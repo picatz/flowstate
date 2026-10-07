@@ -21,7 +21,7 @@ func TaskCapabilityAdmissionCase(record func()) (Case, v1.TaskDef, []string) {
 	callee := &v1.Workflow{
 		Name: "capability-callee",
 		Steps: []*v1.Node{{
-			Id:   "callee-missing",
+			Id:   "callee_missing",
 			Kind: &v1.Node_Task{Task: &v1.Task{Name: missingCalleeTask}},
 		}},
 	}
@@ -29,7 +29,7 @@ func TaskCapabilityAdmissionCase(record func()) (Case, v1.TaskDef, []string) {
 		Name: "task-capability-admission",
 		Steps: []*v1.Node{
 			{
-				Id:   "first-effect",
+				Id:   "first_effect",
 				Kind: &v1.Node_Task{Task: &v1.Task{Name: capabilityEffectTask}},
 				Undo: &v1.Compensation{Task: &v1.Task{Name: missingUndoTask}},
 			},
@@ -38,7 +38,7 @@ func TaskCapabilityAdmissionCase(record func()) (Case, v1.TaskDef, []string) {
 				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 					Items: v1.NewLiteralList("item"),
 					Body: []*v1.Node{{
-						Id:   "nested-missing",
+						Id:   "nested_missing",
 						Kind: &v1.Node_Task{Task: &v1.Task{Name: missingNestedTask}},
 					}},
 				}},

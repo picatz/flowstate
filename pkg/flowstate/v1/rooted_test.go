@@ -92,31 +92,6 @@ func TestStepsRootReachesEveryStep(t *testing.T) {
 	assert.Equal(t, "one two", resultOf(t, out, "joined"))
 }
 
-// TestAStepNamedStepsStillWins is the case that makes the compatibility arm
-// honest rather than merely additive.
-//
-// `steps` is not reserved yet, so a spec compiled before the root existed may
-// contain a step by that name — and a worker replaying it must still resolve
-// `steps.result` to that step's output rather than to a map of every step. The
-// root is answered only when no step claims the name.
-func TestAStepNamedStepsStillWins(t *testing.T) {
-	// Not parallel, for the reason given above.
-	baseURL := conformance.NewHTTPServer(t)
-
-	wf := &v1.Workflow{
-		Name: "shadowed",
-		Steps: []*v1.Node{
-			echoStep("steps", baseURL, v1.NewLiteral("i am a step")),
-			echoStep("reader", baseURL, v1.NewExpr("steps.result")),
-		},
-	}
-
-	out, err := v1.Run(context.Background(), wf)
-	require.NoError(t, err)
-	assert.Equal(t, "i am a step", resultOf(t, out, "reader"),
-		"an older spec's own step must not be shadowed by the root")
-}
-
 // TestUnknownRootedReferenceStaysUnresolved keeps the root from becoming a way to
 // reach something that is not there.
 //

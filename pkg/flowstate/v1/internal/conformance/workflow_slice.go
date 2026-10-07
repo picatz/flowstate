@@ -20,7 +20,7 @@ func WorkflowSliceCases() []Case {
 	refs := make([]string, len(values))
 	wantRunValues := make([]any, len(values))
 	for i := range values {
-		id := fmt.Sprintf("value-%03d", i)
+		id := fmt.Sprintf("value_%03d", i)
 		values[i] = &v1.Node{Id: id, Kind: &v1.Node_Value{Value: v1.NewExpr(heavy)}}
 		wantValues[id] = &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
 			v1.ValueOutput: v1.NewLiteral(int64(10000)),

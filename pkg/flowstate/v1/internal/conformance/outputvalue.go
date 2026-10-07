@@ -74,7 +74,7 @@ func OutputValueRefusalCases() []Refusal {
 			Workflow: declares("calls-structural-only-output",
 				nil,
 				nil,
-				says("before-call", "side effect"),
+				says("before_call", "side effect"),
 				callNode("callee", declares("outputs-structural-only-callee",
 					nil,
 					[]*v1.OutputDeclaration{{

@@ -202,7 +202,7 @@ func ExecCases(root string) []ExecCase {
 			// operator cannot act on is no diagnostic.
 			Name:          "the task is denied until a policy enables it",
 			NoPolicy:      true,
-			Workflow:      execWorkflow("exec-default-denied", execStep("run", shArgv("echo hi"), root, nil)),
+			Workflow:      execWorkflow("exec-default-denied", execStep("program", shArgv("echo hi"), root, nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("no exec policy", "--exec-policy"),
 		},
@@ -211,22 +211,22 @@ func ExecCases(root string) []ExecCase {
 			// a later step branches on it: the same stance as an HTTP status.
 			Name: "a nonzero exit code is output, not failure",
 			Workflow: execWorkflow("exec-exit-code",
-				execStep("run", shArgv(`printf out; printf err >&2; exit 3`), root, nil),
+				execStep("program", shArgv(`printf out; printf err >&2; exit 3`), root, nil),
 				&v1.Node{
 					Id:        "after",
-					Condition: v1.NewExpr(`steps.run.exit_code == 3 && steps.run.outcome == "ran"`),
+					Condition: v1.NewExpr(`steps.program.exit_code == 3 && steps.program.outcome == "ran"`),
 					Kind: &v1.Node_Task{Task: &v1.Task{Name: "log", Inputs: map[string]*v1.Value{
-						"message": v1.NewExpr(`"exited " + string(steps.run.exit_code)`),
+						"message": v1.NewExpr(`"exited " + string(steps.program.exit_code)`),
 					}}},
 				}),
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
-				require.EqualValues(tb, 3, execField(tb, out, "run", "exit_code"))
-				require.Equal(tb, "out", execField(tb, out, "run", "stdout"))
-				require.Equal(tb, "err", execField(tb, out, "run", "stderr"))
-				require.Equal(tb, "ran", execField(tb, out, "run", "outcome"))
-				require.Equal(tb, "", execField(tb, out, "run", "signal"))
-				require.Equal(tb, false, execField(tb, out, "run", "stdout_truncated"))
-				require.Equal(tb, false, execField(tb, out, "run", "stderr_truncated"))
+				require.EqualValues(tb, 3, execField(tb, out, "program", "exit_code"))
+				require.Equal(tb, "out", execField(tb, out, "program", "stdout"))
+				require.Equal(tb, "err", execField(tb, out, "program", "stderr"))
+				require.Equal(tb, "ran", execField(tb, out, "program", "outcome"))
+				require.Equal(tb, "", execField(tb, out, "program", "signal"))
+				require.Equal(tb, false, execField(tb, out, "program", "stdout_truncated"))
+				require.Equal(tb, false, execField(tb, out, "program", "stderr_truncated"))
 				require.Contains(tb, out.GetStepValues(), "after", "the exit code was readable by the next step")
 			},
 		},
@@ -239,12 +239,12 @@ func ExecCases(root string) []ExecCase {
 				Name:    "exec-argv-is-not-a-shell-string",
 				Profile: v1.CurrentProfile,
 				Vars:    map[string]*v1.Value{"payload": v1.NewLiteral("x; echo hacked; $(echo hacked) `echo hacked` > pwned")},
-				Steps: []*v1.Node{execStep("run",
+				Steps: []*v1.Node{execStep("program",
 					v1.NewExpr(`["sh", "-c", "printf %s \"$1\"", "sh", vars.payload]`), root, nil)},
 			},
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
-				require.Equal(tb, "x; echo hacked; $(echo hacked) `echo hacked` > pwned", execField(tb, out, "run", "stdout"))
-				require.EqualValues(tb, 0, execField(tb, out, "run", "exit_code"))
+				require.Equal(tb, "x; echo hacked; $(echo hacked) `echo hacked` > pwned", execField(tb, out, "program", "stdout"))
+				require.EqualValues(tb, 0, execField(tb, out, "program", "exit_code"))
 			},
 		},
 		{
@@ -254,17 +254,17 @@ func ExecCases(root string) []ExecCase {
 			// not a variable this case can speak to.
 			Name: "the worker's environment does not reach the program",
 			Workflow: execWorkflow("exec-env-from-nothing",
-				execStep("run", shArgv(`printf '%s|%s|%s' "${HOME-unset}" "${USER-unset}" "${`+execWorkerSecretEnv+`-unset}"`), root, nil)),
+				execStep("program", shArgv(`printf '%s|%s|%s' "${HOME-unset}" "${USER-unset}" "${`+execWorkerSecretEnv+`-unset}"`), root, nil)),
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
-				require.Equal(tb, "unset|unset|unset", execField(tb, out, "run", "stdout"))
+				require.Equal(tb, "unset|unset|unset", execField(tb, out, "program", "stdout"))
 			},
 		},
 		{
 			Name: "an authored environment key the policy names reaches the program",
 			Workflow: execWorkflow("exec-env-authored",
-				execStep("run", shArgv(`printf %s "$GREETING"`), root, v1.NewLiteralMap(map[string]any{"GREETING": "hello"}))),
+				execStep("program", shArgv(`printf %s "$GREETING"`), root, v1.NewLiteralMap(map[string]any{"GREETING": "hello"}))),
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
-				require.Equal(tb, "hello", execField(tb, out, "run", "stdout"))
+				require.Equal(tb, "hello", execField(tb, out, "program", "stdout"))
 			},
 		},
 		{
@@ -272,14 +272,14 @@ func ExecCases(root string) []ExecCase {
 			// not name.
 			Name: "an environment key the policy does not name is denied",
 			Workflow: execWorkflow("exec-env-unlisted",
-				execStep("run", shArgv(`true`), root, v1.NewLiteralMap(map[string]any{"LD_PRELOAD": "/tmp/evil.so"}))),
+				execStep("program", shArgv(`true`), root, v1.NewLiteralMap(map[string]any{"LD_PRELOAD": "/tmp/evil.so"}))),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("LD_PRELOAD", "env_authored"),
 		},
 		{
 			Name: "a program the policy does not list is denied",
 			Workflow: execWorkflow("exec-unlisted-program",
-				execStep("run", v1.NewLiteralList("curl", "https://example.com"), root, nil)),
+				execStep("program", v1.NewLiteralList("curl", "https://example.com"), root, nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied(`"curl"`, "not a program this policy lists"),
 		},
@@ -288,14 +288,14 @@ func ExecCases(root string) []ExecCase {
 			// resolves: a workflow names, it never locates.
 			Name: "a path in argv[0] is denied",
 			Workflow: execWorkflow("exec-path-argv0",
-				execStep("run", v1.NewLiteralList("/bin/sh", "-c", "true"), root, nil)),
+				execStep("program", v1.NewLiteralList("/bin/sh", "-c", "true"), root, nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("is a path"),
 		},
 		{
 			Name: "a directory outside every root is denied",
 			Workflow: execWorkflow("exec-dir-outside",
-				execStep("run", shArgv(`true`), filepath.Dir(root), nil)),
+				execStep("program", shArgv(`true`), filepath.Dir(root), nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("not under any root"),
 		},
@@ -304,12 +304,12 @@ func ExecCases(root string) []ExecCase {
 			// history: a thousand bytes against a 256-byte bound.
 			Name: "output past the bound is truncated and said so",
 			Workflow: execWorkflow("exec-output-bound",
-				execStep("run", shArgv(`i=0; while [ $i -lt 100 ]; do printf aaaaaaaaaa; i=$((i+1)); done`), root, nil)),
+				execStep("program", shArgv(`i=0; while [ $i -lt 100 ]; do printf aaaaaaaaaa; i=$((i+1)); done`), root, nil)),
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
-				stdout, _ := execField(tb, out, "run", "stdout").(string)
+				stdout, _ := execField(tb, out, "program", "stdout").(string)
 				require.Len(tb, stdout, ExecMaxOutputBytes)
-				require.Equal(tb, true, execField(tb, out, "run", "stdout_truncated"))
-				require.Equal(tb, false, execField(tb, out, "run", "stderr_truncated"))
+				require.Equal(tb, true, execField(tb, out, "program", "stdout_truncated"))
+				require.Equal(tb, false, execField(tb, out, "program", "stderr_truncated"))
 			},
 		},
 		{
@@ -317,7 +317,7 @@ func ExecCases(root string) []ExecCase {
 			// kind: permanent, because the same program would run as long again.
 			Name:     "the policy's time bound ends the program",
 			Timeout:  500 * time.Millisecond,
-			Workflow: execWorkflow("exec-timeout", execStep("run", shArgv(`sleep 30`), root, nil)),
+			Workflow: execWorkflow("exec-timeout", execStep("program", shArgv(`sleep 30`), root, nil)),
 
 			ExpectedKind:  v1.ErrorKindLimitExceeded,
 			ExpectedError: denied("outcome=timed_out"),
@@ -326,10 +326,10 @@ func ExecCases(root string) []ExecCase {
 			Name:  "an allow rule keyed on the run's identity permits its own tenant",
 			Allow: []string{`identity.namespace == "team-a" && name == "sh"`},
 			Workflow: execWorkflow("exec-identity-allow",
-				execStep("run", shArgv(`printf ok`), root, nil)),
+				execStep("program", shArgv(`printf ok`), root, nil)),
 			Identity: teamA,
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
-				require.Equal(tb, "ok", execField(tb, out, "run", "stdout"))
+				require.Equal(tb, "ok", execField(tb, out, "program", "stdout"))
 			},
 		},
 		{
@@ -339,7 +339,7 @@ func ExecCases(root string) []ExecCase {
 			Name:  "the same allow rule refuses another tenant",
 			Allow: []string{`identity.namespace == "team-a" && name == "sh"`},
 			Workflow: execWorkflow("exec-identity-allow-other",
-				execStep("run", shArgv(`printf no`), root, nil)),
+				execStep("program", shArgv(`printf no`), root, nil)),
 			Identity:      teamB,
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("allow rules", "no allow rule matched"),
@@ -348,7 +348,7 @@ func ExecCases(root string) []ExecCase {
 			Name:  "a run with no identity matches no tenant rule",
 			Allow: []string{`identity.namespace == "team-a"`},
 			Workflow: execWorkflow("exec-identity-absent",
-				execStep("run", shArgv(`printf no`), root, nil)),
+				execStep("program", shArgv(`printf no`), root, nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("allow rules"),
 		},
@@ -356,7 +356,7 @@ func ExecCases(root string) []ExecCase {
 			Name: "a deny rule over argv refuses the invocation",
 			Deny: []string{`argv.exists(a, a.contains("rm -rf"))`},
 			Workflow: execWorkflow("exec-deny-rule",
-				execStep("run", shArgv(`rm -rf /`), root, nil)),
+				execStep("program", shArgv(`rm -rf /`), root, nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("deny rule", "rm -rf"),
 		},
@@ -366,7 +366,7 @@ func ExecCases(root string) []ExecCase {
 			Name: "a rule that cannot be evaluated denies",
 			Deny: []string{`argv[9] == "x"`},
 			Workflow: execWorkflow("exec-rule-error",
-				execStep("run", shArgv(`true`), root, nil)),
+				execStep("program", shArgv(`true`), root, nil)),
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("rule error"),
 		},

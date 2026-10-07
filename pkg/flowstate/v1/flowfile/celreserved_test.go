@@ -1,13 +1,14 @@
 package flowfile
 
 import (
-	"slices"
 	"strings"
 	"testing"
 
 	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Two lists here, and they answer two different questions, which is the whole
@@ -19,7 +20,7 @@ import (
 // nothing checking it goes stale on a dependency bump nobody reviewed as a
 // language change.
 //
-// celUnusableStepIDs is what no step may be called even under the root. Rooting
+// v1.CELUnusableStepIDs is what no step may be called even under the root. Rooting
 // moved step ids into field-select position, where cel-go's reserved-word check
 // does not apply — so most of the first list became legal, and what is left is
 // refused a level lower, by the lexer.
@@ -84,7 +85,7 @@ func TestCELReservedIdentifiersMatchTheParser(t *testing.T) {
 	}
 }
 
-// TestCELWordsUnusableAsStepIDs derives celUnusableStepIDs from cel-go, and is
+// TestCELWordsUnusableAsStepIDs derives v1.CELUnusableStepIDs from cel-go, and is
 // the test that caught the list being wrong.
 //
 // The probe has to ask the question a step id actually asks, which rooting
@@ -119,9 +120,9 @@ func TestCELWordsUnusableAsStepIDs(t *testing.T) {
 		return inner != nil && inner.GetOperand().GetIdentExpr().GetName() == "steps"
 	}
 
-	for _, word := range celUnusableStepIDs {
+	for _, word := range v1.CELUnusableStepIDs() {
 		assert.False(t, usable(word),
-			"%q is refused as a step id but cel-go now parses ${steps.%s.result}; remove it from celUnusableStepIDs",
+			"%q is refused as a step id but cel-go now parses ${steps.%s.result}; remove it from v1.CELUnusableStepIDs",
 			word, word)
 	}
 
@@ -138,8 +139,8 @@ func TestCELWordsUnusableAsStepIDs(t *testing.T) {
 		if usable(word) {
 			continue
 		}
-		assert.Contains(t, celUnusableStepIDs, word,
-			"cel-go cannot parse ${steps.%s.result} and celUnusableStepIDs does not list %q; "+
+		assert.Contains(t, v1.CELUnusableStepIDs(), word,
+			"cel-go cannot parse ${steps.%s.result} and v1.CELUnusableStepIDs does not list %q; "+
 				"a step with that id would compile and then every reference to it would fail to parse",
 			word, word)
 	}
@@ -152,7 +153,7 @@ func TestMostReservedWordsBecameLegalStepIDs(t *testing.T) {
 
 	var legal []string
 	for _, word := range celReservedIdentifiers {
-		if !slices.Contains(celUnusableStepIDs, word) {
+		if !v1.IsCELUnusableStepID(word) {
 			legal = append(legal, word)
 		}
 	}
@@ -174,7 +175,7 @@ func TestMostReservedWordsBecameLegalStepIDs(t *testing.T) {
 func TestUnusableStepIDIsReportedOnTheID(t *testing.T) {
 	t.Parallel()
 
-	for _, word := range celUnusableStepIDs {
+	for _, word := range v1.CELUnusableStepIDs() {
 		ds, err := ValidateSource([]byte(
 			"edition: v2026.4\nname: t\nsteps:\n  - id: \"" + word + "\"\n    log:\n      message: hi\n"))
 		require.NoError(t, err)

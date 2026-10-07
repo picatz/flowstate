@@ -80,6 +80,7 @@ func corpusSizes() map[string]int {
 		"ForEachTripCountCases":           len(ForEachTripCountCases()),
 		"InputOutputCases":                len(InputOutputCases(standIn)),
 		"InputRefusalCases":               len(InputRefusalCases()),
+		"StepIDRefusalCases":              len(StepIDRefusalCases()),
 		"IdentityCases":                   len(IdentityCases()),
 		"InterpolationCases":              len(InterpolationCases()),
 		"LogCases":                        len(LogCases()),

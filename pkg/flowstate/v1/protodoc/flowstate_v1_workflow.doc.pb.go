@@ -1305,7 +1305,14 @@ func init() {
 			Name: "flowstate.v1.Node.id",
 			Leading: " Each node has a unique identifier within the workflow. This ID is used to reference the\n" +
 				" node in the workflow's step outputs and can be used to access the outputs of the\n" +
-				" node after the workflow has been executed.\n",
+				" node after the workflow has been executed.\n" +
+				"\n" +
+				" An ID is a CEL identifier, because expressions name a step as\n" +
+				" `steps.<id>`: a letter or underscore, then letters, digits and underscores.\n" +
+				" Uniqueness and the words an ID may not be (the five root names and the\n" +
+				" lexer's `true`, `false`, `null` and `in`) are whole-workflow rules that\n" +
+				" protovalidate cannot express per field; the submit boundary enforces them\n" +
+				" with the same check `flow validate` runs.\n",
 		},
 		{
 			Name: "flowstate.v1.Node.value",

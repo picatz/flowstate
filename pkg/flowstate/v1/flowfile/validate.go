@@ -25,29 +25,10 @@ import (
 
 // celReservedIdentifiers are the words CEL will not accept as an identifier.
 //
-// A step whose ID is one of these compiles, and then every ${...} referencing it
-// fails to parse. The list mirrors the parser's own; keeping a copy is necessary
-// because it is not exported.
-// celUnusableStepIDs are the words no step may be named even under the root.
-//
-// Seventeen of the twenty-one in celReservedIdentifiers became legal the moment
-// references were rooted: cel-go refuses a reserved word in *identifier* position
-// and nowhere else, and `steps.<id>` is a field select. These four are refused a
-// level lower, by the lexer, which no amount of qualifying can reach — `true`,
-// `false` and `null` are literals and `in` is an operator, so `steps.in` is a
-// syntax error in the grammar itself.
-//
-// `in` is the one that is easy to miss, and missing it is not harmless: the step
-// compiles, and then every reference to it fails to *parse*, so the author gets a
-// syntax error pointing at an expression instead of a diagnostic pointing at the
-// id — which is precisely the failure celReservedIdentifiers exists to prevent.
-// TestCELWordsUnusableAsStepIDs derives this set from cel-go rather than trusting
-// the reasoning above.
-//
-// The full list is still needed, because a `for_each` iterator is still written
-// bare and so is still an identifier.
-var celUnusableStepIDs = []string{"true", "false", "null", "in"}
-
+// A loop's `as:` binding is an identifier in every expression of its body, so one
+// of these compiles and then every ${...} referencing it fails to parse. (Step
+// ids are held to the same grammar by [v1.StepIDIssues].) The list mirrors the
+// parser's own; keeping a copy is necessary because it is not exported.
 var celReservedIdentifiers = []string{
 	"as", "break", "const", "continue", "else", "false", "for", "function",
 	"if", "import", "in", "let", "loop", "namespace", "null", "package",
@@ -314,7 +295,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 
 	// Step IDs are the names expressions use, so they are validated before
 	// anything that depends on resolving a reference.
-	ds = append(ds, validateStepIDs(wf.GetSteps())...)
+	ds = append(ds, validateStepIDs(wf)...)
 
 	ds = append(ds, validateDeclaredTypes(wf)...)
 	ds = append(ds, validateDeclaredErrors(wf)...)
@@ -459,77 +440,21 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	return ds
 }
 
-// validateStepIDs checks every top-level step's id for problems that exist
-// independently of the rest of the file: empty, unusable in CEL, not a valid
-// identifier, shadowing a declaration root, or duplicated.
+// validateStepIDs reports every step id in wf, at any nesting, that breaks a
+// scope rule: empty, unusable in CEL, not a valid identifier, shadowing a
+// declaration root, or colliding with another id in its namespace.
 //
-// Extracted so that [validateParsed] can run it on a partial workflow when the
-// compiler reported diagnostics — a step called `in` causes every reference to
-// it to be a CEL syntax error, and without this the id diagnostic is masked by
+// The rules are [v1.StepIDIssues], the same ones the submit boundary refuses a
+// hand-built specification with ([v1.CheckStepIDs]), so there is one spelling of
+// them. Extracted so that [validateParsed] can run it on a partial workflow when
+// the compiler reported diagnostics — a step called `in` causes every reference
+// to it to be a CEL syntax error, and without this the id diagnostic is masked by
 // the expression one (#1292).
-func validateStepIDs(steps []*v1.Node) Diagnostics {
+func validateStepIDs(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
-
-	seen := make(map[string]int, len(steps))
-	for i, node := range steps {
-		id := node.GetId()
-
-		switch {
-		case id == "":
-			ds = append(ds, Diagnostic{
-				Field:   fmt.Sprintf("steps[%d]", i),
-				Message: "step has no id; every step needs an id so later steps can reference its outputs",
-			})
-		case isDeclarationRoot(id):
-			// A root itself. Refused as an id, and this is the one collision
-			// rooting *creates* rather than removes — worth stating, because the
-			// rest of this change is about deleting rules like it.
-			//
-			// It has to be refused here rather than left to resolve, because the
-			// runtime deliberately lets a step of this name win: a spec compiled
-			// before the root existed may contain one, and a worker replaying it
-			// must keep resolving the way it always did. That compatibility is only
-			// safe while no *new* file can create the situation — otherwise a step
-			// called `steps` shadows the root, and every rooted reference in the
-			// file resolves against that step's outputs instead. Which validates
-			// clean and fails at run time with `no such key`.
-			//
-			// Every root rather than only `steps`: the argument is about what a name
-			// hides, not about which root was written first.
-			ds = append(ds, Diagnostic{
-				Step:    id,
-				Message: "id " + shadowsRoot("step", id),
-			})
-		case slices.Contains(celUnusableStepIDs, id):
-			// Four words, where there used to be twenty-one — see celUnusableStepIDs
-			// for which seventeen rooting made legal and why these did not follow.
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is punctuation in CEL rather than a name, so ${%s.%s} cannot be parsed at all; choose another id",
-					id, v1.StepsRoot, id),
-			})
-		case !isCELIdentifier(id):
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is not a valid identifier, so ${%s.…} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore",
-					id, id),
-			})
-		}
-
-		if first, dup := seen[id]; dup && id != "" {
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"duplicate id, already used by step %d; ids must be unique or one step's outputs silently replace the other's",
-					first+1),
-			})
-		} else if id != "" {
-			seen[id] = i
-		}
+	for _, issue := range v1.StepIDIssues(wf) {
+		ds = append(ds, Diagnostic{Step: issue.ID, Field: issue.Field, Message: issue.Message})
 	}
-
 	return ds
 }
 
@@ -637,7 +562,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 		}
 
 		for _, ref := range bare {
-			if isDeclarationRoot(ref) {
+			if v1.IsDeclarationRoot(ref) {
 				// A root as an operand, which fails here for the same reason a
 				// selection through it does — and is described by the two loops
 				// above, not by the general "unknown name" sentence.
@@ -956,7 +881,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 	}
 
 	iterator := v1.IteratorName(loop)
-	if !isCELIdentifier(iterator) {
+	if !v1.IsCELIdentifier(iterator) {
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as",
 			Message: fmt.Sprintf("%q is not a valid identifier", iterator),
@@ -981,7 +906,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 					"different name", iterator),
 		})
 	}
-	if isDeclarationRoot(iterator) {
+	if v1.IsDeclarationRoot(iterator) {
 		// A root, by the other route into a body's scope. A bound name wins over
 		// the scope it is bound into, so an iterator spelled `steps` hides every
 		// step from the body — and the body is exactly where rooted references are
@@ -992,7 +917,7 @@ func validateLoop(stepID string, loop *v1.ForEach, enclosing refScope, index int
 		// body is where those are read too.
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as",
-			Message: shadowsRoot("loop variable", iterator),
+			Message: v1.ShadowsRootMessage("loop variable", iterator),
 		})
 	}
 	// An iterator sharing a step's id used to be refused here, because both
@@ -1230,7 +1155,7 @@ func describeCallSite(node *v1.Node, call *v1.Call) string {
 func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics {
 	var ds Diagnostics
 
-	if !isCELIdentifier(state) {
+	if !v1.IsCELIdentifier(state) {
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as", Value: state,
 			Message: fmt.Sprintf("%q is not a valid identifier, so the body could not read it as `${%s}`", state, state),
@@ -1242,10 +1167,10 @@ func validateLoopStateName(stepID, state string, enclosing refScope) Diagnostics
 			Message: fmt.Sprintf("%q is a CEL reserved word, so ${%s} cannot be parsed", state, state),
 		})
 	}
-	if isDeclarationRoot(state) {
+	if v1.IsDeclarationRoot(state) {
 		ds = append(ds, Diagnostic{
 			Step: stepID, Field: "as", Value: state,
-			Message: shadowsRoot("loop state", state),
+			Message: v1.ShadowsRootMessage("loop state", state),
 		})
 	}
 	if state == v1.NowIdentifier {
@@ -1276,32 +1201,14 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		ds = append(ds, Diagnostic{Step: stepID, Field: "parallel", Message: "at least one branch is required"})
 	}
 
-	// Branch outputs merge into one namespace after the block, so ids must not
-	// collide across branches — and a branch must not reference a sibling, since
-	// branches are unordered.
-	seen := make(map[string]bool, len(enclosing.steps))
-	for id := range enclosing.steps {
-		seen[id] = true
-	}
-
-	for i, branch := range parallel.GetBranches() {
-		for _, node := range v1.MergedSteps(branch.GetSteps()) {
-			if seen[node.GetId()] {
-				ds = append(ds, Diagnostic{
-					Step: node.GetId(),
-					Message: fmt.Sprintf(
-						"id is already used outside branch %d; parallel branches share one output namespace, so ids must be unique across them",
-						i),
-				})
-			}
-		}
+	// Branch outputs merge into one namespace after the block, and ids must not
+	// collide across branches ([validateStepIDs] refuses that) — nor may a branch
+	// reference a sibling, since branches are unordered.
+	for _, branch := range parallel.GetBranches() {
 		// Each branch sees only what existed before the block, never a sibling's
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
 		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, profile, depth, v1.UndoScopeConcurrent)...)
-		for _, node := range v1.MergedSteps(branch.GetSteps()) {
-			seen[node.GetId()] = true
-		}
 	}
 	return ds
 }
@@ -1320,39 +1227,8 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 
 	for _, node := range nodes {
 		id := node.GetId()
-		if id == "" {
-			ds = append(ds, Diagnostic{Message: "nested step has no id"})
-		}
-
-		// A nested id may not shadow one already in scope, for the same reason two
-		// top-level steps may not share one: expressions resolve both from one
-		// namespace, so a reference inside the body means whichever the engine
-		// happens to bind last.
-		//
-		// This was missing while the top-level rule was present, which made the
-		// hole exactly the one that is hardest to see — a body step is written far
-		// from the step it collides with, often in a different part of the file, and
-		// nothing said so. It also left a diagnostic about the body step landing on
-		// the top-level one, since a source position is looked up by id.
-		if isDeclarationRoot(id) {
-			// The same refusal a top-level id gets, for the same reason. A nested
-			// step's outputs are named through the root too, so one called `steps`
-			// hides them from everything after it in the body.
-			ds = append(ds, Diagnostic{
-				Step:    id,
-				Message: "id " + shadowsRoot("step", id),
-			})
-		}
-
-		if _, shadowed := enclosing.steps[id]; id != "" && shadowed {
-			ds = append(ds, Diagnostic{
-				Step: id,
-				Message: fmt.Sprintf(
-					"id %q is already used by a step this one is nested inside; expressions resolve both from one namespace, so a reference here would be ambiguous",
-					id),
-			})
-		}
-
+		// Id collisions and root-named ids are [validateStepIDs]'s, which walks
+		// every nesting level once from the top; this walk only models scope.
 		// See the top-level walk: a node's own vars are bound throughout it, whatever
 		// kind of work it turns out to do.
 		inner, varDiagnostics := scopeWithStepVars(id, node, scope, index, wf)
@@ -1450,7 +1326,7 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 						"different name", name),
 			})
 
-		case isDeclarationRoot(name):
+		case v1.IsDeclarationRoot(name):
 			// A bare binding wins over every root, so a step var of a root's name
 			// hides that namespace for the whole step — its task's inputs, a loop's
 			// items, and everything nested inside it. Refused rather than resolved,
@@ -1458,7 +1334,7 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 			// scope bound.
 			ds = append(ds, Diagnostic{
 				Step: id, Field: "vars." + name, Value: name,
-				Message: shadowsRoot("var", name),
+				Message: v1.ShadowsRootMessage("var", name),
 			})
 
 		case name == v1.NowIdentifier:
@@ -1716,7 +1592,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if scope.locals[ref] {
 			continue
 		}
-		if isDeclarationRoot(ref) {
+		if v1.IsDeclarationRoot(ref) {
 			// A root written as an operand rather than selected through:
 			// `size(steps)`, or `vars["region"]` where the key is computed. Both
 			// resolve — the activation answers a root whole — so reporting either as
@@ -2191,26 +2067,6 @@ func rootedName(sel *expr.Expr_Select, bound map[string]struct{}) (root, name, u
 	return root, name, under, true
 }
 
-// isCELIdentifier reports whether s is a legal CEL identifier.
-func isCELIdentifier(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i, r := range s {
-		switch {
-		case r == '_':
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z':
-		case r >= '0' && r <= '9':
-			if i == 0 {
-				return false
-			}
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 // sortedInputNames returns input names in a stable order so diagnostics do not
 // vary between runs over the same file.
 func sortedInputNames(inputs map[string]*v1.Value) []string {
@@ -2450,7 +2306,7 @@ func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnosti
 		// that explains *why* is masked.
 		var compilerDiags Diagnostics
 		if wf != nil && errors.As(err, &compilerDiags) {
-			idDiags := validateStepIDs(wf.GetSteps())
+			idDiags := validateStepIDs(wf)
 			positionDiagnostics(idDiags, positions)
 			if len(idDiags) > 0 {
 				return nil, append(idDiags, compilerDiags...)

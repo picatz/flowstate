@@ -70,6 +70,17 @@ import (
 // output is still judged at completion, against the value it actually
 // produced, because that is the first moment there is one.
 func BindRunInputs(wf *Workflow, submitted map[string]*Value) (map[string]*Value, error) {
+	// The scope rules a step id must satisfy, refused here in a specification that
+	// never was a Flowfile: a step named for a root, a duplicate id, or one `steps.<id>`
+	// cannot parse. This is the one function every submit path calls, so the server's
+	// doors and the local driver refuse the same spec in the same words, and it runs
+	// at submit only: a run already started replays from its history (#1430). Once
+	// per submission, over the callees too, rather than in [bindRunInputs], which a
+	// call reaches again for each callee.
+	if err := CheckStepIDs(wf); err != nil {
+		return nil, err
+	}
+
 	return bindRunInputs(wf, wf.GetProfile(), submitted)
 }
 
