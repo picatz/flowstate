@@ -14,10 +14,11 @@ func init() {
 			Leading: " AuthorizationActionBinding says which operations one action covers.\n" +
 				"\n" +
 				" The bindings are what keep the vocabulary attached to the surfaces it is a\n" +
-				" vocabulary of: TestEveryRPCHasExactlyOneAuthorizationAction walks\n" +
-				" flowstate.v1.WorkflowService's descriptor and fails when an RPC is named by\n" +
-				" no binding or by two, so an RPC added to the schema cannot arrive without an\n" +
-				" action, and a binding cannot name an RPC the service no longer declares.\n" +
+				" vocabulary of: each WorkflowService method carries its action in its\n" +
+				" authorization_action option, the bindings' rpcs are read from those options,\n" +
+				" and TestEveryRPCHasExactlyOneAuthorizationAction walks the service descriptor\n" +
+				" and fails when a method carries no option, so an RPC added to the schema\n" +
+				" cannot arrive without an action.\n" +
 				"\n" +
 				" rpcs holds RPC names only. The MCP tool projected from an RPC is derived\n" +
 				" from the RPC name and is deliberately not listed: which tools a given MCP\n" +

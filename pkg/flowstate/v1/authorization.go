@@ -234,9 +234,9 @@ func AuthorizationActionForRPC(rpc string) (AuthorizationAction, error) {
 	}
 
 	return AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED,
-		fmt.Errorf("no authorization action names the rpc %q; add it to a binding in "+
-			"pkg/flowstate/v1/authorization.go, or add an action to "+
-			"proto/flowstate/v1/authorization.proto when none of them fits", rpc)
+		fmt.Errorf("no authorization action names the rpc %q; set the method's "+
+			"(flowstate.v1.authorization_action) option in proto/flowstate/v1/service.proto, "+
+			"or add an action to proto/flowstate/v1/authorization.proto when none of them fits", rpc)
 }
 
 // MCPToolPrefix namespaces Flowstate tools when a client aggregates MCP
