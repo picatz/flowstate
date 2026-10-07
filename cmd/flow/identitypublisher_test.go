@@ -128,7 +128,7 @@ func TestServerJWKSFromAPublicKeyVerifiesAWorkerAssertion(t *testing.T) {
 	require.Equal(t, "2026-09", assertion.KeyID)
 
 	verifier, err := auth.NewOIDCVerifier(
-		auth.Policy{Issuers: []auth.TrustedIssuer{{Name: "self", Issuer: relying.URL, Audiences: []string{audience}}}},
+		auth.Policy{Issuers: []auth.TrustedIssuer{{Name: "self", Issuer: relying.URL, Audiences: []string{audience}, Actions: []string{}}}},
 		auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
