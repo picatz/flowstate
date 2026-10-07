@@ -163,7 +163,7 @@ func decide(ctx context.Context, client *http.Client, endpoint, key string, in *
 		System:    systemPrompt,
 		Messages: []message{{
 			Role:    "user",
-			Content: "<evidence>\n" + in.GetEvidence() + "\n</evidence>",
+			Content: "<evidence>\n" + escapeEvidence(in.GetEvidence()) + "\n</evidence>",
 		}},
 		Tools:      []object{toolDefinition(set, in.GetReportConfidence())},
 		ToolChoice: object{{"type", "tool"}, {"name", toolName}},
