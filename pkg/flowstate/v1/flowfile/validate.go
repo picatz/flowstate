@@ -796,16 +796,6 @@ func validateCondition(id string, node *v1.Node, scope refScope, index int, wf *
 	return validateInputRefs(id, "if", node.GetCondition(), scope, index, wf)
 }
 
-// branchStepNodes returns every step across a parallel block's branches,
-// including those nested inside branch control flow whose outputs also merge out.
-func branchStepNodes(parallel *v1.Parallel) []*v1.Node {
-	var nodes []*v1.Node
-	for _, branch := range parallel.GetBranches() {
-		nodes = append(nodes, mergedStepNodes(branch.GetSteps())...)
-	}
-	return nodes
-}
-
 // mergedStepNodes returns the steps whose outputs become visible to steps
 // following a list of nodes.
 //
@@ -818,19 +808,7 @@ func branchStepNodes(parallel *v1.Parallel) []*v1.Node {
 // find its node by searching the whole workflow for that id, which is the wrong
 // step as soon as two blocks legally reuse one (#323). Recording what was put in
 // scope, at the point it is put there, is what makes the later lookup exact.
-func mergedStepNodes(nodes []*v1.Node) []*v1.Node {
-	var out []*v1.Node
-	for _, node := range nodes {
-		out = append(out, node)
-		if p, ok := node.GetKind().(*v1.Node_Parallel); ok {
-			out = append(out, branchStepNodes(p.Parallel)...)
-		}
-		if s, ok := node.GetKind().(*v1.Node_Switch); ok {
-			out = append(out, switchStepNodes(s.Switch)...)
-		}
-	}
-	return out
-}
+func mergedStepNodes(nodes []*v1.Node) []*v1.Node { return v1.MergedSteps(nodes) }
 
 // recordStepInScope marks a finished step in the scope the steps after it are
 // checked against: its own id, plus — for a parallel block or a switch — the
@@ -1307,7 +1285,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 	}
 
 	for i, branch := range parallel.GetBranches() {
-		for _, node := range branch.GetSteps() {
+		for _, node := range v1.MergedSteps(branch.GetSteps()) {
 			if seen[node.GetId()] {
 				ds = append(ds, Diagnostic{
 					Step: node.GetId(),
@@ -1321,7 +1299,7 @@ func validateParallel(stepID string, parallel *v1.Parallel, enclosing refScope, 
 		// steps, which is what validation must model to catch a cross-branch
 		// reference.
 		ds = append(ds, validateNested(branch.GetSteps(), enclosing, index, wf, profile, depth, v1.UndoScopeConcurrent)...)
-		for _, node := range branch.GetSteps() {
+		for _, node := range v1.MergedSteps(branch.GetSteps()) {
 			seen[node.GetId()] = true
 		}
 	}
