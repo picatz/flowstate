@@ -3605,6 +3605,12 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	signalsCmd.GroupID = "workflow"
 	rootCmd.AddCommand(signalsCmd)
 
+	// Beside `signals`: that one rehearses a workflow's own gates, this one a
+	// deployment's policy files. Neither runs anything.
+	policyCmd := newPolicyCommand()
+	policyCmd.GroupID = "workflow"
+	rootCmd.AddCommand(policyCmd)
+
 	rootCmd.AddCommand(scheduleCmd)
 	for _, c := range lifecycleCmds {
 		rootCmd.AddCommand(c)

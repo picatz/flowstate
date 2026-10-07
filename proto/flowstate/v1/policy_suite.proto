@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// PolicyTestSuite is the file `flow policy test` reads: cases to put to one
+// deployment policy, each saying whether the policy must allow or deny and,
+// for a denial, optionally which rule must be the one that denies.
+//
+// # Why the file is a message
+//
+// For the reason [PolicyCheckMatrix] is: an author writes it, more than one tool
+// may read it, and this schema is the one place its shape, bounds and
+// documentation are written. Nothing is sent anywhere.
+//
+// # One suite, one policy surface
+//
+// A suite names the surface its policy file is, once, because a policy file is
+// one surface and a case that belonged to a different one could only ever be a
+// mistake. The surfaces are the deployment policies whose decision needs no
+// server: egress (`--egress-policy`), task shape (`--task-policy`) and exec
+// (`--exec-policy`). Each case is decided by the evaluator the engine enforces
+// that policy with, not by a copy of it.
+//
+// # Nothing here is attested
+//
+// Every identity in this file is an assertion the author makes. The suite says
+// what the policy would answer for it, not whether a deployment's authenticator
+// would let that identity through.
+message PolicyTestSuite {
+  // Surface is which policy the file under test is: `egress`, `task` or `exec`.
+  string surface = 1 [(buf.validate.field).string = {in: ["egress", "task", "exec"]}];
+
+  // Cases are put to the policy in order. At least one, and no more than 512,
+  // because every case is a full evaluation of the policy.
+  repeated PolicyTestCase cases = 2 [(buf.validate.field).repeated = {
+    min_items: 1
+    max_items: 512
+  }];
+}
+
+// PolicyTestCase is one request put to the policy, and what the policy must say.
+message PolicyTestCase {
+  // Name labels the case in the output. Unique across the file (checked by the
+  // reader), at most 128 characters, and free of control characters (C0, DEL and
+  // C1) and Unicode format characters (category Cf), since it is printed.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 128
+    pattern: "^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$"
+  }];
+
+  // Identity is who the request is made as. Absent is no attested caller, which
+  // a rule that scopes by tenant declines to match.
+  PolicyTestIdentity identity = 2;
+
+  // Request is what is asked of the policy; which fields it may carry depends
+  // on the suite's surface, and one that carries another surface's is refused.
+  PolicyTestRequest request = 3;
+
+  // Expect is the outcome the policy must give: `allow` or `deny`. Required: a
+  // case that asserted nothing would read as if it asserted something.
+  string expect = 4 [(buf.validate.field).string = {in: ["allow", "deny"]}];
+
+  // Rule asserts which rule denies, and is allowed only with `expect: deny`. For
+  // a deny rule it is the rule's source text exactly as the policy file writes
+  // it; for any other denial it is the reason the policy gives (`allow rules`
+  // when no allow rule matched, `rule error`, and for egress and exec the
+  // category: `scheme`, `port`, `address`, `executable`, `argv`, `dir`, `env`).
+  // A policy that denies for a different reason fails the case.
+  string rule = 5 [(buf.validate.field).string.max_len = 4096];
+}
+
+// PolicyTestIdentity is the identity a case is made as: the fields every policy
+// surface reads as `identity.<field>`.
+message PolicyTestIdentity {
+  string subject = 1 [(buf.validate.field).string.max_len = 1024];
+  string issuer = 2 [(buf.validate.field).string.max_len = 1024];
+  string namespace = 3 [(buf.validate.field).string.max_len = 1024];
+  map<string, string> claims = 4 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {max_len: 256}}
+    values: {string: {max_len: 4096}}
+  }];
+}
+
+// PolicyTestRequest is the request a case puts to the policy.
+message PolicyTestRequest {
+  // Url and Method are an egress request. Url is required for `egress`; Method
+  // defaults to GET.
+  string url = 1 [(buf.validate.field).string.max_len = 4096];
+  string method = 2 [(buf.validate.field).string.max_len = 32];
+
+  // Ip is the address an egress request is said to resolve to, for the
+  // address checks a hostname cannot exercise without DNS (loopback, private
+  // ranges, link-local and metadata). Absent, a host that is itself an IP
+  // literal is checked as that address and any other host is not address-checked.
+  string ip = 3 [(buf.validate.field).string.max_len = 64];
+
+  // Task is the qualified task name dispatched, such as `http` or `codex.exec`.
+  // Required for `task`.
+  string task = 4 [(buf.validate.field).string.max_len = 256];
+
+  // Argv, Dir and Env are an exec request: the program name and its arguments,
+  // the working directory and the step's environment. Argv is required for
+  // `exec`.
+  repeated string argv = 5 [(buf.validate.field).repeated = {
+    max_items: 256
+    items: {string: {max_len: 4096}}
+  }];
+  string dir = 6 [(buf.validate.field).string.max_len = 4096];
+  map<string, string> env = 7 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {max_len: 256}}
+    values: {string: {max_len: 4096}}
+  }];
+}
