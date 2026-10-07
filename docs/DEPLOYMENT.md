@@ -1375,7 +1375,8 @@ refuses a private key at start-up, so it never reads signing material. Either
 process refuses to start with `federation:` and no key, or a key and no
 `federation:`, so a deployment that does not federate removes the line from both
 files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
-restarts both.
+restarts both. Past one VM, [keep the key in Vault Transit](#signing-keys-in-vault-transit)
+instead of a file.
 
 The server holds no signing key, but the signing key is still shared: every
 worker that federates holds the same private key, and whoever holds it can sign
@@ -1441,6 +1442,94 @@ federation stays shared as above), its own `TEMPORAL_NAMESPACE`, and its own
 `--egress-policy` / `--auth-policy` files, and map each tenant onto its namespace in the trust
 policy the server loads (`tenancy:` under `--auth-policy`, `auth.Tenancy` /
 `temporalclient.Pool`).
+
+### Signing keys in Vault Transit
+
+A key file is the right shape for one VM and the wrong one past it. The
+`--identity-key` file is on every worker that federates, in each one's memory, and
+a compromise of any of them is a compromise of the issuer
+([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
+Past a single VM, **keep the key in a Vault or OpenBao Transit engine instead**: the
+key is created non-exportable, Flowstate asks Transit to sign, and the private half
+is never in a Flowstate process, on its disk, or in anything it logs. Self-hosting
+stays the baseline, since Transit is Vault's or OpenBao's own engine and needs no
+cloud account.
+
+Create the key once, as an operator, with a type the issuer publishes
+(`ecdsa-p256` signs ES256 and `ed25519` signs EdDSA; other types are refused):
+
+```console
+$ vault secrets enable transit
+$ vault write transit/keys/flowstate-identity type=ecdsa-p256 exportable=false allow_plaintext_backup=false
+```
+
+Grant the processes exactly what they use and nothing else. A worker signs, so it
+needs `update` on the sign path and `read` on the key; the server only publishes,
+so it needs the `read` alone:
+
+```hcl
+# worker policy
+path "transit/sign/flowstate-identity" { capabilities = ["update"] }
+path "transit/keys/flowstate-identity" { capabilities = ["read"] }
+
+# server policy
+path "transit/keys/flowstate-identity" { capabilities = ["read"] }
+```
+
+Do not grant `create` on the sign path. Transit creates a key that does not exist
+when the policy allows it, so a deleted key would be replaced by one nobody
+published. Do not grant `export`, `rotate`, `config`, or `trim` to a Flowstate
+token: rotation is an operator's act, below.
+
+Point both processes at the key with `--identity-signer` (or
+`FLOWSTATE_IDENTITY_SIGNER`) in place of `--identity-key`:
+
+```ini
+# worker.env and server.env
+FLOWSTATE_IDENTITY_SIGNER=vault-transit://vault.internal.example.com:8200/flowstate-identity
+FLOWSTATE_SECRET_VAULT_TOKEN_FILE=/run/vault-agent/token
+```
+
+The URL names the host and the key. `?mount=` names a Transit mount other than
+`transit`, `?namespace=` a Vault namespace, and `?kubernetes_role=ROLE` logs a
+worker in with its service account instead of a token file, which is the better
+choice in a cluster since the token renews itself. The token is never part of the
+URL (one that is is refused), and never on a command line: it comes from the
+file, or from `FLOWSTATE_SECRET_VAULT_TOKEN`, the same places the Vault secrets
+provider reads it. The requests leave through the trust policy's `egress:` section
+like every other identity fetch, so a Vault on a private network is reached by
+naming that network there (`allow_networks`), and a redirect is never followed.
+`--identity-signer` and `--identity-key` are alternatives: giving both is refused.
+
+What the processes do with it:
+
+- **The key is read from the backend, never from a copy.** The algorithm comes from
+  the key's type, and the published key id is `<key>-v<N>` from its version, so a
+  rotation is a new id in the key set. A worker proves the pairing at start-up: it
+  has Transit sign once and refuses to start unless that signature verifies against
+  the public key Transit reported, so a backend that answers with the wrong key
+  fails the deployment instead of every relying party. A backend that does not
+  answer, or answers 403, stops the process; nothing falls back to a local key,
+  since there is none.
+- **Every signature names its version.** The worker pins the version it published,
+  so an operator rotating mid-flight cannot produce an assertion whose `kid` names
+  one key and whose signature is another's.
+- **Rotation keeps the overlap file keys have.** Rotate in Transit
+  (`vault write -f transit/keys/flowstate-identity/rotate`), then restart the
+  server and then the workers: the worker signs with the new version and publishes
+  every older version Transit still serves for verification only, and the server
+  publishes all of them, so assertions signed before the restart keep verifying
+  with no key list to maintain. To end the overlap, raise `min_decryption_version`
+  on the key (`vault write transit/keys/flowstate-identity/config
+  min_decryption_version=N`) and restart: versions below it are no longer
+  published.
+- **Every mint is a round trip.** A signature is one request to Vault, bounded by
+  the issuer's signing timeout, so Vault's availability is the availability of
+  minting, and its audit log records every assertion signed.
+
+`flow keys public --signer 'vault-transit://…'` prints what the backend holds as a
+key set, current version first, which is the check to run after creating or
+rotating a key.
 
 ### Kubernetes
 

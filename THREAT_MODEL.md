@@ -777,8 +777,17 @@ the entire federation story in one file. The server that publishes the key set d
 not hold it: `flow server --identity-key` accepts only the PKIX public key and
 refuses a private one at start-up, so the process facing callers never reads
 signing material (`auth.NewIssuer` in publish-only mode; `cmd/flow` `identityPublisher`).
-Workers sign, so the key is on every worker that federates; one shared signer across
-tenant workers remains a documented limit, and federation is a deployment-wide trust
+Workers sign, so with a key file the key is on every worker that federates. With
+`--identity-signer vault-transit://…` it is not: the key lives in a Vault or OpenBao
+Transit engine, non-exportable, and a worker holds only a token that may ask Transit
+to sign (`update` on `transit/sign/KEY`) and read the key's public versions; the
+server needs only the read (`pkg/flowstate/v1/auth/signers/vaulttransit`). A worker
+compromise then yields the ability to have assertions signed while the token is
+valid, which Vault's audit log records and revoking the token ends, rather than a
+key that signs anywhere forever; it does not narrow what those assertions may claim.
+The deployment guide recommends this shape past a single VM
+([signing keys in Vault Transit](docs/DEPLOYMENT.md#signing-keys-in-vault-transit)).
+One shared signer across tenant workers remains a documented limit, and federation is a deployment-wide trust
 domain until per-tenant issuers land, so one tenant's worker compromise reaches every
 tenant's federated credentials.
 

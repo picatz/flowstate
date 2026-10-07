@@ -185,6 +185,11 @@ type authFlags struct {
 	// public key published for verification and none signs — see
 	// [identityPublisher].
 	identityKeyPaths []string
+
+	// identitySigner is a vault-transit:// URL naming a Transit key to sign with
+	// (a worker) or to read the public keys to publish from (the server), in
+	// place of --identity-key. See [parseIdentitySigner].
+	identitySigner string
 }
 
 // identityKeyDefault is what --identity-key holds when it is not given: the one
@@ -223,12 +228,14 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	identityKeyPaths, _ := cmd.Flags().GetStringArray("identity-key")
+	identitySigner, _ := cmd.Flags().GetString("identity-signer")
 
 	return authFlags{
 		policyPath:       policyPath,
 		policyPathGiven:  cmd.Flags().Changed("auth-policy"),
 		insecure:         insecure,
 		identityKeyPaths: identityKeyPaths,
+		identitySigner:   identitySigner,
 	}
 }
 
@@ -1895,41 +1902,34 @@ func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
 // covered and is not.
 func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) {
 	if policy == nil || policy.Federation == nil {
-		if len(flags.identityKeyPaths) > 0 {
-			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
+		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" {
+			return nil, fmt.Errorf("--identity-key or --identity-signer was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	if len(flags.identityKeyPaths) == 0 {
+	var (
+		key  auth.SigningKey
+		opts []auth.FederationOption
+		err  error
+	)
+
+	switch {
+	case flags.identitySigner != "" && len(flags.identityKeyPaths) > 0:
+		return nil, fmt.Errorf("configure one source of signing keys, not both --identity-signer and --identity-key: " +
+			"a Transit key supplies its own previous versions, so there is nothing to list beside it")
+	case flags.identitySigner != "":
+		key, opts, err = identitySignerKeys(flags.identitySigner, policy)
+	case len(flags.identityKeyPaths) == 0:
 		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
-			"pass --identity-key with a PKCS#8 PEM private key, since Flowstate cannot issue an " +
-			"assertion it cannot sign")
+			"pass --identity-key with a PKCS#8 PEM private key, or --identity-signer with a vault-transit:// " +
+			"URL, since Flowstate cannot issue an assertion it cannot sign")
+	default:
+		key, opts, err = identityFileKeys(flags.identityKeyPaths)
 	}
-
-	signingPath, verifyOnlyPaths := flags.identityKeyPaths[0], flags.identityKeyPaths[1:]
-
-	pem, err := readBoundedFile(signingPath, "a PEM private key", maxPEMFileBytes)
-	if err != nil {
-		return nil, fmt.Errorf("reading identity key: %w", err)
-	}
-	key, err := parseSigningKey(signingPath, pem)
 	if err != nil {
 		return nil, err
-	}
-
-	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
-	for _, path := range verifyOnlyPaths {
-		data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
-		if err != nil {
-			return nil, fmt.Errorf("reading verify-only identity key: %w", err)
-		}
-		id, public, err := parseVerifyOnlyKey(path, data)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
 	}
 
 	// A duplicate id is refused by [auth.NewIssuer], which is where the key set
@@ -1940,6 +1940,36 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
 	return broker, nil
+}
+
+// identityFileKeys reads a worker's --identity-key files: the first signs and
+// every later one is published for verification only.
+func identityFileKeys(paths []string) (auth.SigningKey, []auth.FederationOption, error) {
+	signingPath, verifyOnlyPaths := paths[0], paths[1:]
+
+	pem, err := readBoundedFile(signingPath, "a PEM private key", maxPEMFileBytes)
+	if err != nil {
+		return auth.SigningKey{}, nil, fmt.Errorf("reading identity key: %w", err)
+	}
+	key, err := parseSigningKey(signingPath, pem)
+	if err != nil {
+		return auth.SigningKey{}, nil, err
+	}
+
+	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
+	for _, path := range verifyOnlyPaths {
+		data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
+		if err != nil {
+			return auth.SigningKey{}, nil, fmt.Errorf("reading verify-only identity key: %w", err)
+		}
+		id, public, err := parseVerifyOnlyKey(path, data)
+		if err != nil {
+			return auth.SigningKey{}, nil, err
+		}
+		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
+	}
+
+	return key, opts, nil
 }
 
 // identityPublisher builds the publish-only issuer a server serves its discovery
@@ -1959,21 +1989,48 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 // shared key signs as the same issuer, whatever tenant its run belongs to.
 func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.Issuer, error) {
 	if policy == nil || policy.Federation == nil {
-		if len(flags.identityKeyPaths) > 0 {
-			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
+		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" {
+			return nil, fmt.Errorf("--identity-key or --identity-signer was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	if len(flags.identityKeyPaths) == 0 {
+	var (
+		opts []auth.FederationOption
+		err  error
+	)
+
+	switch {
+	case flags.identitySigner != "" && len(flags.identityKeyPaths) > 0:
+		return nil, fmt.Errorf("configure one source of published keys, not both --identity-signer and --identity-key")
+	case flags.identitySigner != "":
+		opts, err = identitySignerPublicKeys(flags.identitySigner, policy)
+	case len(flags.identityKeyPaths) == 0:
 		return nil, fmt.Errorf("the trust policy configures federation but no identity key was given: " +
 			"pass --identity-key with the PKIX public key PEM of each key workers sign with " +
-			"(flow keys public --in KEY.pem --pem), since the server publishes keys and holds no signing key")
+			"(flow keys public --in KEY.pem --pem), or --identity-signer with the vault-transit:// URL of the " +
+			"Transit key they sign with, since the server publishes keys and holds no signing key")
+	default:
+		opts, err = identityPublicFileKeys(flags.identityKeyPaths)
+	}
+	if err != nil {
+		return nil, err
 	}
 
-	opts := make([]auth.FederationOption, 0, len(flags.identityKeyPaths))
-	for _, path := range flags.identityKeyPaths {
+	// A duplicate id is refused by [auth.NewIssuer], as for a worker.
+	issuer, err := policy.Federation.PublishOnlyIssuer(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("configuring identity federation: %w", err)
+	}
+	return issuer, nil
+}
+
+// identityPublicFileKeys reads a server's --identity-key files, every one a
+// PKIX public key published for verification.
+func identityPublicFileKeys(paths []string) ([]auth.FederationOption, error) {
+	opts := make([]auth.FederationOption, 0, len(paths))
+	for _, path := range paths {
 		data, err := readBoundedFile(path, "a PEM public key", maxPEMFileBytes)
 		if err != nil {
 			return nil, fmt.Errorf("reading identity key: %w", err)
@@ -1985,12 +2042,7 @@ func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.Issuer, erro
 		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
 	}
 
-	// A duplicate id is refused by [auth.NewIssuer], as for a worker.
-	issuer, err := policy.Federation.PublishOnlyIssuer(opts...)
-	if err != nil {
-		return nil, fmt.Errorf("configuring identity federation: %w", err)
-	}
-	return issuer, nil
+	return opts, nil
 }
 
 // parsePublicIdentityKey decodes a server's --identity-key entry, which must be
@@ -3007,6 +3059,7 @@ flow server --insecure-no-auth`,
 	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"), runtimeAuthPolicyUsage)
 	workerCmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
+	addIdentitySignerFlag(workerCmd, false)
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
@@ -3026,6 +3079,7 @@ flow server --insecure-no-auth`,
 			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\". "+
 			"Repeatable: list the current key and any previous ones, so a rotation does "+
 			"not reject assertions signed with the old key")
+	addIdentitySignerFlag(serverCmd, true)
 
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an

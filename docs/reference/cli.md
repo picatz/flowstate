@@ -1002,11 +1002,13 @@ flow keys generate --out identity/key.pem --id 2026-08
 
 ## `flow keys public`
 
-Print the public JWK for an existing signing key
+Print the public JWK for an existing signing key, or what a Transit key holds
 
 ```
 flow keys public [flags]
 ```
+
+Print the public half of a signing key: from a PKCS#8 private key file with `--in`, or from a Vault or OpenBao Transit key with `--signer`, which reads what the backend itself holds (every version it still serves) and prints it as a JSON Web Key Set. Nothing about a Transit key is read from a local copy.
 
 Examples:
 
@@ -1017,14 +1019,21 @@ flow keys public --in identity/2026-08.pem
 # The PKIX public key PEM a server's --identity-key takes, so the server
 # never holds the private key (the file's base name is the key id):
 flow keys public --in identity/2026-08.pem --pem > server-identity/2026-08.pem
+
+# What a Vault Transit key publishes, read from the backend (the token comes
+# from $FLOWSTATE_SECRET_VAULT_TOKEN_FILE, never from the URL):
+flow keys public \
+  --signer 'vault-transit://vault.example.com:8200/flowstate-identity'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--auth-policy <string>` | `string` | — | — | with `--signer`: a trust policy whose `egress:` section bounds the request to the backend, so a Vault on a private network is reached the way every identity fetch is |
 | `--id <string>` | `string` | — | — | key id published in the JWK (default: `--in`'s file name, without its extension) |
-| `--in <string>` | `string` | — | — | path to a PKCS#8 private key PEM (required) |
+| `--in <string>` | `string` | — | — | path to a PKCS#8 private key PEM (one of `--in` or `--signer` is required) |
 | `--jwks` | `bool` | `false` | — | wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file |
 | `--pem` | `bool` | `false` | — | print a PKIX public key PEM instead of a JWK: the only form `flow server --identity-key` accepts, which publishes keys workers sign with without holding them |
+| `--signer <string>` | `string` | — | — | vault-transit://HOST[:PORT]/KEY[?mount=…&token_file=…] naming a Transit key: prints a key set of what the backend holds, current version and previous. Needs only `read` on transit/keys/KEY |
 
 ## `flow lint`
 
@@ -1958,6 +1967,7 @@ flow server --insecure-no-auth
 | `--gates-ui-scope <string,...>` | `stringSlice` | — | — | scope to request at sign-in; repeatable. None is required by the page |
 | `--gates-ui-session-key-file <string>` | `string` | — | — | file holding the base64 of a 32-byte key that seals the sign-in cookies. Replicas that should accept each other's sessions share one; without it a random key is made at start and a restart signs everyone out. Generate one with `head -c32 /dev/urandom \| base64` |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | path to a PKIX public key PEM (`flow keys public --in KEY.pem --pem`) to publish for verifying assertions workers sign, required when the auth policy configures federation; a private key is refused, since the server holds no signing key (workers take the PKCS#8 private key). The file's base name becomes the published key id, so 2026-07.pem publishes as "2026-07". Repeatable: list the current key and any previous ones, so a rotation does not reject assertions signed with the old key |
+| `--identity-signer <string>` | `string` | — | `FLOWSTATE_IDENTITY_SIGNER` | vault-transit://HOST[:PORT]/KEY[?mount=transit&namespace=NS&scheme=https&token_file=PATH&kubernetes_role=ROLE] naming a Vault or OpenBao Transit key whose private half never leaves it, in place of --identity-key. The server reads the key's public versions from the backend and publishes them, and needs only `read` on transit/keys/KEY. The Vault token is never part of the URL: it comes from token_file, $FLOWSTATE_SECRET_VAULT_TOKEN_FILE, $FLOWSTATE_SECRET_VAULT_TOKEN, or Kubernetes auth. Requests are bounded by the trust policy's `egress:` section |
 | `--insecure-no-auth` | `bool` | `false` | — | allow unauthenticated access, for local development only; cannot be combined with `--auth-policy` (or an inherited FLOWSTATE_AUTH_POLICY) |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as `--internal-listen 127.0.0.1:9090`, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--listen <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address this server listens on, as host:port (default $FLOWSTATE_ADDRESS); not a URL, and not the client's `--address`. Off loopback it requires `--tls-cert-file` and `--tls-key-file` (or `--tls-acme-hosts`), or `--tls-terminated-upstream` |
@@ -2732,6 +2742,7 @@ flow worker --temporal-namespace production \
 | `--exec-policy <string>` | `string` | — | `FLOWSTATE_EXEC_POLICY` | path to an exec policy (YAML) enabling the built-in exec task (default $FLOWSTATE_EXEC_POLICY); unset, every exec step is denied. The file lists the programs a workflow may name, the directory roots they may run in, the environment they see, and the time and output bounds; it is an allowlist of what may be started, not a sandbox: a started program runs with this process's privileges and is not confined by the egress policy |
 | `--identity <string>` | `string` | — | `FLOWSTATE_WORKER_IDENTITY` | how this worker identifies itself to Temporal, shown in Event History and a task queue's poller list; a platform identifier (a Kubernetes pod name, an ECS task id) is the most useful value. Unset builds one from `--temporal-deployment-name`, `--build-id`, `--tenant` if set, and this machine's hostname |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
+| `--identity-signer <string>` | `string` | — | `FLOWSTATE_IDENTITY_SIGNER` | vault-transit://HOST[:PORT]/KEY[?mount=transit&namespace=NS&scheme=https&token_file=PATH&kubernetes_role=ROLE] naming a Vault or OpenBao Transit key whose private half never leaves it, in place of --identity-key. The worker signs through Transit (`update` on transit/sign/KEY, `read` on transit/keys/KEY) and publishes the key's previous versions for the rotation overlap. The Vault token is never part of the URL: it comes from token_file, $FLOWSTATE_SECRET_VAULT_TOKEN_FILE, $FLOWSTATE_SECRET_VAULT_TOKEN, or Kubernetes auth. Requests are bounded by the trust policy's `egress:` section |
 | `--internal-listen <string>` | `string` | — | `FLOWSTATE_INTERNAL_ADDRESS` | address for health and pprof, on a private socket of this process's own; empty (the default) means no internal listener at all. Pass a loopback address, such as `--internal-listen 127.0.0.1:9090`, to turn it on — nothing else is accepted: it serves pprof, whose profiles carry this process's memory and running goroutines (secret values resolved into it among them), and it carries no authentication and no TLS configuration of its own, so reach it over a private network rather than exposing it |
 | `--max-activities-per-second <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_ACTIVITIES_PER_SECOND` | maximum rate, per second, at which this worker process starts activity tasks; 0 takes the Temporal SDK default (effectively unlimited). Enforced locally, per worker process — see `--task-queue-activities-per-second` for the server-enforced, per-queue limit |
 | `--max-concurrent-activities <string>` | `string` | `0` | `FLOWSTATE_WORKER_MAX_CONCURRENT_ACTIVITIES` | maximum number of activity tasks executing at once in this process; 0 takes the Temporal SDK default (1000). Raising this trades worker CPU/memory for throughput on a single replica; see the capacity section of https://github.com/picatz/flowstate/blob/main/docs/DEPLOYMENT.md for when to raise this versus scaling out |

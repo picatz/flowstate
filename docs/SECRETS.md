@@ -287,6 +287,14 @@ every key to publish, newest first. To rotate:
 3. After `federation.key_retention` (default 24h), restart them all with the new
    key alone, and delete the old one.
 
+The key need not be a file. `--identity-signer vault-transit://HOST/KEY` signs
+through a Vault or OpenBao Transit key whose private half never reaches the worker,
+and the server publishes the public versions it reads from the same key, in place
+of `--identity-key` on both. Rotation is then a rotation in Transit and a restart,
+with the older versions published for the overlap automatically; see
+[Signing keys in Vault Transit](DEPLOYMENT.md#signing-keys-in-vault-transit) for the
+policy it needs.
+
 [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) describes the
 metadata documents a relying party reads and what each cloud requires of them.
 

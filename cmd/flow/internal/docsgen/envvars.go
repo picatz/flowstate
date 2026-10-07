@@ -220,6 +220,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_IDENTITY_SIGNER",
+			value:   "unset",
+			purpose: "Default for `--identity-signer`: a `vault-transit://HOST[:PORT]/KEY` URL naming a Vault or OpenBao Transit key to sign with, in place of `--identity-key`, so the private key never reaches the server or worker. A worker signs through Transit and publishes the key's previous versions; `flow server` only reads the public versions. The Vault token is never part of the URL: it comes from the URL's `token_file`, `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`, `$FLOWSTATE_SECRET_VAULT_TOKEN`, or Kubernetes auth (`kubernetes_role`).",
+			read:    "cmd/flow/identitysigner.go",
+		},
+		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
 			value:   "false",
 			purpose: "Set to `true` to permit sending a bearer token over plain HTTP to somewhere that is not loopback. A refusal by default, because a token on the wire in the clear belongs to whatever is between here and there.",
@@ -409,13 +415,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_SECRET_VAULT_TOKEN",
 			value:   "unset",
 			purpose: "A static Vault client token, read directly when `--secret-vault-token-file` (and `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`) is unset. For a development vault or a test; a long-running worker should prefer the file form or Kubernetes auth, since this one cannot be rotated without a restart.",
-			read:    "cmd/flow/secrets.go",
+			read:    "cmd/flow/secrets.go, cmd/flow/identitysigner.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_VAULT_TOKEN_FILE",
 			value:   "unset",
 			purpose: "Default for `--secret-vault-token-file`: a file holding a static Vault client token, re-read on every login so a rotated token is picked up without a restart.",
-			read:    "cmd/flow/secrets.go",
+			read:    "cmd/flow/secrets.go, cmd/flow/identitysigner.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_<NAME>",
