@@ -1,6 +1,90 @@
 {
   "plugins": [
     {
+      "name": "anthropic",
+      "version": "0.1.0",
+      "description": "Puts typed questions to a Claude model and returns validated, provider-neutral answers; outbound only.",
+      "secretSchemes": [],
+      "tasks": [
+        {
+          "name": "anthropic.decide",
+          "summary": "Answer a set of predicate, choice and score questions about evidence, with a self-reported confidence only when the model gives one.",
+          "inputs": [
+            {
+              "name": "api_key",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": [
+                "must be a whole secret reference, never a literal"
+              ]
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "evidence",
+              "type": "string",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "question_set",
+              "type": "any",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "report_confidence",
+              "type": "bool",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            },
+            {
+              "name": "max_tokens",
+              "type": "int",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "outputs": [
+            {
+              "name": "answers",
+              "type": "list[Answer]",
+              "required": false,
+              "deferred": false,
+              "constraints": []
+            }
+          ],
+          "needsScope": false,
+          "secretInputs": [
+            "api_key"
+          ],
+          "shapesOutputs": false,
+          "deferredInputs": [],
+          "expressionInputs": [],
+          "inputDescriptor": "ChxhbnRocm9waWMvdjEvYW50aHJvcGljLnByb3RvEgxhbnRocm9waWMudjEaG2Zsb3dzdGF0ZS92MS9kZWNpc2lvbi5wcm90bxoYZmxvd3N0YXRlL3YxL3ZhbHVlLnByb3RvIvIBCgxEZWNpZGVJbnB1dHMSLAoHYXBpX2tleRgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIGYXBpS2V5EhQKBW1vZGVsGAIgASgJUgVtb2RlbBIaCghldmlkZW5jZRgDIAEoCVIIZXZpZGVuY2USNgoMcXVlc3Rpb25fc2V0GAQgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgtxdWVzdGlvblNldBIrChFyZXBvcnRfY29uZmlkZW5jZRgFIAEoCFIQcmVwb3J0Q29uZmlkZW5jZRIdCgptYXhfdG9rZW5zGAYgASgFUgltYXhUb2tlbnMiPwoNRGVjaWRlT3V0cHV0cxIuCgdhbnN3ZXJzGAEgAygLMhQuZmxvd3N0YXRlLnYxLkFuc3dlclIHYW5zd2Vyc0K/AQoQY29tLmFudGhyb3BpYy52MUIOQW50aHJvcGljUHJvdG9QAVpKZ2l0aHViLmNvbS9waWNhdHovZmxvd3N0YXRlL3BsdWdpbnMvYW50aHJvcGljL2dlbi9hbnRocm9waWMvdjE7YW50aHJvcGljdjGiAgNBWFiqAgxBbnRocm9waWMuVjHKAgxBbnRocm9waWNcVjHiAhhBbnRocm9waWNcVjFcR1BCTWV0YWRhdGHqAg1BbnRocm9waWM6OlYxStIbCo0KCgIEABIDAAAAGoEKIERlY2lkZUlucHV0cyBpcyB0aGlzIHBsdWdpbidzIG9uZSB0YXNrOiBwdXQgYSBuYW1lZCBzZXQgb2YgdHlwZWQgcXVlc3Rpb25zCiB0byBhIENsYXVkZSBtb2RlbCBhYm91dCBzb21lIGV2aWRlbmNlLCBhbmQgZ2V0IGJhY2sgb25lIHR5cGVkIGFuc3dlciBwZXIKIHF1ZXN0aW9uLgoKIFRoZSBxdWVzdGlvbnMgYW5kIGFuc3dlcnMgYXJlIHRoZSBwcm92aWRlci1uZXV0cmFsIHNoYXBlcyBvZgogZmxvd3N0YXRlL3YxL2RlY2lzaW9uLnByb3RvLCBzbyBhIEZsb3dmaWxlIHRoYXQgcm91dGVzIG9uIGFuIGFuc3dlciByZWFkcyB0aGUKIHNhbWUgdW5kZXIgYW55IHByb3ZpZGVyIHBsdWdpbi4gRXZlcnl0aGluZyBzcGVjaWZpYyB0byBBbnRocm9waWMgLSB0aGUgbW9kZWwsCiB0aGUgb3V0cHV0IGJ1ZGdldCwgd2hldGhlciB0byBhc2sgZm9yIGEgc2VsZi1yZXBvcnRlZCBjb25maWRlbmNlIC0gaXMgYSBmaWVsZAogaGVyZSBhbmQgbmV2ZXIgY3Jvc3NlcyBpbnRvIHRoZSBuZXV0cmFsIHNjaGVtYS4KCiAjIEhvdyBhIHF1ZXN0aW9uIHNldCBiZWNvbWVzIGEgcmVxdWVzdAoKIFRoZSBNZXNzYWdlcyBBUEkgaGFzIG5vIGRlY2lzaW9ucyBlbmRwb2ludC4gVGhpcyBwbHVnaW4gc2VuZHMgb25lIHJlcXVlc3QKIHdob3NlIG9ubHkgdG9vbCB0YWtlcyBvbmUgcHJvcGVydHkgcGVyIHF1ZXN0aW9uLCBhbmQgZm9yY2VzIHRoZSBtb2RlbCB0byBjYWxsCiBpdCB3aXRoIHRvb2xfY2hvaWNlLCBzbyB0aGUgYW5zd2VyIGNvbWVzIGJhY2sgYXMgdGhlIHRvb2wncyBKU09OIGlucHV0IHJhdGhlcgogdGhhbiBhcyBwcm9zZSB0byBiZSBwYXJzZWQuIEEgY2hvaWNlIHF1ZXN0aW9uIGlzIGFuIGVudW0gb2YgaXRzIG9wdGlvbnMsIGEKIHByZWRpY2F0ZSBpcyBhIGJvb2xlYW4sIGFuZCBhIHNjb3JlIGlzIGFuIGVudW0gb2YgaXRzIGxldmVscyBpbiBvcmRlci4KCiAjIENhbGlicmF0aW9uCgogQ2xhdWRlIGV4cG9zZXMgbm8gdG9rZW4gcHJvYmFiaWxpdGllcy4gVGhlIG9ubHkgY29uZmlkZW5jZSBpdCBjYW4gZ2l2ZSBpcyBpdHMKIG93biBkZXNjcmlwdGlvbiBvZiBob3cgc3VyZSBpdCBpcywgc28gYW4gYW5zd2VyIGNhcnJpZXMKIENBTElCUkFUSU9OX1NFTEZfUkVQT1JURUQgd2hlbiwgYW5kIG9ubHkgd2hlbiwgdGhlIG1vZGVsIHN1cHBsaWVkIGEKIGNvbmZpZGVuY2UgaW4gaXRzIHRvb2wgaW5wdXQsIGFuZCBDQUxJQlJBVElPTl9OT05FIG90aGVyd2lzZS4gTm8gcHJvYmFiaWxpdHkKIG9yIGRpc3RyaWJ1dGlvbiBpcyBldmVyIGNvbXB1dGVkIG9yIGZpbGxlZCBpbi4KCsoCCgQEAAIAEgMAAAAavAIgQXBpS2V5IGlzIGFuIEFudGhyb3BpYyBBUEkga2V5LiBUaGUgdGFzayByZXF1aXJlcyB0aGlzIGVudGlyZSBpbnB1dCB0byBiZSBhCiBzZWNyZXQgcmVmZXJlbmNlLCB3aGljaCB0aGUgaG9zdCByZXNvbHZlcyB3b3JrZXItc2lkZSBiZWZvcmUgZXhlY3V0aW9uOyBhCiBsaXRlcmFsIGlzIHJlZnVzZWQgYmVmb3JlIGl0IGNhbiBlbnRlciBkdXJhYmxlIGhpc3RvcnkuIFRoZSByZXNvbHZlZCB2YWx1ZQogaXMgY2FwcGVkIGF0IDQgS2lCLCBzZW50IG9ubHkgYXMgdGhlIHgtYXBpLWtleSBoZWFkZXIsIGFuZCBuZXZlciBhcHBlYXJzCiBpbiBhbiBlcnJvci4KCuABCgQEAAIBEgMAAAAa0gEgTW9kZWwgaXMgdGhlIEFudGhyb3BpYyBtb2RlbCBpZGVudGlmaWVyIHRoZSByZXF1ZXN0IG5hbWVzLCByZXF1aXJlZCBhbmQKIG5ldmVyIGRlZmF1bHRlZCBoZXJlLiBJdCBpcyBwYXNzZWQgdGhyb3VnaCB1bmNoYW5nZWQsIHNvIGFuIGFsaWFzIG9yIGEKIGRhdGVkIHNuYXBzaG90IGJvdGggd29yazsgdGhlIEFQSSByZWZ1c2VzIG9uZSBpdCBkb2VzIG5vdCBrbm93LgoK0QIKBAQAAgISAwAAABrDAiBFdmlkZW5jZSBpcyB0aGUgdGV4dCB0aGUgcXVlc3Rpb25zIGFyZSBhYm91dCwgc2VudCBhcyB0aGUgdXNlciBtZXNzYWdlIGFuZAogbGltaXRlZCB0byAyNjIsMTQ0IGJ5dGVzLiBJdCBpcyBkYXRhIHRvIGJlIGp1ZGdlZCwgbm90IGluc3RydWN0aW9uczogdGhlCiBzeXN0ZW0gcHJvbXB0IHRlbGxzIHRoZSBtb2RlbCBzbywgYnV0IGEgbW9kZWwgY2FuIHN0aWxsIGJlIGluZmx1ZW5jZWQgYnkKIHdoYXQgaXQgcmVhZHMsIHdoaWNoIGlzIHdoeSBhbiBhbnN3ZXIgaXMgdmFsaWRhdGVkIGFnYWluc3QgdGhlIHF1ZXN0aW9uCiBzZXQgcmF0aGVyIHRoYW4gdHJ1c3RlZC4KCrgDCgQEAAIDEgMAAAAaqgMgUXVlc3Rpb25TZXQgaXMgYSBmbG93c3RhdGUudjEuUXVlc3Rpb25TZXQgd3JpdHRlbiBhcyBhIG1hcHBpbmc6IGEKIGBxdWVzdGlvbnNgIGxpc3Qgd2hvc2UgZW50cmllcyBlYWNoIGhhdmUgYSBgbmFtZWAsIG9wdGlvbmFsCiBgaW5zdHJ1Y3Rpb25zYCwgYW5kIGV4YWN0bHkgb25lIG9mIGBwcmVkaWNhdGU6IHt9YCwgYGNob2ljZToge29wdGlvbnM6CiBbLi4uXX1gIG9yIGBzY29yZToge2xldmVsczogWy4uLl19YC4gSXQgaXMgdmFsaWRhdGVkIGFnYWluc3QgdGhlIHNjaGVtYSdzCiBydWxlcyBiZWZvcmUgYW55IHJlcXVlc3QgaXMgbWFkZS4gTmFtZXMgYXJlIGFsc28gbGltaXRlZCB0byA2NCBjaGFyYWN0ZXJzCiBoZXJlLCB0aGUgbG9uZ2VzdCBwcm9wZXJ0eSBuYW1lIHRoZSBNZXNzYWdlcyBBUEkgYWNjZXB0cyBpbiBhIHRvb2wgc2NoZW1hLgoKtAIKBAQAAgQSAwAAABqmAiBSZXBvcnRDb25maWRlbmNlIGFza3MgdGhlIG1vZGVsIHRvIGluY2x1ZGUgYSBjb25maWRlbmNlIGJldHdlZW4gMCBhbmQgMQogd2l0aCBlYWNoIGFuc3dlci4gV2hhdCBjb21lcyBiYWNrIGlzIHRoZSBtb2RlbCdzIGNsYWltIGFib3V0IGl0c2VsZiBhbmQgaXMKIGxhYmVsbGVkIENBTElCUkFUSU9OX1NFTEZfUkVQT1JURUQ7IGl0IGlzIG5vdCBhIG1lYXN1cmVkIHByb2JhYmlsaXR5LiBXaGVuCiBmYWxzZSB0aGUgbW9kZWwgaXMgbm90IGFza2VkLCBhbmQgZXZlcnkgYW5zd2VyIGlzIENBTElCUkFUSU9OX05PTkUuCgp4CgQEAAIFEgMAAAAaayBNYXhUb2tlbnMgYm91bmRzIHRoZSBtb2RlbCdzIHJlcGx5LCB3aGljaCBpcyBvbmx5IHRoZSB0b29sIGNhbGwuIFplcm8gbWVhbnMKIDEsMDI0OyB0aGUgY2VpbGluZyBpcyA4LDE5Mi4KClgKAgQBEgMAAAAaTSBEZWNpZGVPdXRwdXRzIGNhcnJpZXMgb25lIGFuc3dlciBwZXIgcXVlc3Rpb24sIGluIHRoZSBxdWVzdGlvbiBzZXQncyBvcmRlci4KCvUCCgQEAQIAEgMAAAAa5wIgQW5zd2VycyBoYXMgZXhhY3RseSBvbmUgdmFsaWRhdGVkIGZsb3dzdGF0ZS52MS5BbnN3ZXIgZm9yIGVhY2ggcXVlc3Rpb24sCiBtYXRjaGVkIGJ5IG5hbWUuIEEgcmVwbHkgdGhhdCBpcyBtaXNzaW5nIG9uZSwgYWRkcyBvbmUsIG9yIGNhcnJpZXMgYSB2YWx1ZQogdGhlIHF1ZXN0aW9uIGRpZCBub3Qgb2ZmZXIgZmFpbHMgdGhlIHRhc2sgcmF0aGVyIHRoYW4gcmV0dXJuaW5nIGEgcGFydGlhbAogcmVzdWx0LiBSZWFkIGEgY2hvaWNlIGFzIGBzdGVwcy48aWQ+LmFuc3dlcnNbMF0uY2hvaWNlYDsgYW4gYWJzZW50CiBjb25maWRlbmNlIHJlYWRzIGFzIDAsIHNvIHRlc3QgYGNhbGlicmF0aW9uYCBiZWZvcmUgdHJ1c3RpbmcgaXQuCmIGcHJvdG8z",
+          "inputMessage": "anthropic.v1.DecideInputs",
+          "outputDescriptor": "ChxhbnRocm9waWMvdjEvYW50aHJvcGljLnByb3RvEgxhbnRocm9waWMudjEaG2Zsb3dzdGF0ZS92MS9kZWNpc2lvbi5wcm90bxoYZmxvd3N0YXRlL3YxL3ZhbHVlLnByb3RvIvIBCgxEZWNpZGVJbnB1dHMSLAoHYXBpX2tleRgBIAEoCzITLmZsb3dzdGF0ZS52MS5WYWx1ZVIGYXBpS2V5EhQKBW1vZGVsGAIgASgJUgVtb2RlbBIaCghldmlkZW5jZRgDIAEoCVIIZXZpZGVuY2USNgoMcXVlc3Rpb25fc2V0GAQgASgLMhMuZmxvd3N0YXRlLnYxLlZhbHVlUgtxdWVzdGlvblNldBIrChFyZXBvcnRfY29uZmlkZW5jZRgFIAEoCFIQcmVwb3J0Q29uZmlkZW5jZRIdCgptYXhfdG9rZW5zGAYgASgFUgltYXhUb2tlbnMiPwoNRGVjaWRlT3V0cHV0cxIuCgdhbnN3ZXJzGAEgAygLMhQuZmxvd3N0YXRlLnYxLkFuc3dlclIHYW5zd2Vyc0K/AQoQY29tLmFudGhyb3BpYy52MUIOQW50aHJvcGljUHJvdG9QAVpKZ2l0aHViLmNvbS9waWNhdHovZmxvd3N0YXRlL3BsdWdpbnMvYW50aHJvcGljL2dlbi9hbnRocm9waWMvdjE7YW50aHJvcGljdjGiAgNBWFiqAgxBbnRocm9waWMuVjHKAgxBbnRocm9waWNcVjHiAhhBbnRocm9waWNcVjFcR1BCTWV0YWRhdGHqAg1BbnRocm9waWM6OlYxStIbCo0KCgIEABIDAAAAGoEKIERlY2lkZUlucHV0cyBpcyB0aGlzIHBsdWdpbidzIG9uZSB0YXNrOiBwdXQgYSBuYW1lZCBzZXQgb2YgdHlwZWQgcXVlc3Rpb25zCiB0byBhIENsYXVkZSBtb2RlbCBhYm91dCBzb21lIGV2aWRlbmNlLCBhbmQgZ2V0IGJhY2sgb25lIHR5cGVkIGFuc3dlciBwZXIKIHF1ZXN0aW9uLgoKIFRoZSBxdWVzdGlvbnMgYW5kIGFuc3dlcnMgYXJlIHRoZSBwcm92aWRlci1uZXV0cmFsIHNoYXBlcyBvZgogZmxvd3N0YXRlL3YxL2RlY2lzaW9uLnByb3RvLCBzbyBhIEZsb3dmaWxlIHRoYXQgcm91dGVzIG9uIGFuIGFuc3dlciByZWFkcyB0aGUKIHNhbWUgdW5kZXIgYW55IHByb3ZpZGVyIHBsdWdpbi4gRXZlcnl0aGluZyBzcGVjaWZpYyB0byBBbnRocm9waWMgLSB0aGUgbW9kZWwsCiB0aGUgb3V0cHV0IGJ1ZGdldCwgd2hldGhlciB0byBhc2sgZm9yIGEgc2VsZi1yZXBvcnRlZCBjb25maWRlbmNlIC0gaXMgYSBmaWVsZAogaGVyZSBhbmQgbmV2ZXIgY3Jvc3NlcyBpbnRvIHRoZSBuZXV0cmFsIHNjaGVtYS4KCiAjIEhvdyBhIHF1ZXN0aW9uIHNldCBiZWNvbWVzIGEgcmVxdWVzdAoKIFRoZSBNZXNzYWdlcyBBUEkgaGFzIG5vIGRlY2lzaW9ucyBlbmRwb2ludC4gVGhpcyBwbHVnaW4gc2VuZHMgb25lIHJlcXVlc3QKIHdob3NlIG9ubHkgdG9vbCB0YWtlcyBvbmUgcHJvcGVydHkgcGVyIHF1ZXN0aW9uLCBhbmQgZm9yY2VzIHRoZSBtb2RlbCB0byBjYWxsCiBpdCB3aXRoIHRvb2xfY2hvaWNlLCBzbyB0aGUgYW5zd2VyIGNvbWVzIGJhY2sgYXMgdGhlIHRvb2wncyBKU09OIGlucHV0IHJhdGhlcgogdGhhbiBhcyBwcm9zZSB0byBiZSBwYXJzZWQuIEEgY2hvaWNlIHF1ZXN0aW9uIGlzIGFuIGVudW0gb2YgaXRzIG9wdGlvbnMsIGEKIHByZWRpY2F0ZSBpcyBhIGJvb2xlYW4sIGFuZCBhIHNjb3JlIGlzIGFuIGVudW0gb2YgaXRzIGxldmVscyBpbiBvcmRlci4KCiAjIENhbGlicmF0aW9uCgogQ2xhdWRlIGV4cG9zZXMgbm8gdG9rZW4gcHJvYmFiaWxpdGllcy4gVGhlIG9ubHkgY29uZmlkZW5jZSBpdCBjYW4gZ2l2ZSBpcyBpdHMKIG93biBkZXNjcmlwdGlvbiBvZiBob3cgc3VyZSBpdCBpcywgc28gYW4gYW5zd2VyIGNhcnJpZXMKIENBTElCUkFUSU9OX1NFTEZfUkVQT1JURUQgd2hlbiwgYW5kIG9ubHkgd2hlbiwgdGhlIG1vZGVsIHN1cHBsaWVkIGEKIGNvbmZpZGVuY2UgaW4gaXRzIHRvb2wgaW5wdXQsIGFuZCBDQUxJQlJBVElPTl9OT05FIG90aGVyd2lzZS4gTm8gcHJvYmFiaWxpdHkKIG9yIGRpc3RyaWJ1dGlvbiBpcyBldmVyIGNvbXB1dGVkIG9yIGZpbGxlZCBpbi4KCsoCCgQEAAIAEgMAAAAavAIgQXBpS2V5IGlzIGFuIEFudGhyb3BpYyBBUEkga2V5LiBUaGUgdGFzayByZXF1aXJlcyB0aGlzIGVudGlyZSBpbnB1dCB0byBiZSBhCiBzZWNyZXQgcmVmZXJlbmNlLCB3aGljaCB0aGUgaG9zdCByZXNvbHZlcyB3b3JrZXItc2lkZSBiZWZvcmUgZXhlY3V0aW9uOyBhCiBsaXRlcmFsIGlzIHJlZnVzZWQgYmVmb3JlIGl0IGNhbiBlbnRlciBkdXJhYmxlIGhpc3RvcnkuIFRoZSByZXNvbHZlZCB2YWx1ZQogaXMgY2FwcGVkIGF0IDQgS2lCLCBzZW50IG9ubHkgYXMgdGhlIHgtYXBpLWtleSBoZWFkZXIsIGFuZCBuZXZlciBhcHBlYXJzCiBpbiBhbiBlcnJvci4KCuABCgQEAAIBEgMAAAAa0gEgTW9kZWwgaXMgdGhlIEFudGhyb3BpYyBtb2RlbCBpZGVudGlmaWVyIHRoZSByZXF1ZXN0IG5hbWVzLCByZXF1aXJlZCBhbmQKIG5ldmVyIGRlZmF1bHRlZCBoZXJlLiBJdCBpcyBwYXNzZWQgdGhyb3VnaCB1bmNoYW5nZWQsIHNvIGFuIGFsaWFzIG9yIGEKIGRhdGVkIHNuYXBzaG90IGJvdGggd29yazsgdGhlIEFQSSByZWZ1c2VzIG9uZSBpdCBkb2VzIG5vdCBrbm93LgoK0QIKBAQAAgISAwAAABrDAiBFdmlkZW5jZSBpcyB0aGUgdGV4dCB0aGUgcXVlc3Rpb25zIGFyZSBhYm91dCwgc2VudCBhcyB0aGUgdXNlciBtZXNzYWdlIGFuZAogbGltaXRlZCB0byAyNjIsMTQ0IGJ5dGVzLiBJdCBpcyBkYXRhIHRvIGJlIGp1ZGdlZCwgbm90IGluc3RydWN0aW9uczogdGhlCiBzeXN0ZW0gcHJvbXB0IHRlbGxzIHRoZSBtb2RlbCBzbywgYnV0IGEgbW9kZWwgY2FuIHN0aWxsIGJlIGluZmx1ZW5jZWQgYnkKIHdoYXQgaXQgcmVhZHMsIHdoaWNoIGlzIHdoeSBhbiBhbnN3ZXIgaXMgdmFsaWRhdGVkIGFnYWluc3QgdGhlIHF1ZXN0aW9uCiBzZXQgcmF0aGVyIHRoYW4gdHJ1c3RlZC4KCrgDCgQEAAIDEgMAAAAaqgMgUXVlc3Rpb25TZXQgaXMgYSBmbG93c3RhdGUudjEuUXVlc3Rpb25TZXQgd3JpdHRlbiBhcyBhIG1hcHBpbmc6IGEKIGBxdWVzdGlvbnNgIGxpc3Qgd2hvc2UgZW50cmllcyBlYWNoIGhhdmUgYSBgbmFtZWAsIG9wdGlvbmFsCiBgaW5zdHJ1Y3Rpb25zYCwgYW5kIGV4YWN0bHkgb25lIG9mIGBwcmVkaWNhdGU6IHt9YCwgYGNob2ljZToge29wdGlvbnM6CiBbLi4uXX1gIG9yIGBzY29yZToge2xldmVsczogWy4uLl19YC4gSXQgaXMgdmFsaWRhdGVkIGFnYWluc3QgdGhlIHNjaGVtYSdzCiBydWxlcyBiZWZvcmUgYW55IHJlcXVlc3QgaXMgbWFkZS4gTmFtZXMgYXJlIGFsc28gbGltaXRlZCB0byA2NCBjaGFyYWN0ZXJzCiBoZXJlLCB0aGUgbG9uZ2VzdCBwcm9wZXJ0eSBuYW1lIHRoZSBNZXNzYWdlcyBBUEkgYWNjZXB0cyBpbiBhIHRvb2wgc2NoZW1hLgoKtAIKBAQAAgQSAwAAABqmAiBSZXBvcnRDb25maWRlbmNlIGFza3MgdGhlIG1vZGVsIHRvIGluY2x1ZGUgYSBjb25maWRlbmNlIGJldHdlZW4gMCBhbmQgMQogd2l0aCBlYWNoIGFuc3dlci4gV2hhdCBjb21lcyBiYWNrIGlzIHRoZSBtb2RlbCdzIGNsYWltIGFib3V0IGl0c2VsZiBhbmQgaXMKIGxhYmVsbGVkIENBTElCUkFUSU9OX1NFTEZfUkVQT1JURUQ7IGl0IGlzIG5vdCBhIG1lYXN1cmVkIHByb2JhYmlsaXR5LiBXaGVuCiBmYWxzZSB0aGUgbW9kZWwgaXMgbm90IGFza2VkLCBhbmQgZXZlcnkgYW5zd2VyIGlzIENBTElCUkFUSU9OX05PTkUuCgp4CgQEAAIFEgMAAAAaayBNYXhUb2tlbnMgYm91bmRzIHRoZSBtb2RlbCdzIHJlcGx5LCB3aGljaCBpcyBvbmx5IHRoZSB0b29sIGNhbGwuIFplcm8gbWVhbnMKIDEsMDI0OyB0aGUgY2VpbGluZyBpcyA4LDE5Mi4KClgKAgQBEgMAAAAaTSBEZWNpZGVPdXRwdXRzIGNhcnJpZXMgb25lIGFuc3dlciBwZXIgcXVlc3Rpb24sIGluIHRoZSBxdWVzdGlvbiBzZXQncyBvcmRlci4KCvUCCgQEAQIAEgMAAAAa5wIgQW5zd2VycyBoYXMgZXhhY3RseSBvbmUgdmFsaWRhdGVkIGZsb3dzdGF0ZS52MS5BbnN3ZXIgZm9yIGVhY2ggcXVlc3Rpb24sCiBtYXRjaGVkIGJ5IG5hbWUuIEEgcmVwbHkgdGhhdCBpcyBtaXNzaW5nIG9uZSwgYWRkcyBvbmUsIG9yIGNhcnJpZXMgYSB2YWx1ZQogdGhlIHF1ZXN0aW9uIGRpZCBub3Qgb2ZmZXIgZmFpbHMgdGhlIHRhc2sgcmF0aGVyIHRoYW4gcmV0dXJuaW5nIGEgcGFydGlhbAogcmVzdWx0LiBSZWFkIGEgY2hvaWNlIGFzIGBzdGVwcy48aWQ+LmFuc3dlcnNbMF0uY2hvaWNlYDsgYW4gYWJzZW50CiBjb25maWRlbmNlIHJlYWRzIGFzIDAsIHNvIHRlc3QgYGNhbGlicmF0aW9uYCBiZWZvcmUgdHJ1c3RpbmcgaXQuCmIGcHJvdG8z",
+          "outputMessage": "anthropic.v1.DecideOutputs",
+          "requiredSecretInputs": [
+            "api_key"
+          ]
+        }
+      ],
+      "protocolVersion": 7,
+      "taskSchemaDigest": "sha256:9db27b8016cb79585d06765724b060e72e07dd704ef39457bd164d7a12e3eae5",
+      "claimsDigest": "sha256:569d12ecde6b803be0c126e24a0bcc57adbefafc5052ddde6ed396365d72c66b"
+    },
+    {
       "name": "codex",
       "version": "0.1.0",
       "description": "Runs a single bounded OpenAI Codex agentic turn (over the codex CLI) and returns its final message, any patch it produced, and usage - the demonstration that flowstate orchestrates AI agents as durable workloads.",
