@@ -1430,10 +1430,9 @@ already refused once.
   loop binding may not collide with an enclosing step var, and neither may be
   `now`. `flow validate` reports the collision at the inner declaration. Silent
   shadowing is how `${body}` comes to mean two things eleven lines apart.
-  *Since written:* this holds for a step's `vars:` and a `loop:`'s state name, but a
-  `for_each`'s `as:` is not yet checked against enclosing bare names, so a nested
-  `for_each` reusing its parent's `as:`, or one whose own `vars:` binds the same
-  name, validates and the inner binding wins.
+  *Since written:* it holds for a step's `vars:`, a `loop:`'s state name and a
+  `for_each`'s `as:` alike, so a nested `for_each` reusing its parent's `as:`, or
+  one whose own `vars:` binds the same name, is refused at the inner declaration.
 - **The fence stays required inside `vars` values.** A var legitimately holds the
   literal string `"steps.greet.result"`, so this is exactly the ambiguous position
   the fence exists for. No exception.
