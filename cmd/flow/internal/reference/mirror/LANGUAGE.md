@@ -1466,7 +1466,7 @@ predicate that says which senders may deliver it. It reads
   entry that admitted the sender carries (`carry_claims: [{claim: team, type: string}]`
   in the auth policy). A missing claim is an error, which refuses the sender.
 - A claim keeps its JSON shape: `"sre" in sender.identity.claims.groups` reads a list and
-  `sender.identity.claims.slack.user == "U1"` a nested object. Guard an absent one with
+  `sender.identity.claims.slack_user == "U1"` a scalar read from a nested path (`carry_claims: [{claim: slack.user, as: slack_user, type: string}]`). Guard an absent one with
   `has(sender.identity.claims.groups)`; reading one the sender lacks is an error, which
   refuses. `sender.identity.actions` is the list of scopes the sender was granted.
 - `sender.identity.namespace == "payments"` is the sender's tenant.
