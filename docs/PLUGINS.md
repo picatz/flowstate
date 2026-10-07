@@ -373,6 +373,20 @@ adds nothing to the bytes your plugin sends (protocol version 7 and later; see
 below). Keep your own refusal at the point of use; the mark moves the refusal
 earlier, it does not replace it.
 
+### Which protovalidate rules the host enforces
+
+The host enforces the *standard* protovalidate rules your descriptor carries
+(`string.max_len`, `repeated.min_items`, `in`, `required`, ...) when it validates a
+task's inputs at `flow validate`, in the editor, and through the MCP validate tool.
+It does **not** evaluate expression rules: `(buf.validate.field).cel`,
+`(buf.validate.message).cel`, their `cel_expression` forms, and predefined rules'
+`cel` are removed from the descriptor when the manifest is read, because protovalidate
+is a second CEL evaluator with no cost limit and a descriptor is input from outside
+the host's trust (#1531). The rest of the schema is unchanged. A rule that needs an
+expression (a cross-field check, a computed bound) belongs in your plugin's own
+process, where your own limits apply; `now`, which protovalidate binds and `must:`
+refuses, is never reachable this way.
+
 ### Your field comments, in somebody else's editor
 
 Everything above travels: names, types, required-ness, protovalidate bounds. The
