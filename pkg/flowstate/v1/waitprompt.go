@@ -123,7 +123,7 @@ func evalWaitPrompt(ctx context.Context, value *Value, scope *Scope, now time.Ti
 	// - a `*Workflow` assembled in Go and executed directly. Answered with the
 	// marker rather than the secret, and rather than an error, per this file's
 	// doc.
-	if holdsSecretRef(value, 0) {
+	if holdsReference(value) {
 		return PromptWithheldSecret, false, nil
 	}
 
@@ -645,11 +645,11 @@ func (w *promptWalk) checkSink(value *Value, bindings map[string]promptReach, st
 		return
 	}
 
-	if holdsSecretRef(value, 0) {
+	if holdsReference(value) {
 		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
-			Err: fmt.Errorf("step %q asks for approval with a `prompt:` that is a secret reference, "+
+			Err: fmt.Errorf("step %q asks for approval with a `prompt:` that is a secret or credential reference, "+
 				"which a prompt may not hold: a prompt is rendered to whoever is being asked to approve, "+
-				"so write the question without the secret in it", stepID)})
+				"so write the question without it", stepID)})
 
 		return
 	}
@@ -697,11 +697,11 @@ func (w *promptWalk) checkSink(value *Value, bindings map[string]promptReach, st
 // checkFailMessage is [promptWalk.checkSink] for a `fail:` step's `message:`:
 // the same secret and sensitive-input reach, worded for where the text goes.
 func (w *promptWalk) checkFailMessage(value *Value, bindings map[string]promptReach, stepID string, sensitive map[string]bool) {
-	if holdsSecretRef(value, 0) {
+	if holdsReference(value) {
 		w.problems = append(w.problems, WaitPromptProblem{StepID: stepID,
-			Err: fmt.Errorf("step %q raises a failure with a `message:` that is a secret reference, "+
+			Err: fmt.Errorf("step %q raises a failure with a `message:` that is a secret or credential reference, "+
 				"which a failure may not hold: the message is recorded in the run's history and shown to every "+
-				"reader of its failure, so write it without the secret in it", stepID)})
+				"reader of its failure, so write it without it", stepID)})
 
 		return
 	}

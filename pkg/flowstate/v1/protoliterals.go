@@ -661,6 +661,18 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 					"bearer: input is the one built today",
 				fieldName, kind.SecretRef.GetScheme(), kind.SecretRef.GetName())
 
+		case *Value_CredentialRef:
+			// Named for the reason the secret reference above is, and held to
+			// the same rule: a field typed as a plain scalar cannot carry a
+			// reference that is not a value, and flattening one would mint a
+			// credential into a message anything may print. Only a field
+			// declared flowstate.v1.Value receives one whole.
+			return fmt.Errorf(
+				"field %q was given a credential reference (%s), which this field's type "+
+					"cannot hold; only a field declared as flowstate.v1.Value that the task "+
+					"marks as accepting a credential receives one whole",
+				fieldName, kind.CredentialRef.GetTarget())
+
 		case *Value_Structure_:
 			// A list or a mapping where the field holds one value. Named for the
 			// same reason the reference above is: this is the shape a Flowfile

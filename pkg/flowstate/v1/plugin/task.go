@@ -536,6 +536,15 @@ func resolvePluginSecretInputs(
 				"input %q holds a secret reference nested inside a list or a mapping, "+
 					"which no plugin task input accepts", name))
 
+		case flowstatev1.ValueHoldsCredentialRef(v):
+			// Refused here rather than forwarded: the host does not mint a
+			// credential for a plugin task yet, and passing the reference through
+			// would hand a plugin a name it cannot resolve and a host contract it
+			// never agreed to. The host resolution that accepts one for a
+			// declared input replaces this arm.
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q is a credential reference, which no plugin task input accepts", name))
+
 		default:
 			resolved[name] = v
 		}
@@ -582,6 +591,11 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 		if flowstatev1.ValueHoldsSecretRef(v) {
 			return fmt.Errorf(
 				"output %q holds a secret reference, which a task output must never be: "+
+					"step outputs are written to workflow history", name)
+		}
+		if flowstatev1.ValueHoldsCredentialRef(v) {
+			return fmt.Errorf(
+				"output %q holds a credential reference, which a task output must never be: "+
 					"step outputs are written to workflow history", name)
 		}
 		if v == nil {

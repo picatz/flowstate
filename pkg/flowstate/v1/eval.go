@@ -627,6 +627,14 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 			"pass it to a task input that accepts one (%s:%s)",
 			v.GetSecretRef().GetScheme(), v.GetSecretRef().GetName())
 
+	case *Value_CredentialRef:
+		// The same refusal for the same reason, one rung over: a credential is
+		// minted by the worker running the task, and a value minted here would
+		// be workflow code's to hold and so history's to keep (invariant 7).
+		return nil, fmt.Errorf("a credential reference cannot be read in an expression; "+
+			"pass it to a task input that accepts one (credential target %q)",
+			v.GetCredentialRef().GetTarget())
+
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", v.GetKind())
 	}

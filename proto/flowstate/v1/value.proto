@@ -57,12 +57,47 @@ message SecretRef {
   ];
 }
 
+// CredentialRef names a federated credential without containing it.
+//
+// It is [SecretRef]'s sibling for a credential Flowstate mints rather than
+// stores: the target is the name of an outbound federation target in the
+// deployment's trust policy (`federation.targets[].name`), and the worker
+// running the task exchanges its own workload identity for a short-lived
+// credential at the moment the task needs it. The specification therefore
+// carries a name and nothing else, for the same reason a SecretRef carries
+// no value: workflow history is durable and broadly readable.
+//
+// It is a separate message rather than a SecretRef with a credential scheme
+// because the two are decided by different policies: a secret is authorized by
+// the secret access rules, a credential by the federation assumption rules, and
+// one spelling for both would let a rule for one silently govern the other.
+//
+// This message must never gain a field holding a minted credential.
+message CredentialRef {
+  // Target is the federation target's name, as the trust policy spells it.
+  //
+  // Whether a target is configured is a fact about the deployment, not the
+  // Flowfile, so the schema constrains only its length, and code rejects a
+  // control character, which could forge lines in a log that records the
+  // name. The server refuses an unknown target at validate and submit time
+  // rather than at run time.
+  string target = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }
+  ];
+}
+
 // Value is one value in a workflow: a task input, a step output, a variable or
 // a run argument.
 //
 // Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a
 // parsed CEL expression evaluated when the value is needed; a `secret_ref`
-// names a secret resolved only by the worker that uses it; a `structure` is a
+// names a secret resolved only by the worker that uses it; a `credential_ref`
+// names a federation target whose credential only that worker mints; a `structure` is a
 // list or map of Values, the only shape that can hold a secret reference below
 // the top level; and an `error` records a value that could not be produced.
 // Values a caller submits, such as `RunRequest.inputs`, must be literals.
@@ -176,5 +211,15 @@ message Value {
     // A list or a mapping whose entries are values, which is the only shape
     // that can hold a [SecretRef] somewhere other than at the top.
     Structure structure = 5;
+
+    // A reference to a federated credential, minted only where the value is
+    // needed.
+    //
+    // Inert in exactly the way [secret_ref] is, and held to the same
+    // containment: the compiler produces it, the control plane transports it,
+    // workflow-side evaluation refuses to read it, and only the worker
+    // executing the task exchanges for the credential. It is the whole value of
+    // a task input and is never nested in a [Structure].
+    CredentialRef credential_ref = 6;
   }
 }

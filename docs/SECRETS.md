@@ -245,7 +245,19 @@ federation:
 
 A target is one of `token_exchange`, `client_credentials`, `gcp`, `aws`, or
 `assertion` (present the signed assertion itself to a relying party that
-verifies OIDC). The generic `http` task does not apply AWS session credentials,
+verifies OIDC).
+
+A task input that takes a secret can take a target instead, written
+`${credential('partner-api')}` where it would write `${secret('env:KEY')}`. The
+specification carries the target's name, never a credential: the compiler turns
+it into a reference, workflow-side evaluation refuses to read it, and only the
+worker running the task mints it. It must be the whole value of the input, and
+it is refused in `vars:`, across a call, and anywhere the workflow evaluates
+the value itself. Naming a target the deployment's `federation:` does not
+configure fails when the workflow is validated (`flow validate` against a
+server, `flow run local` with a trust policy) or submitted, with a diagnostic
+that names the target and lists the configured ones; with no trust policy
+configured there is nothing to check it against. The generic `http` task does not apply AWS session credentials,
 which require SigV4 signing. [examples/http-federated](../examples/http-federated/)
 and [examples/federation-flow-to-flow](../examples/federation-flow-to-flow/) are
 worked examples.

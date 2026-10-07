@@ -636,8 +636,8 @@ Durable history holds the debug protocol, not the run's secrets: the asks (sessi
 ids, request ids, breakpoint targets with their conditions, log messages and hit
 counts, and `until` targets, as the caller wrote them), the receipts, and the attested holder's identity. Inspection
 is a query and writes nothing to history. A condition is the caller's own
-expression; `secret(...)` is compiled to a reference and is never a function a
-debugger can call, so no resolved secret reaches a condition, an answer, or
+expression; `secret(...)` and `credential(...)` are compiled to references and are never
+functions a debugger can call, so no resolved secret reaches a condition, an answer, or
 history (invariant 7).
 
 **Limits.** Redaction in a debugger is a transcript control, not a

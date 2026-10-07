@@ -470,7 +470,7 @@ func (c *compiler) webhookTrigger(fields *fieldSet, path string, r ref) *v1.Webh
 		// line: a predicate is evaluated over the delivery and its verdict is
 		// audited, and neither is a place a reference belongs.
 		if resolved := c.resolveQuiet(f.value); resolved != nil && c.holdsSecretMarker(resolved) {
-			c.report(c.secretMarkerSpan(resolved), whenRef, "%s", notInWhenHelp)
+			c.report(c.secretMarkerSpan(resolved), whenRef, "%s", c.markerHelp(resolved, notInWhenHelp))
 		} else {
 			webhook.When = c.exprValue(f.value, whenPath, whenRef)
 		}
@@ -618,7 +618,7 @@ func (c *compiler) triggerArguments(n ast.Node, path string, r ref) map[string]*
 		valueRef := ref{path: valuePath, label: "with." + e.name}
 
 		if resolved := c.resolveQuiet(e.value); resolved != nil && c.holdsSecretMarker(resolved) {
-			c.report(c.secretMarkerSpan(resolved), valueRef, "%s", notInTriggerHelp)
+			c.report(c.secretMarkerSpan(resolved), valueRef, "%s", c.markerHelp(resolved, notInTriggerHelp))
 
 			continue
 		}

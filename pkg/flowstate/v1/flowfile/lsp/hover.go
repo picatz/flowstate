@@ -391,6 +391,10 @@ func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor i
 		rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 		return markdownHover(secretDoc(name), rng)
 	}
+	if target, span, err := markerArgumentAt(f.source, cursor, flowfile.CredentialMarker); err == nil {
+		rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
+		return markdownHover(credentialDoc(target), rng)
+	}
 
 	rng := v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[1])
 	if ref.step != "" && cursor <= ref.span[1] {
@@ -449,6 +453,12 @@ func hoverDocumentExpression(doc *document, pos lsp.Position) *lsp.Hover {
 			if name, span, err := secretRefAt(f.source, cursor); err == nil {
 				rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
 				found = markdownHover(secretDoc(name), rng)
+
+				return
+			}
+			if target, span, err := markerArgumentAt(f.source, cursor, flowfile.CredentialMarker); err == nil {
+				rng := v.fenceSpanOrWhole(doc.index, f, span[0], span[1])
+				found = markdownHover(credentialDoc(target), rng)
 
 				return
 			}
@@ -1111,8 +1121,15 @@ func rootedRef(step, output string) string {
 // for a computed one to resolve against — which is what makes scanning for it
 // reliable rather than a guess at CEL syntax.
 func secretRefAt(src string, cursor int) (string, [2]int, error) {
+	return markerArgumentAt(src, cursor, flowfile.SecretMarker)
+}
+
+// markerArgumentAt is [secretRefAt] for either marker: the quoted argument of the
+// `marker('...')` call containing the cursor, and the span of the whole call. The
+// marker names come from flowfile for the reason [secretRefAt] gives.
+func markerArgumentAt(src string, cursor int, marker string) (string, [2]int, error) {
 	var span [2]int
-	call := flowfile.SecretMarker + "("
+	call := marker + "("
 	for at := 0; ; {
 		i := strings.Index(src[at:], call)
 		if i < 0 {
@@ -1170,6 +1187,29 @@ func secretDoc(ref string) string {
 	b.WriteString("The value is resolved on the worker running the step, at the moment it runs. " +
 		"It never enters workflow history, which is why a reference has to be the whole value of a " +
 		"task input and cannot be combined with anything else.")
+	return b.String()
+}
+
+// credentialDoc renders what a credential reference names.
+//
+// What it says about the target is only what the file can know: the name. Whether
+// the deployment federates it, and what it exchanges for, is the trust policy's
+// and is checked where that configuration is known, so the editor describes the
+// rule rather than guessing at a deployment.
+func credentialDoc(target string) string {
+	var b strings.Builder
+	if err := v1.ValidateCredentialTarget(target); err != nil {
+		fmt.Fprintf(&b, "**credential reference** — not usable as written\n\n%s", err)
+		return b.String()
+	}
+
+	fmt.Fprintf(&b, "**credential** · `%s`\n\n", target)
+	fmt.Fprintf(&b, "Names the federation target `%s` in this deployment's trust policy. ", target)
+	b.WriteString("The worker running the step exchanges its own workload identity for a " +
+		"short-lived credential at the moment it runs, and the task receives it as it would a secret. " +
+		"The credential never enters workflow history, which is why a reference has to be the whole " +
+		"value of a task input and cannot be combined with anything else. A target the deployment " +
+		"does not federate is refused when the workflow is validated.")
 	return b.String()
 }
 
