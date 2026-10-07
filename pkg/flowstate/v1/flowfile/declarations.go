@@ -192,6 +192,12 @@ func validateInputDefault(table v1.TypeTable, profile string, declaration *v1.In
 			Message: "a default may not be a secret reference: it stands in for what a caller would have " +
 				"sent, and a secret is resolved inside the task that needs it rather than carried as an argument",
 		}}
+	case *v1.Value_CredentialRef:
+		return Diagnostics{{
+			Field: defaultField,
+			Message: "a default may not be a credential reference: it stands in for what a caller would have " +
+				"sent, and a credential is minted inside the task that needs it rather than carried as an argument",
+		}}
 	}
 
 	var ds Diagnostics

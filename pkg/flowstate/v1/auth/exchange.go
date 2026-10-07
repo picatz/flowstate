@@ -428,11 +428,36 @@ func credentialKey(target, subject string, identity WorkloadIdentity) string {
 
 	write(target, subject, identity.Subject, identity.Issuer, identity.Namespace, identity.Deployment)
 
+	// Each section carries a domain tag, so a claim, the kind and an action can
+	// never be read as one another when their text runs together.
 	for _, name := range slices.Sorted(maps.Keys(identity.Claims)) {
-		write(name, identity.Claims[name])
+		write("claim", name, claimKeyText(identity.Claims[name]))
+	}
+
+	// What the assumption rules read also shapes which credential is reusable:
+	// two identities that differ only in kind or granted actions are different
+	// callers to a rule, so they must not share a cached credential.
+	write("kind", identity.Kind)
+	for _, action := range identity.Actions {
+		write("action", action)
 	}
 
 	return target + "|" + subject + "|" + hex.EncodeToString(digest.Sum(nil))
+}
+
+// claimKeyText spells a carried claim for a cache key as its JSON encoding, so
+// the claim's type is part of the text: the string "true" (quoted) is distinct
+// from the boolean true, and sorted keys and quoting keep ["a b"] distinct from
+// ["a","b"].
+func claimKeyText(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		// Unreachable for a value that passed [validateCarriedClaims]; a value
+		// that cannot be encoded must not collide with one that can.
+		return fmt.Sprintf("!%T", value)
+	}
+
+	return string(encoded)
 }
 
 // tokenResponse is the OAuth 2.0 token endpoint response shared by RFC 8693 token

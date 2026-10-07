@@ -112,7 +112,7 @@ var dslKeys = map[string][]dslKey{
 			"Rooted rather than bare because a var is *ambient*: it is in scope everywhere rather than bound where you read it, the same distinction that makes a step's outputs `" + v1.StepsRoot + ".<id>.<output>` and a loop's binding bare.\n\n" +
 			"Evaluated once, before the first step runs. A var may therefore use literals, operators and the profile's functions, and may not read a step, another var, or anything else that does not exist yet. " +
 			"The `${...}` fence is still required for an expression: without it the value is the text as written, which is what lets a var hold the literal string `steps.greet.result`.\n\n" +
-			"A `${secret(...)}` reference may not be stored here: a var is evaluated by the workflow and its value is written to durable history. Write the reference on the task input that consumes the secret instead."},
+			"A `${secret(...)}` or `${credential(...)}` reference may not be stored here: a var is evaluated by the workflow and its value is written to durable history. Write the reference on the task input that consumes the secret instead."},
 		{name: "steps", detail: "list", docs: "The steps to run, in order. Each step may reference the outputs of the steps before it."},
 		{name: "triggers", detail: "map", docs: "Declares how runs may start from schedules, webhooks, or manual submission, including any trigger-specific policy."},
 		{name: "signals", detail: "map", docs: "Declares the named signals this workflow accepts and the authorization policy for each."},
@@ -158,7 +158,7 @@ var dslKeys = map[string][]dslKey{
 			"The result may be anything an output can hold, a list or a mapping as readily as a boolean.\n\n" +
 			"It is not a task and schedules nothing, so `retry:`, `timeout:` and `undo:` are refused on it: a pure expression has nothing to attempt again, nothing to bound beyond the cost limit every expression shares, and no effect to take back. " +
 			"An `if:` composes as it does anywhere; a value that is skipped produces no outputs, and a later reference to it does not resolve.\n\n" +
-			"A `${secret(...)}` reference may not be written here, for the reason it may not go in `vars:`: the workflow evaluates this, and what the workflow evaluates is written to durable history."},
+			"A `${secret(...)}` or `${credential(...)}` reference may not be written here, for the reason it may not go in `vars:`: the workflow evaluates this, and what the workflow evaluates is written to durable history."},
 		{name: "fail", detail: "map", docs: "Raise an error the workflow declared under `errors:`. " + oneStepKind + "\n\n" +
 			"```yaml\n- id: refuse\n  if: ${inputs.amount > inputs.balance}\n  fail:\n    error: InsufficientFunds\n    message: ${\"cannot cover \" + string(inputs.amount)}\n```\n\n" +
 			"`error:` names a declared error and `message:` is an expression evaluated in the workflow, so it may read inputs, vars and earlier steps' outputs but not a secret or a sensitive input: the message is written to the run's history. " +
@@ -174,7 +174,7 @@ var dslKeys = map[string][]dslKey{
 			"They are private to the step: on a `for_each` or `parallel:` they reach the whole body, and nowhere else. Pass a value to a *later* step through its outputs instead.\n\n" +
 			"A name already bound by an enclosing loop or step is refused rather than shadowed, and a var may not read its siblings: `vars:` is a mapping, so there is no order that would make one available to another. " +
 			"Everything else in scope is fair: `" + v1.VarsRoot + ".<name>`, the outputs of steps already run, and any enclosing binding.\n\n" +
-			"A `${secret(...)}` reference may not be stored here either, for the same reason it may not go in the workflow's own `vars:`. Write it on the task input that consumes the secret."},
+			"A `${secret(...)}` or `${credential(...)}` reference may not be stored here either, for the same reason it may not go in the workflow's own `vars:`. Write it on the task input that consumes the secret."},
 		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`.\n\n" +
 			"Only a task step schedules the one activity this bounds. `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, `sleep:`, " +
 			"`wait_until:`, `wait_for_signal:` and `value:` are refused: each either schedules zero or more of something else, or nothing " +
@@ -199,7 +199,7 @@ var dslKeys = map[string][]dslKey{
 		{name: "async", detail: "bool", docs: "Allows this task step to start without waiting for it at the next written step. A reference to its outputs joins it, and the end of the enclosing step list joins every async step still outstanding. Only supported on task steps at a sequential placement."},
 		{name: "with", detail: "map", docs: "Arguments binding the callee's declared `inputs:`, resolved in *this* file's scope, the same scope a task's inputs are resolved in. " +
 			"Only meaningful beside `call:`. Checked against what the callee declares when this file is compiled: a missing required input or an argument it does not declare is refused here, not at run time.\n\n" +
-			"A secret reference may not be bound through `with:`. Pass it to the task that needs it inside the callee instead."},
+			"A secret or credential reference may not be bound through `with:`. Pass it to the task that needs it inside the callee instead."},
 		{name: "digest", detail: "string", docs: "Pins a `call:` to the SHA-256 digest of the callee file that was reviewed, written as `sha256:` followed by 64 hexadecimal characters. Compilation refuses the call if the file's current bytes no longer match."},
 	},
 	"wait_for_signal": {
@@ -1203,7 +1203,7 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 	identity := celcomplete.Candidate{
 		Name: "identity", Kind: celcomplete.KindField, Detail: "workload identity",
 		Docs: "The identity the server attested, or the run's starter: `principal` (issuer#subject, empty " +
-			"when either half is missing), `subject`, `issuer`, `namespace`, `kind` and `claims`.",
+			"when either half is missing), `subject`, `issuer`, `namespace`, `kind`, `claims` and `actions`.",
 		Insert: "identity.",
 		Members: []celcomplete.Candidate{
 			{Name: "principal", Kind: celcomplete.KindField, Detail: "string",
@@ -1213,8 +1213,10 @@ func signalAllowScope(withRun bool) celcomplete.Scope {
 			{Name: "namespace", Kind: celcomplete.KindField, Detail: "string"},
 			{Name: "kind", Kind: celcomplete.KindField, Detail: "string",
 				Docs: "`human`, `workload` or `agent`, as the trust policy entry that admitted the caller assigned it; empty when it assigned none."},
-			{Name: "claims", Kind: celcomplete.KindField, Detail: "map(string, string)",
-				Docs: "Read as `claims[\"team\"]` or `claims.team`; a missing key is an error, which denies. Test with `has(...)`."},
+			{Name: "claims", Kind: celcomplete.KindField, Detail: "map(string, dyn)",
+				Docs: "Claims of any JSON shape: `claims.team`, `claims.groups` (a list, so `\"sre\" in claims.groups`) or `claims.slack.user` (nested). A missing key is an error, which denies. Test with `has(...)`."},
+			{Name: "actions", Kind: celcomplete.KindField, Detail: "list(string)",
+				Docs: "The scopes the caller was granted; empty when none."},
 		},
 	}
 

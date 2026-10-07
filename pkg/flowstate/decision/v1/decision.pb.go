@@ -2,9 +2,9 @@
 // versions:
 // 	protoc-gen-go v1.36.12
 // 	protoc        (unknown)
-// source: flowstate/v1/decision.proto
+// source: flowstate/decision/v1/decision.proto
 
-package flowstatev1
+package decisionv1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
@@ -69,11 +69,11 @@ func (x Calibration) String() string {
 }
 
 func (Calibration) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_decision_proto_enumTypes[0].Descriptor()
+	return file_flowstate_decision_v1_decision_proto_enumTypes[0].Descriptor()
 }
 
 func (Calibration) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_decision_proto_enumTypes[0]
+	return &file_flowstate_decision_v1_decision_proto_enumTypes[0]
 }
 
 func (x Calibration) Number() protoreflect.EnumNumber {
@@ -82,7 +82,7 @@ func (x Calibration) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Calibration.Descriptor instead.
 func (Calibration) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{0}
 }
 
 // Question is one named thing to decide, of exactly one of three kinds.
@@ -115,7 +115,7 @@ type Question struct {
 
 func (x *Question) Reset() {
 	*x = Question{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[0]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -127,7 +127,7 @@ func (x *Question) String() string {
 func (*Question) ProtoMessage() {}
 
 func (x *Question) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[0]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -140,7 +140,7 @@ func (x *Question) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Question.ProtoReflect.Descriptor instead.
 func (*Question) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *Question) GetName() string {
@@ -226,7 +226,7 @@ type QuestionSet struct {
 
 func (x *QuestionSet) Reset() {
 	*x = QuestionSet{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[1]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -238,7 +238,7 @@ func (x *QuestionSet) String() string {
 func (*QuestionSet) ProtoMessage() {}
 
 func (x *QuestionSet) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[1]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -251,7 +251,7 @@ func (x *QuestionSet) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestionSet.ProtoReflect.Descriptor instead.
 func (*QuestionSet) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *QuestionSet) GetQuestions() []*Question {
@@ -290,14 +290,14 @@ type Answer struct {
 	Distribution map[string]float64 `protobuf:"bytes,6,rep,name=distribution,proto3" json:"distribution,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"fixed64,2,opt,name=value"`
 	// Calibration says what `confidence` and `distribution` are. Required and
 	// never UNSPECIFIED.
-	Calibration   Calibration `protobuf:"varint,7,opt,name=calibration,proto3,enum=flowstate.v1.Calibration" json:"calibration,omitempty"`
+	Calibration   Calibration `protobuf:"varint,7,opt,name=calibration,proto3,enum=flowstate.decision.v1.Calibration" json:"calibration,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Answer) Reset() {
 	*x = Answer{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[2]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -309,7 +309,7 @@ func (x *Answer) String() string {
 func (*Answer) ProtoMessage() {}
 
 func (x *Answer) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[2]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -322,7 +322,7 @@ func (x *Answer) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Answer.ProtoReflect.Descriptor instead.
 func (*Answer) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Answer) GetName() string {
@@ -431,7 +431,7 @@ type Decision struct {
 
 func (x *Decision) Reset() {
 	*x = Decision{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[3]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -443,7 +443,7 @@ func (x *Decision) String() string {
 func (*Decision) ProtoMessage() {}
 
 func (x *Decision) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[3]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -456,7 +456,7 @@ func (x *Decision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Decision.ProtoReflect.Descriptor instead.
 func (*Decision) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Decision) GetQuestion() *Question {
@@ -483,7 +483,7 @@ type Question_Predicate struct {
 
 func (x *Question_Predicate) Reset() {
 	*x = Question_Predicate{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[4]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -495,7 +495,7 @@ func (x *Question_Predicate) String() string {
 func (*Question_Predicate) ProtoMessage() {}
 
 func (x *Question_Predicate) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[4]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -508,7 +508,7 @@ func (x *Question_Predicate) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Question_Predicate.ProtoReflect.Descriptor instead.
 func (*Question_Predicate) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{0, 0}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{0, 0}
 }
 
 // Choice picks one of a closed set of unordered options.
@@ -523,7 +523,7 @@ type Question_Choice struct {
 
 func (x *Question_Choice) Reset() {
 	*x = Question_Choice{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[5]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -535,7 +535,7 @@ func (x *Question_Choice) String() string {
 func (*Question_Choice) ProtoMessage() {}
 
 func (x *Question_Choice) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[5]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -548,7 +548,7 @@ func (x *Question_Choice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Question_Choice.ProtoReflect.Descriptor instead.
 func (*Question_Choice) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{0, 1}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{0, 1}
 }
 
 func (x *Question_Choice) GetOptions() []string {
@@ -571,7 +571,7 @@ type Question_Score struct {
 
 func (x *Question_Score) Reset() {
 	*x = Question_Score{}
-	mi := &file_flowstate_v1_decision_proto_msgTypes[6]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -583,7 +583,7 @@ func (x *Question_Score) String() string {
 func (*Question_Score) ProtoMessage() {}
 
 func (x *Question_Score) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_decision_proto_msgTypes[6]
+	mi := &file_flowstate_decision_v1_decision_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -596,7 +596,7 @@ func (x *Question_Score) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Question_Score.ProtoReflect.Descriptor instead.
 func (*Question_Score) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_decision_proto_rawDescGZIP(), []int{0, 2}
+	return file_flowstate_decision_v1_decision_proto_rawDescGZIP(), []int{0, 2}
 }
 
 func (x *Question_Score) GetLevels() []string {
@@ -606,27 +606,27 @@ func (x *Question_Score) GetLevels() []string {
 	return nil
 }
 
-var File_flowstate_v1_decision_proto protoreflect.FileDescriptor
+var File_flowstate_decision_v1_decision_proto protoreflect.FileDescriptor
 
-const file_flowstate_v1_decision_proto_rawDesc = "" +
+const file_flowstate_decision_v1_decision_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/decision.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xbd\x03\n" +
+	"$flowstate/decision/v1/decision.proto\x12\x15flowstate.decision.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1fgoogle/api/field_behavior.proto\"\xd8\x03\n" +
 	"\bQuestion\x12B\n" +
 	"\x04name\x18\x01 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x12-\n" +
-	"\finstructions\x18\x02 \x01(\tB\t\xbaH\x06r\x04(\x80\x80\x01R\finstructions\x12@\n" +
-	"\tpredicate\x18\x03 \x01(\v2 .flowstate.v1.Question.PredicateH\x00R\tpredicate\x127\n" +
-	"\x06choice\x18\x04 \x01(\v2\x1d.flowstate.v1.Question.ChoiceH\x00R\x06choice\x124\n" +
-	"\x05score\x18\x05 \x01(\v2\x1c.flowstate.v1.Question.ScoreH\x00R\x05score\x1a\v\n" +
+	"\finstructions\x18\x02 \x01(\tB\t\xbaH\x06r\x04(\x80\x80\x01R\finstructions\x12I\n" +
+	"\tpredicate\x18\x03 \x01(\v2).flowstate.decision.v1.Question.PredicateH\x00R\tpredicate\x12@\n" +
+	"\x06choice\x18\x04 \x01(\v2&.flowstate.decision.v1.Question.ChoiceH\x00R\x06choice\x12=\n" +
+	"\x05score\x18\x05 \x01(\v2%.flowstate.decision.v1.Question.ScoreH\x00R\x05score\x1a\v\n" +
 	"\tPredicate\x1a9\n" +
 	"\x06Choice\x12/\n" +
 	"\aoptions\x18\x01 \x03(\tB\x15\xbaH\x12\x92\x01\x0f\b\x01\x10 \x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\aoptions\x1a6\n" +
 	"\x05Score\x12-\n" +
 	"\x06levels\x18\x01 \x03(\tB\x15\xbaH\x12\x92\x01\x0f\b\x01\x10 \x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06levelsB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xc5\x01\n" +
-	"\vQuestionSet\x12@\n" +
-	"\tquestions\x18\x01 \x03(\v2\x16.flowstate.v1.QuestionB\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xce\x01\n" +
+	"\vQuestionSet\x12I\n" +
+	"\tquestions\x18\x01 \x03(\v2\x1f.flowstate.decision.v1.QuestionB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10 R\tquestions:t\xbaHq\x1ao\n" +
-	"\x19question_set.unique_names\x12*question names must be unique within a set\x1a&this.questions.map(q, q.name).unique()\"\x9a\x12\n" +
+	"\x19question_set.unique_names\x12*question names must be unique within a set\x1a&this.questions.map(q, q.name).unique()\"\xac\x12\n" +
 	"\x06Answer\x12B\n" +
 	"\x04name\x18\x01 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x12\x1e\n" +
 	"\tpredicate\x18\x02 \x01(\bH\x00R\tpredicate\x12$\n" +
@@ -636,9 +636,9 @@ const file_flowstate_v1_decision_proto_rawDesc = "" +
 	"\xbaH\ar\x05\x10\x01\x18\x80\x01H\x00R\x05score\x12>\n" +
 	"\n" +
 	"confidence\x18\x05 \x01(\x01B\x19\xbaH\x16\x12\x14@\x01\x19\x00\x00\x00\x00\x00\x00\xf0?)\x00\x00\x00\x00\x00\x00\x00\x00H\x01R\n" +
-	"confidence\x88\x01\x01\x12u\n" +
-	"\fdistribution\x18\x06 \x03(\v2&.flowstate.v1.Answer.DistributionEntryB)\xbaH&\x9a\x01#\x10 \"\ar\x05\x10\x01\x18\x80\x01*\x16\x12\x14@\x01\x19\x00\x00\x00\x00\x00\x00\xf0?)\x00\x00\x00\x00\x00\x00\x00\x00R\fdistribution\x12L\n" +
-	"\vcalibration\x18\a \x01(\x0e2\x19.flowstate.v1.CalibrationB\x0f\xe2A\x01\x02\xbaH\b\xc8\x01\x01\x82\x01\x02\x10\x01R\vcalibration\x1a?\n" +
+	"confidence\x88\x01\x01\x12~\n" +
+	"\fdistribution\x18\x06 \x03(\v2/.flowstate.decision.v1.Answer.DistributionEntryB)\xbaH&\x9a\x01#\x10 \"\ar\x05\x10\x01\x18\x80\x01*\x16\x12\x14@\x01\x19\x00\x00\x00\x00\x00\x00\xf0?)\x00\x00\x00\x00\x00\x00\x00\x00R\fdistribution\x12U\n" +
+	"\vcalibration\x18\a \x01(\x0e2\".flowstate.decision.v1.CalibrationB\x0f\xe2A\x01\x02\xbaH\b\xc8\x01\x01\x82\x01\x02\x10\x01R\vcalibration\x1a?\n" +
 	"\x11DistributionEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x01R\x05value:\x028\x01:\xfb\r\xbaH\xf7\r\x1a\xc8\x01\n" +
@@ -647,12 +647,12 @@ const file_flowstate_v1_decision_proto_rawDesc = "" +
 	"(v.size() > 0 ? v[0] : 0.0) + (v.size() > 1 ? v[1] : 0.0) + (v.size() > 2 ? v[2] : 0.0) + (v.size() > 3 ? v[3] : 0.0) + (v.size() > 4 ? v[4] : 0.0) + (v.size() > 5 ? v[5] : 0.0) + (v.size() > 6 ? v[6] : 0.0) + (v.size() > 7 ? v[7] : 0.0) + (v.size() > 8 ? v[8] : 0.0) + (v.size() > 9 ? v[9] : 0.0) + (v.size() > 10 ? v[10] : 0.0) + (v.size() > 11 ? v[11] : 0.0) + (v.size() > 12 ? v[12] : 0.0) + (v.size() > 13 ? v[13] : 0.0) + (v.size() > 14 ? v[14] : 0.0) + (v.size() > 15 ? v[15] : 0.0) + (v.size() > 16 ? v[16] : 0.0) + (v.size() > 17 ? v[17] : 0.0) + (v.size() > 18 ? v[18] : 0.0) + (v.size() > 19 ? v[19] : 0.0) + (v.size() > 20 ? v[20] : 0.0) + (v.size() > 21 ? v[21] : 0.0) + (v.size() > 22 ? v[22] : 0.0) + (v.size() > 23 ? v[23] : 0.0) + (v.size() > 24 ? v[24] : 0.0) + (v.size() > 25 ? v[25] : 0.0) + (v.size() > 26 ? v[26] : 0.0) + (v.size() > 27 ? v[27] : 0.0) + (v.size() > 28 ? v[28] : 0.0) + (v.size() > 29 ? v[29] : 0.0) + (v.size() > 30 ? v[30] : 0.0) + (v.size() > 31 ? v[31] : 0.0)].all(s, s > 0.999 && s < 1.001))\x1a\xf5\x02\n" +
 	"!answer.distribution_covers_result\x12^distribution must include the selected choice or level, or both true and false for a predicate\x1a\xef\x01this.distribution.size() == 0 || (has(this.predicate) ? ('true' in this.distribution && 'false' in this.distribution && this.distribution.size() == 2) : has(this.choice) ? this.choice in this.distribution : this.score in this.distribution)B\x0f\n" +
 	"\x06result\x12\x05\xbaH\x02\b\x01B\r\n" +
-	"\v_confidence\"\xa1\n" +
+	"\v_confidence\"\xb3\n" +
 	"\n" +
-	"\bDecision\x12>\n" +
-	"\bquestion\x18\x01 \x01(\v2\x16.flowstate.v1.QuestionB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bquestion\x128\n" +
-	"\x06answer\x18\x02 \x01(\v2\x14.flowstate.v1.AnswerB\n" +
+	"\bDecision\x12G\n" +
+	"\bquestion\x18\x01 \x01(\v2\x1f.flowstate.decision.v1.QuestionB\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bquestion\x12A\n" +
+	"\x06answer\x18\x02 \x01(\v2\x1d.flowstate.decision.v1.AnswerB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x06answer:\x9a\t\xbaH\x96\t\x1al\n" +
 	"\x14decision.names_match\x12,the answer must name the question it answers\x1a&this.question.name == this.answer.name\x1a\xe0\x01\n" +
 	"\x1cdecision.result_matches_kind\x125the answer must be of the kind the question asked for\x1a\x88\x01has(this.question.predicate) ? has(this.answer.predicate) : has(this.question.choice) ? has(this.answer.choice) : has(this.answer.score)\x1a\xbf\x02\n" +
@@ -662,43 +662,43 @@ const file_flowstate_v1_decision_proto_rawDesc = "" +
 	"\x17CALIBRATION_UNSPECIFIED\x10\x00\x12!\n" +
 	"\x1dCALIBRATION_MODEL_PROBABILITY\x10\x01\x12\x1d\n" +
 	"\x19CALIBRATION_SELF_REPORTED\x10\x02\x12\x14\n" +
-	"\x10CALIBRATION_NONE\x10\x03B\xac\x01\n" +
-	"\x10com.flowstate.v1B\rDecisionProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
+	"\x10CALIBRATION_NONE\x10\x03B\xe2\x01\n" +
+	"\x19com.flowstate.decision.v1B\rDecisionProtoP\x01Z@github.com/picatz/flowstate/pkg/flowstate/decision/v1;decisionv1\xa2\x02\x03FDX\xaa\x02\x15Flowstate.Decision.V1\xca\x02\x15Flowstate\\Decision\\V1\xe2\x02!Flowstate\\Decision\\V1\\GPBMetadata\xea\x02\x17Flowstate::Decision::V1b\x06proto3"
 
 var (
-	file_flowstate_v1_decision_proto_rawDescOnce sync.Once
-	file_flowstate_v1_decision_proto_rawDescData []byte
+	file_flowstate_decision_v1_decision_proto_rawDescOnce sync.Once
+	file_flowstate_decision_v1_decision_proto_rawDescData []byte
 )
 
-func file_flowstate_v1_decision_proto_rawDescGZIP() []byte {
-	file_flowstate_v1_decision_proto_rawDescOnce.Do(func() {
-		file_flowstate_v1_decision_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_flowstate_v1_decision_proto_rawDesc), len(file_flowstate_v1_decision_proto_rawDesc)))
+func file_flowstate_decision_v1_decision_proto_rawDescGZIP() []byte {
+	file_flowstate_decision_v1_decision_proto_rawDescOnce.Do(func() {
+		file_flowstate_decision_v1_decision_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_flowstate_decision_v1_decision_proto_rawDesc), len(file_flowstate_decision_v1_decision_proto_rawDesc)))
 	})
-	return file_flowstate_v1_decision_proto_rawDescData
+	return file_flowstate_decision_v1_decision_proto_rawDescData
 }
 
-var file_flowstate_v1_decision_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_flowstate_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
-var file_flowstate_v1_decision_proto_goTypes = []any{
-	(Calibration)(0),           // 0: flowstate.v1.Calibration
-	(*Question)(nil),           // 1: flowstate.v1.Question
-	(*QuestionSet)(nil),        // 2: flowstate.v1.QuestionSet
-	(*Answer)(nil),             // 3: flowstate.v1.Answer
-	(*Decision)(nil),           // 4: flowstate.v1.Decision
-	(*Question_Predicate)(nil), // 5: flowstate.v1.Question.Predicate
-	(*Question_Choice)(nil),    // 6: flowstate.v1.Question.Choice
-	(*Question_Score)(nil),     // 7: flowstate.v1.Question.Score
-	nil,                        // 8: flowstate.v1.Answer.DistributionEntry
+var file_flowstate_decision_v1_decision_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_flowstate_decision_v1_decision_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_flowstate_decision_v1_decision_proto_goTypes = []any{
+	(Calibration)(0),           // 0: flowstate.decision.v1.Calibration
+	(*Question)(nil),           // 1: flowstate.decision.v1.Question
+	(*QuestionSet)(nil),        // 2: flowstate.decision.v1.QuestionSet
+	(*Answer)(nil),             // 3: flowstate.decision.v1.Answer
+	(*Decision)(nil),           // 4: flowstate.decision.v1.Decision
+	(*Question_Predicate)(nil), // 5: flowstate.decision.v1.Question.Predicate
+	(*Question_Choice)(nil),    // 6: flowstate.decision.v1.Question.Choice
+	(*Question_Score)(nil),     // 7: flowstate.decision.v1.Question.Score
+	nil,                        // 8: flowstate.decision.v1.Answer.DistributionEntry
 }
-var file_flowstate_v1_decision_proto_depIdxs = []int32{
-	5, // 0: flowstate.v1.Question.predicate:type_name -> flowstate.v1.Question.Predicate
-	6, // 1: flowstate.v1.Question.choice:type_name -> flowstate.v1.Question.Choice
-	7, // 2: flowstate.v1.Question.score:type_name -> flowstate.v1.Question.Score
-	1, // 3: flowstate.v1.QuestionSet.questions:type_name -> flowstate.v1.Question
-	8, // 4: flowstate.v1.Answer.distribution:type_name -> flowstate.v1.Answer.DistributionEntry
-	0, // 5: flowstate.v1.Answer.calibration:type_name -> flowstate.v1.Calibration
-	1, // 6: flowstate.v1.Decision.question:type_name -> flowstate.v1.Question
-	3, // 7: flowstate.v1.Decision.answer:type_name -> flowstate.v1.Answer
+var file_flowstate_decision_v1_decision_proto_depIdxs = []int32{
+	5, // 0: flowstate.decision.v1.Question.predicate:type_name -> flowstate.decision.v1.Question.Predicate
+	6, // 1: flowstate.decision.v1.Question.choice:type_name -> flowstate.decision.v1.Question.Choice
+	7, // 2: flowstate.decision.v1.Question.score:type_name -> flowstate.decision.v1.Question.Score
+	1, // 3: flowstate.decision.v1.QuestionSet.questions:type_name -> flowstate.decision.v1.Question
+	8, // 4: flowstate.decision.v1.Answer.distribution:type_name -> flowstate.decision.v1.Answer.DistributionEntry
+	0, // 5: flowstate.decision.v1.Answer.calibration:type_name -> flowstate.decision.v1.Calibration
+	1, // 6: flowstate.decision.v1.Decision.question:type_name -> flowstate.decision.v1.Question
+	3, // 7: flowstate.decision.v1.Decision.answer:type_name -> flowstate.decision.v1.Answer
 	8, // [8:8] is the sub-list for method output_type
 	8, // [8:8] is the sub-list for method input_type
 	8, // [8:8] is the sub-list for extension type_name
@@ -706,17 +706,17 @@ var file_flowstate_v1_decision_proto_depIdxs = []int32{
 	0, // [0:8] is the sub-list for field type_name
 }
 
-func init() { file_flowstate_v1_decision_proto_init() }
-func file_flowstate_v1_decision_proto_init() {
-	if File_flowstate_v1_decision_proto != nil {
+func init() { file_flowstate_decision_v1_decision_proto_init() }
+func file_flowstate_decision_v1_decision_proto_init() {
+	if File_flowstate_decision_v1_decision_proto != nil {
 		return
 	}
-	file_flowstate_v1_decision_proto_msgTypes[0].OneofWrappers = []any{
+	file_flowstate_decision_v1_decision_proto_msgTypes[0].OneofWrappers = []any{
 		(*Question_Predicate_)(nil),
 		(*Question_Choice_)(nil),
 		(*Question_Score_)(nil),
 	}
-	file_flowstate_v1_decision_proto_msgTypes[2].OneofWrappers = []any{
+	file_flowstate_decision_v1_decision_proto_msgTypes[2].OneofWrappers = []any{
 		(*Answer_Predicate)(nil),
 		(*Answer_Choice)(nil),
 		(*Answer_Score)(nil),
@@ -725,18 +725,18 @@ func file_flowstate_v1_decision_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_decision_proto_rawDesc), len(file_flowstate_v1_decision_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_decision_v1_decision_proto_rawDesc), len(file_flowstate_decision_v1_decision_proto_rawDesc)),
 			NumEnums:      1,
 			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_flowstate_v1_decision_proto_goTypes,
-		DependencyIndexes: file_flowstate_v1_decision_proto_depIdxs,
-		EnumInfos:         file_flowstate_v1_decision_proto_enumTypes,
-		MessageInfos:      file_flowstate_v1_decision_proto_msgTypes,
+		GoTypes:           file_flowstate_decision_v1_decision_proto_goTypes,
+		DependencyIndexes: file_flowstate_decision_v1_decision_proto_depIdxs,
+		EnumInfos:         file_flowstate_decision_v1_decision_proto_enumTypes,
+		MessageInfos:      file_flowstate_decision_v1_decision_proto_msgTypes,
 	}.Build()
-	File_flowstate_v1_decision_proto = out.File
-	file_flowstate_v1_decision_proto_goTypes = nil
-	file_flowstate_v1_decision_proto_depIdxs = nil
+	File_flowstate_decision_v1_decision_proto = out.File
+	file_flowstate_decision_v1_decision_proto_goTypes = nil
+	file_flowstate_decision_v1_decision_proto_depIdxs = nil
 }

@@ -111,6 +111,10 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 			Role:        "deployer",
 			Namespace:   "platform",
 			MaxTokenAge: 10 * time.Minute,
+			CarryClaims: []auth.CarryClaim{
+				{Claim: "repository", Type: auth.ClaimTypeString},
+				{Claim: "job_workflow_ref", Type: auth.ClaimTypeString},
+			},
 		}},
 	}
 
@@ -129,9 +133,8 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 		assert.Equal(t, "deployer", principal.Role)
 		assert.Equal(t, "platform", principal.Namespace)
 
-		// Every claim the token carried is on the principal, whether or not a
-		// rule named it. The narrowing happens later, where an identity is
-		// derived; see TestCIClaimsCarriedIntoRunIdentity.
+		// The claims the entry's carry_claims name are on the principal, and no
+		// others; see TestCIClaimsCarriedIntoRunIdentity.
 		repository, ok := principal.StringClaim("repository")
 		require.True(t, ok)
 		assert.Equal(t, "octo-org/octo-repo", repository)
@@ -660,14 +663,20 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
 			Namespace: "platform",
+			CarryClaims: []auth.CarryClaim{
+				{Claim: "repository", Type: auth.ClaimTypeString},
+				{Claim: "ref", Type: auth.ClaimTypeString},
+				{Claim: "job_workflow_ref", Type: auth.ClaimTypeString},
+				{Claim: "private_repo", Type: auth.ClaimTypeBool},
+			},
 		}},
 	}, auth.WithClock(clock.Now), auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
 
 	claims := ciClaims("octo-org", "octo-repo", "main")
-	// A claim that is not a string, to show what the carrying step does with
-	// one. A CI platform mints its own counters as strings, but an operator can
-	// name any claim here.
+	// A claim that is not a string, to show the carrying step keeps its type. A CI
+	// platform mints its own counters as strings, but an operator can name any
+	// claim here.
 	claims["private_repo"] = true
 
 	token := issuer.MintToken(claims,
@@ -682,7 +691,6 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 		principal,
 		"fallback-namespace",
 		"prod",
-		"repository", "ref", "job_workflow_ref", "private_repo",
 	)
 
 	assert.Equal(t, "repo:octo-org/octo-repo:ref:refs/heads/main", identity.Subject)
@@ -691,18 +699,17 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 	// The verified caller's namespace wins over the deployment's fallback.
 	assert.Equal(t, "platform", identity.Namespace)
 
-	assert.Equal(t, map[string]string{
+	// A carried claim keeps its JSON type, so a rule can read a bool or a list
+	// as the token had it.
+	assert.Equal(t, map[string]any{
 		"repository":       "octo-org/octo-repo",
 		"ref":              "refs/heads/main",
 		"job_workflow_ref": "octo-org/octo-repo/.github/workflows/deploy.yml@refs/heads/main",
-	}, identity.Claims, "only the named string claims are carried")
-
-	// Named but not a string, so it is dropped silently rather than rendered.
-	_, carried := identity.Claims["private_repo"]
-	assert.False(t, carried, "a non-string claim is not carried")
+		"private_repo":     true,
+	}, identity.Claims, "only the entry's carry_claims are carried")
 
 	// Claims nobody named stay behind, whatever the token held.
-	_, carried = identity.Claims["actor"]
+	_, carried := identity.Claims["actor"]
 	assert.False(t, carried, "an unnamed claim is not carried")
 
 	// The subject a downstream relying party sees for a step of this run. It is

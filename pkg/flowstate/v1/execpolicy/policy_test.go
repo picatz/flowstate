@@ -462,7 +462,7 @@ func TestRulesSeeResolvedValuesAndFailClosed(t *testing.T) {
 		edit := func(c *execpolicy.Config) { c.Allow = []string{`identity.namespace == "team-a"`} }
 		withID := func(ns string) execpolicy.Request {
 			r := argv("sh")
-			r.Identity = principal.Caller{Namespace: ns, Claims: map[string]string{"team": ns}}
+			r.Identity = principal.Caller{Namespace: ns, Claims: principal.StringClaims(map[string]string{"team": ns})}
 			return r
 		}
 		require.NoError(t, run(t, edit, withID("team-a")))

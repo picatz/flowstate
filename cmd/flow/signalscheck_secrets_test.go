@@ -16,10 +16,10 @@ func TestSignalsCheckErrorsNeverEchoWhatWasTyped(t *testing.T) {
 	const secret = "SECRET-typed-value-77"
 
 	matrices := map[string]string{
-		"an unknown key beside a claim": "identities:\n  - name: a\n    expct: admitted\n    claims: {team: " + secret + "}\n",
-		"a type error":                  "identities:\n  - name: a\n    subject: [" + secret + "]\n    claims: {team: " + secret + "}\n",
+		"an unknown key beside a claim": "identities:\n  - name: a\n    expct: admitted\n    principal: {claims: {team: " + secret + "}}\n",
+		"a type error":                  "identities:\n  - name: a\n    principal:\n      subject: [" + secret + "]\n      claims: {team: " + secret + "}\n",
 		"a bad outcome":                 "identities:\n  - name: a\n    inputs: {pin: " + secret + "}\n    expect: " + secret + "\n",
-		"an alias":                      "x: &c {team: " + secret + "}\nidentities:\n  - name: a\n    claims: *c\n",
+		"an alias":                      "x: &c {team: " + secret + "}\nidentities:\n  - name: a\n    principal: {claims: *c}\n",
 	}
 
 	for name, doc := range matrices {

@@ -85,7 +85,7 @@ func TestADeniedDurableDispatchIsRecorded(t *testing.T) {
 				}}},
 			},
 		},
-		Identity: &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 	})
 	require.True(t, env.IsWorkflowCompleted())
 	require.Error(t, env.GetWorkflowError(), "the policy denies this task")
@@ -100,7 +100,7 @@ func TestADeniedDurableDispatchIsRecorded(t *testing.T) {
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE, record.GetDenyCode())
 	require.Equal(t, `task == "log"`, record.GetRule())
 	require.Equal(t, "log", record.GetResourceKey())
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject())
 }
 
 // TestEachDispatchAttemptIsRecordedDurable is the second of the two driver
@@ -132,7 +132,7 @@ func TestEachDispatchAttemptIsRecordedDurable(t *testing.T) {
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
 		Workflow: conformance.DispatchAuditWorkflow(),
-		Identity: &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 	})
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError(), "the fixture succeeds on its second attempt")
@@ -168,7 +168,7 @@ func TestADenialOnALaterAttemptIsRecordedDurable(t *testing.T) {
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
 		Workflow: conformance.DispatchAuditWorkflow(),
-		Identity: &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 	})
 	require.True(t, env.IsWorkflowCompleted())
 	require.Error(t, env.GetWorkflowError(), "the second attempt is refused by the tightened policy")

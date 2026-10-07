@@ -36,7 +36,7 @@ func Test_httpTask_egressIdentity(t *testing.T) {
 		if namespace == "" {
 			return nil
 		}
-		return &Scope{Identity: &WorkloadIdentity{Namespace: namespace, Subject: "spiffe://acme/" + namespace}}
+		return &Scope{Identity: &WorkloadIdentity{Principal: &Principal{Namespace: namespace, Subject: "spiffe://acme/" + namespace}}}
 	}
 
 	t.Run("the admitted tenant reaches the host", func(t *testing.T) {

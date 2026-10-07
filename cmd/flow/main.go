@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto"
@@ -177,17 +178,18 @@ type authFlags struct {
 	// server verifies callers but issues nothing, which is the inbound-only
 	// deployment.
 	//
-	// The first names the private key assertions are signed with. Any after it
-	// are published for verification only, so assertions a previous process
-	// signed keep verifying across the restart that rotation actually is — see
-	// [identityBroker].
+	// For a worker the first names the private key assertions are signed with
+	// and any after it are published for verification only, so assertions a
+	// previous process signed keep verifying across the restart that rotation
+	// actually is — see [identityBroker]. For the server every entry is a PKIX
+	// public key published for verification and none signs — see
+	// [identityPublisher].
 	identityKeyPaths []string
 
-	// identityClaims names the caller token claims carried into each run's
-	// identity, where `sender.identity.claims[...]` and `identity.claims[...]` rules and downstream relying parties
-	// read them. Empty means a run's identity records the subject and issuer and
-	// nothing more.
-	identityClaims []string
+	// identitySigner is a vault-transit:// URL naming a Transit key to sign with
+	// (a worker) or to read the public keys to publish from (the server), in
+	// place of --identity-key. See [parseIdentitySigner].
+	identitySigner string
 }
 
 // identityKeyDefault is what --identity-key holds when it is not given: the one
@@ -210,7 +212,8 @@ func identityKeyDefault() []string {
 }
 
 // identityKeyUsage is the help text every command that loads identity keys
-// shows for --identity-key, so the rotation rule is worded once.
+// shows for --identity-key, so the rotation rule is worded once. The server
+// declares its own text: it only publishes, so it takes public keys.
 const identityKeyUsage = "PKCS#8 PEM key used to mint short-lived workload assertions for federation " +
 	"targets (repeatable: the first signs, and every later one is published for verification only, " +
 	"so assertions signed before a restart keep verifying)"
@@ -225,14 +228,14 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 	policyPath, _ := cmd.Flags().GetString("auth-policy")
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	identityKeyPaths, _ := cmd.Flags().GetStringArray("identity-key")
-	identityClaims, _ := cmd.Flags().GetStringArray("identity-claim")
+	identitySigner, _ := cmd.Flags().GetString("identity-signer")
 
 	return authFlags{
 		policyPath:       policyPath,
 		policyPathGiven:  cmd.Flags().Changed("auth-policy"),
 		insecure:         insecure,
 		identityKeyPaths: identityKeyPaths,
-		identityClaims:   identityClaims,
+		identitySigner:   identitySigner,
 	}
 }
 
@@ -1214,7 +1217,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	broker, err := identityBroker(authCfg, policy)
+	issuer, err := identityPublisher(authCfg, policy)
 	if err != nil {
 		return err
 	}
@@ -1228,7 +1231,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkProtectedResourceRouteCollision(protectedResource, broker); err != nil {
+	if err := checkProtectedResourceRouteCollision(protectedResource, issuer); err != nil {
 		return err
 	}
 
@@ -1397,13 +1400,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if temporalCfg.deploymentName != "" {
 		serverOpts = append(serverOpts, server.WithDeployment(temporalCfg.deploymentName))
 	}
-	if len(authCfg.identityClaims) > 0 {
-		serverOpts = append(serverOpts, server.WithIdentityClaims(authCfg.identityClaims...))
-	}
 	if policy != nil {
 		var targets []string
-		if broker != nil {
-			targets = broker.Targets()
+		if policy.Federation != nil {
+			targets = policy.Federation.TargetNames()
 		}
 		serverOpts = append(serverOpts, server.WithCredentialTargets(targets...))
 	}
@@ -1539,7 +1539,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr: publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, broker, rpcResource, rpcMux, receiver, protectedResource,
+		Handler: serverHandler(logger, verifier, peerVerifier, issuer, rpcResource, rpcMux, receiver, protectedResource,
 			gatesOpts...),
 
 		// nil when no certificate was configured, which is only reachable here
@@ -1576,7 +1576,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
 	}
-	if broker != nil {
+	if issuer != nil {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
@@ -1584,10 +1584,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// with a different --identity-key list and its whole result is which
 		// keys this process publishes and which one of them signs. An operator
 		// who cannot read that back has rehearsed nothing.
-		logger.Info("issuing workload identity assertions",
-			"discovery", broker.Issuer().URL()+auth.DiscoveryPath,
-			"signing_key", broker.Issuer().ActiveKeyID(),
-			"verify_only_keys", verifyOnlyKeyIDs(broker.Issuer()))
+		logger.Info("publishing workload identity keys; workers sign, this server holds no signing key",
+			"discovery", issuer.URL()+auth.DiscoveryPath,
+			"published_keys", verifyOnlyKeyIDs(issuer))
 	}
 	if protectedResource != nil {
 		logger.Info("serving RFC 9728 protected resource metadata",
@@ -1903,41 +1902,34 @@ func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
 // covered and is not.
 func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) {
 	if policy == nil || policy.Federation == nil {
-		if len(flags.identityKeyPaths) > 0 {
-			return nil, fmt.Errorf("--identity-key was given but the trust policy configures no federation: " +
+		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" {
+			return nil, fmt.Errorf("--identity-key or --identity-signer was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	if len(flags.identityKeyPaths) == 0 {
+	var (
+		key  auth.SigningKey
+		opts []auth.FederationOption
+		err  error
+	)
+
+	switch {
+	case flags.identitySigner != "" && len(flags.identityKeyPaths) > 0:
+		return nil, fmt.Errorf("configure one source of signing keys, not both --identity-signer and --identity-key: " +
+			"a Transit key supplies its own previous versions, so there is nothing to list beside it")
+	case flags.identitySigner != "":
+		key, opts, err = identitySignerKeys(flags.identitySigner, policy)
+	case len(flags.identityKeyPaths) == 0:
 		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
-			"pass --identity-key with a PKCS#8 PEM private key, since Flowstate cannot issue an " +
-			"assertion it cannot sign")
+			"pass --identity-key with a PKCS#8 PEM private key, or --identity-signer with a vault-transit:// " +
+			"URL, since Flowstate cannot issue an assertion it cannot sign")
+	default:
+		key, opts, err = identityFileKeys(flags.identityKeyPaths)
 	}
-
-	signingPath, verifyOnlyPaths := flags.identityKeyPaths[0], flags.identityKeyPaths[1:]
-
-	pem, err := readBoundedFile(signingPath, "a PEM private key", maxPEMFileBytes)
-	if err != nil {
-		return nil, fmt.Errorf("reading identity key: %w", err)
-	}
-	key, err := parseSigningKey(signingPath, pem)
 	if err != nil {
 		return nil, err
-	}
-
-	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
-	for _, path := range verifyOnlyPaths {
-		data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
-		if err != nil {
-			return nil, fmt.Errorf("reading verify-only identity key: %w", err)
-		}
-		id, public, err := parseVerifyOnlyKey(path, data)
-		if err != nil {
-			return nil, err
-		}
-		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
 	}
 
 	// A duplicate id is refused by [auth.NewIssuer], which is where the key set
@@ -1948,6 +1940,139 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
 	return broker, nil
+}
+
+// identityFileKeys reads a worker's --identity-key files: the first signs and
+// every later one is published for verification only.
+func identityFileKeys(paths []string) (auth.SigningKey, []auth.FederationOption, error) {
+	signingPath, verifyOnlyPaths := paths[0], paths[1:]
+
+	pem, err := readBoundedFile(signingPath, "a PEM private key", maxPEMFileBytes)
+	if err != nil {
+		return auth.SigningKey{}, nil, fmt.Errorf("reading identity key: %w", err)
+	}
+	key, err := parseSigningKey(signingPath, pem)
+	if err != nil {
+		return auth.SigningKey{}, nil, err
+	}
+
+	opts := make([]auth.FederationOption, 0, len(verifyOnlyPaths))
+	for _, path := range verifyOnlyPaths {
+		data, err := readBoundedFile(path, "a PEM private key", maxPEMFileBytes)
+		if err != nil {
+			return auth.SigningKey{}, nil, fmt.Errorf("reading verify-only identity key: %w", err)
+		}
+		id, public, err := parseVerifyOnlyKey(path, data)
+		if err != nil {
+			return auth.SigningKey{}, nil, err
+		}
+		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
+	}
+
+	return key, opts, nil
+}
+
+// identityPublisher builds the publish-only issuer a server serves its discovery
+// documents and key set from, or returns nil when the deployment does not
+// federate outward.
+//
+// The server never mints: assertions are signed in the worker that runs the
+// step, so the server is handed only the public keys to publish and never reads
+// private signing material. Every --identity-key entry is therefore a PKIX
+// public key PEM (`flow keys public --pem`), published for verification, and a
+// private key is refused at start-up rather than read for its public half — a
+// server that accepted one would be a server holding one. The key id is the file
+// name, as for a worker, so a worker's `2026-08.pem` and the server's
+// `2026-08.pem` publish and sign under one id.
+//
+// Federation is a deployment-wide trust domain: every worker that signs with a
+// shared key signs as the same issuer, whatever tenant its run belongs to.
+func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.Issuer, error) {
+	if policy == nil || policy.Federation == nil {
+		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" {
+			return nil, fmt.Errorf("--identity-key or --identity-signer was given but the trust policy configures no federation: " +
+				"add a federation section, or drop the key")
+		}
+		return nil, nil
+	}
+
+	var (
+		opts []auth.FederationOption
+		err  error
+	)
+
+	switch {
+	case flags.identitySigner != "" && len(flags.identityKeyPaths) > 0:
+		return nil, fmt.Errorf("configure one source of published keys, not both --identity-signer and --identity-key")
+	case flags.identitySigner != "":
+		opts, err = identitySignerPublicKeys(flags.identitySigner, policy)
+	case len(flags.identityKeyPaths) == 0:
+		return nil, fmt.Errorf("the trust policy configures federation but no identity key was given: " +
+			"pass --identity-key with the PKIX public key PEM of each key workers sign with " +
+			"(flow keys public --in KEY.pem --pem), or --identity-signer with the vault-transit:// URL of the " +
+			"Transit key they sign with, since the server publishes keys and holds no signing key")
+	default:
+		opts, err = identityPublicFileKeys(flags.identityKeyPaths)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	// A duplicate id is refused by [auth.NewIssuer], as for a worker.
+	issuer, err := policy.Federation.PublishOnlyIssuer(opts...)
+	if err != nil {
+		return nil, fmt.Errorf("configuring identity federation: %w", err)
+	}
+	return issuer, nil
+}
+
+// identityPublicFileKeys reads a server's --identity-key files, every one a
+// PKIX public key published for verification.
+func identityPublicFileKeys(paths []string) ([]auth.FederationOption, error) {
+	opts := make([]auth.FederationOption, 0, len(paths))
+	for _, path := range paths {
+		data, err := readBoundedFile(path, "a PEM public key", maxPEMFileBytes)
+		if err != nil {
+			return nil, fmt.Errorf("reading identity key: %w", err)
+		}
+		id, public, err := parsePublicIdentityKey(path, data)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, auth.WithFederationVerifyOnlyKey(id, public))
+	}
+
+	return opts, nil
+}
+
+// parsePublicIdentityKey decodes a server's --identity-key entry, which must be
+// a PKIX public key PEM. It is the server-side counterpart of
+// [parseVerifyOnlyKey], which also accepts a private key for its public half;
+// this one refuses any private key, because the server must not read one.
+func parsePublicIdentityKey(path string, data []byte) (string, crypto.PublicKey, error) {
+	block, rest := pem.Decode(data)
+	if block == nil {
+		return "", nil, fmt.Errorf("identity key %s is not PEM-encoded", path)
+	}
+
+	// Exactly one block: anything after it, a private key above all, would have
+	// been read into this process by the caller and then silently ignored.
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return "", nil, fmt.Errorf("identity key %s holds more than one PEM block; give the server a file with exactly one public key", path)
+	}
+
+	if strings.HasSuffix(block.Type, "PRIVATE KEY") {
+		return "", nil, fmt.Errorf("identity key %s is a private key, and the server never signs, so it must not hold one: "+
+			"give it the public half, which `flow keys public --in %s --pem` prints "+
+			"(workers keep taking the private key)", path, path)
+	}
+
+	public, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return "", nil, fmt.Errorf("identity key %s is not a PKIX public key PEM "+
+			"(print one from a private key with: flow keys public --in KEY.pem --pem): %w", path, err)
+	}
+	return keyIDFromPath(path), public, nil
 }
 
 // verifyOnlyKeyIDs names the keys the issuer publishes that it does not sign
@@ -2223,8 +2348,17 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		catalog = fromFile
 	}
 
+	// The deployment's auth policy, when named: what every identity expression
+	// below is checked against. Loaded before anything is read so that a policy
+	// that will not load fails the command rather than reporting every claim
+	// as uncarried.
+	claims, err := claimCheckOf(cmd)
+	if err != nil {
+		return err
+	}
+
 	if format.Machine() {
-		return validateMachine(cmd, args, format, catalog)
+		return validateMachine(cmd, args, format, catalog, claims)
 	}
 
 	// Through the surface, and with its theme, for the reason renderHelp and
@@ -2283,6 +2417,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		// mismatch and an unknown-task read the same on the line and in the exit
 		// status.
 		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
+		diagnostics = append(diagnostics, claims.workflow(target)...)
 
 		if len(diagnostics) == 0 {
 			// The one word worth finding in a run over nineteen files: everything
@@ -2294,6 +2429,11 @@ func runValidate(cmd *cobra.Command, args []string) error {
 
 		failed = true
 		writeDiagnostics(out, theme.Muted.Render(path), diagnostics)
+	}
+
+	for _, file := range claims.policies() {
+		failed = true
+		writeDiagnostics(out, theme.Muted.Render(file.path), file.diagnostics)
 	}
 
 	if failed {
@@ -2324,7 +2464,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 //
 // A file that *parses* badly is the opposite: that is a fact about the workflow, so it
 // becomes a diagnostic like any other.
-func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, catalog *v1.PluginCatalog) error {
+func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, catalog *v1.PluginCatalog, claims *claimCheck) error {
 	surface := newSurface(cmd)
 
 	targets, err := collectValidateTargets(args, cmd.InOrStdin())
@@ -2367,8 +2507,12 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 		// green a person would not (#835 review). A no-op with no catalog, and
 		// skipped for a file that did not parse (its diagnostics already say so).
 		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
+		diagnostics = append(diagnostics, claims.workflow(target)...)
 
 		reports = append(reports, diagnostics.Report(path))
+	}
+	for _, file := range claims.policies() {
+		reports = append(reports, file.diagnostics.Report(file.path))
 	}
 
 	var failed bool
@@ -2915,6 +3059,7 @@ flow server --insecure-no-auth`,
 	addLocalRehearsalFlags(runLocalCmd)
 	workerCmd.Flags().String("auth-policy", os.Getenv("FLOWSTATE_AUTH_POLICY"), runtimeAuthPolicyUsage)
 	workerCmd.Flags().StringArray("identity-key", identityKeyDefault(), identityKeyUsage)
+	addIdentitySignerFlag(workerCmd, false)
 
 	serverCmd.Flags().String("auth-policy",
 		os.Getenv("FLOWSTATE_AUTH_POLICY"),
@@ -2927,12 +3072,14 @@ flow server --insecure-no-auth`,
 	addRPCResourceFlags(serverCmd)
 	serverCmd.Flags().StringArray("identity-key",
 		identityKeyDefault(),
-		"path to a PKCS#8 PEM private key Flowstate signs its own assertions with, "+
-			"required when the auth policy configures federation; the file's base name "+
+		"path to a PKIX public key PEM (`flow keys public --in KEY.pem --pem`) to publish "+
+			"for verifying assertions workers sign, required when the auth policy "+
+			"configures federation; a private key is refused, since the server holds no "+
+			"signing key (workers take the PKCS#8 private key). The file's base name "+
 			"becomes the published key id, so 2026-07.pem publishes as \"2026-07\". "+
-			"Repeatable: the first occurrence signs and every later one is published for "+
-			"verification only, so a restart that rotates keys does not reject assertions "+
-			"the previous process signed")
+			"Repeatable: list the current key and any previous ones, so a rotation does "+
+			"not reject assertions signed with the old key")
+	addIdentitySignerFlag(serverCmd, true)
 
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an
@@ -2943,7 +3090,6 @@ flow server --insecure-no-auth`,
 	serverCmd.Flags().String("deployment-name", os.Getenv("FLOWSTATE_DEPLOYMENT_NAME"),
 		"name of this Flowstate installation (not a Temporal Worker Deployment), recorded in "+
 			"each run's workload identity and in every assertion subject it mints")
-	serverCmd.Flags().StringArray("identity-claim", nil, identityClaimUsage)
 
 	// The public listener's own address. Until now this was the one setting in
 	// the tree configured by environment variable with no flag beside it:
@@ -3054,7 +3200,10 @@ flow validate --plugin-dir ./plugins examples/plugins/greet/workflow.yaml
 # The same check against a saved catalog, launching nothing:
 flow plugins --plugin-dir ./plugins -o json > plugins.lock.json
 flow validate --plugin-catalog plugins.lock.json \
-  examples/plugins/greet/workflow.yaml`,
+  examples/plugins/greet/workflow.yaml
+
+# Check every claim a rule reads is carried by the deployment's auth policy:
+flow validate --auth-policy auth.yaml approval.yaml`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
@@ -3084,6 +3233,11 @@ flow validate --plugin-catalog plugins.lock.json \
 	// and the one a CI job wants, since a checked-in catalog validates plugin
 	// examples with no plugin binaries in the runner.
 	addPluginCatalogFlag(validateCmd)
+
+	// The cross-check against a deployment's auth policy: a rule that reads a
+	// claim no issuer entry carries can never match, and this is where an author
+	// learns that instead of from a denial in production.
+	addValidateAuthPolicyFlags(validateCmd)
 
 	// Get command, which asks a server what a run is doing.
 	//
@@ -3305,6 +3459,8 @@ flow plugins -o json \
 	codecCmd := newCodecCommand()
 	jwtCmd := newJWTCommand()
 	authCmd := newAuthCommand()
+	loginCmd := newLoginCommand()
+	logoutCmd := newLogoutCommand()
 
 	// Version command, answering "which build" the way a bug report or an
 	// agent transcript needs to: see version.go for why this is a verb rather
@@ -3504,6 +3660,8 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	workerCmd.GroupID = "infrastructure"
 	serverCmd.GroupID = "infrastructure"
 	authCmd.GroupID = "infrastructure"
+	loginCmd.GroupID = "infrastructure"
+	logoutCmd.GroupID = "infrastructure"
 	lspCmd.GroupID = "development"
 	keysCmd.GroupID = "development"
 	codecCmd.GroupID = "infrastructure"
@@ -3618,6 +3776,8 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(serverCmd)
 	rootCmd.AddCommand(authCmd)
+	rootCmd.AddCommand(loginCmd)
+	rootCmd.AddCommand(logoutCmd)
 
 	// The whole stack in one command, under `server` because that is where
 	// somebody looking for a server looks. Everything it is lives in

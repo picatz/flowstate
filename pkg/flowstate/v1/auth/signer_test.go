@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -345,7 +346,17 @@ func TestProviderSigningKeyDoesNotLeakThroughContainingStructs(t *testing.T) {
 
 	provider := valueSigner{id: "kms-leak", secret: providerSecret, key: *private, raw: raw}
 
-	key, err := auth.NewProviderSigningKey(t.Context(), provider, &private.PublicKey)
+	requireSignerDoesNotLeak(t, provider, &private.PublicKey, providerSecret, fmt.Sprintf("%v", raw))
+}
+
+// requireSignerDoesNotLeak renders a provider-backed key in every containment
+// shape and with every verb, and requires that none of the forbidden strings
+// appear. It is shared by every [auth.Signer] implementation, so the enumeration
+// is one list that a new signer joins rather than a copy that drifts.
+func requireSignerDoesNotLeak(t *testing.T, signer auth.Signer, public crypto.PublicKey, forbidden ...string) {
+	t.Helper()
+
+	key, err := auth.NewProviderSigningKey(t.Context(), signer, public)
 	require.NoError(t, err)
 
 	holder := providerHolder{key: key}
@@ -397,10 +408,10 @@ func TestProviderSigningKeyDoesNotLeakThroughContainingStructs(t *testing.T) {
 	for name, render := range renderings {
 		t.Run(name, func(t *testing.T) {
 			rendered := render()
-			require.NotContains(t, rendered, providerSecret,
-				"%s leaked the provider's material:\n%s", name, rendered)
-			require.NotContains(t, rendered, fmt.Sprintf("%v", raw),
-				"%s leaked the provider's private scalar:\n%s", name, rendered)
+			for _, secret := range forbidden {
+				require.NotContains(t, rendered, secret,
+					"%s leaked the provider's material:\n%s", name, rendered)
+			}
 		})
 	}
 }

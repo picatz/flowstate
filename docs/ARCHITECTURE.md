@@ -300,7 +300,7 @@ run's memo unconditionally at submit (`pkg/flowstate/v1/server/server.go:789`, `
 is what populates `v1.RunSummary.Name` (`proto/flowstate/v1/service.proto:735`,
 `pkg/flowstate/v1/server/list.go:395`) and what `flow list --filter` compares against on any deployment; a
 deployment that has registered search attributes additionally projects it as
-`FlowstateWorkflowName` (`pkg/flowstate/v1/server/server.go:1130`), index-only, for tools querying the
+`FlowstateWorkflowName` (`pkg/flowstate/v1/server/server.go:1119`), index-only, for tools querying the
 visibility store directly. The grouping exists — it is simply not Temporal's built-in type
 field. The one place the server does read an attribute back is a schedule listing: a
 deployment with registration confirmed tags each schedule with its tenant at create and asks
@@ -1065,6 +1065,30 @@ This is the storage foundation only. Nothing in the engine or the Flowfile
 reaches it yet: `ArtifactRef` as a value kind, the `workspace:` and `produce:`
 step keys, and `exec` working in a materialized workspace are the next slice
 (#200), so authors cannot use artifacts today.
+
+## Proto packages: core versus domain
+
+A type belongs in `flowstate.v1` only if the engine itself consumes it: the
+compiler, Flowfile validation, the CEL environment, run, catalog and audit
+records, or the plugin protocol. A type whose only consumers are plugins is a
+**domain type**, and lives in its own package.
+
+| | Core | Domain |
+| --- | --- | --- |
+| Proto | `proto/flowstate/v1/*.proto` | `proto/flowstate/<domain>/v1/<domain>.proto` |
+| Package | `flowstate.v1` | `flowstate.<domain>.v1` |
+| Go | `pkg/flowstate/v1` | `pkg/flowstate/<domain>/v1` (name `<domain>v1`) |
+| Example | `Value`, `TaskDef`, `Workflow` | `flowstate.decision.v1` (`Question`, `Answer`, `Decision`) |
+
+A domain package is in the same buf module (`proto/`) and the same Go module as
+the core: no separate module and no BSR push, and `make plugin-proto` and
+`buf generate` produce it with the rest. It is engine-provided, so the host has it
+compiled in and a plugin never ships a copy: the SDK names it beside
+`flowstate.plugin.v1` in the `describeMessage` hook, and `flowstatev1` does not
+import it. `TestEveryDomainFileIsEngineProvided` walks the proto sources for every
+`flowstate/<domain>/v1` file and fails on one the SDK would still ship. A domain
+package is `v1` until it breaks; a break is a new `v2` directory and Go path, not
+an edit in place. `flowstate.chat.v1` is planned to follow this rule.
 
 ## Design tensions worth knowing
 

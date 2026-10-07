@@ -13,7 +13,7 @@ import (
 func TestSignalPolicyInputsAreUnboundWhenTheCallerHoldsNone(t *testing.T) {
 	t.Parallel()
 
-	approver := &v1.WorkloadIdentity{Claims: map[string]string{"team": "release"}}
+	approver := &v1.WorkloadIdentity{Principal: &v1.Principal{Claims: v1.StringClaimValues(map[string]string{"team": "release"})}}
 	narrow := ` && sender.identity.claims["team"] == "release"`
 
 	// Over an empty scope each of these would read as true. Unbound, each is an

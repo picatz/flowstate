@@ -102,11 +102,7 @@ func TestDispatchOfAnUnknownTaskHoldingASecretTakesTheAuthorizedArm(t *testing.T
 				},
 			},
 		},
-		Identity: &v1.WorkloadIdentity{
-			Subject:   "someone@example.com",
-			Issuer:    "flowstate:test",
-			Namespace: "platform",
-		},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com", Issuer: "flowstate:test", Namespace: "platform"}},
 	})
 	require.True(t, env.IsWorkflowCompleted())
 	require.Error(t, env.GetWorkflowError(),
@@ -152,11 +148,7 @@ func TestDispatchOfATaskCarryingNoReferenceStaysOnThePlainArm(t *testing.T) {
 				Profile: v1.CurrentProfile,
 				Steps:   []*v1.Node{{Id: "report", Kind: &v1.Node_Task{Task: task}}},
 			},
-			Identity: &v1.WorkloadIdentity{
-				Subject:   "someone@example.com",
-				Issuer:    "flowstate:test",
-				Namespace: "platform",
-			},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com", Issuer: "flowstate:test", Namespace: "platform"}},
 		})
 		require.True(t, env.IsWorkflowCompleted())
 

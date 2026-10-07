@@ -29,12 +29,18 @@ import (
 // same drift the issue is about, one layer up: a sentence nothing reads.
 var flagMeanings = []flagMeaning{
 	{
-		name:    "address",
-		means:   "the Flowstate server a client dials",
-		holdsOn: declaresToo("token-file"),
+		name:  "address",
+		means: "the Flowstate server a client dials",
+		holdsOn: func(cmd *cobra.Command) bool {
+			// `flow login` and `flow logout` do not dial the server: --address is
+			// the server a stored login is bound to, still a Flowstate server, and
+			// they take --issuer where a dialing command takes credential flags.
+			return declaresToo("token-file")(cmd) || declaresToo("issuer")(cmd)
+		},
 		because: "--address names a server to dial, and every command that dials one takes " +
-			"the credential flags beside it (addServerFlags, cmd/flow/client.go). A command " +
-			"declaring --address without them is naming something else — which is what " +
+			"the credential flags beside it (addServerFlags, cmd/flow/client.go); `flow login` " +
+			"names the server its credential is bound to and takes --issuer instead. A command " +
+			"declaring --address without either is naming something else — which is what " +
 			"`flow server --address` did, naming Temporal's frontend",
 	},
 	{

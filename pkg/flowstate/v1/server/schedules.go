@@ -172,7 +172,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetPrincipal().GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -217,7 +217,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 	// standing instruction left by a person — and the alternative has no
 	// answer, since at 03:00 there is no caller to derive an identity from.
 	// It is also why deleting a schedule matters when somebody leaves.
-	namespace := identity.GetNamespace()
+	namespace := identity.GetPrincipal().GetNamespace()
 
 	name := v1.ScheduleNameFor(req.Msg.GetName(), workflow)
 	if name == "" {
@@ -436,7 +436,7 @@ func (s *FlowstateServer) CreateSchedule(ctx context.Context, req *connect.Reque
 				// execution. That is also what makes `if: ${trigger.kind !=
 				// "schedule"}` mean the same thing on the first firing and the
 				// thousandth.
-				Trigger: v1.NewScheduleTriggerContext(name, identity.GetSubject()),
+				Trigger: v1.NewScheduleTriggerContext(name, identity.GetPrincipal().GetSubject()),
 			}},
 		},
 	})
@@ -490,7 +490,7 @@ func (s *FlowstateServer) ListSchedules(ctx context.Context, req *connect.Reques
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
-	namespace := s.identityFor(ctx).GetNamespace()
+	namespace := s.identityFor(ctx).GetPrincipal().GetNamespace()
 
 	// The caller's namespace decides which Temporal namespace is listed at all,
 	// exactly as it decides which schedules are addressable. Where a deployment maps
@@ -796,7 +796,7 @@ func (s *FlowstateServer) TriggerSchedule(ctx context.Context, req *connect.Requ
 // scheduleClientFor returns the Temporal client the caller's schedules live on,
 // with the tenant they belong to.
 func (s *FlowstateServer) scheduleClientFor(ctx context.Context) (client.Client, string, error) {
-	namespace := s.identityFor(ctx).GetNamespace()
+	namespace := s.identityFor(ctx).GetPrincipal().GetNamespace()
 
 	temporal, err := s.clientFor(namespace)
 	if err != nil {

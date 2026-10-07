@@ -1010,6 +1010,19 @@ func WorkflowServiceMethods() []ServiceMethod {
 				return resp.Msg, nil
 			},
 		},
+		{
+			Name:   "Whoami",
+			Input:  (&v1.WhoamiRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.WhoamiResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().Whoami(ctx, connect.NewRequest(in.(*v1.WhoamiRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
 	}
 }
 

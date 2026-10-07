@@ -80,10 +80,7 @@ func TestCallerModeHostSDKConformance(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			const privateClaim = "claim-value-must-not-become-output"
-			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-				Mode:   test.sent,
-				Claims: map[string]string{"private": privateClaim},
-			})
+			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Claims: flowstatev1.StringClaimValues(map[string]string{"private": privateClaim})}, Mode: test.sent})
 			outputs, err := def.Fn(ctx, nil, nil)
 			require.NoError(t, err)
 			got := flowstatev1.WorkloadIdentityMode(outputs.GetNamedValues()["mode"].GetLiteral().GetInt64Value())
@@ -109,10 +106,7 @@ func TestLocalDriverOverridesAnOrdinaryIdentityMode(t *testing.T) {
 	registry := flowstatev1.NewRegistry()
 	require.NoError(t, registry.Register(host.TaskDefs()[0]))
 	ctx := flowstatev1.NewContextWithRegistry(t.Context(), registry)
-	ctx = NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{
-		Subject: "embedder",
-		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
-	})
+	ctx = NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "embedder"}, Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION})
 
 	outputs, err := flowstatev1.Run(ctx, &flowstatev1.Workflow{
 		Name: "local-embedder-mode",
@@ -148,10 +142,7 @@ func TestLocalCompensationOverridesAnOrdinaryIdentityMode(t *testing.T) {
 		},
 	}))
 	ctx := flowstatev1.NewContextWithRegistry(t.Context(), registry)
-	ctx = NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{
-		Subject: "embedder",
-		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
-	})
+	ctx = NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "embedder"}, Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION})
 
 	_, err := flowstatev1.Run(ctx, &flowstatev1.Workflow{
 		Name: "local-compensation-mode",

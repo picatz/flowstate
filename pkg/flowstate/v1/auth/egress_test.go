@@ -239,6 +239,80 @@ egress:
 	require.Equal(t, "runner", principal.Subject)
 }
 
+// TestALoopbackHTTPIssuerIsRefusedAtLoadAsTheFetchWouldRefuseIt is #1694's
+// agreement: [auth.ValidateHTTPSURL] admits plain http on loopback, so a
+// rehearsal issuer or jwks_url is valid configuration, and the default identity
+// egress policy then refuses to fetch it. A file that loads must be a file that
+// can fetch, so the load refuses with the fetch's own sentence, and the verifier
+// built from the same policy another way refuses the fetch with that sentence.
+func TestALoopbackHTTPIssuerIsRefusedAtLoadAsTheFetchWouldRefuseIt(t *testing.T) {
+	t.Parallel()
+
+	var (
+		key    = authtest.GenerateKey("primary", jwa.ES256)
+		clock  = authtest.NewClock(referenceTime)
+		issuer = newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
+	)
+
+	const remedy = "configure the trust policy's egress: section to allow this fetch: add `schemes: [http, https]`"
+
+	for _, entry := range []string{
+		"issuer: " + issuer.URL(),
+		"issuer: https://idp.example.com\n    jwks_url: " + issuer.URL() + "/jwks.json",
+	} {
+		_, err := auth.ParsePolicy([]byte("issuers:\n  - name: rehearsal\n    actions: []\n    audiences: [flowstate]\n    " + entry + "\n"))
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy, entry)
+		require.ErrorContains(t, err, remedy, entry)
+	}
+
+	// The same entry built in Go, which no load refuses, fails at the fetch with
+	// the same remedy.
+	verifier, err := auth.NewOIDCVerifier(auth.Policy{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
+			Name: "rehearsal", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
+		}},
+	}, auth.WithClock(clock.Now))
+	require.NoError(t, err)
+
+	_, err = verifier.Verify(t.Context(),
+		issuer.MintToken(nil, authtest.WithSubject("runner"), authtest.WithAudience("flowstate")))
+	require.ErrorContains(t, err, remedy)
+}
+
+// TestLoadJudgesTheFetchByAddressAndByTheRequestItMakes: the load check asks the
+// egress policy what the transport would, so admitting plain http is not enough
+// for a loopback literal (it needs allow_loopback too), a rule on the path sees
+// the discovery URL the fetch requests rather than the bare issuer, and a host
+// name is left to the fetch because loading makes no lookup.
+func TestLoadJudgesTheFetchByAddressAndByTheRequestItMakes(t *testing.T) {
+	t.Parallel()
+
+	load := func(issuer, extra, egress string) error {
+		_, err := auth.ParsePolicy([]byte("issuers:\n  - name: idp\n    actions: []\n    audiences: [flowstate]\n    issuer: " +
+			issuer + "\n" + extra + "egress:\n" + egress))
+		return err
+	}
+
+	for _, host := range []string{"http://127.0.0.1:8555", "http://[::1]:8555"} {
+		err := load(host, "", "  schemes: [http, https]\n")
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy, host)
+		require.ErrorContains(t, err, "`allow_loopback: true`", host)
+
+		require.NoError(t, load(host, "", "  schemes: [http, https]\n  allow_loopback: true\n"), host)
+	}
+
+	// A name is not resolved at load: nothing here can say what it points at.
+	require.NoError(t, load("http://localhost:8555", "", "  schemes: [http, https]\n"))
+
+	// Discovery requests issuer + /.well-known/openid-configuration, so a rule on
+	// that path refuses the issuer, and a jwks_url entry, which does no
+	// discovery, is judged by its own path instead.
+	rule := "  deny: ['path == \"/.well-known/openid-configuration\"']\n"
+	err := load("https://idp.example.com", "", rule)
+	require.ErrorContains(t, err, "configure the trust policy's egress: section")
+	require.NoError(t, load("https://idp.example.com", "    jwks_url: https://idp.example.com/keys\n", rule))
+}
+
 // TestTrustPolicyEgressSectionIsCompiledWhenTheFileLoads is the fail-closed half
 // of the section above: a rule that cannot compile is a configuration error at
 // start-up, not a surprise on the first fetch of the first token.

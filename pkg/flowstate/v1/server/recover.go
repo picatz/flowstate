@@ -164,9 +164,9 @@ func (i *recoverInterceptor) recovered(ctx context.Context, spec connect.Spec, i
 
 	i.logger.ErrorContext(ctx, "recovered from panic in RPC handler",
 		"rpc", method,
-		"namespace", identity.GetNamespace(),
-		"subject", identity.GetSubject(),
-		"issuer", identity.GetIssuer(),
+		"namespace", identity.GetPrincipal().GetNamespace(),
+		"subject", identity.GetPrincipal().GetSubject(),
+		"issuer", identity.GetPrincipal().GetIssuer(),
 		"correlation_id", id,
 		"panic", panicText(value),
 		"stack", string(debug.Stack()),

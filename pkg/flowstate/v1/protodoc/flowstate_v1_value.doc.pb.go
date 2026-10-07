@@ -46,13 +46,43 @@ func init() {
 				" must not be able to forge lines in it.\n",
 		},
 		{
+			Name: "flowstate.v1.CredentialRef",
+			Leading: " CredentialRef names a federated credential without containing it.\n" +
+				"\n" +
+				" It is [SecretRef]'s sibling for a credential Flowstate mints rather than\n" +
+				" stores: the target is the name of an outbound federation target in the\n" +
+				" deployment's trust policy (`federation.targets[].name`), and the worker\n" +
+				" running the task exchanges its own workload identity for a short-lived\n" +
+				" credential at the moment the task needs it. The specification therefore\n" +
+				" carries a name and nothing else, for the same reason a SecretRef carries\n" +
+				" no value: workflow history is durable and broadly readable.\n" +
+				"\n" +
+				" It is a separate message rather than a SecretRef with a credential scheme\n" +
+				" because the two are decided by different policies: a secret is authorized by\n" +
+				" the secret access rules, a credential by the federation assumption rules, and\n" +
+				" one spelling for both would let a rule for one silently govern the other.\n" +
+				"\n" +
+				" This message must never gain a field holding a minted credential.\n",
+		},
+		{
+			Name: "flowstate.v1.CredentialRef.target",
+			Leading: " Target is the federation target's name, as the trust policy spells it.\n" +
+				"\n" +
+				" Whether a target is configured is a fact about the deployment, not the\n" +
+				" Flowfile, so the schema constrains only its length, and code rejects a\n" +
+				" control character, which could forge lines in a log that records the\n" +
+				" name. The server refuses an unknown target at validate and submit time\n" +
+				" rather than at run time.\n",
+		},
+		{
 			Name: "flowstate.v1.Value",
 			Leading: " Value is one value in a workflow: a task input, a step output, a variable or\n" +
 				" a run argument.\n" +
 				"\n" +
 				" Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a\n" +
 				" parsed CEL expression evaluated when the value is needed; a `secret_ref`\n" +
-				" names a secret resolved only by the worker that uses it; a `structure` is a\n" +
+				" names a secret resolved only by the worker that uses it; a `credential_ref`\n" +
+				" names a federation target whose credential only that worker mints; a `structure` is a\n" +
 				" list or map of Values, the only shape that can hold a secret reference below\n" +
 				" the top level; and an `error` records a value that could not be produced.\n" +
 				" Values a caller submits, such as `RunRequest.inputs`, must be literals.\n",
@@ -87,6 +117,17 @@ func init() {
 			Name: "flowstate.v1.Value.structure",
 			Leading: " A list or a mapping whose entries are values, which is the only shape\n" +
 				" that can hold a [SecretRef] somewhere other than at the top.\n",
+		},
+		{
+			Name: "flowstate.v1.Value.credential_ref",
+			Leading: " A reference to a federated credential, minted only where the value is\n" +
+				" needed.\n" +
+				"\n" +
+				" Inert in exactly the way [secret_ref] is, and held to the same\n" +
+				" containment: the compiler produces it, the control plane transports it,\n" +
+				" workflow-side evaluation refuses to read it, and only the worker\n" +
+				" executing the task exchanges for the credential. It is the whole value of\n" +
+				" a task input and is never nested in a [Structure].\n",
 		},
 		{
 			Name:    "flowstate.v1.Value.Error",

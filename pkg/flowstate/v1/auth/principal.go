@@ -122,8 +122,11 @@ type Principal struct {
 	// as valid past this point, for example when it is cached.
 	ExpiresAt time.Time `json:"expires_at"`
 
-	// Claims is the token's full verified claims set, for authorization rules
-	// that need issuer-specific claims such as "repository" or "email". Values
+	// Claims is the claims the admitting trust entry carries (its carry_claims
+	// and groups_claim, or what a [WithClaimMapper] mapper returns), for
+	// authorization rules that need issuer-specific claims such as "repository"
+	// or "email". A claim the entry does not carry is absent, whatever the
+	// token held. Values
 	// are whatever JSON decoding produced: string, bool, float64, []any, or
 	// map[string]any.
 	//

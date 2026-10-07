@@ -180,7 +180,7 @@ func TestAnApproverAnswersAGateInTheBrowser(t *testing.T) {
 	require.Len(t, deniedRecords, 1)
 	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_DENY, deniedRecords[0].GetDecision())
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, deniedRecords[0].GetDenyCode())
-	require.Equal(t, "carol@example.com", deniedRecords[0].GetIdentity().GetSubject())
+	require.Equal(t, "carol@example.com", deniedRecords[0].GetIdentity().GetPrincipal().GetSubject())
 
 	// Refused before Temporal saw it: the gate is still open to answer.
 	resp, err := flow.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
@@ -193,7 +193,7 @@ func TestAnApproverAnswersAGateInTheBrowser(t *testing.T) {
 	require.NotEmpty(t, gateRecords)
 	for _, record := range gateRecords {
 		if record.GetDecision() == v1.AuditDecision_AUDIT_DECISION_DENY {
-			require.Equal(t, "reader@example.com", record.GetIdentity().GetSubject())
+			require.Equal(t, "reader@example.com", record.GetIdentity().GetPrincipal().GetSubject())
 		}
 	}
 
@@ -216,7 +216,7 @@ func TestAnApproverAnswersAGateInTheBrowser(t *testing.T) {
 	allRecords := trail.signalRecords()
 	require.Len(t, allRecords, 2)
 	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, allRecords[1].GetDecision())
-	require.Equal(t, "alice@example.com", allRecords[1].GetIdentity().GetSubject())
+	require.Equal(t, "alice@example.com", allRecords[1].GetIdentity().GetPrincipal().GetSubject())
 
 	// The gate is answered; a second approver sees that, and nothing is
 	// buffered for whatever might next wait on the same name.

@@ -176,18 +176,21 @@ var engineProvidedFiles = sync.OnceValue(func() map[string]struct{} {
 	// which arrived with #928's wire messages. A list nothing walks is a list
 	// that is already wrong (Codex, #1194).
 	//
-	// flowstate/plugin/v1 is deliberately absent, and not by oversight: this
-	// package cannot name it (plugin.proto imports these files, so the Go
-	// package importing this one), and a reader of a catalog is not
-	// necessarily a plugin host. The SDK, which is on the other side of that
-	// import and does talk to a host, names it through alsoProvided.
+	// flowstate/plugin/v1 and every other flowstate/<domain>/v1 package are
+	// deliberately absent, and not by oversight: this package cannot name
+	// plugin.proto (it imports these files, so the Go package importing this
+	// one), a domain type is one only plugins consume and so is not core
+	// (docs/ARCHITECTURE.md, "Proto packages: core versus domain"), and a
+	// reader of a catalog is not necessarily a plugin host. The SDK, which is
+	// on the other side of that import and does talk to a host, names them
+	// through alsoProvided; TestEveryDomainFileIsEngineProvided there keeps
+	// that list whole.
 	for _, file := range []protoreflect.FileDescriptor{
 		File_flowstate_v1_artifact_proto,
 		File_flowstate_v1_audit_proto,
 		File_flowstate_v1_authorization_proto,
 		File_flowstate_v1_catalog_proto,
 		File_flowstate_v1_debug_proto,
-		File_flowstate_v1_decision_proto,
 		File_flowstate_v1_diagnostics_proto,
 		File_flowstate_v1_exec_policy_proto,
 		File_flowstate_v1_policy_check_proto,

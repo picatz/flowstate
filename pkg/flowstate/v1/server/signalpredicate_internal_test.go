@@ -33,10 +33,7 @@ func predicateWorkflow(expression string) *v1types.Workflow {
 func TestSignalPolicyScopeIsRecordedOnlyForWhatAPredicateReads(t *testing.T) {
 	t.Parallel()
 
-	starter := &v1types.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "requester@example.com",
-		Claims: map[string]string{"team": "payments"},
-	}
+	starter := &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "https://issuer.example.com", Subject: "requester@example.com", Claims: v1types.StringClaimValues(map[string]string{"team": "payments"})}}
 	inputs := map[string]*v1types.Value{"expected_approver": v1types.NewLiteral("lead@example.com")}
 
 	read := func(expression string) *v1types.Scope {
@@ -60,7 +57,7 @@ func TestSignalPolicyScopeIsRecordedOnlyForWhatAPredicateReads(t *testing.T) {
 	withRun := read(`sender.identity.principal != run.identity.principal`)
 	require.NotNil(t, withRun)
 	assert.Empty(t, withRun.GetInputs(), "inputs were recorded for a predicate that does not read them")
-	assert.Equal(t, "payments", withRun.GetIdentity().GetClaims()["team"],
+	assert.Equal(t, "payments", withRun.GetIdentity().GetPrincipal().GetClaims()["team"].GetStringValue(),
 		"the starter's identity, claims included, is what run.identity reads at delivery")
 
 	withInputs := read(`sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims["team"] == "x"`)
@@ -99,10 +96,7 @@ func TestSignalPolicyScopeOverItsBoundRefusesTheRunInsteadOfTruncating(t *testin
 func TestAuthorizeSignalReadsAPredicateOverTheRecordedScope(t *testing.T) {
 	t.Parallel()
 
-	starter := &v1types.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "requester@example.com",
-		Claims: map[string]string{"team": "payments"},
-	}
+	starter := &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "https://issuer.example.com", Subject: "requester@example.com", Claims: v1types.StringClaimValues(map[string]string{"team": "payments"})}}
 	wf := predicateWorkflow(`sender.identity.claims["team"] == run.identity.claims["team"]` +
 		` && sender.identity.principal == "https://issuer.example.com#" + inputs.approver`)
 	inputs := map[string]*v1types.Value{"approver": v1types.NewLiteral("lead@example.com")}
@@ -118,7 +112,7 @@ func TestAuthorizeSignalReadsAPredicateOverTheRecordedScope(t *testing.T) {
 		fields[key] = payload
 	}
 	starterPayload, err := converter.GetDefaultDataConverter().ToPayload(
-		v1types.QualifiedSubject(starter.GetIssuer(), starter.GetSubject()))
+		v1types.QualifiedSubject(starter.GetPrincipal().GetIssuer(), starter.GetPrincipal().GetSubject()))
 	require.NoError(t, err)
 	fields[starterMemoKey] = starterPayload
 

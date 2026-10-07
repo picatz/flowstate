@@ -187,9 +187,9 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 
 	if identity := record.GetIdentity(); identity != nil {
 		attrs = append(attrs,
-			attribute.String(attrSubject, identity.GetSubject()),
-			attribute.String(attrIssuer, identity.GetIssuer()),
-			attribute.String(attrNamespace, identity.GetNamespace()),
+			attribute.String(attrSubject, identity.GetPrincipal().GetSubject()),
+			attribute.String(attrIssuer, identity.GetPrincipal().GetIssuer()),
+			attribute.String(attrNamespace, identity.GetPrincipal().GetNamespace()),
 			attribute.String(attrDeployment, identity.GetDeployment()),
 		)
 	}

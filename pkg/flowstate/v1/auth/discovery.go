@@ -158,7 +158,7 @@ func (i *Issuer) supportedClaims() []string {
 }
 
 // KeySet returns the public keys relying parties verify assertions with: the
-// active signing key, and any rotated-out key still within its retention period.
+// active signing key (none for a publish-only issuer), and any rotated-out key still within its retention period.
 func (i *Issuer) KeySet() jwk.Set {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
@@ -166,10 +166,12 @@ func (i *Issuer) KeySet() jwk.Set {
 	now := i.clock()
 
 	set := jwk.Set{Keys: make([]jwk.Value, 0, len(i.retired)+1)}
-	set.Keys = append(set.Keys, i.active.published)
+	if !i.active.IsZero() {
+		set.Keys = append(set.Keys, i.active.published)
+	}
 
 	for _, key := range i.retired {
-		if now.After(key.expiresAt) {
+		if key.expired(now) {
 			continue
 		}
 		set.Keys = append(set.Keys, key.published)
@@ -200,14 +202,17 @@ func (i *Issuer) signingProfile() ([]jwa.Algorithm, []string) {
 
 	now := i.clock()
 
-	algorithms := []jwa.Algorithm{i.active.algorithm}
+	algorithms := []jwa.Algorithm{}
 	keyTypes := []string{}
-	if keyType, ok := i.active.published[jwk.KeyType].(string); ok {
-		keyTypes = append(keyTypes, keyType)
+	if !i.active.IsZero() {
+		algorithms = append(algorithms, i.active.algorithm)
+		if keyType, ok := i.active.published[jwk.KeyType].(string); ok {
+			keyTypes = append(keyTypes, keyType)
+		}
 	}
 
 	for _, key := range i.retired {
-		if now.After(key.expiresAt) {
+		if key.expired(now) {
 			continue
 		}
 		if !slices.Contains(algorithms, key.algorithm) {

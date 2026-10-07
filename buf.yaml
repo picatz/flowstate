@@ -12,6 +12,22 @@ breaking:
     - FILE
     - WIRE
 
+  # The caller moves into one `Principal` message. `WorkloadIdentity` drops
+  # `subject`, `issuer`, `claims`, `namespace` and `principal_kind` for
+  # `principal`; `PolicyCheckRow` and `PolicyCheckIdentity` drop their flat
+  # identity fields for the same `principal`; the three `ClaimsEntry` map
+  # messages go with them. Every removed number and name is reserved, and no
+  # field changes type in place, so what is suppressed is the two delete rules,
+  # in the two files that moved.
+  # Remove this block in the next commit on main, once this one is the baseline.
+  ignore_only:
+    FIELD_NO_DELETE:
+      - proto/flowstate/v1/identity.proto
+      - proto/flowstate/v1/policy_check.proto
+    MESSAGE_NO_DELETE:
+      - proto/flowstate/v1/identity.proto
+      - proto/flowstate/v1/policy_check.proto
+
   # FILE and WIRE compare descriptors: names, numbers, types, cardinality, and
   # reservations. They do not prove that a runtime still gives a field the same
   # meaning. A semantic change needs a focused conformance case that distinguishes

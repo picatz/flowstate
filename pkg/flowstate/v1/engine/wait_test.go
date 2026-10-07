@@ -200,7 +200,7 @@ func testSignalDelivery(subject string, payload map[string]*v1.Value) *v1.Signal
 	return &v1.SignalDelivery{
 		Payload: &v1.Node_Outputs{NamedValues: payload},
 		Sender: &v1.SignalSender{
-			Identity:   &v1.WorkloadIdentity{Subject: subject, Namespace: "team-a"},
+			Identity:   &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: subject, Namespace: "team-a"}},
 			AcceptedAt: timestamppb.Now(),
 		},
 	}
@@ -620,7 +620,7 @@ func TestWaitForSignalSurvivesContinueAsNew(t *testing.T) {
 		carried.GetPendingSignals()[0].GetPayload().GetNamedValues()["approved"].GetLiteral().GetBoolValue(),
 		"the carried signal lost its payload")
 	require.Equal(t, "carried-approver@example.com",
-		carried.GetPendingSignals()[0].GetSender().GetIdentity().GetSubject(),
+		carried.GetPendingSignals()[0].GetSender().GetIdentity().GetPrincipal().GetSubject(),
 		"the carried signal lost its attested sender — a suspend must not be a way to launder identity")
 
 	// The resumed runs consume it and never block, even though nothing signals
@@ -746,7 +746,7 @@ func TestManyAcknowledgedSignalsSurviveContinueAsNewAtTheCarryBound(t *testing.T
 		"an acknowledged delivery beyond the old carry bound was silently dropped rather than carried")
 	for i, pending := range carried.GetPendingSignals() {
 		require.Equal(t, signalName, pending.GetName())
-		require.Equal(t, fmt.Sprintf("approver-%d@example.com", i), pending.GetSender().GetIdentity().GetSubject(),
+		require.Equal(t, fmt.Sprintf("approver-%d@example.com", i), pending.GetSender().GetIdentity().GetPrincipal().GetSubject(),
 			"delivery %d's attested sender did not survive the carry, or the carry reordered deliveries", i)
 	}
 

@@ -16,12 +16,12 @@ import (
 func TestCallerFromContextReadsWhatWasInstalled(t *testing.T) {
 	t.Parallel()
 
-	identity := &flowstatev1.WorkloadIdentity{Subject: "ci", Namespace: "team-a"}
+	identity := &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Namespace: "team-a"}}
 	ctx := contextWithCaller(t.Context(), identity, "team-a")
 
 	caller, ok := CallerFromContext(ctx)
 	require.True(t, ok)
-	assert.Equal(t, "ci", caller.Identity.GetSubject())
+	assert.Equal(t, "ci", caller.Identity.GetPrincipal().GetSubject())
 	assert.Equal(t, "team-a", caller.Namespace)
 }
 

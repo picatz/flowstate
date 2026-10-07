@@ -162,3 +162,40 @@ func TestMCPExtraDeciderRefusesWhatThePolicyGrants(t *testing.T) {
 		})
 	}
 }
+
+// TestMCPStdioCallerWithNoPrincipalIsUnrestricted proves the open zero case of
+// the stdio transport: with no principal and no embedder decider every tool is
+// reached, including one bound to no action, and an embedder's decider still
+// narrows it.
+func TestMCPStdioCallerWithNoPrincipalIsUnrestricted(t *testing.T) {
+	t.Parallel()
+
+	request := &mcp.CallToolRequest{Params: &mcp.CallToolParamsRaw{Arguments: json.RawMessage(`{}`)}}
+	refuse := authz.DeciderFunc(func(context.Context, authz.Request) authz.Decision { return authz.Decision{} })
+
+	for name, test := range map[string]struct {
+		extra   authz.Decider
+		tool    string
+		reached bool
+	}{
+		"an ordinary tool is reached":          {nil, "flowstate_run_local", true},
+		"a tool bound to no action is reached": {nil, "flowstate_unbound_tool", true},
+		"an embedder's decider still narrows":  {refuse, "flowstate_run_local", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var reached bool
+			handler := wrapToolHandler(Deps{Decider: test.extra}, test.tool,
+				func(context.Context, *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+					reached = true
+					return &mcp.CallToolResult{}, nil
+				})
+
+			result, err := handler(t.Context(), request)
+			require.NoError(t, err)
+			require.Equal(t, test.reached, reached)
+			require.Equal(t, !test.reached, result.IsError)
+		})
+	}
+}

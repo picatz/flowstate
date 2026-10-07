@@ -46,11 +46,11 @@ func TestScriptedIdentityWorkloadIdentity(t *testing.T) {
 
 	var absent *flowtest.ScriptedIdentity
 	require.NotNil(t, absent.WorkloadIdentity(), "an absent identity renders empty, never nil")
-	require.Empty(t, absent.WorkloadIdentity().GetSubject())
+	require.Empty(t, absent.WorkloadIdentity().GetPrincipal().GetSubject())
 
 	got := (&flowtest.ScriptedIdentity{Subject: "s", Issuer: "i", Namespace: "n", Claims: map[string]string{"a": "b"}}).WorkloadIdentity()
-	require.Equal(t, "s", got.GetSubject())
-	require.Equal(t, "i", got.GetIssuer())
-	require.Equal(t, "n", got.GetNamespace())
-	require.Equal(t, map[string]string{"a": "b"}, got.GetClaims())
+	require.Equal(t, "s", got.GetPrincipal().GetSubject())
+	require.Equal(t, "i", got.GetPrincipal().GetIssuer())
+	require.Equal(t, "n", got.GetPrincipal().GetNamespace())
+	require.Equal(t, "b", got.GetPrincipal().GetClaims()["a"].GetStringValue())
 }

@@ -37,7 +37,7 @@ func TestIdentityDocumentsAreReachableWithoutCredentials(t *testing.T) {
 
 	// A verifier that refuses everything, so an authenticated route answering at
 	// all would mean the middleware was not applied.
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "", http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker.Issuer(), "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(`{"api":"reached"}`))
@@ -268,7 +268,7 @@ func TestTheServerTakesTheIdentityFlags(t *testing.T) {
 	require.NotNil(t, server, "there is no server command")
 
 	for _, name := range []string{
-		"identity-claim", "deployment-name", "auth-policy", "identity-key",
+		"deployment-name", "auth-policy", "identity-key",
 		"rpc-resource", "allow-issuer-wide-audiences",
 
 		// The receiver's own surface, and the secret flags it cannot resolve a
@@ -605,14 +605,14 @@ func TestCheckProtectedResourceRouteCollisionRefusesJWKSPathCollision(t *testing
 	require.NoError(t, err)
 	require.Equal(t, collidingPath, pr.Path(), "test setup: the two paths must actually collide")
 
-	err = checkProtectedResourceRouteCollision(pr, broker)
+	err = checkProtectedResourceRouteCollision(pr, broker.Issuer())
 	require.Error(t, err)
 	require.ErrorContains(t, err, collidingPath)
 
 	// And the positive control: what this check exists to prevent actually
 	// panics serverHandler if the check is skipped.
 	require.Panics(t, func() {
-		serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "",
+		serverHandler(discardLogger(), refusingVerifier{}, nil, broker.Issuer(), "",
 			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}), nil, pr)
 	}, "a colliding route should panic serverHandler's mux.Handle, which is exactly what the check must catch first")
 }
@@ -635,9 +635,9 @@ func TestCheckProtectedResourceRouteCollisionAllowsTheOrdinaryCase(t *testing.T)
 	}, policy)
 	require.NoError(t, err)
 
-	require.NoError(t, checkProtectedResourceRouteCollision(pr, broker))
+	require.NoError(t, checkProtectedResourceRouteCollision(pr, broker.Issuer()))
 	require.NoError(t, checkProtectedResourceRouteCollision(pr, nil))
-	require.NoError(t, checkProtectedResourceRouteCollision(nil, broker))
+	require.NoError(t, checkProtectedResourceRouteCollision(nil, broker.Issuer()))
 }
 
 // staticProvider resolves any reference to a fixed value, standing in for

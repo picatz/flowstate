@@ -88,7 +88,7 @@ func (x Value_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Value_Type.Descriptor instead.
 func (Value_Type) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 0}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2, 0}
 }
 
 // Code classifies the error.
@@ -150,7 +150,7 @@ func (x Value_Error_Code) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Value_Error_Code.Descriptor instead.
 func (Value_Error_Code) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 0, 0}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2, 0, 0}
 }
 
 // SecretRef names a secret without containing it.
@@ -232,12 +232,80 @@ func (x *SecretRef) GetName() string {
 	return ""
 }
 
+// CredentialRef names a federated credential without containing it.
+//
+// It is [SecretRef]'s sibling for a credential Flowstate mints rather than
+// stores: the target is the name of an outbound federation target in the
+// deployment's trust policy (`federation.targets[].name`), and the worker
+// running the task exchanges its own workload identity for a short-lived
+// credential at the moment the task needs it. The specification therefore
+// carries a name and nothing else, for the same reason a SecretRef carries
+// no value: workflow history is durable and broadly readable.
+//
+// It is a separate message rather than a SecretRef with a credential scheme
+// because the two are decided by different policies: a secret is authorized by
+// the secret access rules, a credential by the federation assumption rules, and
+// one spelling for both would let a rule for one silently govern the other.
+//
+// This message must never gain a field holding a minted credential.
+type CredentialRef struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Target is the federation target's name, as the trust policy spells it.
+	//
+	// Whether a target is configured is a fact about the deployment, not the
+	// Flowfile, so the schema constrains only its length, and code rejects a
+	// control character, which could forge lines in a log that records the
+	// name. The server refuses an unknown target at validate and submit time
+	// rather than at run time.
+	Target        string `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CredentialRef) Reset() {
+	*x = CredentialRef{}
+	mi := &file_flowstate_v1_value_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CredentialRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CredentialRef) ProtoMessage() {}
+
+func (x *CredentialRef) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_value_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CredentialRef.ProtoReflect.Descriptor instead.
+func (*CredentialRef) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *CredentialRef) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
 // Value is one value in a workflow: a task input, a step output, a variable or
 // a run argument.
 //
 // Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a
 // parsed CEL expression evaluated when the value is needed; a `secret_ref`
-// names a secret resolved only by the worker that uses it; a `structure` is a
+// names a secret resolved only by the worker that uses it; a `credential_ref`
+// names a federation target whose credential only that worker mints; a `structure` is a
 // list or map of Values, the only shape that can hold a secret reference below
 // the top level; and an `error` records a value that could not be produced.
 // Values a caller submits, such as `RunRequest.inputs`, must be literals.
@@ -250,6 +318,7 @@ type Value struct {
 	//	*Value_Error_
 	//	*Value_SecretRef
 	//	*Value_Structure_
+	//	*Value_CredentialRef
 	Kind          isValue_Kind `protobuf_oneof:"kind"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -257,7 +326,7 @@ type Value struct {
 
 func (x *Value) Reset() {
 	*x = Value{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[1]
+	mi := &file_flowstate_v1_value_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -269,7 +338,7 @@ func (x *Value) String() string {
 func (*Value) ProtoMessage() {}
 
 func (x *Value) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[1]
+	mi := &file_flowstate_v1_value_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -282,7 +351,7 @@ func (x *Value) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value.ProtoReflect.Descriptor instead.
 func (*Value) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Value) GetKind() isValue_Kind {
@@ -337,6 +406,15 @@ func (x *Value) GetStructure() *Value_Structure {
 	return nil
 }
 
+func (x *Value) GetCredentialRef() *CredentialRef {
+	if x != nil {
+		if x, ok := x.Kind.(*Value_CredentialRef); ok {
+			return x.CredentialRef
+		}
+	}
+	return nil
+}
+
 type isValue_Kind interface {
 	isValue_Kind()
 }
@@ -377,6 +455,18 @@ type Value_Structure_ struct {
 	Structure *Value_Structure `protobuf:"bytes,5,opt,name=structure,proto3,oneof"`
 }
 
+type Value_CredentialRef struct {
+	// A reference to a federated credential, minted only where the value is
+	// needed.
+	//
+	// Inert in exactly the way [secret_ref] is, and held to the same
+	// containment: the compiler produces it, the control plane transports it,
+	// workflow-side evaluation refuses to read it, and only the worker
+	// executing the task exchanges for the credential. It is the whole value of
+	// a task input and is never nested in a [Structure].
+	CredentialRef *CredentialRef `protobuf:"bytes,6,opt,name=credential_ref,json=credentialRef,proto3,oneof"`
+}
+
 func (*Value_Expr) isValue_Kind() {}
 
 func (*Value_Literal) isValue_Kind() {}
@@ -386,6 +476,8 @@ func (*Value_Error_) isValue_Kind() {}
 func (*Value_SecretRef) isValue_Kind() {}
 
 func (*Value_Structure_) isValue_Kind() {}
+
+func (*Value_CredentialRef) isValue_Kind() {}
 
 // Error is why a value could not be produced.
 type Value_Error struct {
@@ -400,7 +492,7 @@ type Value_Error struct {
 
 func (x *Value_Error) Reset() {
 	*x = Value_Error{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[2]
+	mi := &file_flowstate_v1_value_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -412,7 +504,7 @@ func (x *Value_Error) String() string {
 func (*Value_Error) ProtoMessage() {}
 
 func (x *Value_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[2]
+	mi := &file_flowstate_v1_value_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -425,7 +517,7 @@ func (x *Value_Error) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value_Error.ProtoReflect.Descriptor instead.
 func (*Value_Error) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 0}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2, 0}
 }
 
 func (x *Value_Error) GetMessage() string {
@@ -474,7 +566,7 @@ type Value_Structure struct {
 
 func (x *Value_Structure) Reset() {
 	*x = Value_Structure{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[3]
+	mi := &file_flowstate_v1_value_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -486,7 +578,7 @@ func (x *Value_Structure) String() string {
 func (*Value_Structure) ProtoMessage() {}
 
 func (x *Value_Structure) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[3]
+	mi := &file_flowstate_v1_value_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -499,7 +591,7 @@ func (x *Value_Structure) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value_Structure.ProtoReflect.Descriptor instead.
 func (*Value_Structure) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 1}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2, 1}
 }
 
 func (x *Value_Structure) GetKind() isValue_Structure_Kind {
@@ -553,7 +645,7 @@ type Value_Structure_List struct {
 
 func (x *Value_Structure_List) Reset() {
 	*x = Value_Structure_List{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[4]
+	mi := &file_flowstate_v1_value_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -565,7 +657,7 @@ func (x *Value_Structure_List) String() string {
 func (*Value_Structure_List) ProtoMessage() {}
 
 func (x *Value_Structure_List) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[4]
+	mi := &file_flowstate_v1_value_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -578,7 +670,7 @@ func (x *Value_Structure_List) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value_Structure_List.ProtoReflect.Descriptor instead.
 func (*Value_Structure_List) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 1, 0}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2, 1, 0}
 }
 
 func (x *Value_Structure_List) GetValues() []*Value {
@@ -601,7 +693,7 @@ type Value_Structure_Map struct {
 
 func (x *Value_Structure_Map) Reset() {
 	*x = Value_Structure_Map{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[5]
+	mi := &file_flowstate_v1_value_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -613,7 +705,7 @@ func (x *Value_Structure_Map) String() string {
 func (*Value_Structure_Map) ProtoMessage() {}
 
 func (x *Value_Structure_Map) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[5]
+	mi := &file_flowstate_v1_value_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -626,7 +718,7 @@ func (x *Value_Structure_Map) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Value_Structure_Map.ProtoReflect.Descriptor instead.
 func (*Value_Structure_Map) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{1, 1, 1}
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{2, 1, 1}
 }
 
 func (x *Value_Structure_Map) GetEntries() map[string]*Value {
@@ -644,14 +736,18 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"\tSecretRef\x126\n" +
 	"\x06scheme\x18\x01 \x01(\tB\x1e\xe2A\x01\x02\xbaH\x17\xc8\x01\x01r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\x06scheme\x12%\n" +
 	"\x04name\x18\x02 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
-	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\x04name\"\xe1\b\n" +
+	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\x04name\":\n" +
+	"\rCredentialRef\x12)\n" +
+	"\x06target\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x01R\x06target\"\xa7\t\n" +
 	"\x05Value\x12:\n" +
 	"\x04expr\x18\x01 \x01(\v2$.google.api.expr.v1alpha1.ParsedExprH\x00R\x04expr\x12;\n" +
 	"\aliteral\x18\x02 \x01(\v2\x1f.google.api.expr.v1alpha1.ValueH\x00R\aliteral\x121\n" +
 	"\x05error\x18\x03 \x01(\v2\x19.flowstate.v1.Value.ErrorH\x00R\x05error\x128\n" +
 	"\n" +
 	"secret_ref\x18\x04 \x01(\v2\x17.flowstate.v1.SecretRefH\x00R\tsecretRef\x12=\n" +
-	"\tstructure\x18\x05 \x01(\v2\x1d.flowstate.v1.Value.StructureH\x00R\tstructure\x1a\xa1\x02\n" +
+	"\tstructure\x18\x05 \x01(\v2\x1d.flowstate.v1.Value.StructureH\x00R\tstructure\x12D\n" +
+	"\x0ecredential_ref\x18\x06 \x01(\v2\x1b.flowstate.v1.CredentialRefH\x00R\rcredentialRef\x1a\xa1\x02\n" +
 	"\x05Error\x12$\n" +
 	"\amessage\x18\x01 \x01(\tB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\amessage\x12E\n" +
@@ -705,37 +801,39 @@ func file_flowstate_v1_value_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_value_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_value_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_flowstate_v1_value_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_flowstate_v1_value_proto_goTypes = []any{
 	(Value_Type)(0),              // 0: flowstate.v1.Value.Type
 	(Value_Error_Code)(0),        // 1: flowstate.v1.Value.Error.Code
 	(*SecretRef)(nil),            // 2: flowstate.v1.SecretRef
-	(*Value)(nil),                // 3: flowstate.v1.Value
-	(*Value_Error)(nil),          // 4: flowstate.v1.Value.Error
-	(*Value_Structure)(nil),      // 5: flowstate.v1.Value.Structure
-	(*Value_Structure_List)(nil), // 6: flowstate.v1.Value.Structure.List
-	(*Value_Structure_Map)(nil),  // 7: flowstate.v1.Value.Structure.Map
-	nil,                          // 8: flowstate.v1.Value.Structure.Map.EntriesEntry
-	(*v1alpha1.ParsedExpr)(nil),  // 9: google.api.expr.v1alpha1.ParsedExpr
-	(*v1alpha1.Value)(nil),       // 10: google.api.expr.v1alpha1.Value
+	(*CredentialRef)(nil),        // 3: flowstate.v1.CredentialRef
+	(*Value)(nil),                // 4: flowstate.v1.Value
+	(*Value_Error)(nil),          // 5: flowstate.v1.Value.Error
+	(*Value_Structure)(nil),      // 6: flowstate.v1.Value.Structure
+	(*Value_Structure_List)(nil), // 7: flowstate.v1.Value.Structure.List
+	(*Value_Structure_Map)(nil),  // 8: flowstate.v1.Value.Structure.Map
+	nil,                          // 9: flowstate.v1.Value.Structure.Map.EntriesEntry
+	(*v1alpha1.ParsedExpr)(nil),  // 10: google.api.expr.v1alpha1.ParsedExpr
+	(*v1alpha1.Value)(nil),       // 11: google.api.expr.v1alpha1.Value
 }
 var file_flowstate_v1_value_proto_depIdxs = []int32{
-	9,  // 0: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
-	10, // 1: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
-	4,  // 2: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
+	10, // 0: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
+	11, // 1: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
+	5,  // 2: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
 	2,  // 3: flowstate.v1.Value.secret_ref:type_name -> flowstate.v1.SecretRef
-	5,  // 4: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
-	1,  // 5: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
-	6,  // 6: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
-	7,  // 7: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
-	3,  // 8: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
-	8,  // 9: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
-	3,  // 10: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	6,  // 4: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
+	3,  // 5: flowstate.v1.Value.credential_ref:type_name -> flowstate.v1.CredentialRef
+	1,  // 6: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
+	7,  // 7: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
+	8,  // 8: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
+	4,  // 9: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
+	9,  // 10: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
+	4,  // 11: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_value_proto_init() }
@@ -743,14 +841,15 @@ func file_flowstate_v1_value_proto_init() {
 	if File_flowstate_v1_value_proto != nil {
 		return
 	}
-	file_flowstate_v1_value_proto_msgTypes[1].OneofWrappers = []any{
+	file_flowstate_v1_value_proto_msgTypes[2].OneofWrappers = []any{
 		(*Value_Expr)(nil),
 		(*Value_Literal)(nil),
 		(*Value_Error_)(nil),
 		(*Value_SecretRef)(nil),
 		(*Value_Structure_)(nil),
+		(*Value_CredentialRef)(nil),
 	}
-	file_flowstate_v1_value_proto_msgTypes[3].OneofWrappers = []any{
+	file_flowstate_v1_value_proto_msgTypes[4].OneofWrappers = []any{
 		(*Value_Structure_List_)(nil),
 		(*Value_Structure_Map_)(nil),
 	}
@@ -760,7 +859,7 @@ func file_flowstate_v1_value_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_value_proto_rawDesc), len(file_flowstate_v1_value_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

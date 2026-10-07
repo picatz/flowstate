@@ -629,6 +629,6 @@ func DebugLeaseHolder(lease *DebugSession, identity *WorkloadIdentity) bool {
 
 	held := lease.GetAttachedBy()
 
-	return QualifiedSubject(held.GetIssuer(), held.GetSubject()) ==
-		QualifiedSubject(identity.GetIssuer(), identity.GetSubject())
+	return QualifiedSubject(held.GetPrincipal().GetIssuer(), held.GetPrincipal().GetSubject()) ==
+		QualifiedSubject(identity.GetPrincipal().GetIssuer(), identity.GetPrincipal().GetSubject())
 }

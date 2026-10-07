@@ -84,7 +84,7 @@ func serverVenue(server serverFlags, getenv func(string) string) venue {
 
 // presentedIdentity names the credential a request will carry.
 //
-// The order is [readToken]'s own, because a description that disagreed with what
+// The order is [defaultSource]'s own, because a description that disagreed with what
 // is actually sent would be worse than no description: the file wins, then the
 // variable, then nothing. The token itself is never read here. Naming a path
 // costs no I/O and cannot leak a credential into a terminal, a CI log, or a

@@ -127,9 +127,7 @@ func secretReadingWorkflow(taskName string) *v1.RunState {
 		}}},
 	}}}
 
-	return &v1.RunState{Workflow: workflow, Identity: &v1.WorkloadIdentity{
-		Subject: "caller", Issuer: "https://issuer.example", Namespace: "acme",
-	}}
+	return &v1.RunState{Workflow: workflow, Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "caller", Issuer: "https://issuer.example", Namespace: "acme"}}}
 }
 
 // tracedSecretProvider hands out the material under test.

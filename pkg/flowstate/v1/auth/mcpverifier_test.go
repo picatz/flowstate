@@ -54,7 +54,8 @@ func mcpTestVerifier(t *testing.T) (*authtest.Issuer, auth.Verifier) {
 			// makes the adapter's own audience check load-bearing rather than
 			// redundant: the verifier admits a token for either, and only this
 			// surface knows which one it is.
-			Audiences: []string{mcpResource, mcpOtherResource},
+			Audiences:   []string{mcpResource, mcpOtherResource},
+			CarryClaims: []auth.CarryClaim{{Claim: "email", Type: auth.ClaimTypeString}},
 		}},
 	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)

@@ -226,13 +226,13 @@ func signalFuzzSeeds(f *testing.F) []signalFuzzSeed {
 				"by":       v1.NewLiteral("someone@example.com"),
 			}},
 			Sender: &v1.SignalSender{
-				Identity: &v1.WorkloadIdentity{Subject: "real-caller@example.com", Namespace: "team-a"},
+				Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "real-caller@example.com", Namespace: "team-a"}},
 			},
 		},
 		// A sender with nothing attached, which is the narrowest message that
 		// still has to fail the legacy decode.
 		&v1.SignalDelivery{Sender: &v1.SignalSender{
-			Identity: &v1.WorkloadIdentity{Subject: "someone@example.com"},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com"}},
 		}},
 		// The legacy shape, which is what an old server sends and what sits in
 		// histories written before #194.

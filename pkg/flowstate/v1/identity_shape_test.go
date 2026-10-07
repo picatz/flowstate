@@ -6,6 +6,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 func TestPrincipal(t *testing.T) {
@@ -19,7 +20,7 @@ func TestPrincipal(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(t, tc.want, v1.Principal(tc.issuer, tc.subject))
+			require.Equal(t, tc.want, principal.Qualified(tc.issuer, tc.subject))
 		})
 	}
 }
@@ -40,14 +41,11 @@ func TestIdentityShape(t *testing.T) {
 	}
 
 	nilShape := v1.IdentityShape(nil)
-	require.ElementsMatch(t, []string{"subject", "issuer", "namespace", "claims", "principal", "kind"}, keys(nilShape))
+	require.ElementsMatch(t, []string{"subject", "issuer", "namespace", "claims", "principal", "kind", "actions"}, keys(nilShape))
 	require.Equal(t, "", nilShape["principal"])
 	require.Empty(t, nilShape["claims"])
 
-	id := &v1.WorkloadIdentity{
-		Subject: "alice", Issuer: "https://idp.example", Namespace: "team-a", Deployment: "prod",
-		Claims: map[string]string{"team": "sre"},
-	}
+	id := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "alice", Issuer: "https://idp.example", Namespace: "team-a", Claims: v1.StringClaimValues(map[string]string{"team": "sre"})}, Deployment: "prod"}
 	shape := v1.IdentityShape(id)
 	require.Equal(t, v1.QualifiedSubject("https://idp.example", "alice"), shape["principal"])
 	require.Equal(t, map[string]any{"team": "sre"}, shape["claims"])
@@ -59,7 +57,7 @@ func TestIdentityShape(t *testing.T) {
 		v1.PrincipalKind_PRINCIPAL_KIND_AGENT:    "agent",
 		v1.PrincipalKind(99):                     "",
 	} {
-		require.Equal(t, want, v1.IdentityShape(&v1.WorkloadIdentity{PrincipalKind: kind})["kind"])
+		require.Equal(t, want, v1.IdentityShape(&v1.WorkloadIdentity{Principal: &v1.Principal{Kind: kind}})["kind"])
 		if want != "" {
 			require.Equal(t, kind, v1.PrincipalKindNamed(want))
 		}

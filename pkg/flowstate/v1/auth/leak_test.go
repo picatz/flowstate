@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth/signers/vaulttransit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets/vault"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
 )
@@ -39,6 +41,11 @@ type secretHolder struct {
 	credential auth.Credential
 	assertion  auth.Assertion
 	key        auth.SigningKey
+
+	// transitKey is a key whose private half is in a Vault Transit engine. What
+	// it holds in this process is a client for the engine, and the token that
+	// client authenticates with is what must stay out of every rendering.
+	transitKey auth.SigningKey
 }
 
 // nested holds a holder, so the fallback is reached at more than one level.
@@ -51,6 +58,7 @@ type exported struct {
 	Credential auth.Credential
 	Assertion  auth.Assertion
 	Key        auth.SigningKey
+	TransitKey auth.SigningKey
 }
 
 // TestSecretsNeverLeakThroughContainingStructs renders every secret-bearing value
@@ -85,6 +93,21 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 	key, err := auth.GenerateSigningKey("leak-test", jwa.ES256)
 	require.NoError(t, err)
 
+	transit := authtest.NewTransit()
+	t.Cleanup(func() { _ = transit.Close() })
+	transit.CreateKey("leak-test", authtest.TransitECDSAP256)
+
+	transitSigner, err := vaulttransit.New(t.Context(), vaulttransit.Config{
+		Address:      transit.URL(),
+		Key:          "leak-test",
+		EgressPolicy: authtest.EgressPolicy(),
+		Vault:        []vault.Option{vault.WithToken(authtest.TransitToken)},
+	})
+	require.NoError(t, err)
+
+	transitKey, err := transitSigner.SigningKey(t.Context())
+	require.NoError(t, err)
+
 	// An exchanger configured with a client secret. This one was missed for as
 	// long as this file claimed to cover "every secret-bearing value this
 	// package produces": the secret was held in a plain string field, so every
@@ -117,27 +140,31 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		"SUPERSECRET-SECRET-ACCESS-KEY",
 		"SUPERSECRET-SESSION-TOKEN",
 		"SUPERSECRET-CLIENT-SECRET",
+		authtest.TransitToken,
 	}
 
-	holder := secretHolder{credential: credential, assertion: assertion, key: key}
+	holder := secretHolder{credential: credential, assertion: assertion, key: key, transitKey: transitKey}
 
 	renderings := map[string]func() string{
 		// Directly, which a String method already covers.
-		"credential %v":  func() string { return fmt.Sprintf("%v", credential) },
-		"credential %+v": func() string { return fmt.Sprintf("%+v", credential) },
-		"credential %#v": func() string { return fmt.Sprintf("%#v", credential) },
-		"credential %s":  func() string { return fmt.Sprintf("%s", credential) },
-		"assertion %v":   func() string { return fmt.Sprintf("%v", assertion) },
-		"assertion %+v":  func() string { return fmt.Sprintf("%+v", assertion) },
-		"assertion %#v":  func() string { return fmt.Sprintf("%#v", assertion) },
-		"assertion %s":   func() string { return fmt.Sprintf("%s", assertion) },
-		"key %v":         func() string { return fmt.Sprintf("%v", key) },
-		"key %+v":        func() string { return fmt.Sprintf("%+v", key) },
-		"key %#v":        func() string { return fmt.Sprintf("%#v", key) },
-		"exchanger %v":   func() string { return fmt.Sprintf("%v", secretExchanger) },
-		"exchanger %+v":  func() string { return fmt.Sprintf("%+v", secretExchanger) },
-		"exchanger %#v":  func() string { return fmt.Sprintf("%#v", secretExchanger) },
-		"exchanger %s":   func() string { return fmt.Sprintf("%s", secretExchanger) },
+		"credential %v":   func() string { return fmt.Sprintf("%v", credential) },
+		"credential %+v":  func() string { return fmt.Sprintf("%+v", credential) },
+		"credential %#v":  func() string { return fmt.Sprintf("%#v", credential) },
+		"credential %s":   func() string { return fmt.Sprintf("%s", credential) },
+		"assertion %v":    func() string { return fmt.Sprintf("%v", assertion) },
+		"assertion %+v":   func() string { return fmt.Sprintf("%+v", assertion) },
+		"assertion %#v":   func() string { return fmt.Sprintf("%#v", assertion) },
+		"assertion %s":    func() string { return fmt.Sprintf("%s", assertion) },
+		"key %v":          func() string { return fmt.Sprintf("%v", key) },
+		"key %+v":         func() string { return fmt.Sprintf("%+v", key) },
+		"key %#v":         func() string { return fmt.Sprintf("%#v", key) },
+		"transit key %v":  func() string { return fmt.Sprintf("%v", transitKey) },
+		"transit key %+v": func() string { return fmt.Sprintf("%+v", transitKey) },
+		"transit key %#v": func() string { return fmt.Sprintf("%#v", transitKey) },
+		"exchanger %v":    func() string { return fmt.Sprintf("%v", secretExchanger) },
+		"exchanger %+v":   func() string { return fmt.Sprintf("%+v", secretExchanger) },
+		"exchanger %#v":   func() string { return fmt.Sprintf("%#v", secretExchanger) },
+		"exchanger %s":    func() string { return fmt.Sprintf("%s", secretExchanger) },
 		"exchanger in a slice %v": func() string {
 			return fmt.Sprintf("%v", []auth.Exchanger{secretExchanger})
 		},
@@ -169,8 +196,8 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		"array of holders %v": func() string { return fmt.Sprintf("%v", [1]secretHolder{holder}) },
 
 		// Exported fields, where a String method does apply.
-		"exported %v":  func() string { return fmt.Sprintf("%v", exported{credential, assertion, key}) },
-		"exported %+v": func() string { return fmt.Sprintf("%+v", exported{credential, assertion, key}) },
+		"exported %v":  func() string { return fmt.Sprintf("%v", exported{credential, assertion, key, transitKey}) },
+		"exported %+v": func() string { return fmt.Sprintf("%+v", exported{credential, assertion, key, transitKey}) },
 
 		// Serialization, which is what a durable execution backend does.
 		"json of holder": func() string {
@@ -178,7 +205,8 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 				Credential auth.Credential `json:"credential"`
 				Assertion  auth.Assertion  `json:"assertion"`
 				Key        auth.SigningKey `json:"key"`
-			}{credential, assertion, key})
+				Transit    auth.SigningKey `json:"transit"`
+			}{credential, assertion, key, transitKey})
 			require.NoError(t, err)
 			return string(encoded)
 		},
@@ -187,7 +215,7 @@ func TestSecretsNeverLeakThroughContainingStructs(t *testing.T) {
 		"slog attrs": func() string {
 			var buffer bytes.Buffer
 			slog.New(slog.NewJSONHandler(&buffer, nil)).Info("x",
-				"credential", credential, "assertion", assertion, "key", key)
+				"credential", credential, "assertion", assertion, "key", key, "transit", transitKey)
 			return buffer.String()
 		},
 		"slog any of holder": func() string {

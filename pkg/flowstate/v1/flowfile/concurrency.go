@@ -66,7 +66,7 @@ func (c *compiler) concurrency(n ast.Node, path string, r ref) *v1.Concurrency {
 	keyRef := ref{path: keyPath, label: "concurrency key"}
 
 	if resolved := c.resolveQuiet(f.value); resolved != nil && c.holdsSecretMarker(resolved) {
-		c.report(c.secretMarkerSpan(resolved), keyRef, "%s", notInConcurrencyKeyHelp)
+		c.report(c.secretMarkerSpan(resolved), keyRef, "%s", c.markerHelp(resolved, notInConcurrencyKeyHelp))
 		return nil
 	}
 

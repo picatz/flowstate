@@ -39,13 +39,7 @@ func TestRunIdentityShapeLocal(t *testing.T) {
 // would be the thing eval.go's local-scope comment forbids; nothing here can,
 // because the local driver sets it unconditionally.
 func TestRunIdentityShapeLocalRehearsal(t *testing.T) {
-	ctx := v1.NewContextWithRehearsalIdentity(context.Background(), &v1.WorkloadIdentity{
-		Subject:   "release-requester@example.com",
-		Issuer:    "flowstate:test",
-		Namespace: "team-a",
-
-		PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_AGENT,
-	})
+	ctx := v1.NewContextWithRehearsalIdentity(context.Background(), &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-requester@example.com", Issuer: "flowstate:test", Namespace: "team-a", Kind: v1.PrincipalKind_PRINCIPAL_KIND_AGENT}})
 
 	outputs, err := v1.Run(ctx, conformance.RunIdentityWorkflow())
 	require.NoError(t, err)
@@ -62,36 +56,33 @@ func TestRunIdentityShapeLocalRehearsal(t *testing.T) {
 // a slice of those — or something in the rendering path is treating audit
 // evidence as if it were a credential.
 func TestRunIdentityContainmentShapes(t *testing.T) {
-	identity := &v1.WorkloadIdentity{
-		Subject:   "release-requester@example.com",
-		Issuer:    "flowstate:test",
-		Namespace: "team-a",
-	}
+	identity := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-requester@example.com", Issuer: "flowstate:test", Namespace: "team-a"}}
 	scope := &v1.Scope{Identity: identity}
 
-	// %#v is checked only on the value itself, not nested inside the scope or the
-	// slice: Go's `%#v` does not recurse through a *pointer* field the way `%v` and
-	// `%+v` do (it renders the address instead), for any struct with one, secret
-	// or not — that is a property of the verb, not something specific to identity
-	// containment, so holding it to the same bar there would be asserting a fact
-	// about `fmt` rather than about this value.
+	// %#v is checked only on the value that holds the subject, the principal, and
+	// not on the identity, the scope or the slice around it: Go's `%#v` does not
+	// recurse through a *pointer* field the way `%v` and `%+v` do (it renders the
+	// address instead), for any struct with one, secret or not — that is a
+	// property of the verb, not something specific to identity containment, so
+	// holding it to the same bar there would be asserting a fact about `fmt`
+	// rather than about this value.
 	renderings := map[string]string{
-		"%v on the identity":  fmt.Sprintf("%v", identity),
-		"%+v on the identity": fmt.Sprintf("%+v", identity),
-		"%#v on the identity": fmt.Sprintf("%#v", identity),
-		"%v on the scope":     fmt.Sprintf("%v", scope),
-		"%+v on the scope":    fmt.Sprintf("%+v", scope),
-		"%v on a slice":       fmt.Sprintf("%v", []*v1.Scope{scope}),
-		"%+v on a slice":      fmt.Sprintf("%+v", []*v1.Scope{scope}),
+		"%v on the identity":   fmt.Sprintf("%v", identity),
+		"%+v on the identity":  fmt.Sprintf("%+v", identity),
+		"%#v on the principal": fmt.Sprintf("%#v", identity.GetPrincipal()),
+		"%v on the scope":      fmt.Sprintf("%v", scope),
+		"%+v on the scope":     fmt.Sprintf("%+v", scope),
+		"%v on a slice":        fmt.Sprintf("%v", []*v1.Scope{scope}),
+		"%+v on a slice":       fmt.Sprintf("%+v", []*v1.Scope{scope}),
 	}
 	//lint:ignore S1025 the %s verb is one of the containment shapes under test, not a roundabout String()
 	renderings["%s on the identity"] = fmt.Sprintf("%s", identity)
 
 	for label, rendered := range renderings {
-		if !strings.Contains(rendered, identity.GetSubject()) {
+		if !strings.Contains(rendered, identity.GetPrincipal().GetSubject()) {
 			t.Errorf("%s does not show the attested subject (%q); an approval trail must stay "+
 				"legible, and this rendering hid it as if it were a secret: %s",
-				label, identity.GetSubject(), rendered)
+				label, identity.GetPrincipal().GetSubject(), rendered)
 		}
 	}
 }

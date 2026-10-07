@@ -62,7 +62,7 @@ func init() {
 				" this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason\n" +
 				" stated there — a spec is a thing an outside party writes.\n" +
 				"\n" +
-				" `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the\n" +
+				" `max_len` here rather than `Principal.claims`'s `max_bytes`, and the\n" +
 				" difference is not an oversight. That field is written in bytes because a\n" +
 				" second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts\n" +
 				" bytes — refuses the same sizes at mint, and one limit written down twice in\n" +

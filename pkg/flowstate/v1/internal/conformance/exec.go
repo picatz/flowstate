@@ -190,11 +190,11 @@ func execField(tb testing.TB, out *v1.Workflow_StepOutputs, step, name string) a
 // ExecCases returns the shared cases both drivers must agree on. root comes from
 // [ExecRoot].
 func ExecCases(root string) []ExecCase {
-	teamA := &v1.WorkloadIdentity{Subject: "spiffe://acme/a", Issuer: "https://issuer.example.com", Namespace: "team-a"}
-	teamB := &v1.WorkloadIdentity{Subject: "spiffe://acme/b", Issuer: "https://issuer.example.com", Namespace: "team-b"}
+	teamA := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/a", Issuer: "https://issuer.example.com", Namespace: "team-a"}}
+	teamB := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/b", Issuer: "https://issuer.example.com", Namespace: "team-b"}}
 
-	workloadCI := &v1.WorkloadIdentity{Subject: "spiffe://acme/ci", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
-	humanKent := &v1.WorkloadIdentity{Subject: "spiffe://acme/kent", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}
+	workloadCI := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/ci", Kind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}}
+	humanKent := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/kent", Kind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}}
 
 	denied := func(contains ...string) []string { return append([]string{"exec"}, contains...) }
 
@@ -375,7 +375,7 @@ func ExecCases(root string) []ExecCase {
 			Allow: []string{`identity.kind == "workload" && name == "sh"`},
 			Workflow: execWorkflow("exec-kind-allow-unassigned",
 				execStep("program", shArgv(`printf no`), root, nil)),
-			Identity:      &v1.WorkloadIdentity{Subject: "spiffe://acme/ci"},
+			Identity:      &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/ci"}},
 			ExpectedKind:  v1.ErrorKindPolicyDenied,
 			ExpectedError: denied("allow rules", "no allow rule matched"),
 		},
@@ -397,6 +397,34 @@ func ExecCases(root string) []ExecCase {
 			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
 				require.Equal(tb, "ok", execField(tb, out, "program", "stdout"))
 			},
+		},
+		{
+			Name:  "an allow rule reads the run's kind and a list claim",
+			Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && name == "sh"`},
+			Workflow: execWorkflow("exec-identity-carrier",
+				execStep("program", shArgv(`printf ok`), root, nil)),
+			Identity: carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev", "sre"),
+			Check: func(tb testing.TB, out *v1.Workflow_StepOutputs) {
+				require.Equal(tb, "ok", execField(tb, out, "program", "stdout"))
+			},
+		},
+		{
+			Name:  "the same rule refuses a list claim without the group",
+			Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && name == "sh"`},
+			Workflow: execWorkflow("exec-identity-carrier-other",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev"),
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("allow rules", "no allow rule matched"),
+		},
+		{
+			Name:  "an allow rule refuses a claim the issuer entry did not carry",
+			Allow: []string{carrierUncarriedRule},
+			Workflow: execWorkflow("exec-identity-uncarried",
+				execStep("program", shArgv(`printf no`), root, nil)),
+			Identity:      carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "sre"),
+			ExpectedKind:  v1.ErrorKindPolicyDenied,
+			ExpectedError: denied("rule error", "no such key: team"),
 		},
 		{
 			Name:  "a run with no identity matches no tenant rule",

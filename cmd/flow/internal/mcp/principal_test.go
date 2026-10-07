@@ -52,9 +52,10 @@ func verifiedTokenInfo(t *testing.T, claims map[string]any) (*mcp.CallToolReques
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
 		Issuers: []auth.TrustedIssuer{{Actions: everyAction,
-			Name:      "agent-idp",
-			Issuer:    issuer.URL(),
-			Audiences: []string{principalTestResource},
+			Name:        "agent-idp",
+			Issuer:      issuer.URL(),
+			Audiences:   []string{principalTestResource},
+			CarryClaims: []auth.CarryClaim{{Claim: "email", Type: auth.ClaimTypeString}},
 		}},
 	}, auth.WithEgressPolicy(authtest.EgressPolicy()))
 	require.NoError(t, err)
@@ -272,9 +273,9 @@ func TestMCPAuditIsWriteAheadAndExactlyOnceForEveryExecutionOutcome(t *testing.T
 			require.Empty(t, record.GetRpc())
 			require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE, record.GetAction())
 			require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
-			require.Equal(t, "agent", record.GetIdentity().GetSubject())
+			require.Equal(t, "agent", record.GetIdentity().GetPrincipal().GetSubject())
 			require.Equal(t, "agent-idp", record.GetIssuerName())
-			require.Empty(t, record.GetIdentity().GetClaims(),
+			require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims(),
 				"MCP audit copied the token's claims instead of the bounded audit identity")
 
 			encoded, err := protojson.Marshal(record)

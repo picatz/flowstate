@@ -70,17 +70,17 @@ func federatingPolicy() *auth.Policy {
 // Through the mux rather than off the issuer, because the acceptance is about
 // what a relying party can fetch: an issuer holding a key it does not serve
 // would satisfy an in-process assertion and none of the ones that matter.
-func servedKeyIDs(t *testing.T, broker *auth.Broker) []string {
+func servedKeyIDs(t *testing.T, issuer *auth.Issuer) []string {
 	t.Helper()
 
-	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, broker, "", http.HandlerFunc(
+	handler := serverHandler(discardLogger(), refusingVerifier{}, nil, issuer, "", http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) },
 	), nil, nil)
 
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	response, err := server.Client().Get(server.URL + broker.Issuer().JWKSPath())
+	response, err := server.Client().Get(server.URL + issuer.JWKSPath())
 	require.NoError(t, err)
 	defer response.Body.Close()
 	require.Equal(t, http.StatusOK, response.StatusCode)
@@ -117,7 +117,7 @@ func TestIdentityKeysPublishEveryNamedKeyAndSignWithTheFirst(t *testing.T) {
 
 	assert.Equal(t, "2026-09", broker.Issuer().ActiveKeyID(),
 		"the first --identity-key signs; a later one is published for verification only")
-	assert.Equal(t, []string{"2026-09", "2026-08", "2026-07"}, servedKeyIDs(t, broker),
+	assert.Equal(t, []string{"2026-09", "2026-08", "2026-07"}, servedKeyIDs(t, broker.Issuer()),
 		"every named key is published, so assertions signed before a restart still verify")
 	assert.Equal(t, []string{"2026-08", "2026-07"}, verifyOnlyKeyIDs(broker.Issuer()),
 		"the start-up line names the keys this process publishes but does not sign with")
@@ -132,7 +132,7 @@ func TestOneIdentityKeyIsUnchanged(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "2026-09", broker.Issuer().ActiveKeyID())
-	assert.Equal(t, []string{"2026-09"}, servedKeyIDs(t, broker))
+	assert.Equal(t, []string{"2026-09"}, servedKeyIDs(t, broker.Issuer()))
 	assert.Empty(t, verifyOnlyKeyIDs(broker.Issuer()))
 }
 

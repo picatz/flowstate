@@ -223,7 +223,7 @@ func Test_Policy_rules_identity(t *testing.T) {
 
 	teamA := principal.Caller{Subject: "spiffe://acme/team-a", Namespace: "team-a"}
 	teamB := principal.Caller{Subject: "spiffe://acme/team-b", Namespace: "team-b"}
-	admin := principal.Caller{Namespace: "team-a", Claims: map[string]string{"role": "admin"}}
+	admin := principal.Caller{Namespace: "team-a", Claims: principal.StringClaims(map[string]string{"role": "admin"})}
 
 	tests := []struct {
 		name  string

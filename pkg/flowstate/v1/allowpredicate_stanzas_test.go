@@ -119,7 +119,7 @@ func manualPredicateWorkflow(expression string) *v1.Workflow {
 }
 
 func manualCaller(issuer, subject string, claims map[string]string) *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{Issuer: issuer, Subject: subject, Namespace: "team-a", Claims: claims}
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: issuer, Subject: subject, Namespace: "team-a", Claims: v1.StringClaimValues(claims)}}
 }
 
 func TestAManualAllowPredicateIsDecidedByTheSharedEvaluator(t *testing.T) {
@@ -129,9 +129,9 @@ func TestAManualAllowPredicateIsDecidedByTheSharedEvaluator(t *testing.T) {
 	dev := manualCaller("https://idp.example", "dev", map[string]string{"team": "dev"})
 	wf := manualPredicateWorkflow(`sender.identity.claims.team == "ops"`)
 
-	require.NoError(t, v1.CheckManualStart(t.Context(), wf, ops, v1.QualifiedSubject(ops.GetIssuer(), ops.GetSubject()), "", nil))
+	require.NoError(t, v1.CheckManualStart(t.Context(), wf, ops, v1.QualifiedSubject(ops.GetPrincipal().GetIssuer(), ops.GetPrincipal().GetSubject()), "", nil))
 
-	err := v1.CheckManualStart(t.Context(), wf, dev, v1.QualifiedSubject(dev.GetIssuer(), dev.GetSubject()), "", nil)
+	err := v1.CheckManualStart(t.Context(), wf, dev, v1.QualifiedSubject(dev.GetPrincipal().GetIssuer(), dev.GetPrincipal().GetSubject()), "", nil)
 	require.Error(t, err, "a caller the predicate does not admit was allowed to start the workload")
 	assert.Contains(t, err.Error(), "manual start")
 }
@@ -140,7 +140,7 @@ func TestAManualAllowPredicateFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	caller := manualCaller("https://idp.example", "ops", map[string]string{"team": "ops"})
-	principal := v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject())
+	principal := v1.QualifiedSubject(caller.GetPrincipal().GetIssuer(), caller.GetPrincipal().GetSubject())
 
 	for name, test := range map[string]struct {
 		expression string

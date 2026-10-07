@@ -284,6 +284,7 @@ type Provider struct {
 	// Authentication. Exactly one of staticToken and role is set, which
 	// NewProvider enforces.
 	staticToken string
+	tokenFile   string
 	role        string
 	jwtPath     string
 	authMount   string
@@ -338,6 +339,28 @@ func WithToken(token string) Option {
 		}
 
 		p.staticToken = token
+
+		return nil
+	}
+}
+
+// WithTokenFile authenticates with a client token held in a file, such as the
+// sink a Vault Agent keeps current. The file is read when the provider is
+// constructed, so an unreadable one refuses start-up, and read again whenever
+// Vault rejects the token in hand: a rotated token is picked up by the request
+// that found the old one dead, with one retry, and no restart.
+//
+// Unlike [WithToken] the credential can be replaced, so a 403 is worth a second
+// attempt; it is still final when the file holds the token that was just
+// refused. The file is read with the same bounds as the Kubernetes token, and its
+// contents never appear in an error or a log.
+func WithTokenFile(path string) Option {
+	return func(p *Provider) error {
+		if strings.TrimSpace(path) == "" {
+			return fmt.Errorf("secrets/vault: WithTokenFile was given an empty path")
+		}
+
+		p.tokenFile = path
 
 		return nil
 	}
@@ -666,11 +689,12 @@ func NewProvider(addr string, opts ...Option) (*Provider, error) {
 	}
 
 	switch {
-	case provider.staticToken != "" && provider.role != "":
+	case (provider.staticToken != "" || provider.tokenFile != "") && provider.role != "",
+		provider.staticToken != "" && provider.tokenFile != "":
 		return nil, fmt.Errorf(
-			"secrets/vault: configure one authentication method, not both a static token and Kubernetes auth",
+			"secrets/vault: configure one authentication method: a static token, a token file, or Kubernetes auth",
 		)
-	case provider.staticToken == "" && provider.role == "":
+	case provider.staticToken == "" && provider.tokenFile == "" && provider.role == "":
 		return nil, fmt.Errorf(
 			"secrets/vault: no way to authenticate to %s: pass WithKubernetesAuth for a worker in a cluster, or WithToken",
 			provider.addr,
@@ -692,6 +716,17 @@ func NewProvider(addr string, opts ...Option) (*Provider, error) {
 			"secrets/vault: WithHTTPClient and WithRootCAs cannot be combined; " +
 				"configure the TLS roots on the client you supply",
 		)
+	}
+
+	// A token file is read once now, so a path that cannot be read refuses
+	// start-up, and then again by every login after a rejection.
+	if provider.tokenFile != "" {
+		token, err := provider.readTokenFile()
+		if err != nil {
+			return nil, fmt.Errorf("secrets/vault: %w", err)
+		}
+
+		provider.staticToken = token
 	}
 
 	// A static token is seeded as the cached token with no expiry, so the

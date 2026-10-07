@@ -231,15 +231,15 @@ func TestTwoTenantsCannotReadEachOther(t *testing.T) {
 		// The resource is the Temporal namespace addressed, not the
 		// caller's tenant, so a forged header names what it reached for.
 		require.Contains(t, []string{"ns-a", "ns-b"}, rec.GetResourceKey(), line)
-		if rec.GetIdentity().GetSubject() == "alice" && rec.GetResourceKey() == "ns-b" &&
+		if rec.GetIdentity().GetPrincipal().GetSubject() == "alice" && rec.GetResourceKey() == "ns-b" &&
 			rec.GetDecision() == v1.AuditDecision_AUDIT_DECISION_DENY {
 			forgedRecorded = true
 		}
-		if id := rec.GetIdentity(); id.GetSubject() != "" {
+		if id := rec.GetIdentity(); id.GetPrincipal().GetSubject() != "" {
 			// The coordinates an RPC record carries for the same caller, so
 			// the two correlate: issuer and subject apart, never joined.
-			require.Equal(t, "https://issuer.example", id.GetIssuer(), line)
-			require.Contains(t, []string{"alice", "ann", "abe", "bob"}, id.GetSubject(), line)
+			require.Equal(t, "https://issuer.example", id.GetPrincipal().GetIssuer(), line)
+			require.Contains(t, []string{"alice", "ann", "abe", "bob"}, id.GetPrincipal().GetSubject(), line)
 		}
 		switch rec.GetDecision() {
 		case v1.AuditDecision_AUDIT_DECISION_ALLOW:

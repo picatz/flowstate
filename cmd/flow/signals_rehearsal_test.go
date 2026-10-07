@@ -83,7 +83,7 @@ func TestRehearsedSignalReachesAPolicedGate(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, payload.GetNamedValues()["approved"].GetLiteral().GetBoolValue())
 
-	require.Equal(t, "sre-lead@example.com", sender.GetIdentity().GetSubject())
+	require.Equal(t, "sre-lead@example.com", sender.GetIdentity().GetPrincipal().GetSubject())
 	require.True(t, sender.GetLocal(),
 		"a rehearsed sender was not marked local, so a local run's gate output would read "+
 			"exactly like an attested production one")

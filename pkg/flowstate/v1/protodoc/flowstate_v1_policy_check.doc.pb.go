@@ -47,8 +47,9 @@ func init() {
 			Leading: " PolicyCheckRow is one named identity: who attempts the act, who started the\n" +
 				" hypothetical run, and what the check must answer.\n" +
 				"\n" +
-				" The identity fields sit directly on the row, as a test file's `sender:`\n" +
-				" writes them. All of them absent is an unauthenticated caller.\n",
+				" The caller is the row's [Principal], the same shape a run records and a policy\n" +
+				" reads as `identity`. A row whose principal is absent is an unauthenticated\n" +
+				" caller.\n",
 		},
 		{
 			Name: "flowstate.v1.PolicyCheckRow.name",
@@ -59,10 +60,12 @@ func init() {
 				" as the bidirectional override U+202E), since it is printed.\n",
 		},
 		{
-			Name: "flowstate.v1.PolicyCheckRow.subject",
-			Leading: " Subject, Issuer, Namespace and Claims are the identity attempting the act.\n" +
-				" A subject and an issuer travel together or not at all, which the reader\n" +
-				" enforces with the rule a test file's identities are held to.\n",
+			Name: "flowstate.v1.PolicyCheckRow.principal",
+			Leading: " Principal is the identity attempting the act. A subject and an issuer travel\n" +
+				" together or not at all, which the reader enforces with the rule a test\n" +
+				" file's identities are held to; its kind is the one the trust policy entry\n" +
+				" that admitted it would have assigned (`human`, `workload` or `agent`), and\n" +
+				" empty assigns none, which a predicate naming a kind refuses.\n",
 		},
 		{
 			Name: "flowstate.v1.PolicyCheckRow.starter",
@@ -92,18 +95,13 @@ func init() {
 				" that is not a gate being checked is refused by the reader.\n",
 		},
 		{
-			Name: "flowstate.v1.PolicyCheckRow.kind",
-			Leading: " Kind is the sort of party the identity attempting the act is, as the trust\n" +
-				" policy entry that admitted it would have assigned it: `human`, `workload` or\n" +
-				" `agent`. Empty assigns none, which a predicate naming a kind refuses.\n",
+			Name: "flowstate.v1.PolicyCheckIdentity",
+			Leading: " PolicyCheckIdentity is an identity a row names for the run's starter, read as\n" +
+				" `run.identity`. It is a [Principal]: the same shape as the row's own caller.\n",
 		},
 		{
-			Name:    "flowstate.v1.PolicyCheckIdentity",
-			Leading: " PolicyCheckIdentity is an identity a row names for the run's starter.\n",
-		},
-		{
-			Name:    "flowstate.v1.PolicyCheckIdentity.kind",
-			Leading: " Kind is the starter's kind, read as `run.identity.kind`; see the row's kind.\n",
+			Name:    "flowstate.v1.PolicyCheckIdentity.principal",
+			Leading: " Principal is the starter, with every field a caller has.\n",
 		},
 	})
 }

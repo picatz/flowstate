@@ -2033,14 +2033,13 @@ func scriptedIdentity(s *ScriptedIdentity) *v1.WorkloadIdentity {
 		return &v1.WorkloadIdentity{}
 	}
 
-	return &v1.WorkloadIdentity{
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{
 		Subject:   s.Subject,
 		Issuer:    s.Issuer,
 		Namespace: s.Namespace,
-		Claims:    s.Claims,
-
-		PrincipalKind: v1.PrincipalKindNamed(s.Kind),
-	}
+		Claims:    v1.StringClaimValues(s.Claims),
+		Kind:      v1.PrincipalKindNamed(s.Kind),
+	}}
 }
 
 // checkExpectationNames refuses an expectation naming a step the workflow does

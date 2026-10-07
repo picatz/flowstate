@@ -89,7 +89,7 @@ func TestAVetoFromAnUnadmittedSenderNeverReachesAQuorumLocally(t *testing.T) {
 	signals := v1.NewPolicedLocalSignals(wf.GetSignals(), &v1.WorkloadIdentity{}, true, nil)
 
 	sender := func(subject string) *v1.SignalSender {
-		return &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: subject, Issuer: "https://idp.example"}}
+		return &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: subject, Issuer: "https://idp.example"}}}
 	}
 	payload := func(approved bool) *v1.Node_Outputs {
 		return &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(approved)}}
@@ -123,7 +123,7 @@ func TestAQuorumDecidedFromTheQueueNeverRegistersADeadline(t *testing.T) {
 	for _, subject := range []string{"alice", "bob"} {
 		require.NoError(t, signals.DeliverFrom("release-approved",
 			&v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
-			&v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: subject, Issuer: "https://idp.example"}}))
+			&v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: subject, Issuer: "https://idp.example"}}}))
 	}
 
 	clock := v1.NewVirtualClock(time.Unix(0, 0))

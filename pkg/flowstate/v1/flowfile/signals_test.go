@@ -176,7 +176,7 @@ func TestSignalPolicyPredicateComparingABareSubjectCompilesButNeverMatches(t *te
 
 	policy := &v1.SignalPolicy{Allow: workflow.GetSignals()["deploy-approved"].GetAllow()}
 	require.Error(t, v1.SignalPolicyCheck(t.Context(), policy,
-		&v1.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}, nil, false, nil),
+		&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}}, nil, false, nil),
 		"a bare subject admitted a qualified sender")
 }
 
@@ -375,21 +375,11 @@ func TestSignalPolicyEndToEnd(t *testing.T) {
 		return v1.SignalPolicyCheck(t.Context(), policy, identity, nil, false, nil) == nil
 	}
 
-	assert.True(t, check(&v1.WorkloadIdentity{
-		Issuer:  "https://issuer.example.com",
-		Subject: "release-manager@example.com",
-	}), "the declared subject was refused")
+	assert.True(t, check(&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}}), "the declared subject was refused")
 
-	assert.True(t, check(&v1.WorkloadIdentity{
-		Issuer:  "https://issuer.example.com",
-		Subject: "whoever@example.com",
-		Claims:  map[string]string{"team": "release-managers"},
-	}), "the declared claim was refused")
+	assert.True(t, check(&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "whoever@example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}}), "the declared claim was refused")
 
-	assert.False(t, check(&v1.WorkloadIdentity{
-		Issuer:  "https://issuer.example.com",
-		Subject: "some-other-engineer@example.com",
-	}), "an undeclared sender was authorized")
+	assert.False(t, check(&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "some-other-engineer@example.com"}}), "an undeclared sender was authorized")
 }
 
 // A predicate's inputs are recorded in the run's memo, so one that reads an

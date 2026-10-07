@@ -41,7 +41,8 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //     longer registers its own built-ins.
 //
 //   - auth — entity.go (the namespace grammar, for a bound checked at compile
-//     time) and taskruntime.go.
+//     time), taskruntime.go, and run_identity.go, which reads the wire identity
+//     as an auth.WorkloadIdentity (AuthIdentity) and writes it back.
 //
 //   - secrets — taskruntime.go and webhookverify.go. secrets imports auth, so
 //     this edge carries that one with it.
@@ -101,6 +102,7 @@ var allowedSelfImports = map[string][]string{
 	"auth": {
 		"entity.go",
 		"eval_task_http_run.go",
+		"run_identity.go",
 		"taskruntime.go",
 		// webhookverify.go names [auth.Verifier] and [auth.Principal] so a
 		// `verify: {jwt: ...}` delivery is checked by the one function a
@@ -141,11 +143,13 @@ var allowedSelfImports = map[string][]string{
 		"eval_task_http_def.go",
 		"eval_task_http_run.go",
 	},
-	// principal is the caller type egress, exec and task-shape rules bind; this
+	// principal is the caller type every policy surface binds; this
 	// package renders a WorkloadIdentity into it (CallerOf) and taskpolicy.go
-	// binds it for task-shape rules.
+	// binds it for task-shape rules, and signalpredicate.go for the signal and
+	// manual-start predicates' `sender` and `run`.
 	"principal": {
 		"run_identity.go",
+		"signalpredicate.go",
 		"taskpolicy.go",
 	},
 	"secrets": {

@@ -819,6 +819,8 @@ func writtenInputValue(value *v1.Value, unfold bool) (any, error) {
 		return literalToYAML(kind.Literal)
 	case *v1.Value_SecretRef:
 		return secretRefToDSL(kind.SecretRef)
+	case *v1.Value_CredentialRef:
+		return credentialRefToDSL(kind.CredentialRef)
 	case *v1.Value_Structure_:
 		return structureToYAML(kind.Structure)
 	default:
@@ -887,6 +889,9 @@ func exprValueToYAML(value *v1.Value) (any, error) {
 		// Writing it would produce a Flowfile that does not compile.
 		return nil, fmt.Errorf("is a secret reference, which cannot be written here: %s", notEvaluableHelp)
 	}
+	if value.GetCredentialRef() != nil {
+		return nil, fmt.Errorf("is a credential reference, which cannot be written here: %s", credentialNotHereHelp)
+	}
 	return inputValueToYAML(value)
 }
 
@@ -907,6 +912,9 @@ func fencedExprToYAML(value *v1.Value) (any, error) {
 	if parsed == nil {
 		if reference := value.GetSecretRef(); reference != nil {
 			return nil, fmt.Errorf("is a secret reference, which cannot be written here: %s", notEvaluableHelp)
+		}
+		if value.GetCredentialRef() != nil {
+			return nil, fmt.Errorf("is a credential reference, which cannot be written here: %s", credentialNotHereHelp)
 		}
 
 		return nil, fmt.Errorf(

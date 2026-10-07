@@ -152,7 +152,7 @@ func TestARefusedDeliveryIsRecordedByClass(t *testing.T) {
 			if tc.identity == "" {
 				assert.Nil(t, record.GetIdentity(), "a delivery that proved nothing was recorded as somebody")
 			} else {
-				assert.Equal(t, tc.identity, record.GetIdentity().GetSubject())
+				assert.Equal(t, tc.identity, record.GetIdentity().GetPrincipal().GetSubject())
 			}
 
 			// Nothing the sender wrote. The body's event id, the order id, the
@@ -246,8 +246,8 @@ func TestAnAcceptedDeliveryIsRecordedWithItsRun(t *testing.T) {
 	assert.Equal(t, accepted.WorkflowID, first.GetResourceKey(), "the record does not name the run the delivery started")
 	assert.Equal(t, accepted.DeliveryID, first.GetDeliveryId(), "the record does not carry the delivery id provenance records")
 	assert.False(t, first.GetJoined())
-	assert.Equal(t, "order-webhook/storefront", first.GetIdentity().GetSubject())
-	assert.Equal(t, v1.WebhookPrincipalIssuer, first.GetIdentity().GetIssuer())
+	assert.Equal(t, "order-webhook/storefront", first.GetIdentity().GetPrincipal().GetSubject())
+	assert.Equal(t, v1.WebhookPrincipalIssuer, first.GetIdentity().GetPrincipal().GetIssuer())
 	assert.NotContains(t, prototext.Format(first), "evt_recorded", "the raw idempotency key reached the trail")
 
 	// The redelivery: admitted, then recognized as a join.
@@ -337,7 +337,7 @@ func TestABridgedDeliveryIsRecordedRatherThanRefusedByTheRecorder(t *testing.T) 
 	assert.Equal(t, workflowID, records[0].GetResourceKey())
 	assert.True(t, records[0].GetJoined(), "a bridged delivery starts nothing, so it always joins")
 	assert.NotEmpty(t, records[0].GetDeliveryId())
-	assert.Equal(t, "gate-webhook/slack-approval", records[0].GetIdentity().GetSubject())
+	assert.Equal(t, "gate-webhook/slack-approval", records[0].GetIdentity().GetPrincipal().GetSubject())
 
 	// A delivery naming no run: refused, and the refusal recorded.
 	before = len(sink.all())

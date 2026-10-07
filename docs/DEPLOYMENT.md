@@ -485,8 +485,11 @@ claims or either in the wrong shape is refused.
 
 These disjoint entries let the dashboard inspect and CI submit while neither may
 terminate. `actions: []` grants no control-plane action. Every action is granted
-only to an entry that lists it; the disclosure actions `workload.reveal_sensitive`
-([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
+only to an entry that lists it, with one exception: `identity.read`, which
+`Whoami` (`flow auth whoami`) needs, is held by every caller, because the answer
+is only the caller's own principal and withholding it would hide exactly the
+misconfiguration it diagnoses. An embedder's decider can still refuse it. The disclosure actions
+`workload.reveal_sensitive` ([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
 ([Payload encryption](ENCRYPTION.md)) also gate what is shown, so a reader that
 may see sensitive values lists both the read and the reveal:
 
@@ -720,15 +723,41 @@ needs; a loopback address also needs `allow_loopback: true`)
 ```
 
 The section is the trust policy's own `egress:` block, and its fields are the
-ones the worker's `--egress-policy` file takes:
+ones the worker's `--egress-policy` file takes (the complete set is
+`netpolicy.EgressConfig`: it also narrows with `deny_networks`, `allow_ports`,
+`deny_ports` and CEL rules, and sets timeouts, TLS and proxy). The four that
+widen what an identity provider may be are
+`schemes`, `allow_loopback`, `allow_private_networks` and `allow_networks`. A
+policy file whose issuer or `jwks_url` the section would refuse (a plain `http`
+URL it does not admit, or an IP-literal host in an address class it does not
+admit) is refused when it loads, with the sentence above, rather than at the
+first token. That check reads the exact request, and the address only when the
+host is a literal; a host name is not resolved at load, so one that points at a
+denied address is still refused at the first fetch. The in-cluster case, an
+identity provider on a private address, admits private networks and keeps https:
 
 ```yaml
-# An in-cluster identity provider (Keycloak, Dex, the Kubernetes API server):
-# private addresses admitted, https kept.
+issuers:
+  - name: keycloak
+    issuer: https://keycloak.keycloak.svc.cluster.local:8443/realms/acme
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+
 egress:
   allow_private_networks: true
+```
 
-# A loopback rehearsal on a laptop: plain http on this machine only.
+A loopback rehearsal on a laptop admits plain http on this machine only:
+
+```yaml
+issuers:
+  - name: rehearsal
+    issuer: http://127.0.0.1:8555
+    audiences: [http://127.0.0.1:9233]
+    actions: [workload.run, workload.read]
+    namespace: rehearsal
+
 egress:
   schemes: [http, https]
   allow_loopback: true
@@ -777,6 +806,235 @@ GitHub Actions or AWS and GCP STS publish carries one; the service account email
 in GCP's impersonation request is a path this server composes itself under a
 validated `iam_endpoint`, not one an operator writes.
 
+### Carrying claims and groups into policy
+
+A token holds far more than authorization needs, and what a run carries is
+recorded in its history and can be signed into assertions sent to third parties.
+So a policy rule sees only what the issuer entry that admitted the caller says to
+carry, in the entry itself; there is no server-wide flag. Everything a rule reads
+as `identity.claims` (egress, exec, task, secret and assumption rules) or
+`sender.identity.claims` and `run.identity.claims` (`signals:`, `debug:`,
+`manual:`) is exactly this, on both drivers:
+
+```yaml
+issuers:
+  - name: keycloak
+    issuer: https://idp.example.com/realms/acme
+    audiences: [https://flowstate.example.com/rpc]
+    namespace: acme
+    actions: [workload.run, workload.read]
+    carry_claims:
+      - {claim: team, type: string}
+      - {claim: acme.cost_center, as: cost_center, type: string}
+    groups_claim: realm_access.roles
+    group_map:
+      flowstate-sre: sre
+      flowstate-dev: dev
+```
+
+`carry_claims` lists typed claims. `claim` is a top-level name or a dotted path
+into nested objects (at most four segments; a token claim whose own name has
+dots, such as `https://example.com/team`, is read by that exact name first),
+`type` is `string`, `string_list`, `bool` or `number`, and `as` renames the claim
+as rules see it (default: the `claim` text, dots included, as
+`identity.claims["acme.cost_center"]`). A claim that is absent, of another type
+than declared, or over the carried-claim bounds is left out, never coerced or
+trimmed, so a rule reading it errors and denies. At most 32 claims are carried;
+a list or object claim is at most 4 KiB, 4 levels deep and 512 values.
+
+`groups_claim` is the dotted path of the token's group list, carried as the
+list-valued claim `groups`, so `"sre" in identity.claims.groups` reads the same
+on every surface whichever IdP supplies it. `group_map` renames IdP values (a
+name, an Entra GUID) to the Flowstate group a rule names, and when present it is
+also the allowlist: a value it does not list is not carried, so a rule that must
+deny on a group has to map that group. The name `groups` is reserved for
+`groups_claim`: a `carry_claims` entry that carries it is refused when the policy loads.
+
+A group list is never trimmed. At most 64 groups of 256 bytes are carried, and a
+token that exceeds that, or carries an overage indicator (Entra's
+`_claim_names.groups` and `hasgroups`, or `groups_truncated` from a gateway that
+flags a cut list), is refused: the server logs an error naming the entry and the
+claim, and the caller sees only "token group membership is incomplete or over the
+supported bound". Fix it at the IdP: send fewer groups, assign the application
+only the groups it needs, or use app roles (`groups_claim: roles`) with a
+`group_map`. A token with no groups claim at all carries no groups.
+
+A `kind: mtls` entry carries only the claim `subject` and no groups.
+
+`flow validate --auth-policy auth.yaml workflow.yaml` reads every identity
+expression in the Flowfiles (`signals:`, `debug:`, `triggers: manual:`) and in the
+policy's own `secrets:` and `federation:` rules. A claim read that no entry
+carries is a diagnostic: a rule requiring it can never match. Embedders
+that need a different mapping pass `auth.WithClaimMapper` to the verifier; its
+result is held to the same bounds.
+
+### Trust policy per identity provider
+
+One issuer entry per identity provider, each pinning the issuer string exactly
+(no normalization, so a trailing slash or a `/v2.0` is part of it), an audience
+this server's `--rpc-resource` names, and the claims that identify the caller.
+Every block below is a complete policy that `flow auth check --auth-policy`
+loads, and `go test ./pkg/flowstate/v1/auth` loads each one from this page, so an
+example cannot drift from the schema. What the examples cannot prove is what a
+provider mints: where a claim name or issuer shape comes from a provider's own
+documentation rather than from this repository, a note says to check it against
+a real token (`flow jwt inspect`, or your provider's token inspector) before you
+rely on it.
+
+A tenant claim that is not already a namespace (lowercase letters, digits and
+dashes) is mapped with `namespace_map`: an exact table from a claim value to a
+namespace, where a value the table does not list is refused rather than defaulted.
+A policy whose entries name a namespace must do so for every entry, so each block
+below is one deployment's whole policy, not a fragment to paste beside another's.
+
+**GitHub Actions.** The workflow requests a token for the audience with
+`permissions: id-token: write`. `repository` is `owner/name`, which is not a
+namespace, so it is mapped:
+
+```yaml
+issuers:
+  - name: github-actions
+    issuer: https://token.actions.githubusercontent.com
+    audiences: [https://flowstate.example.com/rpc]
+    algorithms: [RS256]
+    actions: [workload.run, workload.read]
+    namespace_claim: repository
+    namespace_map:
+      acme/infra: infra
+      acme/platform: platform
+    max_token_age: 10m
+```
+
+**GitLab CI.** A job declares `id_tokens:` with an `aud:` of the RPC resource.
+`project_path` is `group/project`, so it is mapped. For a self-managed GitLab the
+issuer is the instance's own URL. Add a `require:` rule on `ref_protected` to
+admit only protected branches (a note to check: GitLab documents it as the
+string `"true"`):
+
+```yaml
+issuers:
+  - name: gitlab
+    issuer: https://gitlab.com
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace_claim: project_path
+    namespace_map:
+      acme/infra: infra
+      acme/platform: platform
+    require:
+      - claim: ref_protected
+        any_of: ["true"]
+    max_token_age: 10m
+```
+
+**Kubernetes projected service-account tokens.** The issuer is the cluster's
+`--service-account-issuer` value and the audience is the `audience:` of the
+`serviceAccountToken` projection; read both from the cluster rather than from
+this page. The subject is `system:serviceaccount:NAMESPACE:NAME`, so mapping it
+names exactly the service accounts admitted. The control plane must be able to
+read the issuer's discovery document, which an in-cluster issuer behind a
+private address needs the `egress:` section for (see
+[Identity egress](#identity-egress-where-the-trust-policy-may-fetch-keys-from));
+a `jwks_url` or `jwks_file` avoids discovery:
+
+```yaml
+issuers:
+  - name: kubernetes
+    issuer: https://oidc.cluster.example.com
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace_claim: sub
+    namespace_map:
+      system:serviceaccount:team-a:runner: team-a
+      system:serviceaccount:team-b:runner: team-b
+
+egress:
+  allow_private_networks: true
+```
+
+**Keycloak.** An audience mapper on the client puts the RPC resource in `aud`.
+Realm roles arrive in `realm_access.roles`. Keycloak has no tenant claim of its
+own, so the tenant is the entry's fixed `namespace`:
+
+```yaml
+issuers:
+  - name: keycloak
+    issuer: https://keycloak.example.com/realms/acme
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+    groups_claim: realm_access.roles
+    group_map:
+      flowstate-sre: sre
+      flowstate-dev: dev
+```
+
+**Okta.** Use a custom authorization server (the org authorization server's
+access tokens are not for your own APIs) whose audience is the RPC resource.
+Okta does not add a `groups` claim to an access token by default; add one in the
+authorization server's Claims tab (a note to check against a real token):
+
+```yaml
+issuers:
+  - name: okta
+    issuer: https://acme.okta.com/oauth2/default
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+    groups_claim: groups
+    group_map:
+      flowstate-sre: sre
+      flowstate-dev: dev
+```
+
+**Microsoft Entra ID.** Set the API's `accessTokenAcceptedVersion` to 2 so `iss`
+is the v2.0 issuer below, with the directory's GUID in place of `TENANT`. The
+`tid` claim names the directory, so it maps a directory GUID to a namespace.
+Prefer app roles (`roles`) to `groups`, whose values are GUIDs and which Entra
+replaces with an overage indicator past a size limit; a token that carries the
+indicator (`_claim_names.groups`) is refused here even with `groups_claim: roles`
+(see above). `group_map` renames what a rule reads; it does not gate admission,
+which the audience, `require:` and the namespace rules decide. The audience Entra puts in `aud` is the
+application ID URI or client ID of your API: check a real token:
+
+```yaml
+issuers:
+  - name: entra
+    issuer: https://login.microsoftonline.com/00000000-0000-0000-0000-000000000000/v2.0
+    audiences: [api://11111111-1111-1111-1111-111111111111]
+    actions: [workload.run, workload.read]
+    namespace_claim: tid
+    namespace_map:
+      00000000-0000-0000-0000-000000000000: acme
+    groups_claim: roles
+    group_map:
+      Flowstate.Sre: sre
+      Flowstate.Dev: dev
+```
+
+**Auth0.** The issuer ends in a slash, and the discovery document repeats it, so
+leave it. The audience is the API identifier. Auth0 puts custom claims on an
+access token only under a namespaced name you choose in an Action, such as the
+URL below (a note to check: the name is yours, not Auth0's):
+
+```yaml
+issuers:
+  - name: auth0
+    issuer: https://acme.us.auth0.com/
+    audiences: [https://flowstate.example.com/rpc]
+    actions: [workload.run, workload.read]
+    namespace: acme
+    groups_claim: https://flowstate.example.com/groups
+    group_map:
+      sre: sre
+      dev: dev
+```
+
+AWS and GCP identity tokens are issued by ordinary OIDC issuers and take the same
+shape: pin the issuer and audience, then identify the caller with a `require:`
+rule on the claim that names it. The claim names are the provider's to document,
+so this page does not guess them.
+
 ### Bearer-token audiences are per surface
 
 A `flow server` whose trust policy has a `kind: oidc` issuer requires a canonical
@@ -816,6 +1074,81 @@ to request it, then set `--rpc-resource`. If that cannot be atomic,
 `--allow-issuer-wide-audiences` explicitly restores the old behavior for one
 migration window. It is mutually exclusive with `--rpc-resource`; remove it to
 complete migration. New deployments should never set it.
+
+### Interactive login with `flow login`
+
+A person at a terminal signs in with the OAuth 2.0 Device Authorization Grant
+([RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)); nothing is pasted from an
+IdP console and no token is ever an argument:
+
+```sh
+flow login --issuer https://idp.example.com/realms/acme --client-id flow-cli \
+  --address flowstate.example.com:9233
+# To sign in, open: https://idp.example.com/realms/acme/device
+# and enter the code: WDJB-MJHT          (printed to stderr)
+flow auth whoami --address flowstate.example.com:9233
+flow logout
+```
+
+The command reads `device_authorization_endpoint` and `token_endpoint` from the
+issuer's `/.well-known/openid-configuration` (and `revocation_endpoint` when
+advertised), prints the verification URL and user code to stderr, polls at the
+interval the IdP names (adding five seconds on `slow_down`, giving up when the
+code expires), and stores the result. `--issuer`, `--client-id`, `--address`
+(required), `--scope` (default `openid offline_access`) and `--audience` also
+come from `FLOWSTATE_ISSUER`, `FLOWSTATE_CLIENT_ID`, `FLOWSTATE_ADDRESS`,
+`FLOWSTATE_SCOPE` and `FLOWSTATE_AUDIENCE`. The issuer and every endpoint it names must be https, or
+http on a loopback host, and the discovery document must name the issuer you
+asked for; redirects away from the original origin are refused.
+
+Where the login lives and when it is used:
+
+- One file per issuer and client ID under the user config directory
+  (`$XDG_CONFIG_HOME/flowstate/login` on Linux), mode 0600 in a 0700 directory,
+  written atomically. A file or directory that is group- or world-accessible
+  is refused, not read. Anyone who can read the file can act as you until the
+  tokens expire or are revoked, so treat it like an SSH key.
+- The login is bound to the server `--address` named when it was made: its
+  origin (scheme, host and port, lowercased, default ports dropped; an address
+  with userinfo, a path or a query is refused) is stored with the tokens, and
+  the token is presented to that origin and no other. A command aimed anywhere
+  else, whether by a mistyped or a hostile `--address`, fails with a message
+  naming `flow login --address ...` instead of sending the token or going
+  anonymous. This applies to `--credential-source login` too. To use another
+  server, log in again for it.
+- Every server command presents it after `--token-file` and `FLOWSTATE_TOKEN`,
+  so existing setups are unchanged; `--credential-source login` asks for it by
+  name. It is refreshed with the refresh token a minute before the access token
+  expires. A login that cannot be refreshed (revoked, expired, no refresh token)
+  is an error that says to run `flow login` again; it is never sent expired and
+  never silently anonymous. With several stored logins, pick one with
+  `FLOWSTATE_ISSUER` and `FLOWSTATE_CLIENT_ID`.
+- `flow logout` asks the IdP to revoke the stored refresh token at the
+  `revocation_endpoint` when it advertises one
+  ([RFC 7009](https://www.rfc-editor.org/rfc/rfc7009); best effort, a failure is
+  a warning) and deletes the file. An access token already issued may stay valid
+  until it expires, because revoking a refresh token does not promise to revoke
+  it.
+- A logged-in user who needs to reach a different server unauthenticated or
+  with another credential runs `flow logout`, or supplies one explicitly with
+  `--token-file` or `FLOWSTATE_TOKEN`, which outrank the stored login.
+
+What the server verifies is the **access token**, so the IdP must issue a JWT
+access token whose `iss` and `aud` match an issuer entry in the trust policy
+(the audience being the `--rpc-resource`). Register the CLI as a *public*
+client with the device grant enabled; a confidential client secret is not
+supported. Per-IdP notes (check your provider's current documentation for the
+exact console wording):
+
+| IdP | Issuer | Notes |
+| --- | --- | --- |
+| Keycloak | `https://host/realms/NAME` | Enable "OAuth 2.0 Device Authorization Grant" on a public client. Add an audience mapper so the access token's `aud` is the RPC resource. `offline_access` yields a refresh token. |
+| Okta | `https://ORG.okta.com/oauth2/default` (a custom authorization server) | On the Native app enable both the Device Authorization and Refresh Token grant types. Use a custom authorization server whose audience is the RPC resource (the org authorization server's access tokens are not for your own APIs), and allow the Device Authorization grant in that server's access-policy rule. Requesting `offline_access` alone does not yield renewable tokens. |
+| Auth0 | `https://TENANT.auth0.com/` (note the trailing slash; the discovery document must repeat it exactly) | Enable the Device Code and Refresh Token grants on a Native application. Pass `--audience` with the API identifier, or the access token is opaque. Enable "Allow Offline Access" on the API for refresh. |
+| Microsoft Entra ID | `https://login.microsoftonline.com/TENANT/v2.0` | Enable "Allow public client flows". Request a scope on your own API, such as `api://APP-ID/.default openid offline_access`, and set the API's `accessTokenAcceptedVersion` to 2 so `iss` matches the v2.0 issuer. No `revocation_endpoint` is advertised, so `flow logout` only forgets the tokens locally. |
+
+An IdP whose device flow returns opaque access tokens (Google's, for one)
+cannot sign in to a Flowstate server this way.
 
 ### Tier 3 — substrate isolation
 
@@ -877,11 +1210,13 @@ server --auth-policy ... --rpc-resource ...` and a discoverable organizational
 issuer for a shared deployment.
 
 Claims beyond subject, issuer, and namespace are not copied into durable run or
-signal-sender identity unless the server names them. Add repeatable
-`--identity-claim <name>` flags when a local `signals:` (`sender.identity.claims[...]`) or `identity.claims[...]`
-rule needs to inspect a verified claim, just as on `flow server`; for example,
-the [authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
-uses `--identity-claim team`.
+signal-sender identity unless the issuer entry carries them (see
+[Carrying claims and groups into policy](#carrying-claims-and-groups-into-policy)).
+The generated dev entry carries one, `team` (a string), so
+`flow jwt sign --claim team=...` reaches a local `signals:`
+(`sender.identity.claims.team`) or `identity.claims.team` rule; the
+[authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
+uses it.
 
 ### Docker Compose
 
@@ -904,15 +1239,16 @@ No Kubernetes needed. Two systemd units on one host, or split across two hosts
 for Tier 2: one worker unit per tenant's Temporal namespace.
 
 Each unit runs as its own system user, so the server — the process that faces
-the network — cannot read the worker's secrets. The two share one group, and
-that group can read only the federation signing key, which both processes open.
+the network — cannot read the worker's secrets. Only the worker joins the key
+group, which can read only the federation signing key; the server reads a separate
+public copy of it and never holds a signing key.
 Neither user's home is under `/home`: the worker's `ProtectHome=yes` makes that
 unreadable, and `flow worker` reads Temporal's client configuration from
 `$HOME` and refuses to start on a file it cannot read. `PrivateTmp=yes` gives
 each unit a writable `/tmp`, where a worker makes its plugins' socket
 directories; `ProtectSystem=strict` otherwise leaves it read-only. `flow keys
 generate` writes a key with mode 0600, owned by whoever ran it, so hand it to
-the shared group and the secret directory to the worker alone:
+the shared group (the server is not in it: it reads only the public copy) and the secret directory to the worker alone:
 
 ```console
 $ sudo groupadd --system flowstate-keys
@@ -923,6 +1259,9 @@ $ sudo useradd --system --user-group --home-dir /nonexistent --no-create-home \
 $ sudo install -d -o flowstate-worker -g flowstate-worker -m 0750 /var/lib/flowstate
 $ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-07.pem
 $ sudo chmod 0640 /etc/flowstate/identity-2026-07.pem
+$ sudo install -d -m 0755 /etc/flowstate/public-keys
+$ sudo flow keys public --in /etc/flowstate/identity-2026-07.pem --pem \
+    | sudo tee /etc/flowstate/public-keys/identity-2026-07.pem >/dev/null
 $ sudo chown -R root:flowstate-worker /etc/flowstate/secrets
 $ sudo chmod -R u=rwX,g=rX,o= /etc/flowstate/secrets
 ```
@@ -998,7 +1337,7 @@ TEMPORAL_ADDRESS=temporal.internal:7233
 TEMPORAL_NAMESPACE=production
 FLOWSTATE_DEPLOYMENT_NAME=flowstate
 FLOWSTATE_AUTH_POLICY=/etc/flowstate/policy.yaml
-FLOWSTATE_IDENTITY_KEY=/etc/flowstate/identity-2026-07.pem
+FLOWSTATE_IDENTITY_KEY=/etc/flowstate/public-keys/identity-2026-07.pem
 FLOWSTATE_RPC_RESOURCE=https://flowstate.example.com/rpc
 ```
 
@@ -1018,7 +1357,6 @@ Restart=on-failure
 RestartSec=5s
 User=flowstate-server
 Group=flowstate-server
-SupplementaryGroups=flowstate-keys
 NoNewPrivileges=yes
 ProtectSystem=strict
 PrivateTmp=yes
@@ -1027,31 +1365,39 @@ PrivateTmp=yes
 WantedBy=multi-user.target
 ```
 
-Both units name the same `FLOWSTATE_IDENTITY_KEY` because this `policy.yaml`
+Both units name an `FLOWSTATE_IDENTITY_KEY` because this `policy.yaml`
 configures `federation:`: the worker signs the short-lived assertions a step
-exchanges for credentials, and the server publishes the matching public keys.
-Either process refuses to start with `federation:` and no key, or a key and no
+exchanges for credentials with the private key, and the server publishes the
+matching public key, so it is given only the PKIX public key PEM that `flow keys
+public --pem` prints. Name the two files alike, since the file's base name is the
+published key id and the server and the worker must agree on it. The server
+refuses a private key at start-up, so it never reads signing material. Either
+process refuses to start with `federation:` and no key, or a key and no
 `federation:`, so a deployment that does not federate removes the line from both
 files. [Secrets and credentials](SECRETS.md#signing-keys) covers rotation, which
-restarts both.
+restarts both. Past one VM, [keep the key in Vault Transit](#signing-keys-in-vault-transit)
+instead of a file.
 
-Sharing that key is a trust boundary this recipe does not split. The server and
-every worker that federates hold the same private key, and whoever holds it can
-sign an assertion for any subject or namespace
+The server holds no signing key, but the signing key is still shared: every
+worker that federates holds the same private key, and whoever holds it can sign
+an assertion for any subject or namespace
 ([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
-So a compromise of the server, or of any one tenant's worker, reaches every
-tenant's federated credentials. The per-user isolation above keeps secret files
-apart; it does not narrow federation.
+So a compromise of any one tenant's worker reaches every tenant's federated
+credentials, because federation is one deployment-wide trust domain until
+per-tenant issuers land. The per-user isolation above keeps secret files apart;
+it does not narrow federation.
 
 `FLOWSTATE_IDENTITY_KEY` holds one path, and a rotation needs two for its
 overlap, so for that window the keys go on each unit's command line, new first.
 Repeated `--identity-key` flags replace the variable's value rather than adding
-to it. Give the new key the same ownership as the first before either unit
-opens it:
+to it. Give the new worker key the same ownership as the first, and derive the
+server's public copy of it, before either unit opens it:
 
 ```console
 $ sudo chown root:flowstate-keys /etc/flowstate/identity-2026-10.pem
 $ sudo chmod 0640 /etc/flowstate/identity-2026-10.pem
+$ sudo flow keys public --in /etc/flowstate/identity-2026-10.pem --pem \
+    | sudo tee /etc/flowstate/public-keys/identity-2026-10.pem >/dev/null
 ```
 
 ```ini
@@ -1060,7 +1406,8 @@ ExecStart=/usr/local/lib/flowstate/%i/flow worker --build-id %i --plugin-dir /us
     --identity-key /etc/flowstate/identity-2026-07.pem
 ```
 
-The server unit gets the same two flags. After editing the units, run `sudo
+The server unit gets the same two flags, naming the public copies under
+`/etc/flowstate/public-keys/`. After editing the units, run `sudo
 systemctl daemon-reload`, then restart the server before any worker instance,
 so it publishes the new key before a worker signs with it. After
 `federation.key_retention`, drop the flags, point `FLOWSTATE_IDENTITY_KEY` in
@@ -1095,6 +1442,95 @@ federation stays shared as above), its own `TEMPORAL_NAMESPACE`, and its own
 `--egress-policy` / `--auth-policy` files, and map each tenant onto its namespace in the trust
 policy the server loads (`tenancy:` under `--auth-policy`, `auth.Tenancy` /
 `temporalclient.Pool`).
+
+### Signing keys in Vault Transit
+
+A key file is the right shape for one VM and the wrong one past it. The
+`--identity-key` file is on every worker that federates, in each one's memory, and
+a compromise of any of them is a compromise of the issuer
+([THREAT_MODEL.md §7](../THREAT_MODEL.md#7-the-issuer-as-a-single-point-of-failure)).
+Past a single VM, **keep the key in a Vault or OpenBao Transit engine instead**: the
+key is created non-exportable, Flowstate asks Transit to sign, and the private half
+is never in a Flowstate process, on its disk, or in anything it logs. Self-hosting
+stays the baseline, since Transit is Vault's or OpenBao's own engine and needs no
+cloud account.
+
+Create the key once, as an operator, with a type the issuer publishes
+(`ecdsa-p256` signs ES256 and `ed25519` signs EdDSA; other types are refused):
+
+```console
+$ vault secrets enable transit
+$ vault write transit/keys/flowstate-identity type=ecdsa-p256 exportable=false allow_plaintext_backup=false
+```
+
+Grant the processes exactly what they use and nothing else. A worker signs, so it
+needs `update` on the sign path and `read` on the key; the server only publishes,
+so it needs the `read` alone:
+
+```hcl
+# worker policy
+path "transit/sign/flowstate-identity" { capabilities = ["update"] }
+path "transit/keys/flowstate-identity" { capabilities = ["read"] }
+
+# server policy
+path "transit/keys/flowstate-identity" { capabilities = ["read"] }
+```
+
+Withhold `create` on the sign path: Flowstate only ever signs with a key that
+already exists, so granting it adds nothing. Do not grant `export`, `rotate`, `config`, or `trim` to a Flowstate
+token: rotation is an operator's act, below.
+
+Point both processes at the key with `--identity-signer` (or
+`FLOWSTATE_IDENTITY_SIGNER`) in place of `--identity-key`:
+
+```ini
+# worker.env and server.env
+FLOWSTATE_IDENTITY_SIGNER=vault-transit://vault.internal.example.com:8200/flowstate-identity
+FLOWSTATE_SECRET_VAULT_TOKEN_FILE=/run/vault-agent/token
+```
+
+The URL names the host and the key. `?mount=` names a Transit mount other than
+`transit`, `?namespace=` a Vault namespace, and `?kubernetes_role=ROLE` logs a
+worker in with its service account instead of a token file, which is the better
+choice in a cluster since the token renews itself. The token is never part of the
+URL (one that is is refused), and never on a command line: it comes from the
+file, or from `FLOWSTATE_SECRET_VAULT_TOKEN`, the same places the Vault secrets
+provider reads it. A token file is re-read when Vault rejects the token in hand,
+and the request is retried once, so a Vault Agent sink that rotates the token is
+picked up without a restart; a static `FLOWSTATE_SECRET_VAULT_TOKEN` is not. The requests leave through the trust policy's `egress:` section
+like every other identity fetch, so a Vault on a private network is reached by
+naming that network there (`allow_networks`), and a redirect is never followed.
+`--identity-signer` and `--identity-key` are alternatives: giving both is refused.
+
+What the processes do with it:
+
+- **The key is read from the backend, never from a copy.** The algorithm comes from
+  the key's type, and the published key id is `<key>-v<N>` from its version, so a
+  rotation is a new id in the key set. A worker proves the pairing at start-up: it
+  has Transit sign once and refuses to start unless that signature verifies against
+  the public key Transit reported, so a backend that answers with the wrong key
+  fails the deployment instead of every relying party. A backend that does not
+  answer, or answers 403, stops the process; nothing falls back to a local key,
+  since there is none.
+- **Every signature names its version.** The worker pins the version it published,
+  so an operator rotating mid-flight cannot produce an assertion whose `kid` names
+  one key and whose signature is another's.
+- **Rotation keeps the overlap file keys have.** Rotate in Transit
+  (`vault write -f transit/keys/flowstate-identity/rotate`), then restart the
+  server and then the workers: the worker signs with the new version and publishes
+  every older version Transit still serves for verification only, and the server
+  publishes all of them, so assertions signed before the restart keep verifying
+  with no key list to maintain. To end the overlap, raise `min_decryption_version`
+  on the key (`vault write transit/keys/flowstate-identity/config
+  min_decryption_version=N`) and restart: versions below it are no longer
+  published.
+- **Every mint is a round trip.** A signature is one request to Vault, bounded by
+  the issuer's signing timeout, so Vault's availability is the availability of
+  minting, and its audit log records every assertion signed.
+
+`flow keys public --signer 'vault-transit://…'` prints what the backend holds as a
+key set, current version first, which is the check to run after creating or
+rotating a key.
 
 ### Kubernetes
 
@@ -1181,7 +1617,7 @@ There is exactly one probe endpoint — `flow server` does not expose a
 separate readiness or startup route. What makes `/healthz` usable as more than
 a bare liveness check is startup ordering: `flow server` dials Temporal with
 the SDK's eager `client.DialContext` (`pkg/flowstate/v1/temporalclient/temporalclient.go:269`,
-reached from `cmd/flow/main.go:278` through `temporalclient.DialWithNamespace`)
+reached from `cmd/flow/main.go:281` through `temporalclient.DialWithNamespace`)
 and mounts the HTTP mux — the one carrying `/healthz` — only after that dial,
 and every other startup check (TLS configuration, auth policy load, plugin
 catalog build), succeeds. So the first `200` from `/healthz` already implies
@@ -1328,7 +1764,7 @@ are equally plaintext `httpGet` checks against the TLS-terminated port and
 fail the same way if left as they are. `exec` runs the command inside the
 container's own network namespace, which loopback is reachable from, and the
 internal listener never carries TLS or client-cert requirements of its own
-(`internalHandler`, `cmd/flow/routing.go:226`) regardless of what the public
+(`internalHandler`, `cmd/flow/routing.go:225`) regardless of what the public
 listener demands:
 
 ```yaml

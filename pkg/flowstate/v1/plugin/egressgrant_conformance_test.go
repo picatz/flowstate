@@ -413,11 +413,7 @@ func TestTheGrantsIdentityRulesGovernThePluginsOwnRequests(t *testing.T) {
 			host := openHost(t, cfg)
 			require.Len(t, host.TaskDefs(), 1)
 
-			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-				Subject:   "workflow/probe",
-				Issuer:    "https://issuer.invalid",
-				Namespace: test.namespace,
-			})
+			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "workflow/probe", Issuer: "https://issuer.invalid", Namespace: test.namespace}})
 
 			outputs, err := host.TaskDefs()[0].Fn(ctx,
 				map[string]*flowstatev1.Value{"message": flowstatev1.NewLiteral(server.URL)}, nil)
@@ -580,11 +576,7 @@ func TestTheGrantsIdentityRulesGovernASecretResolversRequests(t *testing.T) {
 			providers := host.SecretProviders()
 			require.Len(t, providers, 1)
 
-			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-				Subject:   "workflow/probe",
-				Issuer:    "https://issuer.invalid",
-				Namespace: test.namespace,
-			})
+			ctx := NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "workflow/probe", Issuer: "https://issuer.invalid", Namespace: test.namespace}})
 
 			secret, err := providers[0].Resolve(ctx, secrets.Request{
 				Namespace: test.namespace,

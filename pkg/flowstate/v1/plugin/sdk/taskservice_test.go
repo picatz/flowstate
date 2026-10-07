@@ -52,13 +52,13 @@ func TestTaskServiceExecuteInstallsCallerBeforeFn(t *testing.T) {
 
 	_, err := svc.Execute(t.Context(), connect.NewRequest(&pluginv1.ExecuteRequest{
 		Task:      &flowstatev1.Task{Name: "whoami"},
-		Identity:  &flowstatev1.WorkloadIdentity{Subject: "ci", Namespace: "team-a"},
+		Identity:  &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "ci", Namespace: "team-a"}},
 		Namespace: "team-a",
 	}))
 	require.NoError(t, err)
 
 	require.True(t, gotOK, "Fn ran without a caller installed on its context")
-	assert.Equal(t, "ci", gotCaller.Identity.GetSubject())
+	assert.Equal(t, "ci", gotCaller.Identity.GetPrincipal().GetSubject())
 	assert.Equal(t, "team-a", gotCaller.Namespace)
 }
 

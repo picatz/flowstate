@@ -996,7 +996,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	memo[deliveryMemoKey] = deliveryID
 	options.Memo = memo
 
-	options.ID = webhookWorkflowID(identity.GetNamespace(), route.workflow.GetName(), route.trigger.GetName(), key)
+	options.ID = webhookWorkflowID(identity.GetPrincipal().GetNamespace(), route.workflow.GetName(), route.trigger.GetName(), key)
 
 	// The two halves of "this event starts one run". Conflict covers a
 	// redelivery while the first run is still going; reuse covers one that
@@ -1033,7 +1033,7 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 		// this value is written to history, which invariant 7 calls durable and
 		// broadly readable.
 		Trigger: v1.NewWebhookTriggerContext(
-			route.trigger.GetName(), identity.GetSubject(), deliveryID),
+			route.trigger.GetName(), identity.GetPrincipal().GetSubject(), deliveryID),
 	})
 	if err != nil {
 		if already, ok := errors.AsType[*serviceerror.WorkflowExecutionAlreadyStarted](err); ok {
@@ -1119,7 +1119,7 @@ func (r *WebhookReceiver) answer(ctx context.Context, route *webhookRoute, deliv
 	// compose it, from the *receiver's* namespace and the delivery's entity key.
 	// The namespace is not the sender's to choose, which is what keeps a key
 	// holder inside the tenant their trigger was configured in.
-	workflowID, err := v1.EntityWorkflowID(identity.GetNamespace(), entityKey)
+	workflowID, err := v1.EntityWorkflowID(identity.GetPrincipal().GetNamespace(), entityKey)
 	if err != nil {
 		return v1.AcceptedDelivery{}, r.denied(ctx, route, identity,
 			v1.AuditResourceKind_AUDIT_RESOURCE_KIND_WEBHOOK_ROUTE, webhookRouteKey(route),

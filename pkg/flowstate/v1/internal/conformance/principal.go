@@ -36,11 +36,8 @@ type IdentityCase struct {
 func IdentityCases() []IdentityCase {
 	return []IdentityCase{
 		{
-			Name: "issuer and subject",
-			Identity: &v1.WorkloadIdentity{
-				Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com",
-				Claims: map[string]string{"team": "release-managers", "role": "sre-lead"},
-			},
+			Name:      "issuer and subject",
+			Identity:  &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers", "role": "sre-lead"})}},
 			Principal: "https://issuer.example.com#sre-lead@example.com",
 			Why:       "the joined form is what a policy compares across identity providers",
 		},
@@ -52,13 +49,13 @@ func IdentityCases() []IdentityCase {
 		},
 		{
 			Name:      "subject without issuer",
-			Identity:  &v1.WorkloadIdentity{Subject: "sre-lead@example.com"},
+			Identity:  &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "sre-lead@example.com"}},
 			Principal: "",
 			Why:       "a subject is only unique within its issuer, so half a principal is no principal",
 		},
 		{
 			Name:      "issuer without subject",
-			Identity:  &v1.WorkloadIdentity{Issuer: "https://issuer.example.com"},
+			Identity:  &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com"}},
 			Principal: "",
 			Why:       "an issuer with nobody under it must not read as a principal that matches every anonymous caller of it",
 		},
@@ -133,11 +130,11 @@ func assertIdentityOutputs(t testing.TB, what string, outputs *v1.Workflow_StepO
 	if got := str("principal"); got != c.Principal {
 		t.Fatalf("%s.principal = %q, want %q (%s)", what, got, c.Principal, c.Why)
 	}
-	if got := str("subject"); got != c.Identity.GetSubject() {
-		t.Fatalf("%s.subject = %q, want %q", what, got, c.Identity.GetSubject())
+	if got := str("subject"); got != c.Identity.GetPrincipal().GetSubject() {
+		t.Fatalf("%s.subject = %q, want %q", what, got, c.Identity.GetPrincipal().GetSubject())
 	}
-	if got := str("issuer"); got != c.Identity.GetIssuer() {
-		t.Fatalf("%s.issuer = %q, want %q", what, got, c.Identity.GetIssuer())
+	if got := str("issuer"); got != c.Identity.GetPrincipal().GetIssuer() {
+		t.Fatalf("%s.issuer = %q, want %q", what, got, c.Identity.GetPrincipal().GetIssuer())
 	}
 
 	if !withClaims {
@@ -156,9 +153,9 @@ func assertIdentityOutputs(t testing.TB, what string, outputs *v1.Workflow_StepO
 	for _, entry := range claims.GetLiteral().GetMapValue().GetEntries() {
 		got[entry.GetKey().GetStringValue()] = entry.GetValue().GetStringValue()
 	}
-	want := c.Identity.GetClaims()
-	if want == nil {
-		want = map[string]string{}
+	want := map[string]string{}
+	for name, value := range c.Identity.GetPrincipal().GetClaims() {
+		want[name] = value.GetStringValue()
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("%s.claims = %v, want %v", what, got, want)

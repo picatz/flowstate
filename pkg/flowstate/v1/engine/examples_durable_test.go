@@ -838,11 +838,7 @@ func runExampleDurably(
 		delivery := &v1.SignalDelivery{
 			Payload: payload,
 			Sender: &v1.SignalSender{
-				Identity: &v1.WorkloadIdentity{
-					Subject:   "examples",
-					Issuer:    "flowstate:test",
-					Namespace: "",
-				},
+				Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "examples", Issuer: "flowstate:test", Namespace: ""}},
 			},
 		}
 		require.NoError(t, c.SignalWorkflow(ctx, id, "", signal, delivery),
@@ -920,7 +916,7 @@ func runExampleLocally(
 			// two engines compute the identical answer. They cannot, unless both
 			// sides are actually given that identical sender.
 			require.NoError(t, waiter.DeliverFrom(signal, payload, &v1.SignalSender{
-				Identity: &v1.WorkloadIdentity{Subject: "examples", Issuer: "flowstate:test"},
+				Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "examples", Issuer: "flowstate:test"}},
 			}))
 		}
 		ctx = v1.NewContextWithSignalWaiter(ctx, waiter)

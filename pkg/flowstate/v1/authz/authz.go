@@ -201,6 +201,13 @@ func Restricted(principal auth.Principal, authenticated bool) bool {
 func DecidePrincipal(principal auth.Principal, authenticated bool, action v1.AuthorizationAction, mode Mode) Decision {
 	scope := v1.AuthorizationActionScope(action)
 
+	// The one action every caller holds, verified or not: see
+	// [v1.AuthorizationActionHeldByEveryCaller]. An embedder's [Decider] still
+	// runs after this one through [Restrict].
+	if v1.AuthorizationActionHeldByEveryCaller(action) {
+		return Decision{Allowed: true, Scope: scope}
+	}
+
 	if mode == Implied && !Restricted(principal, authenticated) {
 		return Decision{Allowed: true, Scope: scope}
 	}

@@ -81,9 +81,7 @@ func TestCheckSignalPoliciesRefusesAPolicyWithNoPredicate(t *testing.T) {
 func TestABareSubjectPredicateNeverAdmitsAQualifiedSender(t *testing.T) {
 	policy := &v1.SignalPolicy{Allow: `sender.identity.principal == "release-manager@example.com"`}
 
-	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "release-manager@example.com",
-	}))
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com"}}))
 }
 
 func TestQualifiedSubjectAndLooksLikeQualifiedSubject(t *testing.T) {
@@ -103,18 +101,10 @@ func TestSignalPolicyPredicateClausesAreAnded(t *testing.T) {
 	policy := &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "release-manager@example.com") + `" && sender.identity.claims["team"] == "release-managers"`}
 
 	// Matches the principal, but not the claim: refused.
-	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{
-		Issuer:  "https://issuer.example.com",
-		Subject: "release-manager@example.com",
-		Claims:  map[string]string{"team": "some-other-team"},
-	}))
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com", Claims: v1.StringClaimValues(map[string]string{"team": "some-other-team"})}}))
 
 	// Matches both: allowed.
-	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{
-		Issuer:  "https://issuer.example.com",
-		Subject: "release-manager@example.com",
-		Claims:  map[string]string{"team": "release-managers"},
-	}))
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "release-manager@example.com", Claims: v1.StringClaimValues(map[string]string{"team": "release-managers"})}}))
 }
 
 // TestSignalPolicyPredicateAlternativesAreOred checks that `||` makes
@@ -122,15 +112,9 @@ func TestSignalPolicyPredicateClausesAreAnded(t *testing.T) {
 func TestSignalPolicyPredicateAlternativesAreOred(t *testing.T) {
 	policy := &v1.SignalPolicy{Allow: `sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "alice@example.com") + `" || sender.identity.principal == "` + v1.QualifiedSubject("https://issuer.example.com", "bob@example.com") + `"`}
 
-	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "alice@example.com",
-	}))
-	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "bob@example.com",
-	}))
-	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "carol@example.com",
-	}))
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "alice@example.com"}}))
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "bob@example.com"}}))
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "carol@example.com"}}))
 }
 
 // TestSignalPolicyNamespacePredicate checks the namespace form independently of
@@ -138,8 +122,8 @@ func TestSignalPolicyPredicateAlternativesAreOred(t *testing.T) {
 func TestSignalPolicyNamespacePredicate(t *testing.T) {
 	policy := &v1.SignalPolicy{Allow: `sender.identity.namespace == "release-managers-ns"`}
 
-	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{Namespace: "release-managers-ns"}))
-	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{Namespace: "team-a"}))
+	require.True(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "release-managers-ns"}}))
+	require.False(t, policyAllows(t, policy, &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}))
 }
 
 // TestCheckSignalPoliciesRefusesAnInputsPredicateWithNothingNarrowing is the
