@@ -60,7 +60,7 @@ import (
 // Verified is left false here and set by the case or computed from its bound
 // keys, deliberately: this function knows what arrived, not whether it was
 // genuine. See [TriggerDelivery].
-func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
+func loadDelivery(path string, trigger *v1.WebhookTrigger) (v1.WebhookDelivery, []byte, error) {
 	data, err := readBounded(path, v1.MaxWebhookPayloadBytes, "delivery")
 	if err != nil {
 		return v1.WebhookDelivery{}, nil, fmt.Errorf("reading the delivery: %w", err)
@@ -116,12 +116,12 @@ func loadDelivery(path string) (v1.WebhookDelivery, []byte, error) {
 			contentType = value
 		}
 	}
-	if stored.RawBody == nil && v1.IsWebhookFormContentType(contentType) {
+	if stored.RawBody == nil && v1.WebhookReadsForms(trigger) && v1.IsWebhookFormContentType(contentType) {
 		return v1.WebhookDelivery{}, nil, fmt.Errorf(
 			"the delivery %s declares a form content type with `body`, which embeds a JSON value; a form "+
 				"is text, so store its exact bytes under `raw_body`", path)
 	}
-	body, err := v1.DecodeWebhookBody(contentType, raw)
+	body, err := v1.DecodeWebhookBody(trigger, contentType, raw)
 	if err != nil {
 		return v1.WebhookDelivery{}, nil, fmt.Errorf("the delivery %s carries a body that will not decode: %w", path, err)
 	}
@@ -190,7 +190,7 @@ func replayDelivery(test *Test, deliveryPath string, workflow *v1.Workflow) (map
 			test.Trigger.Webhook, trigger.GetSignal().GetName())
 	}
 
-	delivery, rawBody, err := loadDelivery(deliveryPath)
+	delivery, rawBody, err := loadDelivery(deliveryPath, trigger)
 	if err != nil {
 		return nil, "", nil, fmt.Errorf("trigger %q: %w", test.Trigger.Webhook, err)
 	}

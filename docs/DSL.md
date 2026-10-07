@@ -2007,7 +2007,7 @@ one, and both drivers ignore the block entirely — `flow run local` still runs 
 with a webhook on it once, now.
 
 `event.body` is the delivery's one JSON document, or, when its `Content-Type` is
-`application/x-www-form-urlencoded`, its form: a map of field to text, which is what a Slack
+`application/x-www-form-urlencoded` and the webhook verifies with `slack`, its form: a map of field to text, which is what a Slack
 slash command is. A form whose only field is `payload` (Slack interactivity) is that field's
 JSON document, so `event.body.actions[0].action_id` reads the same as it would in a JSON
 delivery. A form that repeats a field is refused, since two values for one name has no single

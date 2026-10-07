@@ -10,10 +10,12 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
+var slackT = schemeTrigger(v1.WebhookSchemeSlack)
+
 func TestFormBodiesDecodeToTextFields(t *testing.T) {
 	t.Parallel()
 
-	body, err := v1.DecodeWebhookBody("application/x-www-form-urlencoded; charset=utf-8",
+	body, err := v1.DecodeWebhookBody(slackT, "application/x-www-form-urlencoded; charset=utf-8",
 		[]byte("command=%2Fdeploy&text=prod+east&user_id=U1"))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"command": "/deploy", "text": "prod east", "user_id": "U1"}, body)
@@ -23,7 +25,7 @@ func TestAFormPayloadFieldIsTheJSONItCarries(t *testing.T) {
 	t.Parallel()
 
 	form := "payload=" + url.QueryEscape(`{"type":"block_actions","actions":[{"action_id":"approve"}],"n":4200}`)
-	body, err := v1.DecodeWebhookBody("application/x-www-form-urlencoded", []byte(form))
+	body, err := v1.DecodeWebhookBody(slackT, "application/x-www-form-urlencoded", []byte(form))
 	require.NoError(t, err)
 
 	document, ok := body.(map[string]any)
@@ -34,7 +36,7 @@ func TestAFormPayloadFieldIsTheJSONItCarries(t *testing.T) {
 	require.NotEqual(t, float64(4200), document["n"], "numbers must read as the receiver reads them, not as float64")
 
 	// Beside other fields it is only text, which is what it is.
-	mixed, err := v1.DecodeWebhookBody("application/x-www-form-urlencoded", []byte(form+"&x=1"))
+	mixed, err := v1.DecodeWebhookBody(slackT, "application/x-www-form-urlencoded", []byte(form+"&x=1"))
 	require.NoError(t, err)
 	require.IsType(t, "", mixed.(map[string]any)["payload"])
 }
@@ -44,19 +46,19 @@ func TestFormBodiesAreRefusedWhenAmbiguousOrUnbounded(t *testing.T) {
 
 	const form = "application/x-www-form-urlencoded"
 
-	_, err := v1.DecodeWebhookBody(form, []byte("payload=%7B%7D&payload=%7B%7D"))
+	_, err := v1.DecodeWebhookBody(slackT, form, []byte("payload=%7B%7D&payload=%7B%7D"))
 	require.ErrorContains(t, err, `repeats the field "payload"`)
 
-	_, err = v1.DecodeWebhookBody(form, []byte("a=1&a=2"))
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte("a=1&a=2"))
 	require.ErrorContains(t, err, "repeats")
 
-	_, err = v1.DecodeWebhookBody(form, []byte("payload=not-json"))
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte("payload=not-json"))
 	require.ErrorContains(t, err, "`payload` field is not a JSON document")
 
-	_, err = v1.DecodeWebhookBody(form, []byte("payload=%7B%7D%20%7B%7D"))
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte("payload=%7B%7D%20%7B%7D"))
 	require.ErrorContains(t, err, "more than one JSON document")
 
-	_, err = v1.DecodeWebhookBody(form, []byte("a=%zz"))
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte("a=%zz"))
 	require.Error(t, err)
 
 	var many strings.Builder
@@ -65,7 +67,7 @@ func TestFormBodiesAreRefusedWhenAmbiguousOrUnbounded(t *testing.T) {
 		many.WriteString(strings.Repeat("x", i))
 		many.WriteString("=1&")
 	}
-	_, err = v1.DecodeWebhookBody(form, []byte(many.String()))
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte(many.String()))
 	require.ErrorContains(t, err, "more than 256 fields")
 }
 
@@ -75,11 +77,11 @@ func TestOnlyTheFormTypeSelectsTheFormReader(t *testing.T) {
 	t.Parallel()
 
 	for _, contentType := range []string{"", "application/json", "text/plain", "garbage;;"} {
-		_, err := v1.DecodeWebhookBody(contentType, []byte("a=1&b=2"))
+		_, err := v1.DecodeWebhookBody(slackT, contentType, []byte("a=1&b=2"))
 		require.ErrorContains(t, err, "not a JSON document", contentType)
 	}
 
-	body, err := v1.DecodeWebhookBody("application/json", []byte(`{"a":1}`))
+	body, err := v1.DecodeWebhookBody(slackT, "application/json", []byte(`{"a":1}`))
 	require.NoError(t, err)
 	require.Equal(t, map[string]any{"a": int64(1)}, body)
 }
@@ -108,5 +110,17 @@ func TestSlackHandshakeChallengeIsRecognisedOnlyUnderTheSlackScheme(t *testing.T
 	} {
 		_, ok := v1.SlackURLVerificationChallenge(slack, body)
 		require.False(t, ok, name)
+	}
+}
+
+// The Content-Type is not signed, so a trigger that does not expect forms never
+// reads one: replaying a captured delivery with another type cannot change how
+// its signed bytes are read.
+func TestOnlyAFormSendingProviderReadsAForm(t *testing.T) {
+	t.Parallel()
+
+	for _, scheme := range []string{v1.WebhookSchemeHMACSHA256, v1.WebhookSchemeGitHub, v1.WebhookSchemeStripe} {
+		_, err := v1.DecodeWebhookBody(schemeTrigger(scheme), "application/x-www-form-urlencoded", []byte("a=1"))
+		require.ErrorContains(t, err, "not a JSON document", scheme)
 	}
 }

@@ -36,15 +36,28 @@ const webhookFormPayloadField = "payload"
 //     carries exactly one field, `payload`, its value is decoded as the JSON
 //     document it is (Slack interactivity), so `event.body.actions[0]` reads
 //     the same as it does for a JSON delivery.
+//   - A form is read only for a trigger whose provider sends them, which is a
+//     Slack-verified one today. The Content-Type is not covered by any
+//     signature, so letting it select the parser for every trigger would let
+//     whoever replays a captured delivery choose how its signed bytes are
+//     read; a trigger that does not expect a form never reads one.
 //   - Anything else, including no media type, is one JSON document with nothing
 //     after it, as before. The receiver never trusted the media type to select a
 //     *looser* parser, and still does not.
-func DecodeWebhookBody(contentType string, raw []byte) (any, error) {
-	if IsWebhookFormContentType(contentType) {
+func DecodeWebhookBody(trigger *WebhookTrigger, contentType string, raw []byte) (any, error) {
+	if WebhookReadsForms(trigger) && IsWebhookFormContentType(contentType) {
 		return decodeWebhookForm(raw)
 	}
 
 	return decodeWebhookJSON(raw, "the delivery body")
+}
+
+// WebhookReadsForms reports whether a trigger's provider sends form-encoded
+// deliveries, so that [DecodeWebhookBody] may read one for it.
+func WebhookReadsForms(trigger *WebhookTrigger) bool {
+	_, slack := trigger.GetVerify()[WebhookSchemeSlack]
+
+	return slack
 }
 
 // IsWebhookFormContentType reports whether a Content-Type header names a form

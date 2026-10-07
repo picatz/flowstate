@@ -721,7 +721,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	// [v1.BindWebhookTriggerInputs] documents and the reason a malformed body may
 	// safely be reported precisely: reaching this line means the sender holds the
 	// signing key, so nothing said from here on tells an outsider anything.
-	decoded, err := decodeDeliveryBody(headers, body)
+	decoded, err := decodeDeliveryBody(route.trigger, headers, body)
 	if err != nil {
 		r.log.WarnContext(req.Context(), "a verified delivery did not decode",
 			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
@@ -1267,8 +1267,8 @@ func webhookWorkflowID(namespace, workflow, trigger, key string) string {
 // through [v1.DecodeWebhookBody], the one decoder both share, so that
 // `"amount": 4200` is an integer here exactly as it is in a replayed delivery and
 // a form-encoded delivery reads the same live as in a rehearsal.
-func decodeDeliveryBody(headers map[string]string, body []byte) (any, error) {
-	return v1.DecodeWebhookBody(headers["content-type"], body)
+func decodeDeliveryBody(trigger *v1.WebhookTrigger, headers map[string]string, body []byte) (any, error) {
+	return v1.DecodeWebhookBody(trigger, headers["content-type"], body)
 }
 
 // withoutAuthorization removes the credential [v1.WebhookSchemeJWT] verified from
