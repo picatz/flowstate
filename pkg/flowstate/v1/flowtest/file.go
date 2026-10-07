@@ -317,6 +317,10 @@ type File struct {
 	// the refusal without spending the production budget, which is seconds of
 	// work under the race detector.
 	scanLimit int
+
+	// leafLimit replaces [maxVarMaterializedLeaves] when positive, unexported
+	// for the same reason as scanLimit.
+	leafLimit int
 }
 
 // CoverageStanza is a file's record of the branches its cases deliberately do

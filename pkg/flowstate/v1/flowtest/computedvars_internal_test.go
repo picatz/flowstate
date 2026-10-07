@@ -282,6 +282,46 @@ func TestTheScanBudgetCoversTheWidestOrdinaryFile(t *testing.T) {
 	assert.GreaterOrEqual(t, maxVarDependencyScans, (MaxVarsPerFile-1)*4*(tableLeaves+MaxVarsPerFile-1))
 }
 
+// TestAChainOfWholeValueReadsIsRefusedByWhatItCopies pins #1317: each link
+// reads the previous var whole, so the dependency graph is one edge per link
+// and every edge and scan bound admits it, while each link copies the table.
+// A small limit stands in for the production one, which costs a table of
+// hundreds of thousands of leaves to reach.
+func TestAChainOfWholeValueReadsIsRefusedByWhatItCopies(t *testing.T) {
+	t.Parallel()
+
+	build := func(links int) *File {
+		vars := map[string]any{"t": []any{1, 2, 3, 4}}
+		prev := "t"
+		for i := range links {
+			name := fmt.Sprintf("c%02d", i)
+			vars[name] = "${vars." + prev + "}"
+			prev = name
+		}
+
+		return &File{Vars: vars, leafLimit: 12}
+	}
+
+	// Three links of four leaves fit in twelve; the fourth does not.
+	p := newProblems(nil)
+	build(3).evaluateVars(p, nil)
+	assert.Nil(t, p.err(), "a chain within the limit loads")
+
+	p = newProblems(nil)
+	build(4).evaluateVars(p, nil)
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 leaves")
+}
+
+func TestLeafCountCountsAnEmptyContainerOnce(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, 1, leafCount(1))
+	assert.Equal(t, 1, leafCount(map[string]any{}))
+	assert.Equal(t, 1, leafCount([]any{}))
+	assert.Equal(t, 3, leafCount(map[string]any{"a": []any{1, 2}, "b": "x"}))
+}
+
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
 	t.Parallel()
 

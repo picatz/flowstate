@@ -267,7 +267,8 @@ const maxVarExpressions = MaxVarsPerFile
 // it: the per-read scan over the node map (a probe that retains no new edge
 // spends no edge budget; [maxVarDependencyScans] bounds it), and the material evaluation itself retains (a chain of
 // whole-value container reads copies the table once per link on ~one edge per
-// link). Those are the dependency model's costs, not this budget's; collapsing
+// link; [maxVarMaterializedLeaves] bounds that). Those are the dependency
+// model's costs, not this budget's; collapsing
 // a container read to one edge on the container would remove the quadratic
 // product — and most of this constant's job — entirely.
 const maxVarDependencyEdges = 2 * maxExpandedNodes
@@ -285,6 +286,45 @@ const maxVarDependencyEdges = 2 * maxExpandedNodes
 // is not an attack, and at roughly 45ns a visit it bounds the loader's scan to
 // about 0.9s.
 const maxVarDependencyScans = 20_000_000
+
+// maxVarMaterializedLeaves bounds the leaves the computed vars of one file may
+// produce between them. A whole-value read of a container yields a fresh copy
+// of it, and a chain of such reads depends on one var per link, so neither the
+// edge budget nor the scan budget sees it: 100 links over a 20,000-leaf table
+// is about 20,000 edges and 2,000,000 copied leaves, 17.7s and 2.6GB from a
+// small file (#1317). The copy is the resource, so the copy is what is counted.
+//
+// Three times [maxExpandedNodes]: it must admit everything the edge budget
+// does, since a direct reader of a table of L leaves both costs L edges and
+// yields L leaves, and [maxVarDependencyEdges] admits up to 200,000 of those.
+// 300,000 leaves is tens of megabytes at the worst, far under the 1GiB the
+// repository's tests run under.
+const maxVarMaterializedLeaves = 3 * maxExpandedNodes
+
+// leafCount is the number of leaves in a decoded value: a scalar is one, a
+// container is the sum of its elements, and an empty container is one so that
+// a million empty maps are still counted. Work is the value's own size, which
+// is what the evaluation that produced it already spent.
+func leafCount(v any) int {
+	switch v := v.(type) {
+	case map[string]any:
+		n := 0
+		for _, e := range v {
+			n += leafCount(e)
+		}
+
+		return max(n, 1)
+	case []any:
+		n := 0
+		for _, e := range v {
+			n += leafCount(e)
+		}
+
+		return max(n, 1)
+	default:
+		return 1
+	}
+}
 
 // depBudget is what one load's dependency scan may still spend: edges
 // retained and node visits made. Separate because they bound different
@@ -1088,6 +1128,7 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 			// expression reads already holds its value, and a var can read
 			// nothing else.
 			activation := map[string]any{v1.VarsRoot: f.Vars}
+			leavesLeft := cmp.Or(f.leafLimit, maxVarMaterializedLeaves)
 
 			for _, name := range order {
 				d := declared[name]
@@ -1110,6 +1151,16 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 
 					continue
 				}
+				// Charged for the copy the evaluation just made, before it is
+				// stored: past the budget the file is refused whole, and no
+				// later link gets to copy again (#1317).
+				leaves := leafCount(value)
+				if leaves > leavesLeft {
+					p.report(site{at: block}, "computed vars produce more than %d leaves between them; each `${vars.name}` read of a container copies it, so read a leaf of it, or read it from fewer vars", cmp.Or(f.leafLimit, maxVarMaterializedLeaves))
+
+					break
+				}
+				leavesLeft -= leaves
 				if len(d.path) > 1 {
 					switch value.(type) {
 					case map[string]any, []any:
