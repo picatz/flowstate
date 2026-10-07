@@ -45,6 +45,10 @@ func TestLexCELClassifiesByRole(t *testing.T) {
 		{"a comment", "x // why\n+ y", []string{"x:variable", "// why:comment", "+:operator", "y:variable"}},
 		{"a quote being typed is already a string", `inputs.a == "ab`, []string{
 			"inputs:variable", "a:property", "==:operator", `"ab:string`}},
+		{"a raw string ends at its quote even after a backslash", `r"\" + x`, []string{
+			`r"\":string`, "+:operator", "x:variable"}},
+		{"a cooked string skips an escaped backslash pair", `"\\" + x`, []string{
+			`"\\":string`, "+:operator", "x:variable"}},
 		{"nothing", "", nil},
 	}
 	for _, tt := range tests {
@@ -182,4 +186,72 @@ steps:
 		"5:15 != operator",
 		`5:18 "" string`,
 	}, decodeTokens(t, src, c.semanticTokens("file:///lit.yaml").Data))
+}
+
+func TestLexCELLetsAComprehensionShadowARoot(t *testing.T) {
+	t.Parallel()
+
+	mods := func(src string) map[string][]uint32 {
+		got := map[string][]uint32{}
+		for _, tok := range lexCEL(src) {
+			if tok.kind == tokVariable {
+				name := src[tok.start:tok.end]
+				got[name] = append(got[name], tok.mods)
+			}
+		}
+		return got
+	}
+
+	// The receiver and the use after the call are the engine's; both names inside
+	// the macro are the author's.
+	got := mods("[inputs].exists(inputs, inputs == 1) && inputs.n > 0")
+	assert.Equal(t, []uint32{modDefaultLibrary, 0, 0, modDefaultLibrary}, got["inputs"],
+		"the binding shadows the root for the length of the call and no longer")
+
+	// A binding does not leak across a sibling call, and a nested one is scoped.
+	got = mods("xs.all(vars, vars > 1) && vars.a == 1 && ys.map(i, zs.filter(steps, steps > i))")
+	assert.Equal(t, []uint32{0, 0, modDefaultLibrary}, got["vars"])
+	assert.Equal(t, []uint32{0, 0}, got["steps"])
+
+	// cel.bind binds its first argument too.
+	got = mods("cel.bind(run, 1, run + 1)")
+	assert.Equal(t, []uint32{0, 0}, got["run"])
+
+	// A call that merely shares a macro's name but whose first argument is not
+	// followed by a comma binds nothing.
+	got = mods("xs.map(inputs)")
+	assert.Equal(t, []uint32{modDefaultLibrary}, got["inputs"])
+}
+
+func TestSemanticTokensTakeMustOnlyFromDeclarations(t *testing.T) {
+	t.Parallel()
+
+	// `must:` is a predicate under inputs, outputs and types, and an ordinary key
+	// everywhere else: a var, a task input, an input's default or example.
+	const src = `name: where
+inputs:
+  n:
+    type: int
+    must: this > 0
+    default: 1
+  rec:
+    type: map
+    default:
+      must: plain words
+vars:
+  must: plain text
+steps:
+  - id: say
+    log:
+      message: hi
+      must: not an expression
+`
+	c := newClient(t)
+	c.initialize()
+	c.open("file:///where.yaml", src)
+	assert.Equal(t, []string{
+		"4:10 this variable+lib",
+		"4:15 > operator",
+		"4:17 0 number",
+	}, decodeTokens(t, src, c.semanticTokens("file:///where.yaml").Data))
 }

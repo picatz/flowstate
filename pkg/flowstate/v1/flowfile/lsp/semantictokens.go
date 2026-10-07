@@ -77,6 +77,13 @@ var engineRoots = map[string]bool{
 // the compiler reads it as a literal expression ([docs/LANGUAGE.md] lists them).
 var bareCELKeys = map[string]bool{"must": true}
 
+// declarationRoots are the top-level keys whose subtree declares typed values,
+// and dataKeys the keys inside one whose value is data rather than declaration.
+var (
+	declarationRoots = map[string]bool{"inputs": true, "outputs": true, "types": true}
+	dataKeys         = map[string]bool{"default": true, "example": true, "values": true}
+)
+
 // semanticTokensProvider is the `semanticTokensProvider` capability: the legend,
 // and full-document answers only. There is no range or delta form — the answer is
 // bounded by the document, which is bounded by [maxDocumentBytes], and a stale
@@ -115,6 +122,20 @@ func lexCEL(src string) []celToken {
 	var out []celToken
 	afterDot := false // the previous significant token was a member selection
 
+	// A comprehension macro binds its first argument for the length of its call,
+	// and the binding shadows an engine root: `[1].exists(inputs, inputs > 0)` is
+	// valid, and both names there are the author's. depth counts open
+	// parentheses, and each binding records the depth it was opened at.
+	type binding struct {
+		name  string
+		depth int
+	}
+	var bound []binding
+	depth := 0
+	shadowed := func(name string) bool {
+		return slices.ContainsFunc(bound, func(b binding) bool { return b.name == name })
+	}
+
 	for i := 0; i < len(src); {
 		c := src[i]
 		switch {
@@ -136,7 +157,7 @@ func lexCEL(src string) []celToken {
 			}
 			// A string prefix: r, b, rb, br in either case, directly before a quote.
 			if j < len(src) && (src[j] == '"' || src[j] == '\'') && isStringPrefix(src[i:j]) {
-				end := stringEnd(src, j)
+				end := stringEnd(src, j, strings.ContainsAny(src[i:j], "rR"))
 				out = append(out, celToken{i, end, tokString, 0})
 				i, afterDot = end, false
 				continue
@@ -147,6 +168,13 @@ func lexCEL(src string) []celToken {
 			switch {
 			case afterDot && call:
 				tok.kind = tokMethod
+				if bindsFirstArgument[word] {
+					if name, ok := firstArgument(src, j); ok {
+						// The parenthesis that opens the call is not counted yet:
+						// the binding lives one level deeper than it.
+						bound = append(bound, binding{name, depth + 1})
+					}
+				}
 			case afterDot:
 				tok.kind = tokProperty
 			case call:
@@ -155,7 +183,7 @@ func lexCEL(src string) []celToken {
 				tok.kind = tokKeyword
 			default:
 				tok.kind = tokVariable
-				if engineRoots[word] {
+				if engineRoots[word] && !shadowed(word) {
 					tok.mods = modDefaultLibrary
 				}
 			}
@@ -163,7 +191,7 @@ func lexCEL(src string) []celToken {
 			i, afterDot = j, false
 
 		case c == '"' || c == '\'':
-			end := stringEnd(src, i)
+			end := stringEnd(src, i, false)
 			out = append(out, celToken{i, end, tokString, 0})
 			i, afterDot = end, false
 
@@ -192,6 +220,15 @@ func lexCEL(src string) []celToken {
 		default:
 			// A bracket, comma or something the lexer does not know: not a name,
 			// so a selection opened before it selects nothing.
+			switch c {
+			case '(':
+				depth++
+			case ')':
+				for len(bound) > 0 && bound[len(bound)-1].depth >= depth {
+					bound = bound[:len(bound)-1]
+				}
+				depth = max(depth-1, 0)
+			}
 			i++
 			afterDot = false
 		}
@@ -201,6 +238,40 @@ func lexCEL(src string) []celToken {
 }
 
 var twoByteOperators = []string{"&&", "||", "==", "!=", "<=", ">="}
+
+// bindsFirstArgument are the macros whose first argument names a variable bound
+// in the rest of the call.
+var bindsFirstArgument = map[string]bool{
+	"all": true, "exists": true, "exists_one": true, "existsOne": true,
+	"map": true, "filter": true, "bind": true,
+	"transformList": true, "transformMap": true, "transformMapEntry": true,
+}
+
+// firstArgument returns the identifier that opens the argument list starting at
+// the parenthesis at or after i, when one is followed by a comma.
+func firstArgument(src string, i int) (string, bool) {
+	for ; i < len(src) && src[i] != '('; i++ {
+		if src[i] != ' ' && src[i] != '\t' && src[i] != '\n' {
+			return "", false
+		}
+	}
+	i++
+	for i < len(src) && (src[i] == ' ' || src[i] == '\t' || src[i] == '\n') {
+		i++
+	}
+	start := i
+	if i >= len(src) || !isIdentStart(src[i]) {
+		return "", false
+	}
+	for i < len(src) && isIdentPart(src[i]) {
+		i++
+	}
+	name := src[start:i]
+	if nextSignificant(src, i) != ',' {
+		return "", false
+	}
+	return name, true
+}
 
 func isIdentStart(c byte) bool {
 	return c == '_' || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
@@ -231,10 +302,9 @@ func nextSignificant(src string, i int) byte {
 
 // stringEnd returns the offset just past the string literal opening at i, which
 // is the end of the source when it is never closed. A triple-quoted string closes
-// only on its own three quotes; a raw string's backslash escapes nothing, but
-// treating it as an escape here only ever shortens a string that is already
-// malformed in the way a raw one would not be, so one rule serves both.
-func stringEnd(src string, i int) int {
+// only on its own three quotes. A backslash escapes the next byte except in a raw
+// string, where it is an ordinary character: `r"\"` is a complete literal.
+func stringEnd(src string, i int, raw bool) int {
 	q := src[i]
 	triple := strings.HasPrefix(src[i:], string([]byte{q, q, q}))
 	j := i + 1
@@ -243,7 +313,7 @@ func stringEnd(src string, i int) int {
 	}
 	for j < len(src) {
 		switch {
-		case src[j] == '\\':
+		case src[j] == '\\' && !raw:
 			j += 2
 		case triple && strings.HasPrefix(src[j:], string([]byte{q, q, q})):
 			return j + 3
@@ -335,14 +405,18 @@ func semanticTokens(doc *document) semanticTokensResult {
 		}
 	}
 
-	var walk func(v *value, key string)
-	walk = func(v *value, key string) {
+	// decl is true beneath the three places a `must:` is a declaration's
+	// predicate. Anywhere else the key is a name a map happens to use — a var
+	// called `must`, a key in a task input — and its value is as literal as the
+	// compiler reads it.
+	var walk func(v *value, key string, decl bool)
+	walk = func(v *value, key string, decl bool) {
 		if v == nil {
 			return
 		}
 		switch v.kind {
 		case kindScalar:
-			if bareCELKeys[key] && len(v.fences) == 0 && v.text != "" {
+			if decl && bareCELKeys[key] && len(v.fences) == 0 && v.text != "" {
 				place(v.text, v.textMapper(doc.index))
 			}
 			for _, f := range v.fences {
@@ -350,16 +424,18 @@ func semanticTokens(doc *document) semanticTokensResult {
 			}
 		case kindSequence:
 			for _, item := range v.items {
-				walk(item, "")
+				walk(item, "", decl)
 			}
 		case kindMapping:
 			for _, e := range v.entries {
-				walk(e.value, e.key)
+				// A declaration's own values are data: an input's default or
+				// example may be a map with a key called `must`.
+				walk(e.value, e.key, decl && !dataKeys[e.key])
 			}
 		}
 	}
 	for _, e := range doc.parsed.entries {
-		walk(e.value, e.key)
+		walk(e.value, e.key, declarationRoots[e.key])
 	}
 	if len(tokens) == 0 {
 		return empty
