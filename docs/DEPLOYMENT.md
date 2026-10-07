@@ -878,7 +878,7 @@ issuer for a shared deployment.
 
 Claims beyond subject, issuer, and namespace are not copied into durable run or
 signal-sender identity unless the server names them. Add repeatable
-`--identity-claim <name>` flags when a local `signals:` or `workload.claims[...]`
+`--identity-claim <name>` flags when a local `signals:` (`sender.identity.claims[...]`) or `identity.claims[...]`
 rule needs to inspect a verified claim, just as on `flow server`; for example,
 the [authenticated approval journey](../examples/approval-gate/README.md#run-an-authenticated-approval)
 uses `--identity-claim team`.

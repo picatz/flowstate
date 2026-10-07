@@ -156,7 +156,7 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 // registration.
 //
 // Claims is copied too, not just the four scalar fields: a case whose policy
-// keys on workload.claims["repository"] would otherwise see them on the local
+// keys on identity.claims["repository"] would otherwise see them on the local
 // driver, which installs auth.WorkloadIdentity directly, and lose them on the
 // durable driver, which only ever sees what crossed this conversion — a
 // driver disagreement the harness itself would have caused rather than caught.

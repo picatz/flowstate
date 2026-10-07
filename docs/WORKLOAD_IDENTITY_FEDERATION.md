@@ -107,6 +107,13 @@ authentication; no OIDC client.
 direction on the workload document, which is under no compatibility obligation
 and therefore has no excuse for advertising any of it.
 
+**Delegated egress.** The RFC 8693 delegated exchange (`actor_token`) exists as a
+library capability only and no policy field or flag reaches it. Its delegator
+token would be the human's own bearer token, which cannot be stored in a run's
+durable history, so it stays unreachable until the inbound `act` chain is carried
+on the principal and a token-exchange service lets a workload present its own
+chain-bearing token.
+
 ## The assertions themselves
 
 Compact signed JWTs with `typ: JWT`, audience-bound and short-lived. They are

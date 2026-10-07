@@ -110,7 +110,7 @@ func TestSecretPolicyAuthorize(t *testing.T) {
 		},
 		{
 			name:      "an allow rule naming who the workload acts for",
-			allow:     []string{`workload.on_behalf_of.startsWith("repo:picatz/flowstate:")`},
+			allow:     []string{`identity.subject.startsWith("repo:picatz/flowstate:")`},
 			reference: secretRef("env", "API_KEY"),
 		},
 		{
@@ -138,7 +138,7 @@ func TestSecretPolicyAuthorize(t *testing.T) {
 		},
 		{
 			name:      "a rule that cannot be evaluated refuses",
-			allow:     []string{`workload.claims["absent"] == "x"`},
+			allow:     []string{`identity.claims["absent"] == "x"`},
 			reference: secretRef("env", "API_KEY"),
 			identity: func() auth.WorkloadIdentity {
 				return auth.WorkloadIdentity{Subject: "s", Issuer: "https://i.example.com"}

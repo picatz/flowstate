@@ -94,8 +94,14 @@ type DelegatorTokenFunc func(ctx context.Context) (token Material, tokenType str
 // exactly the shape a delegated exchange must not be able to degrade into. And
 // this is the client half only: Flowstate is an 8693 client and not a server,
 // so nothing here mints an "act" claim, checks "may_act", or bounds a
-// delegation chain. Those belong to the grant model, which is design-gated on
-// #567's D1 and D2.
+// delegation chain.
+//
+// Delegator is deliberately unreachable from [FederationPolicy] and from any
+// flag: its token would be the human's own bearer token, which cannot cross a
+// durable run's history (invariant 7), so no operator spelling can supply it
+// without storing a credential. Delegated egress returns once the inbound "act"
+// chain is carried on the principal and a token-exchange service lets the
+// workload present its own chain-bearing token (#567 D2, #1467).
 type TokenExchangeConfig struct {
 	// Name identifies this exchanger in credentials and audit records. Defaults
 	// to "token-exchange".

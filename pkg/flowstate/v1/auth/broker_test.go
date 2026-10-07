@@ -118,14 +118,14 @@ func TestBrokerAssumePolicy(t *testing.T) {
 		},
 		{
 			name:     "an allow rule matching who the workload acts for",
-			allow:    []string{`workload.on_behalf_of.startsWith("repo:picatz/flowstate:")`},
+			allow:    []string{`identity.subject.startsWith("repo:picatz/flowstate:")`},
 			identity: testIdentity(),
 			ref:      testStepRef(),
 			target:   "aws-prod",
 		},
 		{
 			name:     "an allow rule matching a carried claim",
-			allow:    []string{`workload.claims["repository"] == "picatz/flowstate"`},
+			allow:    []string{`identity.claims["repository"] == "picatz/flowstate"`},
 			identity: testIdentity(),
 			ref:      testStepRef(),
 			target:   "aws-prod",
@@ -167,7 +167,7 @@ func TestBrokerAssumePolicy(t *testing.T) {
 		},
 		{
 			name:       "a rule that cannot be evaluated refuses",
-			allow:      []string{`workload.claims["missing"] == "x"`},
+			allow:      []string{`identity.claims["missing"] == "x"`},
 			identity:   auth.WorkloadIdentity{Subject: "s", Issuer: "https://idp.example.com"},
 			ref:        testStepRef(),
 			target:     "aws-prod",
