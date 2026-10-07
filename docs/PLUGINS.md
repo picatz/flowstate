@@ -848,6 +848,12 @@ plugin that imports it ships no copy — and a version 6 host has no such file t
 link the plugin's task descriptors against. A host and its plugins built on
 either side of that change are refused at the handshake, naming both numbers.
 
+Protocol version 8 is the same kind of change: the decision types moved from
+`flowstate/v1` to `flowstate/decision/v1`, a domain package the engine
+provides, so a plugin built after the move ships no copy of
+`flowstate/decision/v1/decision.proto` and a version 7 host has no such file to
+link against. Mixed builds are refused at the handshake.
+
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,
 `vcs`, `github`, `slack` and `anthropic` do, so a worker nobody configured reaches public hosts
