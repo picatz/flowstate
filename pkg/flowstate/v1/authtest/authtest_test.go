@@ -66,7 +66,8 @@ func TestIssuerMintsVerifiableTokens(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	issuer := newIssuer(t, authtest.WithClock(clock.Now))
 
-	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{}, Role: "operator"})
+	verifier := verifierFor(t, issuer, clock, auth.TrustedIssuer{Actions: []string{}, Role: "operator",
+		CarryClaims: []auth.CarryClaim{{Claim: "team", Type: auth.ClaimTypeString}}})
 
 	token := issuer.MintToken(
 		map[string]any{"team": "platform"},
