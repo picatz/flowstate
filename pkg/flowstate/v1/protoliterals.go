@@ -489,6 +489,20 @@ func populateProtoMessageFromValueMap(ctx context.Context, input map[string]*Val
 		if !ok {
 			continue // Field not provided in input map
 		}
+		// A field typed as one of the task's own messages, or a list or map of
+		// them, is converted by the same routine the plugin SDK fills its input
+		// with, so the host's check and the plugin's decode cannot disagree
+		// about what a nested input is. Everything else keeps the paths below.
+		if holdsNestedMessage(fieldDesc) {
+			literal, err := nestedLiteral(ctx, val, scope)
+			if err != nil {
+				return fmt.Errorf("field %q: %w", fieldName, err)
+			}
+			if err := SetLiteralField(msg.ProtoReflect(), fieldDesc, literal); err != nil {
+				return fmt.Errorf("field %q: %w", fieldName, err)
+			}
+			continue
+		}
 		if fieldDesc.IsMap() {
 			// Support string-keyed maps with primitive values and flowstate.v1.Value messages.
 			m := msg.ProtoReflect().Mutable(fieldDesc).Map()
@@ -705,4 +719,46 @@ func PopulateLiterals(msg proto.Message, inputs map[string]*Value) error {
 	}
 
 	return populateProtoMessageFromValueMap(context.Background(), literals, msg, nil)
+}
+
+// holdsNestedMessage reports whether a field is one of the task's own messages,
+// or a list or a map of them: not flowstate.v1.Value, CEL's value, or a
+// protobuf well-known type, each of which has a path of its own.
+func holdsNestedMessage(field protoreflect.FieldDescriptor) bool {
+	element := field
+	if field.IsMap() {
+		element = field.MapValue()
+	}
+	if element.Kind() != protoreflect.MessageKind {
+		return false
+	}
+	name := element.Message().FullName()
+
+	return name != flowValueName && name != celValueName && !strings.HasPrefix(string(name), "google.protobuf.")
+}
+
+// nestedLiteral resolves a value written for a nested-message field to the
+// literal to convert: a literal as written, an expression as its result. A
+// secret reference or a structure holding one is refused, since the field's type
+// has nowhere to keep it.
+func nestedLiteral(ctx context.Context, val *Value, scope *Scope) (*expr.Value, error) {
+	switch kind := val.GetKind().(type) {
+	case *Value_Literal:
+		return kind.Literal, nil
+	case *Value_Expr:
+		out, err := valueToCEL(ctx, val, scope)
+		if err != nil {
+			return nil, err
+		}
+		literal, err := cel.RefValueToValue(out)
+		if err != nil {
+			return nil, fmt.Errorf("converting expression result: %w", err)
+		}
+		return literal, nil
+	case *Value_SecretRef:
+		return nil, fmt.Errorf("was given a secret reference (%s:%s), which this field's type cannot hold",
+			kind.SecretRef.GetScheme(), kind.SecretRef.GetName())
+	default:
+		return nil, fmt.Errorf("was given %T, which this field's type cannot hold%s", val.GetKind(), nestedSecretHelp)
+	}
 }

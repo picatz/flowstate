@@ -440,6 +440,48 @@ through a `Plugin.SchemaProse` field instead. That field is gone: it was a secon
 build step whose output could describe an older schema than the one compiled in.
 Delete the embedded file and the field, and add the generator to `buf.gen.yaml`.
 
+### Nested inputs
+
+An input need not be flat. Declare a field as one of your own messages, a list
+of them, or a map of them, and `sdk.DecodeInputs` fills it from the mapping or
+list the Flowfile wrote, keyed by field name:
+
+```yaml
+blocks:
+  - section: { text: "Deploy finished" }
+  - divider: {}
+```
+
+```protobuf
+message Block {
+  oneof kind {
+    Section section = 1;
+    Divider divider = 2;
+  }
+}
+message PostInputs { repeated Block blocks = 1; }
+```
+
+A oneof is written by naming the member it holds, and naming two members of one
+oneof is refused rather than resolved by whichever came last. Inside a nested
+message an unknown key is refused by name, unlike a top-level input the message
+has no field for (see below): a misspelt `sectoin:` would otherwise vanish and
+leave a message that looks accepted and is missing what the author wrote. A
+`null` leaves its field unset.
+
+The work is bounded where it is spent: messages nest at most 16 deep, a list or
+map holds at most 1024 entries, and one input converts at most 65536 values in
+all. Protobuf's well-known types (`Timestamp`, `Duration`) are still refused
+until [#1436](https://github.com/picatz/flowstate/issues/1436) decides what they
+are on the workflow side.
+
+Validation follows the same shape. The host fills your declared input message
+from the Flowfile's literals with the same routine the SDK decodes with
+(`flowstatev1.SetLiteralField`, `pkg/flowstate/v1/literalfield.go`), then
+evaluates your protovalidate rules over it, so a `string.max_len` on a nested
+field or a `repeated.max_items` on a list of blocks is reported by `flow
+validate`, at the line that wrote the input, before the run starts.
+
 ## Where the contract catches authors out
 
 Everything above works. What follows is what an outside author learns by walking
@@ -458,7 +500,7 @@ described in the same word a task with genuinely no inputs uses.
 Nothing checks the inputs going in: the host has no descriptor to check against,
 and inside the plugin `DecodeInputs` ignores an input the message has no field
 for, on purpose, so a workflow written against a newer version of a task does not
-fail against an older plugin (`DecodeInputs` in `pkg/flowstate/v1/plugin/sdk/values.go`). The two are individually
+fail against an older plugin (`DecodeInputs` in `pkg/flowstate/v1/plugin/sdk/values.go`; the nested conversion is `SetLiteralField` in `pkg/flowstate/v1/literalfield.go`). The two are individually
 right and jointly silent.
 
 Measured on the two plugins this page builds — chapter one's kept aside as

@@ -497,7 +497,14 @@ func literalMismatch(field protoreflect.FieldDescriptor, literal *expr.Value) st
 
 	case field.Kind() == protoreflect.MessageKind, field.Kind() == protoreflect.GroupKind:
 		// A singular message field — a Value, a Duration — accepts shapes this
-		// cannot usefully narrow, and the task converts it.
+		// cannot usefully narrow, and the task converts it. One of the task's own
+		// messages is written as a mapping keyed by field name, which is known.
+		name := string(field.Message().FullName())
+		if field.Kind() == protoreflect.MessageKind && name != "flowstate.v1.Value" &&
+			name != "google.api.expr.v1alpha1.Value" && !strings.HasPrefix(name, "google.protobuf.") &&
+			literal.GetMapValue() == nil {
+			return fmt.Sprintf("expected a mapping for %s, but this is %s", name, literalKind(literal))
+		}
 		return ""
 
 	case field.Kind() == protoreflect.EnumKind:
