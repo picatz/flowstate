@@ -67,6 +67,12 @@ func TestPolicyAssignedActionsEnforceLeastPrivilege(t *testing.T) {
 	_, err = flowstate.Run(grantNone, connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
 	assertInsufficientAction(t, err, "workload.run")
 
+	// A verified caller whose entry carried no list holds nothing: absence is
+	// not "unrestricted".
+	noList := auth.ContextWithPrincipal(t.Context(), auth.Principal{Issuer: "https://issuer.example", Subject: "unlisted"})
+	_, err = flowstate.Run(noList, connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
+	assertInsufficientAction(t, err, "workload.run")
+
 	for _, workflowID := range []string{owned.Msg.GetWorkflowId(), submitted.Msg.GetWorkflowId()} {
 		got, err := flowstate.Get(unrestricted, connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
 		require.NoError(t, err)

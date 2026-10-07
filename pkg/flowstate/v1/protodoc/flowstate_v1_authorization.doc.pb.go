@@ -185,8 +185,7 @@ func init() {
 			Leading: " Reading the values a run's workflow declared `sensitive: true` in the\n" +
 				" clear, through GetRequest.reveal_sensitive or\n" +
 				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
-				" values. It is never implied: a policy entry that lists no actions is not\n" +
-				" granted it, unlike the RPC actions above.\n",
+				" values. It is never implied: a caller holds it only when its policy entry lists it.\n",
 		},
 		{
 			Name: "flowstate.v1.authorization_action",

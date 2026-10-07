@@ -514,8 +514,7 @@ type GetRequest struct {
 	// RevealSensitive asks for the values the run's workflow declared
 	// `sensitive: true` in the clear. The server withholds them by default, and
 	// honours this only for a caller whose policy entry lists the
-	// `workload.reveal_sensitive` action explicitly: an entry with no action list
-	// is not granted it. A caller without it is answered normally, with the
+	// `workload.reveal_sensitive` action explicitly: it is never implied. A caller without it is answered normally, with the
 	// values withheld and `sensitive_disclosure` saying so, rather than refused.
 	RevealSensitive bool `protobuf:"varint,3,opt,name=reveal_sensitive,json=revealSensitive,proto3" json:"reveal_sensitive,omitempty"`
 	unknownFields   protoimpl.UnknownFields

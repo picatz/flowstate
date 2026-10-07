@@ -106,7 +106,7 @@ func TestTheServerDecidesWhatSensitiveValuesLeaveIt(t *testing.T) {
 
 	for name, ctx := range map[string]context.Context{
 		"no principal":            t.Context(),
-		"no action list":          caller(t.Context()),
+		"the ordinary actions":    caller(t.Context()),
 		"read only":               caller(t.Context(), "workload.read"),
 		"read and payload decode": caller(t.Context(), "workload.read", "payload.decode"),
 	} {

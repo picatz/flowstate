@@ -173,7 +173,7 @@ whose namespace claim is missing or fails the namespace grammar is rejected, nev
 admitted to a default tenant (`:119-142`, `:345`). Unauthenticated error text never
 describes the trust policy (`pkg/flowstate/v1/auth/connect.go:113-120`). An issuer
 entry may grant an exact allowlist from the schema-owned control-plane action
-vocabulary. An omitted allowlist preserves unrestricted legacy behavior; an empty
+vocabulary. An omitted allowlist is refused at load; an empty
 one grants nothing, role names grant nothing, and token `scope`/`scp` claims are not
 authority. Enforcement is shared by every WorkflowService RPC at the audit seam and
 records a policy denial before returning `PermissionDenied`

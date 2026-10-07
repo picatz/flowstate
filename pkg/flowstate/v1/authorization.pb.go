@@ -117,8 +117,7 @@ const (
 	// Reading the values a run's workflow declared `sensitive: true` in the
 	// clear, through GetRequest.reveal_sensitive or
 	// GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
-	// values. It is never implied: a policy entry that lists no actions is not
-	// granted it, unlike the RPC actions above.
+	// values. It is never implied: a caller holds it only when its policy entry lists it.
 	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE AuthorizationAction = 22
 )
 
