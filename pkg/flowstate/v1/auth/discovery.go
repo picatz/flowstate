@@ -171,7 +171,7 @@ func (i *Issuer) KeySet() jwk.Set {
 	}
 
 	for _, key := range i.retired {
-		if now.After(key.expiresAt) {
+		if key.expired(now) {
 			continue
 		}
 		set.Keys = append(set.Keys, key.published)
@@ -212,7 +212,7 @@ func (i *Issuer) signingProfile() ([]jwa.Algorithm, []string) {
 	}
 
 	for _, key := range i.retired {
-		if now.After(key.expiresAt) {
+		if key.expired(now) {
 			continue
 		}
 		if !slices.Contains(algorithms, key.algorithm) {

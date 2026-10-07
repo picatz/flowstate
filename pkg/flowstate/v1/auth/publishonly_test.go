@@ -60,10 +60,12 @@ func TestIssuerWithNoKeyAtAllIsStillRefused(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrNoSigningKey)
 }
 
-// TestPublishOnlyKeysStillExpire keeps retention honest in the new mode: with
-// the signing key gone nothing is exempt from it, and the key set shrinks rather
-// than panicking on a zero active key.
-func TestPublishOnlyKeysStillExpire(t *testing.T) {
+// TestPublishOnlyKeysOutliveRetention pins that a publish-only issuer keeps
+// every key it was given for as long as it runs. It has no signing key, so each
+// one is a key a worker is signing with now; expiring them after key_retention
+// would empty the key set a day after start-up while assertions still verify.
+// Retention still governs keys a worker-side issuer rotates out.
+func TestPublishOnlyKeysOutliveRetention(t *testing.T) {
 	clock := authtest.NewClock(referenceTime)
 	pair := newKeyPair(t, "2026-08")
 
@@ -74,10 +76,10 @@ func TestPublishOnlyKeysStillExpire(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{pair.id}, publishedKeyIDs(t, issuer))
 
-	clock.Advance(2 * time.Hour)
+	clock.Advance(100 * time.Hour)
 
-	assert.Empty(t, publishedKeyIDs(t, issuer))
-	assert.Empty(t, issuer.WorkloadMetadata().SigningAlgValuesSupported)
+	assert.Equal(t, []string{pair.id}, publishedKeyIDs(t, issuer))
+	assert.NotEmpty(t, issuer.WorkloadMetadata().SigningAlgValuesSupported)
 }
 
 // TestPublishOnlyPolicyIssuerPublishesWhatAWorkerSigns is the end-to-end check

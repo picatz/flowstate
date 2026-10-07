@@ -474,6 +474,8 @@ type retiredKey struct {
 	id        string
 	algorithm jwa.Algorithm
 	published jwk.Value
+	// expiresAt is when retention ends; the zero time means the key is published
+	// until the process stops, which is how a publish-only issuer holds its keys.
 	expiresAt time.Time
 
 	// generation is the installation this key is, from [Issuer.generations].
@@ -696,6 +698,11 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 	return issuer, nil
 }
 
+// expired reports whether the key's retention has ended at now.
+func (k retiredKey) expired(now time.Time) bool {
+	return !k.expiresAt.IsZero() && now.After(k.expiresAt)
+}
+
 // installVerifyOnlyKeys turns what [WithVerifyOnlyKey] collected into retired
 // keys, once every option has been applied and the retention and clock are
 // settled.
@@ -707,6 +714,7 @@ func NewIssuer(issuerURL string, key SigningKey, opts ...IssuerOption) (*Issuer,
 // failure this option exists to prevent, arriving without a message.
 func (i *Issuer) installVerifyOnlyKeys() error {
 	now := i.clock()
+	publishOnly := i.active.IsZero()
 
 	for _, key := range i.verifyOnly {
 		switch {
@@ -730,17 +738,26 @@ func (i *Issuer) installVerifyOnlyKeys() error {
 			return err
 		}
 
-		i.retired = append(i.retired, retiredKey{
+		retired := retiredKey{
 			id:         key.id,
 			algorithm:  algorithm,
 			published:  published,
 			generation: i.nextGeneration(),
+		}
+		if !publishOnly {
 			// Measured from start-up, because that is when this key stopped
 			// signing as far as this process can tell. An operator whose
 			// retention has to outlast a longer gap configures a longer
 			// key_retention rather than getting an unbounded one by default.
-			expiresAt: now.Add(i.keyRetention),
-		})
+			//
+			// A publish-only issuer is the exception: it has no signing key of
+			// its own, so each key it was given is one a worker is signing with
+			// now, not one that stopped. Letting retention lapse would empty the
+			// key set a day after start-up while workers still sign. Rotation
+			// there is the operator replacing the files and restarting.
+			retired.expiresAt = now.Add(i.keyRetention)
+		}
+		i.retired = append(i.retired, retired)
 	}
 
 	i.verifyOnly = nil
@@ -981,7 +998,7 @@ func (i *Issuer) publishedLocked(generation uint64, now time.Time) bool {
 		return true
 	}
 	return slices.ContainsFunc(i.retired, func(key retiredKey) bool {
-		return key.generation == generation && !now.After(key.expiresAt)
+		return key.generation == generation && !key.expired(now)
 	})
 }
 
@@ -989,7 +1006,7 @@ func (i *Issuer) publishedLocked(generation uint64, now time.Time) bool {
 // for writing.
 func (i *Issuer) pruneLocked(now time.Time) {
 	i.retired = slices.DeleteFunc(i.retired, func(key retiredKey) bool {
-		return now.After(key.expiresAt)
+		return key.expired(now)
 	})
 }
 

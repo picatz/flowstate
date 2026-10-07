@@ -816,7 +816,9 @@ flow server --auth-policy /etc/flowstate/auth.yaml \
 
 # 3. After the retention window (federation.key_retention, default 24h, which has
 #    to outlast both the old assertions and every relying party's cached key set),
-#    restart everything with the new key alone and delete the old one.
+#    restart everything with the new key alone and delete the old one. The server
+#    publishes every key it is given until it restarts: it holds no signing key,
+#    so retention never expires them, and dropping the old one is the operator's act.
 flow server --auth-policy /etc/flowstate/auth.yaml \
   --rpc-resource https://flowstate.example.com/rpc \
   --identity-key /etc/flowstate/public-keys/2026-09.pem
