@@ -92,6 +92,7 @@ updates:
       - /plugins/codex
       - /plugins/git
       - /plugins/github
+      - /plugins/openai
       - /plugins/sql
       - /plugins/slack
       - /plugins/vcs

@@ -144,7 +144,7 @@ func commandContext(cmd *cobra.Command) context.Context {
 func addEgressPolicyFlag(cmd *cobra.Command) {
 	cmd.Flags().String("egress-policy", os.Getenv(egressPolicyEnv),
 		"path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches "+
-			"(default $"+egressPolicyEnv+"); the first-party anthropic, git, github, slack, sql, ssh and vcs plugins enforce the "+
+			"(default $"+egressPolicyEnv+"); the first-party anthropic, git, github, openai, slack, sql, ssh and vcs plugins enforce the "+
 			"grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network "+
 			"from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; "+
 			"with no file, plugins are granted the default policy built-in HTTP runs under, which sql "+

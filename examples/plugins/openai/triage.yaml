@@ -1,0 +1,84 @@
+edition: v2026.4
+name: openai-ticket-triage
+description: Asks an OpenAI model two typed questions about a support ticket, then pages on-call only when the probability that the ticket is urgent clears a threshold the file states, and sends everything else to a person.
+plugins:
+  openai: v0.1.0
+inputs:
+  ticket:
+    type: string
+    required: true
+    description: the support ticket text the questions are about
+    example: The checkout page has returned a 500 for every customer since 14:02.
+    must: size(this) > 0 && size(this) <= 20000
+  model:
+    type: string
+    required: true
+    description: the OpenAI model identifier the questions are put to, one that supports the Decisions API
+    example: a-decisions-capable-model
+vars:
+  # The lowest probability of "urgent" that may page a person, and the lowest
+  # confidence in a team choice that may assign the ticket to it. Both are
+  # numbers a person chose and wrote down here, read against probabilities the
+  # model produced rather than a claim it made about itself.
+  page_threshold: 0.9
+  team_threshold: 0.6
+steps:
+  - id: decide
+    # Retried by the engine's own policy on a rate limit, a provider outage
+    # response, or a failure before the request was sent, which the plugin
+    # reports as retryable. A refused credential, a refused question, a
+    # malformed answer, an unknown model, or a connection lost after the request
+    # was sent (the call may have been processed and billed) is not retried.
+    retry:
+      attempts: 3
+      backoff: 2.0
+    openai.decide:
+      # A whole secret reference, resolved on the worker that makes the call. It
+      # is never in the Flowfile, the run's history, or an error.
+      api_key: ${secret('env:OPENAI_API_KEY')}
+      evidence: ${inputs.ticket}
+      model: ${inputs.model}
+      question_set:
+        questions:
+          - name: category
+            instructions: Which team should own this ticket?
+            choice:
+              options:
+                - billing
+                - outage
+                - other
+          - name: urgent
+            instructions: Is a customer-facing service down or losing money right now?
+            predicate: {}
+  - id: urgent
+    value: ${steps.decide.answers.filter(a, a.name == "urgent")[0]}
+  - id: category
+    value: ${steps.decide.answers.filter(a, a.name == "category")[0]}
+  # The gate reads the probability of "true" from the distribution, not the
+  # boolean, because the boolean is only "at least one half". Calibration 1 is
+  # CALIBRATION_MODEL_PROBABILITY, the only value for which the distribution is
+  # a probability; 2 is self-reported and 3 is none, where the distribution is
+  # empty. A provider that cannot say how likely the answer is therefore cannot
+  # page anyone by being sure, and swapping one in queues every ticket for a
+  # person instead of silently passing.
+  - id: confident_and_urgent
+    value: ${steps.urgent.value.calibration == 1 && steps.urgent.value.distribution["true"] >= vars.page_threshold}
+  # The same discipline for the team: an answer the model was not sure of is
+  # not assigned on its say-so.
+  - id: team
+    value: '${(steps.category.value.calibration == 1 && steps.category.value.confidence >= vars.team_threshold) ? steps.category.value.choice : "unassigned"}'
+  - id: page
+    if: ${steps.confident_and_urgent.value}
+    log:
+      message: '${"paging on-call: urgent %s ticket".format([steps.team.value])}'
+  - id: review
+    if: ${!steps.confident_and_urgent.value}
+    log:
+      message: '${"queued for a person: %s ticket, not confidently urgent".format([steps.team.value])}'
+outputs:
+  paged:
+    value: ${steps.confident_and_urgent.value}
+    description: true only when the model's probability that the ticket is urgent was at least page_threshold
+  team:
+    value: ${steps.team.value}
+    description: the team the model chose when its confidence was at least team_threshold, otherwise unassigned

@@ -1,0 +1,139 @@
+package reachable
+
+import (
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
+)
+
+// deniedHost is where every openai.decide goes: the endpoint is a constant in the
+// plugin, not an input, so an operator's only lever over it is the egress
+// policy. Denying it by name means the refusal happens before any name
+// resolution, so nothing here reaches the internet.
+const deniedHost = "api.openai.com"
+
+// operatorPolicyDenying is the file an operator writes to stop this plugin
+// reaching OpenAI — a deployment deciding that this worker may not ask a model,
+// without uninstalling the plugin.
+const operatorPolicyDenying = "egress:\n  deny:\n    - host == \"" + deniedHost + "\"\n"
+
+// TestAnOperatorDenyRuleStopsAnOpenAIDecision is the accepting-posture plugin's other
+// half: `openai` takes the deployment default rather than refusing it (#1332,
+// point 7), which is only safe because an operator who does write a policy is
+// obeyed. This is that direction, through a real launched plugin process.
+//
+// The call carries a production identity, as every real worker call does; the
+// task itself does not depend on the mode, since a decision writes nothing.
+func TestAnOperatorDenyRuleStopsAnOpenAIDecision(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a real plugin binary; skipped under -short, run in CI and by `make check`")
+	}
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("the Go toolchain is not available, so this plugin cannot be built")
+	}
+
+	dir := t.TempDir()
+	binaryPath := filepath.Join(dir, plugin.BinaryPrefix+"openai")
+	buildPlugin(t, binaryPath)
+
+	host := openHost(t, plugin.Config{
+		SearchPath:          []string{dir},
+		HandshakeTimeout:    10 * time.Second,
+		DescribeTimeout:     10 * time.Second,
+		CallTimeout:         30 * time.Second,
+		ShutdownGrace:       5 * time.Second,
+		DisableHealthChecks: true,
+
+		// The field, not a hand-composed Env entry: the host owns encoding the
+		// grant, and this is the launch path a worker actually takes.
+		EgressPolicy: []byte(operatorPolicyDenying),
+	})
+
+	defs := host.TaskDefs()
+	if len(defs) != 1 || defs[0].Name != "openai.decide" {
+		t.Fatalf("the launched plugin does not offer exactly openai.decide: %v", defs)
+	}
+
+	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
+		Principal: &flowstatev1.Principal{Subject: "https://issuer.example.com#worker"},
+		Mode:      flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
+	})
+	ctx = flowstatev1.ContextWithTaskRuntime(ctx, taskRuntimeResolvingTheTestToken(t))
+
+	// A whole secret reference, not a literal: the host refuses a literal for
+	// this input before dispatch, which is a different control (#1320's
+	// credential rule) this test has to satisfy rather than test. Destination
+	// authorization and credential release stay separate all the way down —
+	// this call has a credential and is refused anyway, on the destination.
+	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
+		"model":    flowstatev1.NewValue("any-model-identifier"),
+		"evidence": flowstatev1.NewValue("a ticket the operator's policy should stop"),
+		"question_set": flowstatev1.NewValue(map[string]any{
+			"questions": []any{map[string]any{"name": "urgent", "predicate": map[string]any{}}},
+		}),
+		"api_key": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
+			Scheme: "env", Name: testTokenName,
+		}}},
+	}, nil)
+	if err == nil {
+		t.Fatal("openai.decide reached a host the operator's egress policy denies")
+	}
+	// The plugin's own wording for a netpolicy denial (decide.go), which is
+	// deliberately host-free: the destination came from this plugin, but the
+	// message an author reads must not become a place a denied name is echoed.
+	if !strings.Contains(err.Error(), "deployment egress policy denied openai.decide") {
+		t.Fatalf("openai.decide failed for some reason other than the operator's policy: %v", err)
+	}
+}
+
+// testTokenName is the reference the call above passes, and the environment
+// variable behind it is FLOWSTATE_SECRET_ plus this name — the env provider's
+// own prefix, so nothing but a variable named for this test is readable.
+const testTokenName = "OPENAI_EGRESS_TEST_KEY"
+
+// taskRuntimeResolvingTheTestToken is the smallest runtime that lets a whole
+// secret reference resolve: a store over the process environment, and a policy
+// that permits this one reference.
+//
+// The host refuses a literal for a required secret input before it dispatches,
+// so a task that takes a credential cannot be reached without one — which is a
+// control worth having and an obstacle for a test about somewhere else. The
+// policy is written as narrowly as the test needs rather than as `true`, so it
+// cannot quietly become a fixture that permits everything.
+func taskRuntimeResolvingTheTestToken(t *testing.T) flowstatev1.TaskRuntime {
+	t.Helper()
+
+	t.Setenv(secrets.DefaultEnvPrefix+testTokenName, "sk-not-a-real-key")
+
+	provider, err := secrets.NewEnvProvider(secrets.WithEnvAllow(testTokenName))
+	if err != nil {
+		t.Fatalf("building the env secret provider: %v", err)
+	}
+	store, err := secrets.NewStore(provider)
+	if err != nil {
+		t.Fatalf("building the secret store: %v", err)
+	}
+	policy, err := auth.SecretAccessPolicy{
+		Allow: []string{`secret.scheme == "env" && secret.name == "` + testTokenName + `"`},
+	}.Compile()
+	if err != nil {
+		t.Fatalf("compiling the secret access policy: %v", err)
+	}
+
+	return flowstatev1.TaskRuntime{
+		Store:  store,
+		Policy: policy,
+		Identity: auth.WorkloadIdentity{
+			Subject: "worker",
+			Issuer:  "https://issuer.example.com",
+		},
+		Step: auth.StepRef{Workflow: "openai-egress", Run: "egress-test", Step: "notify"},
+	}
+}
