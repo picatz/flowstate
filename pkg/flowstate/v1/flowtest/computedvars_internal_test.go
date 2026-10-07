@@ -215,12 +215,71 @@ func TestVarDependenciesStopAtWholeFileEdgeBound(t *testing.T) {
 		"big[1]": {path: varPath{{key: "big"}, {index: 1, list: true}}},
 		"big[2]": {path: varPath{{key: "big"}, {index: 2, list: true}}},
 	}
-	remaining := 2
-	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, &remaining)
+	budget := &depBudget{edges: 2, scans: 100}
+	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, budget)
 
 	assert.False(t, withinBound)
 	assert.Nil(t, deps)
-	assert.Zero(t, remaining)
+	assert.Zero(t, budget.edges)
+}
+
+// TestVarDependencyScansAreSpentByReadsThatMatchNothing pins #1353: a read
+// naming no leaf retains no edge, so only the scan budget can refuse it.
+func TestVarDependencyScansAreSpentByReadsThatMatchNothing(t *testing.T) {
+	t.Parallel()
+
+	nodes := map[string]varNode{}
+	for i := range 10 {
+		nodes[fmt.Sprintf("t[%d]", i)] = varNode{path: varPath{{key: "t"}, {index: i, list: true}}}
+	}
+	miss := varPath{{key: "other"}}
+	budget := &depBudget{edges: 1000, scans: 25}
+
+	// Two walks of ten nodes fit in 25; the third does not.
+	for range 2 {
+		deps, within := dependenciesFor([]varPath{miss}, nodes, budget)
+		require.True(t, within)
+		require.Empty(t, deps)
+	}
+	deps, within := dependenciesFor([]varPath{miss}, nodes, budget)
+	assert.False(t, within)
+	assert.Nil(t, deps)
+	assert.Equal(t, 1000, budget.edges, "a miss retains no edge")
+}
+
+// TestAFileOfNonMatchingReadsIsRefused is the load-level form of #1353: a
+// computed var reading paths that name no leaf retains no edge, so only the
+// scan budget can refuse the file. A small limit stands in for the production
+// one, which costs seconds of scanning to reach.
+func TestAFileOfNonMatchingReadsIsRefused(t *testing.T) {
+	t.Parallel()
+
+	file := &File{
+		Vars:      map[string]any{"t": []any{1, 2, 3}, "a": "${size([vars.t.x, vars.t.y])}"},
+		scanLimit: 7,
+	}
+	p := newProblems(nil)
+
+	assert.Nil(t, file.declareVars(p))
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars exceed the dependency budget")
+
+	// The same file within its limit declares: the bound, not the shape, refuses.
+	file.scanLimit = 8
+	p = newProblems(nil)
+	assert.NotNil(t, file.declareVars(p))
+	assert.Nil(t, p.err())
+}
+
+// TestTheScanBudgetCoversTheWidestOrdinaryFile pins the budget's legitimate
+// side by arithmetic rather than by spending it: one 20,000-leaf table and
+// the 199 computed vars that fit beside it, each making four reads, with the
+// computed leaves counted as nodes too (Copilot, #2452).
+func TestTheScanBudgetCoversTheWidestOrdinaryFile(t *testing.T) {
+	t.Parallel()
+
+	const tableLeaves = 20_000
+	assert.GreaterOrEqual(t, maxVarDependencyScans, (MaxVarsPerFile-1)*4*(tableLeaves+MaxVarsPerFile-1))
 }
 
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
@@ -283,7 +342,7 @@ func TestQuadraticSharedTableFanOutIsRefused(t *testing.T) {
 	_, err := LoadSource(sharedTableSource(20_000, 100))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(),
-		fmt.Sprintf("computed vars have more than %d dependency edges", maxVarDependencyEdges))
+		"computed vars exceed the dependency budget")
 }
 
 // TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and
