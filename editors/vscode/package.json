@@ -246,10 +246,10 @@
     ]
   },
   "dependencies": {
-    "vscode-languageclient": "10.1.1"
+    "vscode-languageclient": "10.1.2"
   },
   "devDependencies": {
-    "@types/node": "26.6.2",
+    "@types/node": "26.6.3",
     "@types/vscode": "1.138.0",
     "typescript": "7.0.2"
   }

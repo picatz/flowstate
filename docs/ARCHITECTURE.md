@@ -79,12 +79,12 @@ Flowstate is six layers, each with one responsibility and a narrow contract to t
 
 ```mermaid
 flowchart TB
-  Authoring["1. Authoring<br/>Flowfile (YAML + CEL) · LSP · validate/fix"]
-  Spec[["2. Specification<br/>Workflow protobuf · protovalidate"]]
-  Capability["3. Capability<br/>task registry: TaskDef descriptors"]
-  Execution["4. Execution<br/>one StepExecutor · local and Temporal drivers"]
-  Control["5. Control plane<br/>Connect RPC · authn · schedules"]
-  Governance["6. Governance<br/>egress policy · cost limits · secrets · audit"]
+  Authoring["<b>1 · Authoring</b><br/>Flowfile (YAML + CEL) · LSP · validate/fix"]
+  Spec["<b>2 · Specification</b><br/>Workflow protobuf · protovalidate"]
+  Capability["<b>3 · Capability</b><br/>task registry: TaskDef descriptors"]
+  Execution["<b>4 · Execution</b><br/>one StepExecutor · local and Temporal drivers"]
+  Control["<b>5 · Control plane</b><br/>Connect RPC · authn · schedules"]
+  Governance["<b>6 · Governance</b><br/>egress policy · cost limits · secrets · audit"]
 
   Authoring -->|"flow compile"| Spec
   Spec --> Execution
@@ -94,8 +94,16 @@ flowchart TB
   Capability -. "typed inputs" .-> Spec
   Capability -. "dispatch" .-> Execution
 
-  classDef ir stroke-width:2px;
-  class Spec ir;
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class Authoring authoring
+  class Spec contract
+  class Execution,Control runtime
+  class Governance govern
+  class Capability neutral
 ```
 
 The two solid arrows down the middle are the whole pipeline: an author's file becomes
@@ -230,14 +238,35 @@ workload runs is a value; how any workload runs is the function.
 
 ```mermaid
 flowchart LR
-  Files["Flowfiles: nightly-etl, onboard-tenant, incident-runbook"] -->|compile| Spec[["Workflow spec, carried in RunState"]]
-  Spec -->|argument| Run["Run — the one registered workflow type"]
-  Run --> Kind{"node kind"}
-  Kind --> Task["task activity"]
-  Kind --> Wait["durable timer or signal"]
-  Kind --> Fan["for_each, parallel, loop"]
-  Kind --> Branch["switch, value"]
-  Kind --> Call["call: a nested spec"]
+  Files["Flowfiles:<br/>nightly-etl, onboard-tenant,<br/>incident-runbook"]
+  Spec["<b>Workflow spec</b><br/>carried in RunState"]
+  Run["<b>Run</b><br/>the one registered workflow type"]
+  Kind{"node kind"}
+  Task["task activity"]
+  Wait["durable timer or signal"]
+  Fan["for_each, parallel, loop"]
+  Branch["switch, value"]
+  Call["call: a nested spec"]
+
+  Files -->|compile| Spec
+  Spec -->|argument| Run
+  Run --> Kind
+  Kind --> Task
+  Kind --> Wait
+  Kind --> Fan
+  Kind --> Branch
+  Kind --> Call
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class Files authoring
+  class Spec contract
+  class Run,Fan,Branch,Call,Task runtime
+  class Wait durable
+  class Kind neutral
 ```
 
 The difference from keying on the type name is mechanical rather than stylistic, in three
@@ -456,12 +485,29 @@ Where a reference stops being one is the whole of invariant 7:
 
 ```mermaid
 flowchart LR
-  Author["${secret('db:password')} in a Flowfile"] -->|compile| Ref["SecretRef in the spec"]
-  Ref --> History["submitted; persisted in history and RunState"]
-  History --> Activity["task activity, worker-side"]
-  Activity -->|"ResolveSecret: authorize, then the provider"| Value["value, for this call only"]
-  Value -->|scrubber| Outputs["step outputs, logs, errors"]
-  Ref -->|"refused: cannot be read in an expression"| Eval["workflow-side evaluation"]
+  Author["<b>${secret('db:password')}</b><br/>in a Flowfile"]
+  Ref["SecretRef in the spec"]
+  History["submitted; persisted in<br/>history and RunState"]
+  Activity["task activity,<br/>worker-side"]
+  Value["value, for this call only"]
+  Outputs["step outputs, logs, errors"]
+  Eval["workflow-side evaluation"]
+
+  Author -->|compile| Ref --> History --> Activity
+  Activity -->|"ResolveSecret: authorize,<br/>then the provider"| Value
+  Value -->|scrubber| Outputs
+  Ref -->|"refused: cannot be read<br/>in an expression"| Eval
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  class Author authoring
+  class Ref contract
+  class History durable
+  class Activity,Value,Outputs runtime
+  class Eval govern
 ```
 
 Every edge is a rule with code behind it: `SecretRef` is a `Value` kind

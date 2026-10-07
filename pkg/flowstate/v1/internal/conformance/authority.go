@@ -80,6 +80,14 @@ type Federation struct {
 	// guarantee about [v1.AuthorizeCredential]: that it is never reached for
 	// a request refused before authorization.
 	ExchangeCalls *atomic.Int32
+
+	// NoAllow installs no allow rule, so the broker holds only Deny, if any:
+	// the fixture for "federation is configured, but nothing permits the
+	// target". Left false the broker allows every request, as the cases that
+	// are about something else need.
+	NoAllow bool
+	// Deny are assumption deny rules the broker is built with.
+	Deny []string
 }
 
 // HasSecrets reports whether this Authority configures a fixture secret store
@@ -142,9 +150,14 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 	if err != nil {
 		tb.Fatalf("building fixture issuer: %v", err)
 	}
-	broker, err := auth.NewBroker(issuer,
+	options := []auth.BrokerOption{
 		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, calls: a.Federation.ExchangeCalls}),
-		auth.WithAssumeAllowRules("true"))
+		auth.WithAssumeDenyRules(a.Federation.Deny...),
+	}
+	if !a.Federation.NoAllow {
+		options = append(options, auth.WithAssumeAllowRules("true"))
+	}
+	broker, err := auth.NewBroker(issuer, options...)
 	if err != nil {
 		tb.Fatalf("building fixture broker: %v", err)
 	}
@@ -156,7 +169,7 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 // registration.
 //
 // Claims is copied too, not just the four scalar fields: a case whose policy
-// keys on workload.claims["repository"] would otherwise see them on the local
+// keys on identity.claims["repository"] would otherwise see them on the local
 // driver, which installs auth.WorkloadIdentity directly, and lose them on the
 // durable driver, which only ever sees what crossed this conversion — a
 // driver disagreement the harness itself would have caused rather than caught.
@@ -346,6 +359,41 @@ func AuthorityDenialCases() []AuthorityCase {
 			}},
 			Authority: Authority{
 				Scheme: "fixture-secret", FixtureValue: "unused", Allow: []string{"true"}, Identity: identity,
+			},
+		},
+		{
+			Name: "a credential target is refused when federation has no allow rule",
+			Workflow: &v1.Workflow{
+				Name:  "authority-denied-no-allow-rule",
+				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
+					`authorizing federation target "partner-api": auth: denied by assumption policy: ` +
+					`"flowstate:acme-tenant/_default/authority-denied-no-allow-rule/read" may not assume "partner-api" ` +
+					`(allow rules: no allow rule is configured, and a target must be permitted by an allow rule)`}),
+			}},
+			Authority: Authority{
+				Scheme: "fixture-secret", FixtureValue: "unused", Allow: []string{"true"}, Identity: identity,
+				Federation: &Federation{Target: "partner-api", Token: "unused", NoAllow: true, ExchangeCalls: new(atomic.Int32)},
+			},
+		},
+		{
+			Name: "a credential target is refused when federation has only a deny rule that does not match",
+			Workflow: &v1.Workflow{
+				Name:  "authority-denied-deny-only",
+				Steps: []*v1.Node{credentialStep("read", unreachable, "partner-api")},
+			},
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"read": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "http" failed (PolicyDenied): ` +
+					`authorizing federation target "partner-api": auth: denied by assumption policy: ` +
+					`"flowstate:acme-tenant/_default/authority-denied-deny-only/read" may not assume "partner-api" ` +
+					`(allow rules: no allow rule is configured, and a target must be permitted by an allow rule)`}),
+			}},
+			Authority: Authority{
+				Scheme: "fixture-secret", FixtureValue: "unused", Allow: []string{"true"}, Identity: identity,
+				Federation: &Federation{Target: "partner-api", Token: "unused", NoAllow: true,
+					Deny: []string{`target == "other"`}, ExchangeCalls: new(atomic.Int32)},
 			},
 		},
 		{

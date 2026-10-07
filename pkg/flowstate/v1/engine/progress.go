@@ -58,6 +58,16 @@ const StateQuery = "flowstate.state"
 // the run parked more gates than it retains. No position, no output, no input.
 const GateQuery = "flowstate.gate"
 
+// GatesQuery is the query name a client lists the run's parked gates by, with
+// the arrival number to resume after and the page size as its two arguments.
+//
+// The third of the gate reads, beside [ProgressQuery] and [GateQuery], and for
+// the reason each of those is its own: the answers differ in cost. This one
+// walks every wait the run retains ([v1.MaxHeldWaits]) a page at a time, which
+// neither of the others can: the summary stops at [v1.MaxPendingWaits], and the
+// lookup answers for one name. The answer is a [v1.GatePage].
+const GatesQuery = "flowstate.gates"
+
 // progress is the run's position, shared by pointer with every nested executor.
 //
 // A pointer for the same reason [signalCarry] is one: a nested executor is a
@@ -462,6 +472,15 @@ func setGateQuery(ctx workflow.Context, w *waitRegistry) error {
 		}
 
 		return &v1.RunProgress{PendingWaits: []*v1.PendingWait{wait}}, nil
+	})
+}
+
+// setGatesQuery installs the handler that answers [GatesQuery], on
+// [setGateQuery]'s reasoning: registered at the start, replay-safe, and
+// read-only.
+func setGatesQuery(ctx workflow.Context, w *waitRegistry) error {
+	return workflow.SetQueryHandler(ctx, GatesQuery, func(after uint64, limit int) (*v1.GatePage, error) {
+		return w.page(after, limit), nil
 	})
 }
 

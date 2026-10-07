@@ -111,7 +111,7 @@ func TestGitReadFileResolvesAShaOlderThanTheDefaultDepthOneWindow(t *testing.T) 
 // not merely respected: a file one byte over the configured ceiling is
 // refused with a diagnostic naming the actual size, never silently
 // truncated. doReadFileWithMax's small capBytes is what makes this fast - the
-// real maxReadFileBytes (8 MiB) would need a multi-megabyte fixture to prove
+// real maxReadFileBytes (about 1.4 MiB) would need a multi-megabyte fixture to prove
 // the same thing.
 func TestGitReadFileRefusesAnOversizedFile(t *testing.T) {
 	remote := newBareRemote(t)

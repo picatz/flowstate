@@ -443,6 +443,31 @@ specification:
 - **`flow run`** ran it durably. Temporal recorded every step, the wait
   survived every process stopping, and the signal resumed it.
 
+```mermaid
+flowchart LR
+  File["<b>workflow.yaml</b><br/>one Flowfile"]
+  Spec["<b>compiled specification</b>"]
+  Test["<b>flow test</b><br/>stubs + virtual clock<br/>pins down behavior"]
+  Local["<b>flow run local</b><br/>real run, one process<br/>a rehearsal"]
+  Durable["<b>flow run</b><br/>on Temporal<br/>survives every process stopping"]
+
+  File --> Spec
+  Spec --> Test
+  Spec --> Local
+  Spec --> Durable
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class File authoring
+  class Spec contract
+  class Test,Local runtime
+  class Durable durable
+```
+
 The development stack skipped two things a shared deployment needs:
 authenticated callers, and a versioned worker. With authentication, the
 approval can also be restricted to particular people; the

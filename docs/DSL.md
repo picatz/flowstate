@@ -1430,10 +1430,9 @@ already refused once.
   loop binding may not collide with an enclosing step var, and neither may be
   `now`. `flow validate` reports the collision at the inner declaration. Silent
   shadowing is how `${body}` comes to mean two things eleven lines apart.
-  *Since written:* this holds for a step's `vars:` and a `loop:`'s state name, but a
-  `for_each`'s `as:` is not yet checked against enclosing bare names, so a nested
-  `for_each` reusing its parent's `as:`, or one whose own `vars:` binds the same
-  name, validates and the inner binding wins.
+  *Since written:* it holds for a step's `vars:`, a `loop:`'s state name and a
+  `for_each`'s `as:` alike, so a nested `for_each` reusing its parent's `as:`, or
+  one whose own `vars:` binds the same name, is refused at the inner declaration.
 - **The fence stays required inside `vars` values.** A var legitimately holds the
   literal string `"steps.greet.result"`, so this is exactly the ambiguous position
   the fence exists for. No exception.
@@ -4554,6 +4553,14 @@ with `has(sender.identity.claims.team)` where absence is allowed. When the run h
 recorded starter `run` is unbound, so a predicate that reads it errors and denies
 while one that never mentions it is unaffected. The refusal says what went wrong and
 never quotes an input or a claim.
+
+**Claims need `--identity-claim`.** `sender.identity.claims` holds only the claims
+the server was started to project (`flow server --identity-claim team`, repeatable).
+A token can carry `team` and the trust policy can verify it, and a predicate reading
+`sender.identity.claims.team` still never matches on a server not started with that
+flag. The refusal of a predicate that reads claims therefore names which claim names
+the sender identity carried (or that it carried none), never their values, so an
+empty projection reads differently from a wrong value.
 
 **Narrowing is syntactic.** Whoever starts a run chooses its `inputs`, so a predicate
 over them alone would let the starter name their own approver. A predicate that reads

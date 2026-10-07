@@ -132,17 +132,10 @@ type workload struct {
 	Run        string `cel:"run"`
 	Step       string `cel:"step"`
 
-	// OnBehalfOf and OnBehalfOfIssuer identify the caller that submitted the run,
-	// which is what makes a delegation rule expressible.
-	OnBehalfOf       string `cel:"on_behalf_of"`
-	OnBehalfOfIssuer string `cel:"on_behalf_of_issuer"`
-
-	// Claims are the claims carried from that caller's token. Reading a claim
-	// that is absent is an error, and an errored rule refuses the request, so a
-	// rule about an optional claim should test for it first:
-	//
-	//	"repository" in workload.claims && workload.claims["repository"] == "x"
-	Claims map[string]string `cel:"claims"`
+	// The caller that submitted the run, and the claims carried from its token,
+	// are not repeated here: they are [callerIdentity]'s subject, issuer and
+	// claims, and one value under two names on one surface is the mistake the
+	// split between identity and workload exists to prevent (#567 D2).
 }
 
 // assumeRules holds the allow and deny rules governing credential assumption:
@@ -156,10 +149,20 @@ type assumeRules struct {
 // evaluate applies the rules and returns an [*AssumeDeniedError] when the request
 // is refused.
 //
-// Deny rules run first and win, then allow rules gate the request when any are
-// configured. A rule that fails to evaluate refuses the request: a policy that
-// cannot be evaluated is not a policy that permits everything.
+// Deny rules run first and win, then an allow rule must match: a broker with no
+// allow rule permits nothing, the same as secret access. A rule that fails to
+// evaluate refuses the request: a policy that cannot be evaluated is not a policy
+// that permits everything.
 func (rs assumeRules) evaluate(ctx context.Context, target, subject string, vars map[string]any) error {
+	if len(rs.Allow) == 0 {
+		return &AssumeDeniedError{
+			Target:  target,
+			Subject: subject,
+			Reason:  ReasonAssumeNoAllowRule,
+			Detail:  "no allow rule is configured, and a target must be permitted by an allow rule",
+		}
+	}
+
 	decision, err := rs.Decide(ctx, vars)
 	if err != nil {
 		return assumeRuleFailure(ctx, target, subject, err)
@@ -261,15 +264,12 @@ func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentit
 	}
 
 	who := workload{
-		Subject:          mintedSubject,
-		Namespace:        orDefault(identity.Namespace),
-		Deployment:       orDefault(identity.Deployment),
-		Workflow:         ref.Workflow,
-		Run:              ref.Run,
-		Step:             ref.Step,
-		OnBehalfOf:       identity.Subject,
-		OnBehalfOfIssuer: identity.Issuer,
-		Claims:           claims,
+		Subject:    mintedSubject,
+		Namespace:  orDefault(identity.Namespace),
+		Deployment: orDefault(identity.Deployment),
+		Workflow:   ref.Workflow,
+		Run:        ref.Run,
+		Step:       ref.Step,
 	}
 
 	return map[string]any{

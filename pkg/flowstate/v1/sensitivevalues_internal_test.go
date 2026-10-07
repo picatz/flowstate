@@ -1,9 +1,12 @@
 package flowstatev1
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -895,4 +898,73 @@ func TestASensitiveNestedAndFractionalDataKindIsRedactedInCELSpelling(t *testing
 
 	assert.Equal(t, "-0.000000001s", exactSeconds(&durationpb.Duration{Nanos: -1}))
 	assert.Equal(t, "3600s", exactSeconds(&durationpb.Duration{Seconds: 3600}))
+}
+
+// TestRedactSubstringsCoversEveryEncodingARendererMayApply pins #2081: a
+// renderer that encodes a sensitive value before the backstop reads it — `%q`,
+// [json.Marshal] with or without HTML escaping — prints bytes the plaintext
+// substring never matches, so every set-building path holds those spellings.
+func TestRedactSubstringsCoversEveryEncodingARendererMayApply(t *testing.T) {
+	t.Parallel()
+
+	// The second value holds a control byte and U+2028, where `%q` and JSON
+	// disagree; the third mixes HTML characters with a control byte, the one
+	// shape where the plain-JSON spelling is neither the `%q` nor the
+	// HTML-escaped one, so dropping that leg fails.
+	for _, value := range []string{"pa\"ss\\w<o>rd&é\nx", "a\u2028b\x01c", "<a>&\x01"} {
+		htmlEscaped, err := json.Marshal(value)
+		require.NoError(t, err)
+
+		var plain bytes.Buffer
+
+		enc := json.NewEncoder(&plain)
+		enc.SetEscapeHTML(false)
+		require.NoError(t, enc.Encode(value))
+
+		// The quotes a renderer adds around the body are its own, not the value's.
+		bodyOf := func(quoted string) string { return quoted[1 : len(quoted)-1] }
+
+		spellings := map[string]string{
+			"plaintext":    value,
+			"percent-q":    bodyOf(strconv.Quote(value)),
+			"json":         bodyOf(string(htmlEscaped)),
+			"json-no-html": bodyOf(strings.TrimSuffix(plain.String(), "\n")),
+		}
+
+		sets := map[string]SensitiveValues{
+			"declared input": oneSensitiveInput("token", &Value{Kind: &Value_Literal{Literal: &expr.Value{
+				Kind: &expr.Value_StringValue{StringValue: value},
+			}}}),
+			"with values": SensitiveValues{}.WithValues(value),
+		}
+
+		for setName, set := range sets {
+			for spellingName, spelling := range spellings {
+				t.Run(fmt.Sprintf("%q/%s/%s", value, setName, spellingName), func(t *testing.T) {
+					t.Parallel()
+
+					got := set.RedactSubstrings("line: " + spelling + " end")
+
+					assert.Equal(t, "line: "+SensitiveMarker+" end", got)
+				})
+			}
+		}
+	}
+}
+
+// TestWithValuesHoldsAnEscapeHeavyValueWithinTheMatcherBound pins that a
+// caller hands [SensitiveValues.WithValues] the raw value once: it adds the
+// escaped spellings itself, so a caller that pre-expanded them would escape
+// the `%q` body a second time and spend more of the matcher's budget than the
+// value is worth.
+func TestWithValuesHoldsAnEscapeHeavyValueWithinTheMatcherBound(t *testing.T) {
+	t.Parallel()
+
+	value := strings.Repeat(`\`, 10_000)
+
+	once := SensitiveValues{}.WithValues(value)
+	assert.False(t, once.WithholdAll(), "a raw value with its own spellings fits the bound")
+
+	twice := SensitiveValues{}.WithValues(value, strconv.Quote(value))
+	assert.True(t, twice.WithholdAll(), "a pre-expanded argument is expanded again and overruns it")
 }

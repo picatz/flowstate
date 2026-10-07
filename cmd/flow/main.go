@@ -184,7 +184,7 @@ type authFlags struct {
 	identityKeyPaths []string
 
 	// identityClaims names the caller token claims carried into each run's
-	// identity, where `workload.claims[...]` rules and downstream relying parties
+	// identity, where `sender.identity.claims[...]` and `identity.claims[...]` rules and downstream relying parties
 	// read them. Empty means a run's identity records the subject and issuer and
 	// nothing more.
 	identityClaims []string
@@ -2626,7 +2626,7 @@ flow validate examples/hello-world/workflow.yaml`,
 			"server checks it — so an approver a predicate admits in production opens the gate here, " +
 			"one it refuses is refused here, and a predicate comparing with the run's own starter " +
 			"(`run.identity`) refuses it on both. The gate's `sender.local` output still reads " +
-			"true." + runDocumentHelp,
+			"true." + refusalDocumentHelp + runDocumentHelp,
 		// Exactly one, as `flow run` and `flow compile` already hold: MinimumNArgs
 		// ran the first file and silently dropped the rest, so a habit carried
 		// over from the variadic `flow validate` — `flow run local examples/*/workflow.yaml`

@@ -61,6 +61,12 @@ type command struct {
 	// treat a movement as leaving.
 	effect effect
 
+	// rewinds marks a verb that steps the run back rather than forward. It moves
+	// the run where there is one to move, so it is [effectMoves] to a driver's
+	// stale-revision rule, but the autopsy has no run to rewind and does not
+	// leave on it the way it leaves on `continue`.
+	rewinds bool
+
 	// elsewhere is the sentence a front that does not answer this verb gives,
 	// naming what to type instead. Required for any verb not on every front.
 	elsewhere string
@@ -146,12 +152,10 @@ var commands = []command{
 		help:           "run until the step with that id, optionally only where the condition holds",
 		driverArgument: "<step>",
 		driverHelp:     "run to that step (an id or an address like pages[2]/page); a condition is `break <step> if <expr>` and `continue`"},
-	{verb: "back", completes: completesNothing, fronts: frontDriver, effect: effectMoves,
-		help:      "return to the previous stop (a session that can step back)",
-		elsewhere: "`back` is a driver command, and a prompt session cannot step back"},
-	{verb: "reverse-continue", aliases: []string{"rc"}, completes: completesNothing, fronts: frontDriver, effect: effectMoves,
-		help:      "return to the nearest earlier breakpoint stop, or the first",
-		elsewhere: "`reverse-continue` is a driver command, and a prompt session cannot step back"},
+	{verb: "back", completes: completesNothing, fronts: frontsLive, effect: effectMoves, rewinds: true,
+		help: "return to the previous stop (a session that can step back)"},
+	{verb: "reverse-continue", aliases: []string{"rc"}, completes: completesNothing, fronts: frontsLive, effect: effectMoves, rewinds: true,
+		help: "return to the nearest earlier breakpoint stop, or the first"},
 	{verb: "pause", completes: completesNothing, fronts: frontDriver, effect: effectChanges,
 		help:      "hold at the next step boundary",
 		elsewhere: "`pause` is a driver command: a prompt already holds the run at every stop"},
@@ -178,18 +182,16 @@ var commands = []command{
 	{verb: "inspect", aliases: []string{"p"}, argument: "<expr>", completes: completesExpression, fronts: frontsAll, effect: effectRead,
 		help:       "evaluate a CEL expression against this run's scope",
 		driverHelp: "evaluate a read-only CEL expression at this stop"},
-	{verb: "expand", argument: "<expr>", completes: completesExpression, fronts: frontDriver, effect: effectRead,
-		help:      "list a map's or list's children",
-		elsewhere: "`expand` is a driver command: at a prompt `inspect <expr>` prints the value in full"},
+	{verb: "expand", argument: "<expr>", completes: completesExpression, fronts: frontsLive, effect: effectRead,
+		help: "list a map's or list's children"},
 	{verb: "scope", completes: completesNothing, fronts: frontsAll, effect: effectRead,
 		help:       "list what this run can name right now",
 		driverHelp: "list what this stop can name"},
 	{verb: "complete", argument: "<partial-command>", completes: completesNothing, fronts: frontPrompt | frontAutopsy, effect: effectRead,
 		help:      "list what could be written at the end of that text",
 		elsewhere: "`complete` is a prompt command: the structured fronts do not complete a line"},
-	{verb: "status", completes: completesNothing, fronts: frontDriver, effect: effectRead,
-		help:      "where the run is, and why",
-		elsewhere: "`status` is a driver command: a prompt prints where the run is at every stop, and `info` describes the step"},
+	{verb: "status", completes: completesNothing, fronts: frontsLive, effect: effectRead,
+		help: "where the run is, and why"},
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing, fronts: frontPrompt, effect: effectRead,
 		help:      "describe the step the run is stopped at",
 		elsewhere: "`info` describes the step at a prompt; `status` says where the run is, and why"},
@@ -265,6 +267,7 @@ const (
 	grammarBreak = "break <step-id> [if <expr>]"
 	grammarUntil = "until <step-id> [if <expr>]"
 	usageInspect = "inspect needs an expression: inspect steps.build.artifact"
+	usageExpand  = "expand needs an expression: expand steps.build"
 	// usageCondition is completed by the asking verb's grammar, so `break
 	// body if ` and `until body if ` are each corrected in their own words.
 	usageCondition = "`if` needs an expression: %s"
@@ -482,6 +485,33 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 		}
 		s.record("inspect " + expression)
 		s.inspect(ctx, expression, scope)
+
+		return false, nil
+
+	case "expand":
+		expression := strings.TrimSpace(rest)
+		if expression == "" {
+			s.printfTone(ToneWarning, "%s\n", usageExpand)
+
+			return false, nil
+		}
+		s.record("expand " + expression)
+		s.expand(ctx, expression)
+
+		return false, nil
+
+	case "status":
+		s.record("status")
+		s.showStatus()
+
+		return false, nil
+
+	case "back", "reverse-continue":
+		// Named at the prompt so a script written for a session that can step
+		// back reads the same here, and answers the capability it lacks. Not
+		// recorded: a refused command is not part of the session it would
+		// replay.
+		s.printfTone(ToneWarning, "%s\n", errCannotStepBack)
 
 		return false, nil
 
@@ -1454,4 +1484,25 @@ func (s *Session) addLogpoint(rest string) {
 	}
 	s.record("log " + source)
 	s.printf("logpoint at %s\n", id)
+}
+
+// expand lists an expression's children, through the same [Session.Inspect] a
+// structured front reads, so the redactors, the page size and the wording are
+// one thing on both.
+func (s *Session) expand(ctx context.Context, expression string) {
+	answer, err := s.Inspect(ctx, &v1.DebugInspectRequest{Expression: expression, Children: true})
+	switch {
+	case err != nil:
+		s.printfTone(ToneWarning, "cannot expand: %v\n", err)
+	case answer.GetError() != "":
+		s.emitTone(ToneWarning, answer.GetError()+"\n")
+	default:
+		s.printf("%s", formatChildren(expression, answer))
+	}
+}
+
+// showStatus prints where the run is, and why, as a driver's `status` does.
+func (s *Session) showStatus() {
+	snapshot, _ := s.Snapshot(context.Background())
+	s.printf("%s", FormatSnapshot(snapshot))
 }

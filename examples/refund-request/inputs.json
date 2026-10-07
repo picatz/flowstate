@@ -1,0 +1,7 @@
+{
+  "refund": {
+    "order_id": "o-1000",
+    "reason": "late",
+    "lines": [{"sku": "kb-01", "cents": 1500}]
+  }
+}

@@ -610,50 +610,37 @@ outputs: {}
 // TestTheDebugToolHonoursRequestCancellation (Codex, #1109): on the stdio
 // surface no timeout is configured, and the first cut rooted the run at
 // context.Background() — so a client that cancelled a call could not stop it.
-// A `continue` into a wait with no timeout and no scripted signal is a legal
-// Flowfile that never completes, and the run would have outlived the request
-// that asked for it.
 //
 // Against the handler rather than through a client session, because the claim
 // is about the context the handler runs the case under, and cancelling a live
 // MCP request from the client side is the SDK's plumbing rather than this
-// tool's behaviour.
+// tool's behaviour. A `continue` into a gate with no `timeout:` holds the run
+// for flowtest's liveness settle, a few real milliseconds, before it would be
+// reported as stuck; the request is cancelled inside that window, so what ends
+// the call is the cancellation and the answer is that no verdict was reached,
+// never a verdict. A run no request could stop no longer outlives the call
+// indefinitely (the liveness check ends it), so this guards the answer, and the
+// timing is the one thing it cannot make exact.
 func TestTheDebugToolHonoursRequestCancellation(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	time.AfterFunc(5*time.Millisecond, cancel)
 
-	done := make(chan *mcp.CallToolResult, 1)
-	go func() {
-		result, err := debugToolHandler(0)(ctx, &mcp.CallToolRequest{
-			Params: &mcp.CallToolParamsRaw{
-				Arguments: json.RawMessage(`{
-					"workflow": "edition: v2026.4\nname: parked\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
-					"tests": "tests:\n  - name: it waits\n    expect:\n      failed: false\n",
-					"commands": ["continue"]
-				}`),
-			},
-		})
-		require.NoError(t, err)
-		done <- result
-	}()
-
-	// The run parks: nothing signals the gate and the virtual clock has no
-	// deadline to advance to.
-	select {
-	case <-done:
-		t.Fatal("the case completed, so this proves nothing about cancellation — the fixture must park")
-	case <-time.After(250 * time.Millisecond):
-	}
-
-	cancel()
-
-	select {
-	case result := <-done:
-		require.NotNil(t, result)
-	case <-time.After(10 * time.Second):
-		t.Fatal("cancelling the request did not stop the run: it is rooted at a context the caller cannot reach")
-	}
+	result, err := debugToolHandler(0)(ctx, &mcp.CallToolRequest{
+		Params: &mcp.CallToolParamsRaw{
+			Arguments: json.RawMessage(`{
+				"workflow": "edition: v2026.4\nname: parked\nsteps:\n- id: gate\n  wait_for_signal:\n    name: approve\n",
+				"tests": "tests:\n  - name: it waits\n    expect:\n      failed: true\n",
+				"commands": ["continue"]
+			}`),
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	require.True(t, result.IsError, "a cancelled request must not be answered with a verdict")
+	require.Contains(t, renderEveryShape(result), "did not finish")
 }
 
 // TestTheDebugToolBoundsTheCaseArgument (Codex, #1109): an unknown-case

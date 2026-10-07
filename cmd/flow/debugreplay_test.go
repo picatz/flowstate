@@ -178,6 +178,32 @@ func TestDebugReplayRefusesAMisspelledCommandBeforeRunningAnything(t *testing.T)
 	assert.NotContains(t, res.Stderr, "break at", "the run reached a step boundary before the script was checked")
 }
 
+// TestDebugReplayRefusalIsADocumentUnderAMachineFormat is the machine half of
+// the rule `--output json` makes (#1552): the answer is a document, a refusal
+// included. A script the checker refuses used to print prose and nothing on
+// stdout, which left a caller that asked for JSON nothing to parse.
+func TestDebugReplayRefusalIsADocumentUnderAMachineFormat(t *testing.T) {
+	path := writeRunLocalDebugFixture(t)
+	script := writeDebugScript(t, "contnue\n")
+
+	res := runFlow(t, "debug", "replay", script, path, "--output", "json")
+	require.Error(t, res.Err, "a refused script reported success")
+
+	var document struct {
+		Status string `json:"status"`
+		Error  struct {
+			Message string `json:"message"`
+			Kind    string `json:"kind"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(res.Stdout), &document),
+		"stdout is not a single JSON document:\n%s", res.Stdout)
+	assert.Equal(t, "STATUS_FAILED", document.Status)
+	assert.Equal(t, "InvalidInput", document.Error.Kind)
+	assert.Contains(t, document.Error.Message, `unknown command "contnue"`)
+	assert.NotContains(t, res.Stdout, "ERROR", "prose followed the document")
+}
+
 // TestDebugReplayRefusesABlankLine: the one place a file and a prompt read the
 // same bytes differently, refused rather than reinterpreted.
 func TestDebugReplayRefusesABlankLine(t *testing.T) {

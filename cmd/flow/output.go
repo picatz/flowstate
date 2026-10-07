@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -271,20 +272,38 @@ func writeRunJSON(surface *ui.UI, rendering runRendering, message proto.Message)
 // refusals that never get that far. See refusedRunSensitiveValues for why the
 // set is built differently here.
 func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.SensitiveValues, refusal error) error {
-	// Classified off the original chain, before the redaction below drops it.
-	// [redactFailureError] deliberately does not Unwrap — that is the whole
-	// point of it — so a classification read afterwards would report Internal,
-	// a defect in Flowstate, for the caller's own bad argument: the exact
-	// regression #1552 landed to fix.
-	kind := v1.ClassifyError(refusal).String()
-
-	redacted := redactFailureError(refusal, sensitive)
+	response, redacted := refusalResponse(refusal, sensitive)
 
 	if !rendering.WantsDocument() {
 		return redacted
 	}
 
-	response := &v1.GetResponse{
+	if err := writeRunJSON(surface, rendering, response); err != nil {
+		return err
+	}
+
+	// The document is the report, so the error that remains is the exit code
+	// alone: a prose trailer on stderr would say the refusal twice.
+	return newQuietError(redacted)
+}
+
+// refusalResponse is the run document for a refusal that happened before the run
+// started, and the redacted error it reports, for every surface that owes a
+// caller that document: `flow run local --output json` and `flowstate_run_local`
+// both render this one value, so a refusal reads the same from either.
+//
+// The kind is classified off the original chain, before the redaction drops it.
+// [redactFailureError] deliberately does not Unwrap — that is the whole point of
+// it — so a classification read afterwards would report Internal, a defect in
+// Flowstate, for the caller's own bad argument: the exact regression #1552
+// landed to fix. The input name is read off the same chain for the same reason.
+func refusalResponse(refusal error, sensitive v1.SensitiveValues) (*v1.GetResponse, error) {
+	kind := v1.ClassifyError(refusal).String()
+	input := refusedInputName(refusal)
+
+	redacted := redactFailureError(refusal, sensitive)
+
+	return &v1.GetResponse{
 		Status: v1.RunResponse_STATUS_FAILED,
 		Kind: &v1.GetResponse_Error{Error: &v1.RunResponse_Error{
 			// The redacted sentence itself rather than a second pass with
@@ -292,14 +311,29 @@ func refuseRunLocally(surface *ui.UI, rendering runRendering, sensitive v1.Sensi
 			// come to say different things about one refusal.
 			Message: redacted.Error(),
 			Kind:    kind,
+			Input:   input,
 		}},
+	}, redacted
+}
+
+// maxRefusedInputBytes is RunResponse.Error.input's max_bytes in service.proto.
+const maxRefusedInputBytes = 256
+
+// refusedInputName is the input a submit refusal concerns, empty when err is not
+// one or names none. Read off the original chain for the same reason the kind
+// is: the redacted copy does not Unwrap.
+func refusedInputName(err error) string {
+	if refusal, ok := errors.AsType[*v1.InputError](err); ok {
+		// The field is bounded on the wire; a name the caller made up that is
+		// longer than that is still in the message, which the result floor caps.
+		if len(refusal.Input) > maxRefusedInputBytes {
+			return ""
+		}
+
+		return refusal.Input
 	}
 
-	if err := writeRunJSON(surface, rendering, response); err != nil {
-		return err
-	}
-
-	return redacted
+	return ""
 }
 
 // A mutation's result is an answer, so the verbs that perform one carry `--output`
@@ -403,6 +437,14 @@ const mutationFlagHelp = "\n\nWith `-o json` (or `-o jsonl` for one line), the u
 // silence is what makes people depend on a shape nobody agreed to. See
 // pkg/flowstate/v1/rundoc.go
 // for how the rendering is derived from the schema.
+// refusalDocumentHelp is the help sentence for a run refused before it starts,
+// shared by the commands that render one (#1552).
+const refusalDocumentHelp = "\n\nA refusal before the run starts (an argument the workflow's " +
+	"`inputs:` rejects, a script that does not fit the workflow) is part of the same " +
+	"document under `-o json`: `.status` is `FAILED`, `.error.kind` classifies it " +
+	"(`InvalidInput` for the caller's own argument), and `.error.input` names the " +
+	"input concerned. Standard error then stays empty."
+
 const runDocumentHelp = "\n\nThe run document on stdout is written for a program. A step's outputs " +
 	"are `.steps.<id>.<output>` — the path the file itself writes as " +
 	"`${steps.<id>.<output>}` — and the values a workflow declared under `outputs:` " +

@@ -620,7 +620,20 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 			// a bind failure (#2076).
 			reveal := revealSensitiveRequested(posture)
 			sensitive := refusedRunSensitiveValues(posture, workflow, inputs, err, reveal)
-			return flowmcp.ToolError(redactFailureError(err, sensitive)), nil
+
+			// The run document `flow run local --output json` writes for the
+			// same refusal, so an agent corrects the call from `error.kind` and
+			// `error.input` rather than from prose (#1552).
+			response, redacted := refusalResponse(err, sensitive)
+			encoded, renderErr := renderRunLocalResult(response, nil, nil)
+			if renderErr != nil {
+				return flowmcp.ToolError(redacted), nil
+			}
+
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: string(encoded)}},
+			}, nil
 		}
 
 		timeout, _ := posture.Flags().GetDuration("run-local-timeout")
@@ -822,9 +835,9 @@ func testToolHandler(timeout time.Duration) mcp.ToolHandler {
 		if runCtx.Err() != nil {
 			return flowmcp.ToolError(fmt.Errorf(
 				"the submitted tests did not finish within %s and were stopped, so no verdict is "+
-					"reported: a case that never completes is usually a `wait_for_signal:` with no "+
-					"`timeout:` and no stub scripting its signal, which parks the virtual clock with "+
-					"no deadline to advance to. Script the signal, give the wait a timeout, or split "+
+					"reported: a case that runs this long is usually a long loop or too many cases "+
+					"for one call (a `wait_for_signal:` with no `timeout:` that nothing scripted can "+
+					"answer is reported as a stuck run, not as this). Lower `max_iterations:` or split "+
 					"the file into smaller cases", timeout)), nil
 		}
 

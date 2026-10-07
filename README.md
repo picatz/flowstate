@@ -39,52 +39,53 @@ it with the alternatives, including the workloads it does not fit.
 
 ## A Flowfile
 
-This workflow takes a typed list of targets, normalizes it with a CEL
-expression, deploys each target, and reports what it did. On a durable run,
-`max_parallel` lets up to three targets deploy at once; the local driver runs
-them one at a time so a rehearsal is repeatable.
+A customer asks for a refund. This workflow totals the lines of the request and
+checks the total against a limit that belongs to the workflow rather than to
+whoever starts it, then tells the customer what happened. A payout, and a person
+in finance who must approve the large ones, are the next step; see
+[`examples/refund-request`](examples/refund-request/).
 
 ```yaml
 edition: v2026.4
-name: rollout
+name: refund-triage
 inputs:
-  targets:
-    type: list(string)
+  order_id:
+    type: string
+    required: true
+  lines:
+    type: list(int)
     default:
-      - api
-      - worker
-      - scheduler
+      - 1500
+      - 4200
+vars:
+  auto_limit_cents: 5000
 steps:
-  - id: plan
-    value: ${inputs.targets.map(target, target.lowerAscii())}
-  - id: deploy
-    for_each:
-      items: ${steps.plan.value}
-      as: target
-      max_parallel: 3
-      steps:
-        - id: announce
-          log:
-            message: ${"deploying %s".format([target])}
+  - id: total
+    value: ${inputs.lines.sum()}
+  - id: needs_review
+    value: ${steps.total.value > vars.auto_limit_cents}
+  - id: tell
+    log:
+      message: ${"refund of " + string(steps.total.value) + " cents on " + string(inputs.order_id) + " (needs review " + string(steps.needs_review.value) + ")"}
 outputs:
-  targets:
-    value: ${steps.plan.value}
-  deployed:
-    value: ${size(steps.deploy.results)}
+  needs_review:
+    value: ${steps.needs_review.value}
+  total_cents:
+    value: ${steps.total.value}
 ```
 
 ```console
 $ flow validate workflow.yaml
 workflow.yaml: ok
-$ flow run local workflow.yaml -o json | jq -c .runOutputs
-{"deployed":3,"targets":["api","worker","scheduler"]}
+$ flow run local workflow.yaml --input order_id=o-1 -o json | jq -c .runOutputs
+{"needs_review":true,"total_cents":5700}
 ```
 
-`inputs.targets` is the run's typed argument. `plan` and `deploy` are step ids;
-reading `${steps.plan.value}` is how `deploy` gets the plan, and also what
-orders it after `plan`. The `outputs` are the run's result. Every complete
-Flowfile in this README and the core guides is compiled and linted by the test
-suite.
+`inputs.lines` is the run's typed argument, a list of integers with a default.
+`total` and `needs_review` are step ids; reading `${steps.total.value}` is how
+`needs_review` gets the total, and also what orders it after `total`. The
+`outputs` are the run's result. Every complete Flowfile in this README and the
+core guides is compiled and linted by the test suite.
 
 <details>
 <summary><strong>Start smaller: one step</strong></summary>
@@ -127,20 +128,46 @@ to run it durably with separate requester and approver credentials.
 ## From file to durable run
 
 ```mermaid
-flowchart TB
-  File["Flowfile<br/>YAML + CEL"] --> Check["validate · compile · test"]
-  Check --> Spec["Workflow protobuf<br/>typed and frozen"]
-  Spec --> Local["local driver<br/>in process"]
-  Spec --> API["ConnectRPC API"]
-  API <--> Temporal[("Temporal")]
-  Temporal <--> Worker["Flowstate worker"]
-  Registry["task registry<br/>built-ins + plugins"] --> Local
-  Registry --> Worker
-  Policy["identity · policy · secrets"] -. constrains .-> API
-  Policy -. constrains .-> Worker
+flowchart LR
+  subgraph author["1 · Author"]
+    File["<b>Flowfile</b><br/>YAML + CEL"]
+    Check["validate · compile · test"]
+  end
 
-  classDef contract stroke-width:2px;
-  class Spec contract;
+  Spec["<b>Workflow protobuf</b><br/>typed and frozen"]
+
+  subgraph execute["2 · Execute"]
+    Local["local driver<br/>in process"]
+    API["ConnectRPC API"]
+    Temporal[("<b>Temporal</b><br/>durable history")]
+    Worker["Flowstate worker"]
+  end
+
+  Registry["task registry<br/>built-ins + plugins"]
+  Policy["identity · policy · secrets"]
+
+  File --> Check --> Spec
+  Spec --> Local
+  Spec --> API
+  API <--> Temporal
+  Temporal <--> Worker
+  Registry --> Local
+  Registry --> Worker
+  Policy -.-> |constrains| API
+  Policy -.-> |constrains| Worker
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class File,Check authoring
+  class Spec contract
+  class Local,API,Worker runtime
+  class Temporal durable
+  class Policy govern
+  class Registry neutral
 ```
 
 The Flowfile is how you write a workflow; the compiled `flowstate.v1.Workflow`

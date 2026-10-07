@@ -1,0 +1,215 @@
+# Bids arrive from different attested vendors; the cases pin who wins, which bids
+# are dropped, and that too few valid bids award nothing.
+edition: v2026.4
+vars:
+  issuer: https://issuer.example.com
+defaults:
+  workflow: ./workflow.yaml
+  inputs:
+    item: forklift battery
+    budget_cents: 100000
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the cheapest valid bid wins
+    signals:
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 80000, lead_days: 9}
+        sender: {subject: bolt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 95000, lead_days: 2}
+        sender: {subject: cobalt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      ran: [cutoff, bidding_window, collect, valid, vendor_count, quorum, best_price, winner, award]
+      others: skipped
+      outputs:
+        awarded_to: bolt@example.com
+        bids_received: 3
+        bids_valid: 3
+        vendors_valid: 3
+
+  - name: a tie on price goes to the shorter lead time
+    signals:
+      - name: bid
+        payload: {price_cents: 80000, lead_days: 9}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 80000, lead_days: 3}
+        sender: {subject: bolt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      outputs:
+        awarded_to: bolt@example.com
+        bids_received: 2
+        bids_valid: 2
+        vendors_valid: 2
+
+  - name: a bid over budget, and one with no price, are dropped
+    signals:
+      - name: bid
+        payload: {price_cents: 150000, lead_days: 1}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {lead_days: 1}
+        sender: {subject: bolt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 99000, lead_days: 4}
+        sender: {subject: cobalt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 98000, lead_days: 6}
+        sender: {subject: dune@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      outputs:
+        awarded_to: dune@example.com
+        bids_received: 4
+        bids_valid: 2
+        vendors_valid: 2
+
+  - name: too few valid bids award nothing
+    signals:
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      ran: [cutoff, bidding_window, collect, valid, vendor_count, quorum, no_award]
+      others: skipped
+      outputs:
+        awarded_to: ""
+        bids_received: 1
+        bids_valid: 1
+        vendors_valid: 1
+
+  - name: a lowered quorum lets a single bid win
+    inputs:
+      min_bids: 1
+    signals:
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      outputs:
+        awarded_to: acme@example.com
+        bids_received: 1
+        bids_valid: 1
+        vendors_valid: 1
+
+  - name: a bid from someone who is not a vendor is refused before the step sees it
+    signals:
+      - name: bid
+        payload: {price_cents: 10000, lead_days: 1}
+        sender: {subject: intern@example.com, issuer: "${vars.issuer}", claims: {role: employee}}
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    inputs:
+      min_bids: 1
+    expect:
+      outputs:
+        awarded_to: acme@example.com
+        bids_received: 1
+        bids_valid: 1
+        vendors_valid: 1
+
+  - name: silence until the deadline awards nothing
+    expect:
+      ran: [cutoff, bidding_window, collect, valid, vendor_count, quorum, no_award]
+      others: skipped
+      outputs:
+        awarded_to: ""
+        bids_received: 0
+        bids_valid: 0
+        vendors_valid: 0
+
+  - name: a zero deadline is refused
+    inputs:
+      deadline: 0s
+    expect:
+      failed: true
+      error_contains: deadline
+
+  # The ranking is price first and lead time only to break a tie, so a long lead
+  # time cannot buy a cheaper-looking bid.
+  - name: a very long lead time does not outrank a lower price
+    signals:
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 2000}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 90001, lead_days: 1}
+        sender: {subject: bolt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      outputs:
+        awarded_to: acme@example.com
+        bids_received: 2
+        bids_valid: 2
+        vendors_valid: 2
+
+  # Two bids from one vendor are one vendor. The default quorum of 2 is not met,
+  # so nothing is awarded.
+  - name: one vendor bidding twice does not make a quorum
+    signals:
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 85000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    expect:
+      ran: [cutoff, bidding_window, collect, valid, vendor_count, quorum, no_award]
+      others: skipped
+      outputs:
+        awarded_to: ""
+        bids_received: 2
+        bids_valid: 2
+        vendors_valid: 1
+
+  # The same subject at two issuers is two identities.
+  - name: the same subject at a different issuer is a different vendor
+    signals:
+      - name: bid
+        payload: {price_cents: 90000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 85000, lead_days: 5}
+        sender: {subject: acme@example.com, issuer: https://other.example.com, claims: {role: vendor}}
+    expect:
+      outputs:
+        awarded_to: acme@example.com
+        bids_received: 2
+        bids_valid: 2
+        vendors_valid: 2
+
+  # A payload is whatever the sender wrote: a wrong type or a negative lead time
+  # drops that one bid rather than failing the award.
+  - name: bids with the wrong types or a negative lead time are dropped
+    signals:
+      - name: bid
+        payload: {price_cents: cheap, lead_days: 3}
+        sender: {subject: acme@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 80000, lead_days: soon}
+        sender: {subject: bolt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 70000, lead_days: -1}
+        sender: {subject: cobalt@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+      - name: bid
+        payload: {price_cents: 95000, lead_days: 4}
+        sender: {subject: dune@example.com, issuer: "${vars.issuer}", claims: {role: vendor}}
+    inputs:
+      min_bids: 1
+    expect:
+      outputs:
+        awarded_to: dune@example.com
+        bids_received: 4
+        bids_valid: 1
+        vendors_valid: 1
+
+  - name: a quorum above the admission limit is refused
+    inputs:
+      min_bids: 51
+    expect:
+      failed: true
+      error_contains: min_bids

@@ -754,12 +754,12 @@ tests:
 // witness renders a string with Go's `%q`, which rewrites a tab, a newline, a
 // quote or a backslash before the redaction set ever reads the line, so the
 // entry's material must be redacted in both spellings post-bind exactly as
-// [casePosture] already redacts it pre-bind — see [bothSpellings].
+// [casePosture] already redacts it pre-bind — see [v1.SensitiveValues.WithValues].
 //
 // The workflow concatenates a prefix onto the secret rather than passing it
 // through whole, deliberately: a witness value *equal* to a sensitive value
 // is caught by [SensitiveValues.RedactTree]'s value comparison before %q
-// ever runs, which would pass this test even without [bothSpellings]. Only a
+// ever runs, which would pass this test even without [v1.SensitiveValues.WithValues]. Only a
 // composite string exercises the substring backstop the escaping actually
 // bears on.
 func TestATableRowsEntrySecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
@@ -821,7 +821,7 @@ outputs: {}
 // half of #2041's cross-case fix, on the same gap as the two tests above:
 // `vars.withheld.text` (which now includes a literal secret-seeded var, not
 // only a computed one) is added to the run's own posture without
-// [bothSpellings], so a check witness rendering it with Go's `%q` disclosed
+// [v1.SensitiveValues.WithValues], so a check witness rendering it with Go's `%q` disclosed
 // the escaped spelling for a case that never named the secret itself.
 func TestACrossCaseLiteralSeedSurvivesEscapedAfterInputBinding(t *testing.T) {
 	t.Parallel()
@@ -883,7 +883,7 @@ outputs: {}
 // `test.Secrets` joins the run-time posture too, through [casePosture] and
 // the same [sensitiveInputs.Merge] widening as entrySecretMaterial and
 // vars.withheld.text (#2079) — all three used to be rebuilt by hand in the
-// same three-line stretch, each with the identical missing-bothSpellings gap
+// same three-line stretch, each with the identical missing-spelling gap
 // independent reviewers found on it in turn.
 func TestACasesOwnSecretSurvivesEscapedInThePostBindPosture(t *testing.T) {
 	t.Parallel()

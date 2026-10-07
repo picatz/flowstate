@@ -650,7 +650,9 @@ func init() {
 			Leading: " PendingWaitsTruncated is true when this answer reports fewer waits than the\n" +
 				" run is actually parked on, because the run held more than the reporting\n" +
 				" bound (`v1.MaxPendingWaits`, in `pkg/flowstate/v1/waits.go`, which both drivers read).\n" +
-				" A gate past that bound is not lost: GetGate looks one up by signal name.\n" +
+				" A gate past that bound is not lost: GetGate looks one up by signal name, and\n" +
+				" ListGates lists every gate the run retains (`v1.MaxHeldWaits`). A run parked\n" +
+				" on more than that reports the rest only as ListGates' own `truncated`.\n" +
 				"\n" +
 				" A flag rather than silence, for `EntityState.truncated`'s reason: a reader\n" +
 				" must never mistake \"some of the waits\" for \"all of the waits\". Unlike that\n" +
@@ -771,6 +773,40 @@ func init() {
 			Name: "flowstate.v1.PendingWait.approvals_needed",
 			Leading: " ApprovalsNeeded is the quorum's `approve:`, and zero on every wait that is\n" +
 				" not a quorum.\n",
+		},
+		{
+			Name: "flowstate.v1.GatePage",
+			Leading: " GatePage is one page of the gates a run is parked on, as the run answers the\n" +
+				" `flowstate.gates` query: the engine's side of `ListGates`, never returned to a\n" +
+				" caller as it stands.\n" +
+				"\n" +
+				" A page of the waits the run retains (`v1.MaxHeldWaits`, in\n" +
+				" `pkg/flowstate/v1/waits.go`), in the order they parked, so a run holding more\n" +
+				" gates than [RunProgress] lists can still be read in full, a bounded page at a\n" +
+				" time. Each wait is the same projection `RunProgress.pending_waits` carries,\n" +
+				" non-secret by construction, and the server withholds prompts from it exactly\n" +
+				" as it does there.\n",
+		},
+		{
+			Name:    "flowstate.v1.GatePage.waits",
+			Leading: " Waits are the gates on this page, oldest first.\n",
+		},
+		{
+			Name: "flowstate.v1.GatePage.last_seq",
+			Leading: " LastSeq is the arrival number of the last wait on this page: the position to\n" +
+				" resume after. Zero when the page is empty. An arrival number rather than an\n" +
+				" index, so gates that close between two pages cannot make a later page skip\n" +
+				" one that is still open.\n",
+		},
+		{
+			Name:    "flowstate.v1.GatePage.more",
+			Leading: " More is true when the run retains waits after this page.\n",
+		},
+		{
+			Name: "flowstate.v1.GatePage.incomplete",
+			Leading: " Incomplete is true when the run is parked on gates it did not retain\n" +
+				" because it was already holding `v1.MaxHeldWaits`: no listing can show them,\n" +
+				" however many pages it reads.\n",
 		},
 		{
 			Name: "flowstate.v1.Frame",

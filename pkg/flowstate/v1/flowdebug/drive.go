@@ -408,6 +408,11 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	return result, nil
 }
 
+// errCannotStepBack is what a session that was not built to be replayed from
+// its start says to `back` and `reverse-continue`, at its prompt and through a
+// [Driver] alike.
+var errCannotStepBack = errors.New("this session cannot step back: only a run replayed from its start can")
+
 // back returns to an earlier stop through a target that can step back. It is
 // a movement like any other: the expected revision, or the current one when
 // the caller named none, reaches the target, which answers a stale one. The
@@ -416,7 +421,7 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, error) {
 	reverser, ok := d.target.(Reverser)
 	if !ok {
-		return nil, errors.New("this session cannot step back: only a run replayed from its start can")
+		return nil, errCannotStepBack
 	}
 	// Fenced to the stop the caller is looking at, as a forward movement is:
 	// another controller that moves the target first gets a stale receipt
@@ -666,22 +671,30 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool) 
 	case answer.GetError() != "":
 		result.Text = answer.GetError() + "\n"
 	case children:
-		var b strings.Builder
-		for _, child := range answer.GetChildren() {
-			fmt.Fprintf(&b, "%s  %s  %s\n", child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
-		}
-		if more := int(answer.GetTotal()) - len(answer.GetChildren()); more > 0 {
-			fmt.Fprintf(&b, "… and %d more\n", more)
-		}
-		if b.Len() == 0 {
-			fmt.Fprintf(&b, "%s has no children\n", expression)
-		}
-		result.Text = b.String()
+		result.Text = formatChildren(expression, answer)
 	default:
 		result.Text = answer.GetValue().GetRendered() + "\n"
 	}
 
 	return result, nil
+}
+
+// formatChildren lists an expression's children one to a line, with how many
+// the page left out. The prompt's `expand` and the driver's read the same
+// answer the same way, so a value pages identically on both.
+func formatChildren(expression string, answer *v1.DebugInspectResponse) string {
+	var b strings.Builder
+	for _, child := range answer.GetChildren() {
+		fmt.Fprintf(&b, "%s  %s  %s\n", child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
+	}
+	if more := int(answer.GetTotal()) - len(answer.GetChildren()); more > 0 {
+		fmt.Fprintf(&b, "… and %d more\n", more)
+	}
+	if b.Len() == 0 {
+		fmt.Fprintf(&b, "%s has no children\n", expression)
+	}
+
+	return b.String()
 }
 
 func (d *Driver) scope(ctx context.Context) (*DriveResult, error) {

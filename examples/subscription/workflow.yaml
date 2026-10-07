@@ -1,0 +1,92 @@
+edition: v2026.4
+name: subscription
+description: A customer's subscription as a long-lived entity. It starts on a trial, moves between active, past due and cancelled as events arrive, and ends when it is cancelled.
+inputs:
+  plan:
+    type: enum
+    values:
+      - basic
+      - pro
+    default: basic
+  max_failures:
+    type: int
+    default: 3
+    description: failed payments in a row before the subscription is cancelled
+    must: this >= 1
+# The plans a signal may move a subscription to, the same two the input names.
+vars:
+  plans:
+    - basic
+    - pro
+# Billing and the customer speak to the same run by signal. Who may send which
+# is a deployment's policy to write; a rehearsal needs none.
+steps:
+  - id: lifecycle
+    loop:
+      as: sub
+      init:
+        status: trial
+        plan: ${inputs.plan}
+        failures: 0
+      # One event per pass, then the new state is computed once and carried.
+      # `until:` reads this pass's result, so it is the next state it checks.
+      update: ${steps.next.value}
+      until: ${steps.next.value.status == "cancelled"}
+      max_iterations: 500
+      steps:
+        - id: event
+          wait_for_signal:
+            name: event
+            # A month of silence is itself an event: a trial or an overdue
+            # account lapses; an active one is simply quiet.
+            timeout: 720h
+            outputs:
+              kind: '${timed_out ? "quiet" : payload.?kind.orValue("unknown")}'
+              plan: ${payload.?plan.orValue(sub.plan)}
+        # What each kind of event does to the state, as a table the next step
+        # indexes by kind. A map is written out whole: CEL has no spread.
+        - id: failed_status
+          value: '${(sub.failures + 1 >= inputs.max_failures) ? "cancelled" : "past_due"}'
+        - id: ended
+          value:
+            status: cancelled
+            plan: ${sub.plan}
+            failures: ${sub.failures}
+        - id: outcomes
+          value:
+            payment_succeeded:
+              status: active
+              plan: ${sub.plan}
+              failures: 0
+            payment_failed:
+              status: ${steps.failed_status.value}
+              plan: ${sub.plan}
+              failures: ${sub.failures + 1}
+            change_plan:
+              status: ${sub.status}
+              plan: "${(steps.event.plan in vars.plans) ? steps.event.plan : sub.plan}"
+              failures: ${sub.failures}
+            cancel: ${steps.ended.value}
+            # A quiet month ends a trial or an overdue account, not an active one.
+            quiet: '${(sub.status == "active") ? sub : steps.ended.value}'
+        # An unknown kind changes nothing.
+        - id: next
+          value: "${(steps.event.kind in steps.outcomes.value) ? (steps.outcomes.value[steps.event.kind]) : sub}"
+        - id: dunning
+          if: ${steps.next.value.status == "past_due"}
+          log:
+            level: warn
+            message: ${"payment failed (%d of %d); asking the customer to update their card".format([steps.next.value.failures, inputs.max_failures])}
+  # `state` is the state going into the last pass: `update:` never runs once
+  # `until:` holds. The state the subscription ended in is the last pass's `next`.
+  - id: ended_as
+    value: ${steps.lifecycle.results[size(steps.lifecycle.results) - 1].next.value}
+outputs:
+  status:
+    value: ${steps.ended_as.value.status}
+    description: where the subscription ended
+  plan:
+    value: ${steps.ended_as.value.plan}
+  events:
+    value: ${size(steps.lifecycle.results)}
+    description: how many events the subscription processed, including the one that ended it

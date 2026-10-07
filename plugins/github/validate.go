@@ -72,12 +72,10 @@ const (
 	// value (which may carry an unbounded field this task's own summary
 	// never surfaces, such as an issue body) be discarded immediately, so
 	// this bounds exactly the shape actually retained across the walk -
-	// never go-github's own, much larger, per-record structs. 2 MiB is
-	// deliberately generous next to the ordinary case (a full page of
-	// maxMaxResults entries, each a handful of short strings, comes to a
-	// few hundred KiB) while still finite against the pathological one;
-	// see TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds for a peer
-	// that reaches it with both other bounds far from spent.
+	// never go-github's own, much larger, per-record structs. The budget
+	// below is derived from the host's output bound, and a peer that reaches
+	// it does so with both other bounds far from spent; see
+	// TestPaginateBoundedStopsWhenTheByteBudgetIsWhatBinds.
 	//
 	// Derived from the host's own bound rather than chosen: the listing
 	// becomes a step output, and one over flowstatev1.MaxTaskOutputBytes is

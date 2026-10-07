@@ -226,6 +226,7 @@ func TestAssertionCredentialLifetimeIsTheIssuers(t *testing.T) {
 issuer: https://flowstate.example.com
 assertion_lifetime: 90s
 declared_claims: [repository]
+allow: ['true']
 targets:
   - name: peer-flowstate
     assertion:

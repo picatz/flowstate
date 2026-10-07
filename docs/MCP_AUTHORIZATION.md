@@ -11,7 +11,7 @@ this deployment deliberately does not do yet.
 It assumes the design recorded on [#558](https://github.com/picatz/flowstate/issues/558)
 and sequenced on [#567](https://github.com/picatz/flowstate/issues/567), and
 describes what has landed of that sequence: a token-gated HTTP MCP surface that
-publishes a scope vocabulary but does not yet enforce scopes, and accepts no
+publishes a scope vocabulary and enforces the caller's effective actions on each tool call, and accepts no
 delegation claims. Read those issues for the reasoning; this page is the
 operator-facing result.
 
@@ -270,10 +270,11 @@ own:
   `flowstate_debug` call with it — the debugger drives the same stubbed run
   through the same door, and a script that runs out resumes it rather than
   holding it, so the two share a bound as they share a risk. A submitted
-  workflow can park forever on its own — flowtest's virtual clock advances only
-  when every participant is parked, so a `wait_for_signal:` with no timeout and
-  no scripted signal has no deadline to advance to — and that is a legal
-  Flowfile, so the refusal cannot live in validation. It matters more here than
+  workflow can hold a call open on its own — a long loop, or a debugger session
+  left paused — and that is a legal Flowfile, so the refusal cannot live in
+  validation. (A `wait_for_signal:` with no timeout that nothing scripted can
+  answer is not one of these: flowtest reports it as a stuck run at once.) It
+  matters more here than
   the two above because a `flowstate_test` call also holds the surface's
   registry lock while it runs, so an unbounded one stops the surface for
   everyone rather than only for the caller who asked. A call the deadline
@@ -298,14 +299,24 @@ says plainly what it is missing.
   a deployment has no IdP, HTTP MCP is not available to it today —
   `--insecure-no-auth` is refused on this command, and `flow mcp` over stdio is
   the supported local shape.
-- **MCP still does not enforce token scopes.** #567's D1 is answered: the action
+- **MCP enforces the effective actions on the call, not on discovery.** #567's D1 is answered: the action
   list is in the schema (`proto/flowstate/v1/authorization.proto`), one closed
   enum whose value names spell the scopes, and the metadata document advertises
   it as `scopes_supported`. Connect RPCs can now be restricted by the admitting
-  trust-policy entry's `actions:` list, using those same spellings. This MCP
-  surface does not yet apply that list, and no surface reads a token's `scope` or
-  `scp` claim; an MCP caller admitted by the trust policy may therefore call every
-  tool this reduced surface registers. A challenge must not imply otherwise.
+  trust-policy entry's `actions:` list, using those same spellings, and a token's
+  `scope` (RFC 9068 §2.2.3.1, space-delimited) or `scp` (array, or a space-delimited string as Microsoft Entra issues it) claim can narrow
+  that list further, never widen it: the effective actions are the entry's list
+  intersected with the token's scopes, and an entry with no `actions:` is
+  unrestricted and ignores them. A token carrying both claims, or either in the
+  wrong shape, is refused. This MCP surface applies the resulting list on every
+  tool call, before the tool runs: a caller whose effective actions do not
+  include the action the tool is bound to in the schema gets a tool error naming
+  the required scope, and the refusal is recorded as a policy denial when audit
+  is on. A restricted caller is also refused a tool the schema binds to no
+  action, so a tool added without a binding cannot escape an allowlist. A caller
+  admitted through an entry with no `actions:` list may call every tool this
+  reduced surface registers. `tools/list` still advertises every registered
+  tool; the gate is on the call.
 
   Two things the published list does not say, worth being explicit about
   because a scope value looks like a promise. It is a *vocabulary*, not a
@@ -313,9 +324,8 @@ says plainly what it is missing.
   what that action is, not that this surface registers a tool for it — the
   reduced tool list below is unchanged, and tools are discovered where a
   client actually discovers them, through MCP's own `tools/list`, rather than
-  from an OAuth metadata document its authorization layer reads. A token carrying
-  one of these scopes is admitted no differently from one carrying none; Connect
-  action grants come from trusted configuration, never from that token claim.
+  from an OAuth metadata document its authorization layer reads. Grants come from
+  trusted configuration, and a token claim can only give some of them up.
 - **No delegation.** A token carrying an RFC 8693 `act` or `may_act` claim —
   the shape an agent acting for a human produces — is refused outright, not
   silently accepted as the bare subject and not stripped down to one. Refusal

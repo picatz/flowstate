@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"sort"
+
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -45,6 +47,17 @@ type waitRegistry struct {
 	// reports: a query serializes the copy and the wait goes on counting.
 	entries []*v1.PendingWait
 
+	// seqs is the arrival number of each entry, parallel to entries and
+	// strictly increasing along it. A listing resumes after a number rather
+	// than at an index, so gates that close between two pages cannot make it
+	// skip one that is still open.
+	seqs []uint64
+
+	// issued is the last arrival number handed out. Counts every wait that
+	// reached [waitRegistry.enter], retained or not, so a number is never
+	// reused within a run.
+	issued uint64
+
 	// refused counts waits that are parked right now and are *not* in entries,
 	// because [v1.MaxHeldWaits] was already spent when they arrived.
 	//
@@ -67,6 +80,8 @@ func (r *waitRegistry) enter(wait *v1.PendingWait) func() {
 		return func() {}
 	}
 
+	r.issued++
+
 	if len(r.entries) >= v1.MaxHeldWaits {
 		r.refused++
 
@@ -74,11 +89,13 @@ func (r *waitRegistry) enter(wait *v1.PendingWait) func() {
 	}
 
 	r.entries = append(r.entries, wait)
+	r.seqs = append(r.seqs, r.issued)
 
 	return func() {
 		for i, entry := range r.entries {
 			if entry == wait {
 				r.entries = append(r.entries[:i:i], r.entries[i+1:]...)
+				r.seqs = append(r.seqs[:i:i], r.seqs[i+1:]...)
 
 				break
 			}
@@ -130,6 +147,37 @@ func (r *waitRegistry) find(signalName string) (wait *v1.PendingWait, complete b
 	}
 
 	return nil, !r.isTruncated()
+}
+
+// page is the listing [GatesQuery] answers with: up to limit parked waits that
+// arrived after the arrival number after (0 starts at the first), in the order
+// they parked.
+//
+// The slice [waitRegistry.snapshot] cannot give, which stops at
+// [v1.MaxPendingWaits]: this one walks everything the run retains,
+// [v1.MaxHeldWaits], a page at a time. However large limit is, an answer holds
+// no more than the run retains, so it is bounded by the work bound and not by
+// what a caller asks for.
+func (r *waitRegistry) page(after uint64, limit int) *v1.GatePage {
+	out := &v1.GatePage{}
+	if r == nil {
+		return out
+	}
+
+	limit = max(limit, 0)
+	// The first retained arrival number past the cursor; seqs is sorted.
+	start := sort.Search(len(r.seqs), func(i int) bool { return r.seqs[i] > after })
+
+	end := start + min(limit, len(r.entries)-start)
+	for i := start; i < end; i++ {
+		out.Waits = append(out.Waits, proto.Clone(r.entries[i]).(*v1.PendingWait))
+		out.LastSeq = r.seqs[i]
+	}
+
+	out.More = end < len(r.entries)
+	out.Incomplete = r.isTruncated()
+
+	return out
 }
 
 // isTruncated reports whether some wait parked right now went unrecorded.

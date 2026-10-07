@@ -110,7 +110,8 @@ func TestSignalPolicyExprReportsWhichPerRunValuesItReads(t *testing.T) {
 
 	assert.Equal(t, v1.SignalPolicyReads{}, reads(`sender.identity.principal == "a#b"`))
 	assert.Equal(t, v1.SignalPolicyReads{Run: true}, reads(`sender.identity.principal != run.identity.principal`))
-	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, InputNames: []string{"x"}},
+	assert.Equal(t, v1.SignalPolicyReads{Claims: true}, reads(`sender.identity.claims["x"] == "y"`))
+	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, InputNames: []string{"x"}, Claims: true},
 		reads(`sender.identity.claims["x"] == inputs.x`))
 	assert.Equal(t, v1.SignalPolicyReads{Inputs: true, InputNames: []string{"x"}, Run: true},
 		reads(`inputs.x == "a" && sender.identity.principal != run.identity.principal`))

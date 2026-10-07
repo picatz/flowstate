@@ -98,7 +98,7 @@ func TestTheAuditSeamIsNotBypassed(t *testing.T) {
 		"authorizeRunDecision": {
 			"authorizeRun":      "the audited wrapper: this is where the record is written",
 			"Signal":            "walks a Continue-As-New chain from its first run id to the current one, which is one decision reached in two lookups; it audits once itself",
-			"GetGate":           "resolves the run for one read and audits that one decision itself, allow and deny, under its own rpc name",
+			"openGateRun":       "the front of GetGate and ListGates: resolves the run for one read and audits that one decision itself, allow and deny, under the calling rpc's name",
 			"SignalWithStart":   "audits when the request is admitted, before anything is created; the already-running branch re-resolves that same decision",
 			"answer":            "the webhook-to-signal bridge: it reaches one decision — is there a run here, and will its `signals:` take an answer from this trigger — and audits that decision itself, denial and acceptance both, as a WEBHOOK_DELIVERY enforcement record (webhookaudit.go)",
 			"authorizeDebugRun": "the debugger's RPCs: it walks a Continue-As-New chain as Signal does (a history read does not), and audits the one decision itself, allow and deny, with the debug detail the record carries",

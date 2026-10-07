@@ -72,9 +72,9 @@ jwks_path: /keys.json
 deny:
   - 'workload.step == "debug"'
 allow:
-  - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
+  - 'target == "aws-prod" && identity.subject.startsWith("repo:picatz/flowstate:")'
   - 'target == "gcp-analytics" && workload.namespace == "acme"'
-  - 'target == "partner" && "repository" in workload.claims'
+  - 'target == "partner" && "repository" in identity.claims'
   - 'target == "internal" && workload.deployment == "prod"'
 
 targets:
@@ -281,7 +281,7 @@ issuers:
 federation:
   issuer: https://flowstate.example.com
   allow:
-    - 'target == "aws-prod" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
+    - 'target == "aws-prod" && identity.subject.startsWith("repo:picatz/flowstate:")'
   targets:
     - name: aws-prod
       aws:
@@ -423,7 +423,7 @@ func TestFederationRoundTrip(t *testing.T) {
 issuer: ` + identityServer.URL + `
 declared_claims: [repository]
 allow:
-  - 'target == "partner" && workload.on_behalf_of.startsWith("repo:picatz/flowstate:")'
+  - 'target == "partner" && identity.subject.startsWith("repo:picatz/flowstate:")'
 targets:
   - name: partner
     token_exchange:
@@ -474,6 +474,7 @@ targets:
 		permissive, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
 declared_claims: [repository]
+allow: ['true']
 targets:
   - name: partner
     token_exchange:

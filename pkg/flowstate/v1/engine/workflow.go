@@ -545,6 +545,9 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 	if err := setGateQuery(ctx, parked); err != nil {
 		return nil, fmt.Errorf("register gate query: %w", err)
 	}
+	if err := setGatesQuery(ctx, parked); err != nil {
+		return nil, fmt.Errorf("register gates query: %w", err)
+	}
 	if err := setStateQuery(ctx, position); err != nil {
 		return nil, fmt.Errorf("register state query: %w", err)
 	}

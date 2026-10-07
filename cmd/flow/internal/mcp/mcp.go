@@ -448,7 +448,57 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 		handler = withMCPAudit(deps.Audit, deps.AuditFailure, name, handler)
 	}
 
+	// Outside the recorder, so that disabling audit output cannot disable
+	// authorization, and inside the principal, which it reads.
+	handler = withMCPActions(deps.Audit, deps.AuditFailure, name, handler)
+
 	return withMCPPrincipal(handler)
+}
+
+// withMCPActions refuses a tool call whose caller's effective actions, the
+// trust policy entry's list narrowed by the token's own scopes
+// ([auth.Principal.Actions]), do not include the action the tool requires.
+//
+// A nil list is the entry that restricts nothing and passes, as it does on the
+// RPC surface ([server.FlowstateServer]'s authorizeAction); a present list,
+// empty included, is an allowlist. A tool the schema binds to no action is
+// refused for a caller holding one, because an allowlist that a new tool
+// silently escaped would not be one. The refusal is a tool error naming the
+// scope, never a protocol error, so a client can tell it from a transport
+// failure and request the scope.
+func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {
+	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		principal, ok := auth.PrincipalFromContext(ctx)
+		if !ok || principal.Actions == nil {
+			return next(ctx, req)
+		}
+
+		action, err := v1.AuthorizationActionForMCPTool(tool)
+		if err != nil {
+			return ToolError(errors.New("this caller is restricted to a list of actions and this tool requires none it can be checked against")), nil
+		}
+
+		scope := v1.AuthorizationActionScope(action)
+		if slices.Contains(principal.Actions, scope) {
+			return next(ctx, req)
+		}
+
+		if recorder != nil {
+			if err := recorder.Deny(ctx, audit.Subject{
+				MCPTool:    tool,
+				Identity:   v1.ProtoWorkloadIdentity(auth.IdentityFromPrincipal(principal, principal.Namespace, "")),
+				IssuerName: principal.IssuerName,
+				Role:       principal.Role,
+			}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
+				if reportFailure != nil {
+					reportFailure(err)
+				}
+				return ToolError(errors.New("the authorization decision could not be recorded; try again")), nil
+			}
+		}
+
+		return ToolError(fmt.Errorf("the caller is not authorized for required action %q", scope)), nil
+	}
 }
 
 // withMCPPrincipal installs the verified, token-free caller on the same
@@ -465,7 +515,8 @@ func withMCPPrincipal(next mcp.ToolHandler) mcp.ToolHandler {
 	}
 }
 
-// withMCPAudit is the authoritative MCP tool-authorization seam: the SDK has
+// withMCPAudit is the MCP tool-allow recording seam (the action check is
+// [withMCPActions], which runs before it): the SDK has
 // resolved a registered tool and bearer admission has installed its attested,
 // token-free Principal, while neither argument parsing nor the tool's mutation
 // has happened yet. One allow is therefore complete and true even if the tool
@@ -687,6 +738,19 @@ func WorkflowServiceMethods() []ServiceMethod {
 			Output: (&v1.GetGateResponse{}).ProtoReflect().Descriptor(),
 			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
 				resp, err := remote().GetGate(ctx, connect.NewRequest(in.(*v1.GetGateRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
+			Name:   "ListGates",
+			Input:  (&v1.ListGatesRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ListGatesResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().ListGates(ctx, connect.NewRequest(in.(*v1.ListGatesRequest)))
 				if err != nil {
 					return nil, err
 				}

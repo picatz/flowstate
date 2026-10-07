@@ -413,6 +413,17 @@ func NewExamplesHTTPServer(tb testing.TB) (string, func() []string) {
 		write(w, map[string]any{})
 	})
 
+	// refund-request: the payout the run makes, and the void its `undo:` would
+	// send. The payout answers the `reference` the workflow reads back; the void
+	// is only reached when a later step fails, which this harness's default-inputs
+	// comparison run never does, so it only needs to exist.
+	mux.HandleFunc("/refunds", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{"reference": "ref-1"})
+	})
+	mux.HandleFunc("/refunds/void", func(w http.ResponseWriter, _ *http.Request) {
+		write(w, map[string]any{})
+	})
+
 	// enterprise-access-review: last-used evidence for one grant, read by
 	// `grantee` — matching what accounts for is worth doing since the harness's
 	// default `inputs.json` names two, and the example's `outputs:` reads

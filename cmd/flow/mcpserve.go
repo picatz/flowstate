@@ -353,9 +353,10 @@ type mcpServeLimits struct {
 //     naming the document mounted at step 5 — PR-1's mechanism
 //     ([auth.ProtectedResource.MetadataURL]), reused rather than a second
 //     challenge built here. The protected-resource document advertises the
-//     schema-owned scope vocabulary, but no request enforces a scope yet, so
-//     [mcpauth.RequireBearerTokenOptions.Scopes] stays empty and the middleware
-//     emits no `scope` challenge parameter.
+//     schema-owned scope vocabulary, but the middleware runs before a tool is
+//     chosen and cannot know which scope a request needs, so
+//     [mcpauth.RequireBearerTokenOptions.Scopes] stays empty and it emits no
+//     `scope` challenge parameter. The action check is the tool handler's.
 //  4. **The session bound**, inside authentication so that an unauthenticated
 //     caller can never consume a session slot — a bound an anonymous peer can
 //     exhaust is a denial of service with extra steps.

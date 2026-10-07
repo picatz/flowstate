@@ -2,10 +2,13 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	common "go.temporal.io/api/common/v1"
@@ -912,27 +915,9 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 
 	workflowID, name := req.Msg.GetWorkflowId(), req.Msg.GetSignalName()
 
-	// Before anything is addressed, as Signal does, so a caller without
-	// `workload.signal` cannot tell a run from an absence.
-	if err := s.authorizeAction(ctx, "GetGate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
-		return nil, err
-	}
-
-	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, "")
+	temporal, resp, err := s.openGateRun(ctx, "GetGate", workflowID)
 	if err != nil {
-		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
-			return nil, err
-		}
-
-		return nil, s.auditDeny(ctx, "GetGate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
-	}
-	if err := s.auditAllow(ctx, "GetGate", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
 		return nil, err
-	}
-
-	// Not running is not open, and says nothing else about the run.
-	if getWorkflowExecutionStatus(resp) != v1.RunResponse_STATUS_RUNNING {
-		return nil, notFound(workflowID)
 	}
 
 	progress := runProgress(ctx, temporal, resp)
@@ -947,18 +932,7 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 	// The prompt is withheld exactly as Get withholds it, through the same
 	// redaction over the same declarations, failing closed to withheld. Decided
 	// once and applied to whichever answer a wait is read from.
-	decl := s.sensitiveDeclarationsOf(ctx, workflowID, resp.GetWorkflowExecutionInfo().GetExecution().GetRunId())
-	redacted := func(progress *v1.RunProgress) *v1.RunProgress {
-		probe := &v1.GetResponse{Progress: progress}
-		if decl.declares {
-			probe = v1.RedactGetResponseDecided(probe, decl.outputs, decl.carried)
-			if decl.outputs == nil {
-				v1.WithholdPendingWaitPrompts(probe)
-			}
-		}
-
-		return probe.GetProgress()
-	}
+	redacted := s.gateRedactor(ctx, workflowID, resp)
 	probe := redacted(progress)
 
 	// The progress answer lists at most [v1.MaxPendingWaits] gates, so a run that
@@ -980,42 +954,7 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 			continue
 		}
 
-		sender := &v1.SignalSender{Identity: s.identityFor(ctx), AcceptedAt: timestamppb.Now()}
-
-		out := &v1.GetGateResponse{
-			WorkflowId: workflowID,
-			RunId:      resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
-			StepId:     wait.GetStepId(),
-			SignalName: name,
-			Deadline:   wait.Deadline,
-			MayAnswer:  s.authorizeSignal(resp, name, sender) == nil,
-		}
-
-		// Signal asks for `workload.debug` as well on the reserved debug channel,
-		// which a run begun before that name was reserved may still be waiting on,
-		// so advice that says yes where the delivery is certain to be refused is
-		// wrong. Asked without writing a record: the denial that counts is the one
-		// Signal makes.
-		if out.MayAnswer && v1.IsDebugSignalName(name) &&
-			!holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
-			out.MayAnswer = false
-		}
-
-		// What the question says and who asked it are for the people the policy
-		// admits, and for a caller who could read the run anyway. A caller that
-		// holds `workload.signal` and is refused by the `signals:` rule is told
-		// the gate exists and that they may not answer it, and nothing the
-		// author wrote for approvers: this verb must not widen what that caller
-		// could read through `Get`, which they were never granted.
-		if out.MayAnswer || holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
-			out.Prompt = wait.GetPrompt()
-			out.PromptTruncated = wait.GetPromptTruncated()
-			out.Starter = s.reportedStarter(resp)
-			out.Approvals = wait.GetApprovals()
-			out.ApprovalsNeeded = wait.GetApprovalsNeeded()
-		}
-
-		return connect.NewResponse(out), nil
+		return connect.NewResponse(s.gateOf(ctx, resp, workflowID, wait)), nil
 	}
 
 	// A run that said it holds gates it could not show, and could not find this
@@ -1026,6 +965,199 @@ func (s *FlowstateServer) GetGate(ctx context.Context, req *connect.Request[v1.G
 	}
 
 	return nil, notFound(workflowID)
+}
+
+// openGateRun is the front of every gate read: the caller's `workload.signal`
+// is checked before anything is addressed, as Signal does, so a caller without
+// it cannot tell a run from an absence; the run is resolved and the one decision
+// audited under rpc; and a run that is not running is NotFound, which says
+// nothing else about it. The run's Temporal client and description come back
+// for the read that follows.
+func (s *FlowstateServer) openGateRun(ctx context.Context, rpc, workflowID string) (client.Client, *workflowservice.DescribeWorkflowExecutionResponse, error) {
+	if err := s.authorizeAction(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, nil, err
+	}
+
+	temporal, resp, code, err := s.authorizeRunDecision(ctx, workflowID, "")
+	if err != nil {
+		if code == v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED {
+			return nil, nil, err
+		}
+
+		return nil, nil, s.auditDeny(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID, code, err)
+	}
+	if err := s.auditAllow(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID); err != nil {
+		return nil, nil, err
+	}
+
+	// Not running is not open, and says nothing else about the run.
+	if getWorkflowExecutionStatus(resp) != v1.RunResponse_STATUS_RUNNING {
+		return nil, nil, notFound(workflowID)
+	}
+
+	return temporal, resp, nil
+}
+
+// gateRedactor returns the redaction a gate read applies to whichever answer a
+// wait is read from: prompts withheld exactly as Get withholds them, through the
+// same redaction over the same declarations, failing closed to withheld. The
+// declarations are decided once, here.
+func (s *FlowstateServer) gateRedactor(ctx context.Context, workflowID string, resp *workflowservice.DescribeWorkflowExecutionResponse) func(*v1.RunProgress) *v1.RunProgress {
+	decl := s.sensitiveDeclarationsOf(ctx, workflowID, resp.GetWorkflowExecutionInfo().GetExecution().GetRunId())
+
+	return func(progress *v1.RunProgress) *v1.RunProgress {
+		probe := &v1.GetResponse{Progress: progress}
+		if decl.declares {
+			probe = v1.RedactGetResponseDecided(probe, decl.outputs, decl.carried)
+			if decl.outputs == nil {
+				v1.WithholdPendingWaitPrompts(probe)
+			}
+		}
+
+		return probe.GetProgress()
+	}
+}
+
+// gateOf is the one projection of a parked wait into what a caller may be told
+// about it, shared by [FlowstateServer.GetGate] and [FlowstateServer.ListGates]
+// so the two cannot disagree. The wait must already be redacted by
+// gateRedactor.
+func (s *FlowstateServer) gateOf(ctx context.Context, resp *workflowservice.DescribeWorkflowExecutionResponse, workflowID string, wait *v1.PendingWait) *v1.GetGateResponse {
+	name := wait.GetSignalName()
+
+	sender := &v1.SignalSender{Identity: s.identityFor(ctx), AcceptedAt: timestamppb.Now()}
+
+	out := &v1.GetGateResponse{
+		WorkflowId: workflowID,
+		RunId:      resp.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+		StepId:     wait.GetStepId(),
+		SignalName: name,
+		Deadline:   wait.Deadline,
+		MayAnswer:  s.authorizeSignal(resp, name, sender) == nil,
+	}
+
+	// Signal asks for `workload.debug` as well on the reserved debug channel,
+	// which a run begun before that name was reserved may still be waiting on,
+	// so advice that says yes where the delivery is certain to be refused is
+	// wrong. Asked without writing a record: the denial that counts is the one
+	// Signal makes.
+	if out.MayAnswer && v1.IsDebugSignalName(name) &&
+		!holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
+		out.MayAnswer = false
+	}
+
+	// What the question says and who asked it are for the people the policy
+	// admits, and for a caller who could read the run anyway. A caller that
+	// holds `workload.signal` and is refused by the `signals:` rule is told
+	// the gate exists and that they may not answer it, and nothing the
+	// author wrote for approvers: this verb must not widen what that caller
+	// could read through `Get`, which they were never granted.
+	if out.MayAnswer || holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
+		out.Prompt = wait.GetPrompt()
+		out.PromptTruncated = wait.GetPromptTruncated()
+		out.Starter = s.reportedStarter(resp)
+		out.Approvals = wait.GetApprovals()
+		out.ApprovalsNeeded = wait.GetApprovalsNeeded()
+	}
+
+	return out
+}
+
+const (
+	// defaultListGatesPageSize is how many gates come back when a caller does not
+	// say.
+	defaultListGatesPageSize = 50
+
+	// maxListGatesPageSize bounds what a caller may ask for in one page: the
+	// schema's own limit, lower than List's because each gate carries a prompt
+	// of up to [v1.MaxWaitPromptBytes].
+	maxListGatesPageSize = 200
+)
+
+// ListGates implements the RPC: the open gates of one run, each as
+// [FlowstateServer.GetGate] reports it, a page at a time.
+//
+// The list form of GetGate and nothing more: the same `workload.signal` bound
+// through openGateRun, the same redaction through
+// gateRedactor, the same per-gate projection through
+// gateOf, so a gate listed here and the one GetGate answers
+// for cannot differ. What is new is where the gates are read from: the run's
+// [engine.GatesQuery], which walks every wait the run retains
+// ([v1.MaxHeldWaits]), where the progress summary stops at
+// [v1.MaxPendingWaits].
+//
+// A run that cannot answer that query is Unavailable rather than an empty list:
+// no answer is not "no gates", the one thing a gate list must never say wrongly.
+func (s *FlowstateServer) ListGates(ctx context.Context, req *connect.Request[v1.ListGatesRequest]) (*connect.Response[v1.ListGatesResponse], error) {
+	if err := v1.Validate(req.Msg); err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	workflowID := req.Msg.GetWorkflowId()
+
+	temporal, resp, err := s.openGateRun(ctx, "ListGates", workflowID)
+	if err != nil {
+		return nil, err
+	}
+
+	pageSize := int(req.Msg.GetPageSize())
+	switch {
+	case pageSize <= 0:
+		pageSize = defaultListGatesPageSize
+	case pageSize > maxListGatesPageSize:
+		pageSize = maxListGatesPageSize
+	}
+
+	// The token binds the question as List's does: the workload, the filter and
+	// the effective page size, through the same digest and the same seal, so a
+	// cursor for one listing is refused for another. The position is an arrival
+	// number plus the run it was counted on, because arrival numbers restart on
+	// a later run of the same workload.
+	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+	caller := s.identityFor(ctx).GetNamespace()
+	query := listQueryDigest(workflowID+"\x00"+strconv.FormatBool(req.Msg.GetAnswerableOnly()), pageSize)
+
+	position, err := s.openPageToken(req.Msg.GetPageToken(), caller, query, time.Now())
+	if err != nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
+	var after uint64
+	if len(position) > 0 {
+		if len(position) < 8 || string(position[8:]) != runID {
+			return nil, connect.NewError(connect.CodeInvalidArgument,
+				errors.New("page token was issued on an earlier run of this workload; start the listing again without one"))
+		}
+		after = binary.BigEndian.Uint64(position[:8])
+	}
+
+	page := runGates(ctx, temporal, resp, after, pageSize)
+	if page == nil {
+		return nil, connect.NewError(connect.CodeUnavailable,
+			fmt.Errorf("the run's open gates could not be read; try again"))
+	}
+
+	redacted := s.gateRedactor(ctx, workflowID, resp)
+
+	out := &v1.ListGatesResponse{Truncated: page.GetIncomplete()}
+	for _, wait := range redacted(&v1.RunProgress{PendingWaits: page.GetWaits()}).GetPendingWaits() {
+		gate := s.gateOf(ctx, resp, workflowID, wait)
+		if req.Msg.GetAnswerableOnly() && !gate.GetMayAnswer() {
+			continue
+		}
+
+		out.Gates = append(out.Gates, gate)
+	}
+
+	if page.GetMore() {
+		next := binary.BigEndian.AppendUint64(nil, page.GetLastSeq())
+		out.NextPageToken, err = s.issuePageToken(append(next, runID...), caller, query, time.Now())
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInternal, err)
+		}
+	}
+
+	return connect.NewResponse(out), nil
 }
 
 // holdsAction reports whether the caller holds action, the way
