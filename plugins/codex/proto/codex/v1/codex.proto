@@ -4,6 +4,7 @@ package codex.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/codex/gen/codex/v1;codexv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: one bounded, agentic execution of OpenAI
@@ -87,7 +88,7 @@ message ExecInputs {
   // `api_key: ${secret('...')}` and this task receives the resolved value,
   // never the reference - the host resolves it before this task ever runs.
   // See doc.go, "Secrets," for what that does and does not guarantee.
-  flowstate.v1.Value api_key = 5;
+  flowstate.v1.Value api_key = 5 [(flowstate.v1.input).secret = SECRET_WHOLE_VALUE];
 
   // MaxOutputBytes bounds the combined size of every text field this task
   // reads out of the run's event stream - the final message, each event's

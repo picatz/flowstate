@@ -4,6 +4,7 @@ package vcs.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/vcs/gen/vcs/v1;vcsv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // This plugin's own task schema: version control only, and deliberately
@@ -78,7 +79,7 @@ message LogInputs {
   // Token is a secret reference for HTTPS authentication against a private
   // repository, resolved inside this task and never logged. See the plugin's
   // secret scheme in main.go. A literal string here is refused: see doc.go.
-  flowstate.v1.Value token = 4;
+  flowstate.v1.Value token = 4 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 }
 
 // LogOutputs is a bounded slice of history.
@@ -130,7 +131,7 @@ message DiffInputs {
   string head = 3;
 
   // Token is a secret reference for HTTPS authentication. See LogInputs.token.
-  flowstate.v1.Value token = 4;
+  flowstate.v1.Value token = 4 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 }
 
 // DiffOutputs is the result of comparing two revisions.
