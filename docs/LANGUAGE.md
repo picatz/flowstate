@@ -1267,6 +1267,29 @@ done is the first undone. This is the saga pattern.
   compensations join the caller's.
 - `undo:` goes on task steps only. For a `call:`, put it on the callee's steps.
 
+```mermaid
+flowchart LR
+  N["network<br/>created"]
+  D["database<br/>created"]
+  X["deploy<br/>fails"]
+  UD["undo: database"]
+  UN["undo: network"]
+  F["run ends FAILED<br/>error lists what was undone"]
+
+  N -->|"registers undo"| D -->|"registers undo"| X
+  X -->|"unwind in reverse"| UD --> UN --> F
+
+  classDef authoring fill:#DDF4FF,stroke:#0969DA,color:#1F2328
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  classDef neutral fill:#F6F8FA,stroke:#57606A,color:#1F2328
+  class N,D runtime
+  class X,F govern
+  class UD,UN durable
+```
+
 [examples/saga-provisioning](../examples/saga-provisioning/workflow.yaml) fails
 on purpose to show the unwinding.
 

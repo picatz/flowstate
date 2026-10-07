@@ -73,13 +73,27 @@ reference for anything that must stay out of history.
 
 ```mermaid
 flowchart LR
-  Ref["secret('env:API_TOKEN')<br/>in the specification"] --> Hist["run history<br/>(reference only)"]
-  Hist --> Act["task activity<br/>on the worker"]
-  Act --> Policy{"secrets policy<br/>for this workload<br/>and step"}
-  Policy -- deny --> Fail["step fails:<br/>PolicyDenied"]
-  Policy -- allow --> Prov["provider<br/>env · file · vault · …"]
-  Prov --> Req["applied to the request"]
-  Req --> Scrub["outputs, logs, and errors<br/>scrubbed of the value"]
+  Ref["<b>secret('env:API_TOKEN')</b><br/>in the specification"]
+  Hist["run history<br/>(reference only)"]
+  Act["task activity<br/>on the worker"]
+  Policy{"secrets policy<br/>for this workload<br/>and step"}
+  Fail["step fails:<br/>PolicyDenied"]
+  Prov["provider<br/>env · file · vault · …"]
+  Req["applied to the request"]
+  Scrub["outputs, logs, and errors<br/>scrubbed of the value"]
+
+  Ref --> Hist --> Act --> Policy
+  Policy -- deny --> Fail
+  Policy -- allow --> Prov --> Req --> Scrub
+
+  classDef contract fill:#FFF1C2,stroke:#9A6700,stroke-width:3px,color:#1F2328
+  classDef durable fill:#FBEFFF,stroke:#8250DF,color:#1F2328
+  classDef runtime fill:#DAFBE1,stroke:#1A7F37,color:#1F2328
+  classDef govern fill:#FFEBE9,stroke:#CF222E,color:#1F2328
+  class Ref contract
+  class Hist durable
+  class Act,Prov,Req,Scrub runtime
+  class Policy,Fail govern
 ```
 
 1. The compiler turns the reference into a `SecretRef` in the specification.
