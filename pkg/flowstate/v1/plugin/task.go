@@ -16,6 +16,7 @@ import (
 	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -455,6 +456,10 @@ func reportWirePhase(ctx context.Context, phase pluginv1.TaskPhase) {
 //   - a reference in an input this task did declare is resolved, under the
 //     caller's authenticated identity and namespace, through whatever the host
 //     is holding TaskRuntime for;
+//   - a credential reference, ${credential('target')}, in a declared input is
+//     minted by the broker under the assumption policy and handed over as the
+//     value it names, through the same scrubber and by the same rule: one
+//     declaration, "secret_inputs", says an input takes either;
 //   - a reference in an input this task did not declare is refused, since an
 //     undeclared field is not one a Flowfile author routed a secret to on
 //     purpose, and resolving it anyway would let a plugin fish for whatever a
@@ -498,12 +503,40 @@ func resolvePluginSecretInputs(
 	var resolvedSecrets []secrets.Secret
 	for name, v := range inputs {
 		ref, isWholeRef := v.GetKind().(*flowstatev1.Value_SecretRef)
+		credential, isWholeCredential := v.GetKind().(*flowstatev1.Value_CredentialRef)
 
 		switch {
-		case slices.Contains(required, name) && !isWholeRef:
+		case slices.Contains(required, name) && !isWholeRef && !isWholeCredential:
 			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
-				"input %q must be a whole secret reference such as ${secret('env:NAME')}, never a literal; "+
+				"input %q must be a whole secret reference such as ${secret('env:NAME')} or credential reference such as ${credential('target')}, never a literal; "+
 					"literal secret or connection material is stored in workflow history", name))
+
+		case isWholeCredential && slices.Contains(declared, name):
+			// The same seam [flowstatev1.ResolveSecret] is for a stored secret,
+			// one rung over: the broker decides under the assumption policy,
+			// per step, and what comes back is registered with the scrubber and
+			// handed over as a string exactly as a resolved secret is. Nothing
+			// here is a second resolver; the credential is a value of a
+			// secret input.
+			secret, err := flowstatev1.ResolveCredential(ctx, credential.CredentialRef.GetTarget())
+			if err != nil {
+				kind := flowstatev1.ErrorKindPolicyDenied
+				if auth.Retryable(err) || flowstatev1.AuditRecorderUnavailable(err) {
+					kind = flowstatev1.ErrorKindUpstream
+				}
+				return nil, nil, flowstatev1.NewTaskError(taskName, kind, fmt.Errorf(
+					"resolving input %q (credential %q): %w", name, credential.CredentialRef.GetTarget(), err))
+			}
+			scrubber.Add(secret)
+			resolvedSecrets = append(resolvedSecrets, secret)
+			resolved[name] = &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: &expr.Value{
+				Kind: &expr.Value_StringValue{StringValue: secret.Reveal()},
+			}}}
+
+		case isWholeCredential:
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q is a credential reference, which this task did not declare as accepting one%s",
+				name, acceptedPluginSecretInputsHelp(declared)))
 
 		case isWholeRef && slices.Contains(declared, name):
 			secret, err := flowstatev1.ResolveSecret(ctx, ref.SecretRef)
@@ -537,13 +570,9 @@ func resolvePluginSecretInputs(
 					"which no plugin task input accepts", name))
 
 		case flowstatev1.ValueHoldsCredentialRef(v):
-			// Refused here rather than forwarded: the host does not mint a
-			// credential for a plugin task yet, and passing the reference through
-			// would hand a plugin a name it cannot resolve and a host contract it
-			// never agreed to. The host resolution that accepts one for a
-			// declared input replaces this arm.
 			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
-				"input %q is a credential reference, which no plugin task input accepts", name))
+				"input %q holds a credential reference nested inside a list or a mapping, "+
+					"which no plugin task input accepts", name))
 
 		default:
 			resolved[name] = v

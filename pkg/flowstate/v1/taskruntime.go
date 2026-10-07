@@ -46,6 +46,41 @@ type TaskRuntime struct {
 // discarded. That is the safe direction; a request leaving with an unrecorded
 // credential is not.
 func AuthorizeCredential(ctx context.Context, req *http.Request, target string) error {
+	return assumeCredential(ctx, target, func(runtime TaskRuntime) error {
+		return runtime.Broker.Authorize(ctx, req, runtime.Identity, runtime.Step, target)
+	})
+}
+
+// ResolveCredential obtains a short-lived credential for target and returns its
+// bearer token, for a task input that takes a secret where it would take a stored
+// one: a plugin task's declared secret input written ${credential('target')}.
+//
+// It is [AuthorizeCredential] with a value for a sink instead of a request, and
+// the same seam: the assumption policy decides first, per step, and the decision
+// is recorded under the same enforcement point, so a credential handed to a
+// plugin is audited exactly as one applied to a request. The token is returned as
+// a [secrets.Secret], the type [ResolveSecret] returns, so the caller registers it
+// with its scrubber the same way and it cannot be printed by accident.
+func ResolveCredential(ctx context.Context, target string) (secrets.Secret, error) {
+	var token string
+	err := assumeCredential(ctx, target, func(runtime TaskRuntime) error {
+		var err error
+		token, err = runtime.Broker.Token(ctx, runtime.Identity, runtime.Step, target)
+		return err
+	})
+	if err != nil {
+		return secrets.Secret{}, err
+	}
+
+	// The reference a credential has is its target, which is what the audit
+	// record names, so it is what the secret is named for.
+	return secrets.NewSecret(&SecretRef{Scheme: "credential", Name: target}, token), nil
+}
+
+// assumeCredential is the seam both [AuthorizeCredential] and [ResolveCredential]
+// pass through: it finds the runtime, refuses a worker with no broker, runs use,
+// and records the decision the broker made.
+func assumeCredential(ctx context.Context, target string, use func(TaskRuntime) error) error {
 	subject := EnforcementSubject{
 		Point:        AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION,
 		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET,
@@ -69,7 +104,7 @@ func AuthorizeCredential(ctx context.Context, req *http.Request, target string) 
 			fmt.Errorf("workload identity federation is not configured on this worker"))
 	}
 
-	err := runtime.Broker.Authorize(ctx, req, runtime.Identity, runtime.Step, target)
+	err := use(runtime)
 	if err == nil {
 		// Late, because by here the assertion has been minted and an identity
 		// provider has completed an exchange: this record is behind its effect,

@@ -444,6 +444,10 @@ type TaskDescription struct {
 	// about trust: naming an input here is the plugin asking to receive a value
 	// the workflow author never wrote in the clear.
 	//
+	// The same list is where a credential reference, `${credential('target')}`,
+	// is legal: the worker mints a bearer token for the step and the plugin
+	// receives it as the string a stored secret would have been.
+	//
 	// A membership set, not a sequence — sorted and deduplicated by whichever
 	// server produces this message, regardless of what order a plugin manifest
 	// declared it in. What matters to every reader is which names are present;

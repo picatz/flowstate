@@ -4,6 +4,7 @@ import (
 	"crypto"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
+	"github.com/picatz/flowstate/internal/textbound"
 	"net/http"
 	"slices"
 	"time"
@@ -152,6 +153,29 @@ type FederationTarget struct {
 	// recorded in audit. Required, and unique within the policy.
 	Name string `json:"name" yaml:"name"`
 
+	// SubjectLevel is how much of the workload's position the assertion's
+	// "sub" names: "step", "workflow" or "deployment". Unset keeps the
+	// behavior a target has always had: the whole step, except for a
+	// client_credentials target that authenticates with the assertion, whose
+	// subject RFC 7523 makes the client id.
+	//
+	//	targets:
+	//	  - name: azure-prod
+	//	    subject_level: workflow
+	//	    client_credentials:
+	//	      token_url: https://login.microsoftonline.com/TENANT/oauth2/v2.0/token
+	//	      client_id: 00000000-0000-0000-0000-000000000000
+	//
+	// It exists for relying parties that match the subject exactly or bound its
+	// length: an Azure federated identity credential holds one exact subject
+	// and an application has few of them, and GCP's google.subject is length
+	// limited, so neither can take a per-step subject. A level written here is
+	// explicit, so on a client_credentials target it replaces the client id as
+	// the assertion's subject, which is what an Azure credential matches. The
+	// assumption policy is unaffected: it still gates the real step.
+	// See [SubjectLevel].
+	SubjectLevel SubjectLevel `json:"subject_level,omitempty" yaml:"subject_level,omitempty"`
+
 	// TokenExchange configures RFC 8693 OAuth 2.0 Token Exchange, the
 	// standards-based path that works with any authorization server implementing
 	// it. Prefer it where it is available.
@@ -280,6 +304,16 @@ func (p FederationPolicy) Validate() error {
 			return fmt.Errorf("%w: targets[%d]: duplicate name %q", ErrInvalidPolicy, i, target.Name)
 		}
 		names[target.Name] = struct{}{}
+
+		// Unset is the default; anything written has to be one of the three
+		// levels. A misspelling that fell through to the default would leave an
+		// operator believing a per-workflow subject was configured while every
+		// step minted its own, and a federated credential pinned to the
+		// workflow would refuse them all.
+		if target.SubjectLevel != "" && !target.SubjectLevel.Valid() {
+			return fmt.Errorf("%w: targets[%d] %q: subject_level %q must be step, workflow, or deployment",
+				ErrInvalidPolicy, i, target.Name, textbound.Truncate(string(target.SubjectLevel), 32))
+		}
 
 		configured := 0
 		for _, set := range []bool{
@@ -453,6 +487,11 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	}
 	for name, exchanger := range exchangers {
 		brokerOpts = append(brokerOpts, WithTarget(name, exchanger))
+	}
+	for _, target := range p.Targets {
+		if target.SubjectLevel != "" {
+			brokerOpts = append(brokerOpts, WithTargetSubjectLevel(target.Name, target.SubjectLevel))
+		}
 	}
 	if cfg.clock != nil {
 		brokerOpts = append(brokerOpts, WithBrokerClock(cfg.clock))

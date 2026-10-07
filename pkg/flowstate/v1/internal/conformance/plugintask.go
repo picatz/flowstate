@@ -3,6 +3,7 @@ package conformance
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -56,6 +57,14 @@ const (
 // reached the run's outputs.
 const PluginTaskInputsMaterial = "plugin-task-secret-material"
 
+// PluginTaskInputsCredentialMaterial is what the fixture broker mints for the
+// credential cases' target.
+const PluginTaskInputsCredentialMaterial = "plugin-task-minted-credential"
+
+// PluginTaskInputsWorkflowSubject is the subject the subject_level case's
+// assertion carries: its step reduced to the workflow level.
+const PluginTaskInputsWorkflowSubject = "flowstate:acme-tenant/_default/plugin-task-credential-level/_any"
+
 // PluginTaskInputsTaskDef is a [v1.TaskDef] shaped exactly like the one
 // `plugin.Plugin.taskDef` builds for a real plugin task, and whose Fn reports
 // what each of its inputs looked like on arrival.
@@ -84,6 +93,7 @@ func PluginTaskInputsTaskDef() v1.TaskDef {
 		Summary:        "test fixture standing in for a plugin task",
 		Inputs:         pluginTaskInputsDescriptor(),
 		DeferredInputs: []string{"deferred"},
+		SecretInputs:   []string{"token"},
 		Fn: func(ctx context.Context, inputs map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
 			out := map[string]*v1.Value{
 				"resolved_kind": v1.NewLiteral(valueKindName(inputs["resolved"])),
@@ -93,13 +103,18 @@ func PluginTaskInputsTaskDef() v1.TaskDef {
 			}
 
 			if credential := inputs["token"].GetCredentialRef(); credential != nil {
-				// Carried, not minted: the fixture stands in for the task that will
-				// one day own the exchange, and what this case pins is that both
-				// drivers hand it the reference unresolved. Nothing here mints, so
-				// there is no length to report and nothing for the containment
-				// check to find.
+				// Minted here, in the task, through [v1.ResolveCredential]: the
+				// call plugin/task.go's resolvePluginSecretInputs makes for a
+				// declared secret input, at the same position. The length is
+				// reported and never the value, for the reason below.
 				out["token_ref"] = v1.NewLiteral("credential:" + credential.GetTarget())
-				out["token_length"] = v1.NewLiteral(int64(0))
+
+				secret, err := v1.ResolveCredential(ctx, credential.GetTarget())
+				if err != nil {
+					return nil, v1.NewTaskError(PluginTaskInputsTaskName, v1.ErrorKindPolicyDenied,
+						fmt.Errorf("resolving input %q (credential %q): %w", "token", credential.GetTarget(), err))
+				}
+				out["token_length"] = v1.NewLiteral(int64(len(secret.Reveal())))
 
 				return &v1.Node_Outputs{NamedValues: out}, nil
 			}
@@ -229,6 +244,15 @@ func pluginTaskInputStepWith(workflowName, stepID string, token *v1.Value) *v1.W
 	}
 }
 
+// continueOnError lets a case's failing step be recorded as its outcome rather
+// than ending the run, which is how a denial is observed.
+func continueOnError(workflow *v1.Workflow) *v1.Workflow {
+	for _, node := range workflow.GetSteps() {
+		node.Policy = &v1.StepPolicy{ContinueOnError: true}
+	}
+	return workflow
+}
+
 // PluginTaskInputCases are the shared cases both drivers run for what a plugin
 // task is handed.
 //
@@ -270,12 +294,13 @@ func PluginTaskInputCases() []AuthorityCase {
 			ContainmentValue: PluginTaskInputsMaterial,
 		},
 		{
-			// The credential reference travels exactly as the secret one does: both
-			// drivers leave it a reference through input resolution, so the task
-			// receives a name and not a credential (invariant 7). It is the
-			// carrying half of the containment `VarsSecretRefusalCases` holds the
-			// refusing half of, and it is what the host's resolution builds on.
-			Name:     "a plugin task is handed a credential reference unresolved",
+			// The credential reference travels exactly as the secret one does
+			// and is minted inside the task, so the task receives a credential
+			// it asked for and the run's outputs hold a name and a length. It
+			// is the containment half of the `VarsSecretRefusalCases`
+			// refusal, and what the host's resolution of a declared secret
+			// input builds on.
+			Name:     "a plugin task mints a credential reference inside the task",
 			Workflow: pluginTaskInputStepWith("plugin-task-credential", "call", v1.NewCredentialRef("anthropic")),
 			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
 				"call": {NamedValues: map[string]*v1.Value{
@@ -284,14 +309,67 @@ func PluginTaskInputCases() []AuthorityCase {
 					"deferred_kind": v1.NewLiteral("expression"),
 					"token_kind":    v1.NewLiteral("credential_ref"),
 					"token_ref":     v1.NewLiteral("credential:anthropic"),
-					"token_length":  v1.NewLiteral(int64(0)),
+					"token_length":  v1.NewLiteral(int64(len(PluginTaskInputsCredentialMaterial))),
 				}},
 			}},
 			Authority: Authority{
 				Identity: auth.WorkloadIdentity{
 					Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
 				},
+				Federation: &Federation{Target: "anthropic", Token: PluginTaskInputsCredentialMaterial},
 			},
+			ContainmentValue: PluginTaskInputsCredentialMaterial,
+		},
+		{
+			// The assumption policy still gates the step that asks, whatever
+			// grain the subject is rendered at: a rule naming another step
+			// refuses this one, and nothing is minted.
+			Name:     "a plugin task is refused a credential the assumption policy does not allow for its step",
+			Workflow: continueOnError(pluginTaskInputStepWith("plugin-task-credential-denied", "call", v1.NewCredentialRef("anthropic"))),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"call": v1.FailedStepOutputs(v1.StepFailure{Kind: v1.ErrorKindPolicyDenied, Text: `task "test.plugin_inputs" failed (PolicyDenied): ` +
+					`resolving input "token" (credential "anthropic"): auth: denied by assumption policy: ` +
+					`"flowstate:acme-tenant/_default/plugin-task-credential-denied/call" may not assume "anthropic" ` +
+					`(allow rules: no allow rule matched)`}),
+			}},
+			Authority: Authority{
+				Identity: auth.WorkloadIdentity{
+					Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
+				},
+				Federation: &Federation{
+					Target: "anthropic", Token: PluginTaskInputsCredentialMaterial,
+					Allow: []string{`workload.step == "another"`}, SubjectLevel: auth.SubjectLevelWorkflow,
+					ExchangeCalls: new(atomic.Int32),
+				},
+			},
+		},
+		{
+			// subject_level: the relying party reads the workflow's subject,
+			// not the step's, on both drivers. The fixture exchanger hands back
+			// the subject it was given as the credential, and the task reports
+			// its length: the step id is longer than "_any", so a driver that
+			// ignored the level disagrees with the pinned length.
+			Name:     "a credential target renders its assertion subject at the configured level",
+			Workflow: pluginTaskInputStepWith("plugin-task-credential-level", "invoke", v1.NewCredentialRef("anthropic")),
+			ExpectedOutputs: &v1.Workflow_StepOutputs{StepValues: map[string]*v1.Node_Outputs{
+				"invoke": {NamedValues: map[string]*v1.Value{
+					"resolved_kind": v1.NewLiteral("literal"),
+					"resolved_text": v1.NewLiteral("hello world"),
+					"deferred_kind": v1.NewLiteral("expression"),
+					"token_kind":    v1.NewLiteral("credential_ref"),
+					"token_ref":     v1.NewLiteral("credential:anthropic"),
+					"token_length":  v1.NewLiteral(int64(len(PluginTaskInputsWorkflowSubject))),
+				}},
+			}},
+			Authority: Authority{
+				Identity: auth.WorkloadIdentity{
+					Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
+				},
+				Federation: &Federation{
+					Target: "anthropic", EchoSubject: true, SubjectLevel: auth.SubjectLevelWorkflow,
+				},
+			},
+			ContainmentValue: PluginTaskInputsWorkflowSubject,
 		},
 	}
 }
