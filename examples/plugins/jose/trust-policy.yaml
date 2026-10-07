@@ -15,6 +15,7 @@ issuers:
   # require with the task's `trust:` input, and what a run's history records as
   # the rule that admitted a token.
   - name: github-actions
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     # The audience this deployment mints tokens for. A token for somebody else's
     # audience is somebody else's token.

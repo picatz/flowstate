@@ -460,11 +460,11 @@ func wrapToolHandler(deps Deps, name string, handler mcp.ToolHandler) mcp.ToolHa
 // trust policy entry's list narrowed by the token's own scopes
 // ([auth.Principal.Actions]), do not include the action the tool requires.
 //
-// A nil list is the entry that restricts nothing and passes, as it does on the
-// RPC surface ([server.FlowstateServer]'s authorizeAction); a present list,
-// empty included, is an allowlist. A tool the schema binds to no action is
-// refused for a caller holding one, because an allowlist that a new tool
-// silently escaped would not be one. The refusal is a tool error naming the
+// A verified caller is held to its list, as it is on the RPC surface
+// ([server.FlowstateServer]'s authorizeAction): a nil or empty list grants
+// nothing. Only an anonymous caller passes unrestricted. A tool the schema
+// binds to no action is refused for a verified caller, because an allowlist
+// that a new tool silently escaped would not be one. The refusal is a tool error naming the
 // scope, never a protocol error, so a client can tell it from a transport
 // failure and request the scope.
 func withMCPActions(recorder *audit.Recorder, reportFailure func(error), tool string, next mcp.ToolHandler) mcp.ToolHandler {

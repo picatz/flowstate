@@ -244,7 +244,7 @@ func TestTheEgressPolicyFlagSaysWhichPluginsEnforceTheGrantAndWhereItStops(t *te
 	// The plugins that do enforce it, by name — the promise this build now
 	// keeps, and the reason an operator no longer needs a workaround for three
 	// of them.
-	for _, named := range []string{"git", "github", "slack", "sql", "vcs"} {
+	for _, named := range []string{"anthropic", "git", "github", "slack", "sql", "ssh", "vcs"} {
 		require.Containsf(t, usage, named,
 			"the flag help does not name %q, so an operator cannot tell which plugins the policy actually stops", named)
 	}

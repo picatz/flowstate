@@ -130,7 +130,7 @@ chmod 600 "$TOKEN_DIR/sre.jwt"
 AS="--address $ADDRESS --token-file $TOKEN_DIR/sre.jwt"
 ```
 
-A dev issuer's token names no actions, so it may use every one, including
+The dev server's policy lists every action, so its token may use all of them, including
 `workload.debug` and `workload.debug_inspect`. Start a run that sleeps for half
 a minute, and attach:
 

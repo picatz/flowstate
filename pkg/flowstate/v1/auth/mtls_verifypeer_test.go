@@ -28,7 +28,7 @@ func newMTLSVerifier(t *testing.T, issuer auth.TrustedIssuer) *auth.MTLSVerifier
 // a rejection rather than a panic or an anonymous principal.
 func TestMTLSVerifierVerifyPeerRejectsEmptyChain(t *testing.T) {
 	ca := newTestCA(t, "root")
-	verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+	verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 	})
@@ -47,7 +47,7 @@ func TestMTLSVerifierVerifyPeerRejectsUnknownCA(t *testing.T) {
 	trusted := newTestCA(t, "trusted-root")
 	untrusted := newTestCA(t, "untrusted-root")
 
-	verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+	verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: trusted.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 	})
@@ -65,7 +65,7 @@ func TestMTLSVerifierVerifyPeerRejectsUnknownCA(t *testing.T) {
 // silently.
 func TestMTLSVerifierVerifyPeerRejectsAmbiguousSAN(t *testing.T) {
 	ca := newTestCA(t, "root")
-	verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+	verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 	})
@@ -85,7 +85,7 @@ func TestMTLSVerifierVerifyPeerRejectsAmbiguousSAN(t *testing.T) {
 // as an empty subject.
 func TestMTLSVerifierVerifyPeerRejectsNoMatchingSAN(t *testing.T) {
 	ca := newTestCA(t, "root")
-	verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+	verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 	})
@@ -135,7 +135,7 @@ func TestMTLSVerifierVerifyPeerReadsEachSANKind(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			ca := newTestCA(t, "root")
-			verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+			verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 				Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 				ClientCAFile: ca.clientCAFile(t), SubjectFrom: test.from,
 				Namespace: "ci",
@@ -157,7 +157,7 @@ func TestMTLSVerifierVerifyPeerReadsEachSANKind(t *testing.T) {
 					continue
 				}
 
-				mismatched := newMTLSVerifier(t, auth.TrustedIssuer{
+				mismatched := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 					Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 					ClientCAFile: ca.clientCAFile(t), SubjectFrom: other,
 					Namespace: "ci",
@@ -177,7 +177,7 @@ func TestMTLSVerifierVerifyPeerReadsEachSANKind(t *testing.T) {
 func TestMTLSVerifierVerifyPeerCarriesThePolicyAssignedKind(t *testing.T) {
 	for _, kind := range []auth.PrincipalKind{"", auth.PrincipalKindWorkload, auth.PrincipalKindAgent} {
 		ca := newTestCA(t, "root")
-		verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+		verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 			Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 			ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromDNSSAN,
 			Namespace: "ci", PrincipalKind: kind,
@@ -196,7 +196,7 @@ func TestMTLSVerifierVerifyPeerCarriesThePolicyAssignedKind(t *testing.T) {
 // subject no require rule accepts is refused.
 func TestMTLSVerifierVerifyPeerRejectsRequireMismatch(t *testing.T) {
 	ca := newTestCA(t, "root")
-	verifier := newMTLSVerifier(t, auth.TrustedIssuer{
+	verifier := newMTLSVerifier(t, auth.TrustedIssuer{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 		Require: []auth.ClaimRule{
@@ -253,13 +253,13 @@ func TestMTLSVerifierVerifyPeerNamespaceComesFromPolicyNotCertificate(t *testing
 	ca := newTestCA(t, "shared-root")
 
 	policy := auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name: "tenant-a", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/tenant-a",
 			ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 			Require:   []auth.ClaimRule{auth.RequireClaim("subject", "spiffe://example.org/ns/tenant-a/sa/runner")},
 			Namespace: "tenant-a",
 		},
-		{
+		{Actions: []string{},
 			Name: "tenant-b", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/tenant-b",
 			ClientCAFile: ca.clientCAFile(t), SubjectFrom: auth.SubjectFromURISAN,
 			Require:   []auth.ClaimRule{auth.RequireClaim("subject", "spiffe://example.org/ns/tenant-b/sa/runner")},

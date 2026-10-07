@@ -248,6 +248,7 @@ func TestPolicyCarriesSecretRules(t *testing.T) {
 	policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     namespace_claim: repository_owner
@@ -319,6 +320,7 @@ federation:
 		_, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: idp
+    actions: []
     issuer: https://idp.example.com
     audiences: [flowstate]
 

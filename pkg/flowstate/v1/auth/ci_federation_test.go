@@ -98,7 +98,7 @@ func TestCIIssuedTokenVerifies(t *testing.T) {
 	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 	policy := auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:       "ci-deploy",
 			Issuer:     issuer.URL(),
 			Audiences:  []string{"flowstate"},
@@ -203,7 +203,7 @@ func TestCIIssuerWithPathDiscovers(t *testing.T) {
 	)
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "ci-enterprise",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},
@@ -239,7 +239,7 @@ func TestCITenantFromClaim(t *testing.T) {
 		t.Helper()
 
 		verifier, err := auth.NewOIDCVerifier(auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:           "ci",
 				Issuer:         issuer.URL(),
 				Audiences:      []string{"flowstate"},
@@ -308,7 +308,7 @@ func TestCITenantFromNamespaceMap(t *testing.T) {
 	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:           "ci",
 			Issuer:         issuer.URL(),
 			Audiences:      []string{"flowstate"},
@@ -401,7 +401,7 @@ func TestNamespaceMapValidation(t *testing.T) {
 	t.Parallel()
 
 	base := func() auth.TrustedIssuer {
-		return auth.TrustedIssuer{
+		return auth.TrustedIssuer{Actions: []string{},
 			Name:      "ci",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -503,6 +503,7 @@ func TestNamespaceMapExplicitNullIsRefused(t *testing.T) {
 			yaml: `
 issuers:
   - name: ci
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     namespace_claim: repository_owner
@@ -514,6 +515,7 @@ issuers:
 			yaml: `
 issuers:
   - name: ci
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     namespace_claim: repository_owner
@@ -538,6 +540,7 @@ issuers:
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: ci
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     namespace_claim: repository_owner
@@ -551,6 +554,7 @@ issuers:
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: ci
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     namespace_claim: repository
@@ -583,7 +587,7 @@ issuers:
 func TestNamespaceMapEmptyRoundTripsAsPresent(t *testing.T) {
 	t.Parallel()
 
-	issuer := auth.TrustedIssuer{
+	issuer := auth.TrustedIssuer{Actions: []string{},
 		Name:           "ci",
 		Issuer:         "https://token.actions.githubusercontent.com",
 		Audiences:      []string{"flowstate"},
@@ -621,7 +625,7 @@ func TestNamespaceMapEmptyRoundTripsAsPresent(t *testing.T) {
 	})
 
 	t.Run("nil NamespaceMap is still omitted, both formats", func(t *testing.T) {
-		nilPolicy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+		nilPolicy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:           "ci",
 			Issuer:         "https://token.actions.githubusercontent.com",
 			Audiences:      []string{"flowstate"},
@@ -651,7 +655,7 @@ func TestCIClaimsCarriedIntoRunIdentity(t *testing.T) {
 	issuer := newTestIssuer(t, authtest.WithClock(clock.Now), authtest.WithKeys(key))
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: []string{},
 			Name:      "ci",
 			Issuer:    issuer.URL(),
 			Audiences: []string{"flowstate"},

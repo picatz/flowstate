@@ -823,7 +823,7 @@ func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T)
 	// allow-list, so team-a's copy would refuse it) or, in the direction that
 	// actually matters here, succeed against a copy this tenant never
 	// registered and never reviewed.
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:    "https://issuer.example.com",
 		Subject:   "team-b-oncall@example.com",
 		Namespace: "team-b",
@@ -850,7 +850,7 @@ func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T)
 	// `allow:` predicate, which does not name team-a's qualified oncall principal,
 	// and would be refused. Succeeding here is what proves team-a reached its
 	// own entry rather than team-b's.
-	ctxA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctxA := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:    "https://issuer.example.com",
 		Subject:   "team-a-oncall@example.com",
 		Namespace: "team-a",
@@ -870,7 +870,7 @@ func TestATrustedWorkflowRegisteredForOneTenantDoesNotReachAnother(t *testing.T)
 	// registered it last, and — since that entry's allow-list names
 	// team-b-oncall — would be authorized. A namespace-scoped key must refuse
 	// it: team-a never registered this workflow for this subject.
-	ctxBFromNamespaceA := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctxBFromNamespaceA := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:    "https://issuer.example.com",
 		Subject:   "team-b-oncall@example.com",
 		Namespace: "team-a",

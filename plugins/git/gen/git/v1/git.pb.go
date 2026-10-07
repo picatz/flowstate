@@ -1125,18 +1125,18 @@ var File_git_v1_git_proto protoreflect.FileDescriptor
 
 const file_git_v1_git_proto_rawDesc = "" +
 	"\n" +
-	"\x10git/v1/git.proto\x12\x06git.v1\x1a\x18flowstate/v1/value.proto\"\x81\x01\n" +
+	"\x10git/v1/git.proto\x12\x06git.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\x89\x01\n" +
 	"\x0eLsRemoteInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
-	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x12)\n" +
-	"\x05token\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\x06prefix\x18\x02 \x01(\tR\x06prefix\x121\n" +
+	"\x05token\x18\x03 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x1a\n" +
 	"\busername\x18\x04 \x01(\tR\busername\"1\n" +
 	"\tRemoteRef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x10\n" +
 	"\x03sha\x18\x02 \x01(\tR\x03sha\"V\n" +
 	"\x0fLsRemoteOutputs\x12%\n" +
 	"\x04refs\x18\x01 \x03(\v2\x11.git.v1.RemoteRefR\x04refs\x12\x1c\n" +
-	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\xa5\x03\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\xad\x03\n" +
 	"\x10CommitPushInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
 	"\x06branch\x18\x02 \x01(\tR\x06branch\x12\x19\n" +
@@ -1147,9 +1147,9 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\vauthor_name\x18\a \x01(\tR\n" +
 	"authorName\x12!\n" +
 	"\fauthor_email\x18\b \x01(\tR\vauthorEmail\x12\x1c\n" +
-	"\ttimestamp\x18\t \x01(\tR\ttimestamp\x12)\n" +
+	"\ttimestamp\x18\t \x01(\tR\ttimestamp\x121\n" +
 	"\x05token\x18\n" +
-	" \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	" \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x1a\n" +
 	"\busername\x18\v \x01(\tR\busername\x1a8\n" +
 	"\n" +
 	"FilesEntry\x12\x10\n" +
@@ -1164,15 +1164,15 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\x06author\x18\x02 \x01(\v2\x11.git.v1.SignatureR\x06author\x12/\n" +
 	"\tcommitter\x18\x03 \x01(\v2\x11.git.v1.SignatureR\tcommitter\x12\x18\n" +
 	"\amessage\x18\x04 \x01(\tR\amessage\x12#\n" +
-	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xd9\x01\n" +
+	"\rparent_hashes\x18\x05 \x03(\tR\fparentHashes\"\xe1\x01\n" +
 	"\tLogInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x1f\n" +
 	"\vmax_commits\x18\x03 \x01(\x05R\n" +
 	"maxCommits\x12\x12\n" +
 	"\x04path\x18\x04 \x01(\tR\x04path\x12\x14\n" +
-	"\x05since\x18\x05 \x01(\tR\x05since\x12)\n" +
-	"\x05token\x18\x06 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\x05since\x18\x05 \x01(\tR\x05since\x121\n" +
+	"\x05token\x18\x06 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x1a\n" +
 	"\busername\x18\a \x01(\tR\busername\x12\x16\n" +
 	"\x06cursor\x18\b \x01(\tR\x06cursor\"\x98\x01\n" +
 	"\n" +
@@ -1181,12 +1181,12 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\fresolved_ref\x18\x02 \x01(\tR\vresolvedRef\x12\x1c\n" +
 	"\ttruncated\x18\x03 \x01(\bR\ttruncated\x12\x1f\n" +
 	"\vnext_cursor\x18\x04 \x01(\tR\n" +
-	"nextCursor\"\x8f\x01\n" +
+	"nextCursor\"\x97\x01\n" +
 	"\x0eReadFileInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x10\n" +
 	"\x03ref\x18\x02 \x01(\tR\x03ref\x12\x12\n" +
-	"\x04path\x18\x03 \x01(\tR\x04path\x12)\n" +
-	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x1a\n" +
+	"\x04path\x18\x03 \x01(\tR\x04path\x121\n" +
+	"\x05token\x18\x04 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x1a\n" +
 	"\busername\x18\x05 \x01(\tR\busername\"k\n" +
 	"\x0fReadFileOutputs\x12\x18\n" +
 	"\acontent\x18\x01 \x01(\fR\acontent\x12\x12\n" +

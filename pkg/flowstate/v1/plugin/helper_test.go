@@ -610,11 +610,14 @@ func fakeManifest(mode string) (*pluginv1.PluginManifest, error) {
 		// TestPluginTaskResolvesAndScrubsHostSecret exist to exercise.
 		base.Capabilities = []pluginv1.Capability{pluginv1.Capability_CAPABILITY_TASKS}
 		base.Tasks = []*pluginv1.TaskManifest{{
-			Name:          "task",
-			Summary:       "echoes what it received, to prove what crossed the boundary",
-			InputMessage:  "flowstate.v1.Task.Log.Inputs",
-			OutputMessage: "flowstate.v1.Task.Log.Outputs",
-			SecretInputs:  []string{"message"},
+			Name:    "task",
+			Summary: "echoes what it received, to prove what crossed the boundary",
+			// A descriptor of its own, because the host reads the claim off the
+			// input message and refuses a manifest that says otherwise.
+			InputDescriptor: claimedInputs(map[string]flowstatev1.Secret{"message": flowstatev1.Secret_SECRET_WHOLE_VALUE}),
+			InputMessage:    claimedMessage,
+			OutputMessage:   "flowstate.v1.Task.Log.Outputs",
+			SecretInputs:    []string{"message"},
 		}}
 		setFixtureOutputManifest(base.Tasks...)
 		return base, nil

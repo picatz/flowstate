@@ -16,6 +16,7 @@ func TestDecidePrincipal(t *testing.T) {
 	const other = v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG
 
 	scope := v1.AuthorizationActionScope(signal)
+	verified := auth.Principal{Subject: "s", Issuer: "https://idp.example"}
 
 	tests := []struct {
 		name          string
@@ -27,12 +28,14 @@ func TestDecidePrincipal(t *testing.T) {
 	}{
 		{"no principal holds an implied action", auth.Principal{}, false, authz.Implied, signal, true},
 		{"no principal holds no explicit action", auth.Principal{}, false, authz.Explicit, signal, false},
-		{"an entry listing no actions grants every implied action", auth.Principal{Subject: "s"}, true, authz.Implied, signal, true},
-		{"an entry listing no actions grants no explicit action", auth.Principal{Subject: "s"}, true, authz.Explicit, signal, false},
-		{"an empty list grants nothing implied", auth.Principal{Subject: "s", Actions: []string{}}, true, authz.Implied, signal, false},
-		{"a listed action is held", auth.Principal{Subject: "s", Actions: []string{scope}}, true, authz.Implied, signal, true},
-		{"a listed action is held explicitly", auth.Principal{Subject: "s", Actions: []string{scope}}, true, authz.Explicit, signal, true},
-		{"an unlisted action is refused", auth.Principal{Subject: "s", Actions: []string{scope}}, true, authz.Implied, other, false},
+		{"a verified caller with no list holds nothing implied", verified, true, authz.Implied, signal, false},
+		{"a verified caller with no list holds nothing explicit", verified, true, authz.Explicit, signal, false},
+		{"the anonymous caller of an insecure server holds every implied action", auth.AnonymousPrincipal(), true, authz.Implied, signal, true},
+		{"the anonymous caller holds no explicit action", auth.AnonymousPrincipal(), true, authz.Explicit, signal, false},
+		{"an empty list grants nothing implied", auth.Principal{Subject: "s", Issuer: "https://idp.example", Actions: []string{}}, true, authz.Implied, signal, false},
+		{"a listed action is held", auth.Principal{Subject: "s", Issuer: "https://idp.example", Actions: []string{scope}}, true, authz.Implied, signal, true},
+		{"a listed action is held explicitly", auth.Principal{Subject: "s", Issuer: "https://idp.example", Actions: []string{scope}}, true, authz.Explicit, signal, true},
+		{"an unlisted action is refused", auth.Principal{Subject: "s", Issuer: "https://idp.example", Actions: []string{scope}}, true, authz.Implied, other, false},
 	}
 
 	for _, test := range tests {
@@ -51,7 +54,7 @@ func TestRefusalNamesTheScopeAndChallenges(t *testing.T) {
 
 	require.Nil(t, authz.DecidePrincipal(auth.Principal{}, false, action, authz.Implied).Refusal())
 
-	refusal := authz.DecidePrincipal(auth.Principal{Subject: "s", Actions: []string{}}, true, action, authz.Implied).Refusal()
+	refusal := authz.DecidePrincipal(auth.Principal{Subject: "s", Issuer: "https://idp.example", Actions: []string{}}, true, action, authz.Implied).Refusal()
 	require.NotNil(t, refusal)
 	require.Equal(t, connect.CodePermissionDenied, refusal.Code())
 	require.Contains(t, refusal.Message(), scope)

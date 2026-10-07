@@ -153,6 +153,7 @@ func TestCodecServeResolvesClientCertificatesAsTheServerDoes(t *testing.T) {
 	policy := filepath.Join(t.TempDir(), "policy.yaml")
 	require.NoError(t, os.WriteFile(policy, []byte(`issuers:
   - name: mesh
+    actions: []
     kind: mtls
     issuer: flowstate:mtls/mesh
     client_ca_file: `+testClientCAFile(t)+`

@@ -271,6 +271,7 @@ func TestPolicyCarriesBothDirections(t *testing.T) {
 	policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     role: deployer
@@ -309,6 +310,7 @@ federation:
 		_, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
 
@@ -330,6 +332,7 @@ federation:
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: github-actions
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     require:
@@ -379,7 +382,7 @@ func TestFederationRoundTrip(t *testing.T) {
 
 		verifier, err := auth.NewOIDCVerifier(
 			auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "flowstate",
 					Issuer:    identityServer.URL,
 					Audiences: []string{relyingParty.URL},

@@ -153,6 +153,7 @@ Reads are authorized by the `secrets:` section of the trust policy file given to
 ```yaml
 issuers:
   - name: ci
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     audiences: [https://flowstate.example.com/rpc]
     require:

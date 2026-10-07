@@ -33,7 +33,6 @@ func TestTokenScopeNarrowsGrantedActions(t *testing.T) {
 		{"only foreign scopes grant nothing", granted, map[string]any{"scope": "openid profile email"}, auth.ActionScopes{}},
 		{"empty scope grants nothing", granted, map[string]any{"scope": ""}, auth.ActionScopes{}},
 		{"empty scp grants nothing", granted, map[string]any{"scp": []any{}}, auth.ActionScopes{}},
-		{"an unrestricted entry ignores the token's scopes", nil, map[string]any{"scope": "workload.read"}, nil},
 		{"an entry granting none stays none", auth.ActionScopes{}, map[string]any{"scope": "workload.read"}, auth.ActionScopes{}},
 	}
 

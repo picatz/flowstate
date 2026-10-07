@@ -88,6 +88,7 @@ updates:
   # is how a queue becomes unreadable.
   - package-ecosystem: gomod
     directories:
+      - /plugins/anthropic
       - /plugins/codex
       - /plugins/git
       - /plugins/github

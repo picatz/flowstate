@@ -420,6 +420,7 @@ func TestFlowDAPAcceptsAPluginTask(t *testing.T) {
 	t.Setenv("EXAMPLE_SECRET_API_KEY", "dap-test-token")
 	require.NoError(t, os.WriteFile(policy, []byte(`issuers:
   - name: local
+    actions: []
     issuer: https://issuer.example
     audiences: [flowstate]
     algorithms: [RS256]

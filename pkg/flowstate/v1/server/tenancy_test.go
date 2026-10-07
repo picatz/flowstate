@@ -276,7 +276,7 @@ func TestSignalAttestsTheAuthenticatedCallerNotAnythingItClaims(t *testing.T) {
 	// The context this request carries a real, authenticated principal on —
 	// exactly what a caller cannot forge, which is the whole point: the
 	// server's attestation must come from here, never from the payload below.
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "real-caller@example.com",
 	})

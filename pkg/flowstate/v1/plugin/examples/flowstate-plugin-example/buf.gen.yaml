@@ -6,11 +6,19 @@ version: v2
 # the repository root:
 #
 #   E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
-#   go tool -modfile=tools/external/go.mod buf generate $E/proto --template $E/buf.gen.yaml -o $E --clean
+#   go tool -modfile=tools/external/go.mod buf generate --config "{\"version\":\"v2\",\"modules\":[{\"path\":\"proto\"},{\"path\":\"$E/proto\"}],\"deps\":[\"buf.build/bufbuild/protovalidate\",\"buf.build/googleapis/googleapis\"]}" --template $E/buf.gen.yaml --clean --path $E/proto/example -o $E
 #
 # (`make check` and CI run the same thing.) --clean empties gen/ first, which
 # holds nothing but this template's output, so a file whose .proto is gone
 # does not survive regeneration.
+# managed mode's only job is telling buf what the engine's schema.proto go_package
+# is, so the import of it resolves; nothing here generates code for that file.
+managed:
+  enabled: true
+  override:
+    - file_option: go_package
+      path: flowstate/v1/schema.proto
+      value: github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1
 plugins:
   - local: [go, tool, protoc-gen-go]
     out: ./gen

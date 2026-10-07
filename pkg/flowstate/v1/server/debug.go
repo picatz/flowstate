@@ -635,9 +635,8 @@ func (s *FlowstateServer) authorizeDebugChannel(ctx context.Context, workflowID 
 	return nil
 }
 
-// requireDebugAction refuses a caller whose token carries an action list
-// without action, auditing the refusal under rpc. A caller with no action list
-// keeps the legacy posture [FlowstateServer.authorizeAction] documents.
+// requireDebugAction refuses a caller whose issuer entry does not list
+// action, auditing the refusal under rpc.
 func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowID string, action v1.AuthorizationAction, detail *v1.AuditDebugDetail) error {
 	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
 	if refusal == nil {
@@ -654,8 +653,7 @@ func (s *FlowstateServer) requireDebugAction(ctx context.Context, rpc, workflowI
 // report definitions would, so a client that would resend the set refuses
 // rather than drop the expression — and without its message or its last
 // error, which quote the condition when it did not compile and the values it
-// read when it failed to evaluate. A caller with no action list
-// keeps the legacy posture [FlowstateServer.requireDebugAction] documents.
+// read when it failed to evaluate.
 func expressionsFor(ctx context.Context, snapshot *v1.DebugSnapshot) *v1.DebugSnapshot {
 	if holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT) {
 		return snapshot

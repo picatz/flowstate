@@ -4,6 +4,7 @@ package scim.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/scim/gen/scim/v1;scimv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 import "google/api/expr/v1alpha1/value.proto";
 
@@ -26,7 +27,7 @@ message UserGetInputs {
   // Token is the bearer credential for the SCIM API. The task requires this
   // entire input to be a secret reference, which the host resolves before
   // execution, so it never enters durable history.
-  flowstate.v1.Value token = 2;
+  flowstate.v1.Value token = 2 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Id is the provider's own identifier for the user. Exactly one of id and
   // user_name is given: they are two ways to name one user, and accepting both
@@ -86,7 +87,7 @@ message UserListInputs {
 
   // Token is the bearer credential for the SCIM API, a secret reference as in
   // UserGetInputs.token.
-  flowstate.v1.Value token = 2;
+  flowstate.v1.Value token = 2 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Filter is a SCIM filter expression (RFC 7644 section 3.4.2.2), such as
   // active eq false. It is bounded and checked for shape, and it is the
@@ -129,7 +130,7 @@ message UserDeactivateInputs {
 
   // Token is the bearer credential for the SCIM API, a secret reference as in
   // UserGetInputs.token.
-  flowstate.v1.Value token = 2;
+  flowstate.v1.Value token = 2 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Id is the provider's identifier for the user, as returned by
   // scim.user_get. A user name is not accepted here: a write names the resource

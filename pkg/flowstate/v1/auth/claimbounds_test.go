@@ -121,7 +121,7 @@ func TestVerifierRefusesAnOverBoundToken(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "foreign",
 				Issuer:    issuer.URL(),
 				Audiences: []string{"flowstate"},

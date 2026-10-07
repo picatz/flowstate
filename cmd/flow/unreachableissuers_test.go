@@ -19,7 +19,7 @@ func TestWarnUnreachableIssuersNamesTheEntryAndTheRemedy(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, nil))
 
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{
-		{
+		{Actions: []string{},
 			Name:      "ci-any-branch",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -27,7 +27,7 @@ func TestWarnUnreachableIssuersNamesTheEntryAndTheRemedy(t *testing.T) {
 			Role:      "admin",
 			Namespace: "acme",
 		},
-		{
+		{Actions: []string{},
 			Name:      "ci-main-only",
 			Issuer:    "https://token.actions.githubusercontent.com",
 			Audiences: []string{"flowstate"},
@@ -73,7 +73,7 @@ func TestWarnUnreachableIssuersSaysNothingAboutACorrectPolicy(t *testing.T) {
 			// their order.
 			name: "tiers made disjoint with none_of",
 			policy: &auth.Policy{Issuers: []auth.TrustedIssuer{
-				{
+				{Actions: []string{},
 					Name:      "ci-main-only",
 					Issuer:    "https://token.actions.githubusercontent.com",
 					Audiences: []string{"flowstate"},
@@ -84,7 +84,7 @@ func TestWarnUnreachableIssuersSaysNothingAboutACorrectPolicy(t *testing.T) {
 					Role:      "deployer",
 					Namespace: "acme",
 				},
-				{
+				{Actions: []string{},
 					Name:      "ci-other-branches",
 					Issuer:    "https://token.actions.githubusercontent.com",
 					Audiences: []string{"flowstate"},

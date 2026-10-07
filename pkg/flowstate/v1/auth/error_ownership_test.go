@@ -40,7 +40,7 @@ func TestExportedErrorCollectionsDoNotAliasPolicy(t *testing.T) {
 			},
 		} {
 			t.Run(testCase.name, func(t *testing.T) {
-				policy := auth.Policy{Issuers: []auth.TrustedIssuer{{
+				policy := auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name: "repository", Issuer: issuer.URL(), Audiences: []string{"flowstate"},
 					Require: []auth.ClaimRule{testCase.rule}, Namespace: "acme",
 				}}}
@@ -73,7 +73,7 @@ func TestExportedErrorCollectionsDoNotAliasPolicy(t *testing.T) {
 	})
 
 	t.Run("ambiguous entry names and indexes", func(t *testing.T) {
-		entry := auth.TrustedIssuer{
+		entry := auth.TrustedIssuer{Actions: []string{},
 			Issuer: issuer.URL(), Audiences: []string{"flowstate"}, Namespace: "acme",
 		}
 		first, second := entry, entry

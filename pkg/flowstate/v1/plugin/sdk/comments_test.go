@@ -9,6 +9,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -50,7 +51,7 @@ func commentOn(t *testing.T, raw []byte, message, field string) string {
 	var fdp descriptorpb.FileDescriptorProto
 	require.NoError(t, proto.Unmarshal(raw, &fdp))
 
-	file, err := protodesc.NewFile(&fdp, nil)
+	file, err := protodesc.NewFile(&fdp, protoregistry.GlobalFiles)
 	require.NoError(t, err)
 
 	md := file.Messages().ByName(protoreflect.Name(message))

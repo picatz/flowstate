@@ -18,7 +18,7 @@ import (
 // policy that does not mean what its author thought is a security problem rather
 // than an inconvenience.
 func TestPolicyValidate(t *testing.T) {
-	valid := auth.TrustedIssuer{
+	valid := auth.TrustedIssuer{Actions: []string{},
 		Name:      "idp",
 		Issuer:    "https://issuer.example.com",
 		Audiences: []string{"flowstate"},
@@ -43,8 +43,8 @@ func TestPolicyValidate(t *testing.T) {
 		{
 			name: "several entries for one issuer",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "main", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, Require: []auth.ClaimRule{auth.RequireClaim("ref", "refs/heads/main")}},
-				{Name: "other", Issuer: valid.Issuer, Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "main", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, Require: []auth.ClaimRule{auth.RequireClaim("ref", "refs/heads/main")}},
+				{Actions: []string{}, Name: "other", Issuer: valid.Issuer, Audiences: []string{"flowstate"}},
 			}},
 		},
 		{
@@ -208,24 +208,24 @@ func TestPolicyValidate(t *testing.T) {
 		{
 			name: "two entries with the same name",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "idp", Issuer: valid.Issuer, Audiences: []string{"flowstate"}},
-				{Name: "idp", Issuer: "https://other.example.com", Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "idp", Issuer: valid.Issuer, Audiences: []string{"flowstate"}},
+				{Actions: []string{}, Name: "idp", Issuer: "https://other.example.com", Audiences: []string{"flowstate"}},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "entries for one issuer that disagree about where its keys are",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "a", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/keys"},
-				{Name: "b", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/other-keys"},
+				{Actions: []string{}, Name: "a", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/keys"},
+				{Actions: []string{}, Name: "b", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/other-keys"},
 			}},
 			wantErr: true,
 		},
 		{
 			name: "entries for one issuer that disagree between URL and file keys",
 			policy: auth.Policy{Issuers: []auth.TrustedIssuer{
-				{Name: "a", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/keys"},
-				{Name: "b", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSFile: "/etc/flowstate/keys.jwks"},
+				{Actions: []string{}, Name: "a", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSURL: "https://issuer.example.com/keys"},
+				{Actions: []string{}, Name: "b", Issuer: valid.Issuer, Audiences: []string{"flowstate"}, JWKSFile: "/etc/flowstate/keys.jwks"},
 			}},
 			wantErr: true,
 		},
@@ -269,6 +269,7 @@ issuers:
       - claim: ref
         any_of: [refs/heads/main, refs/tags/v1]
   - name: cluster
+    actions: []
     issuer: https://kubernetes.default.svc.cluster.local
     audiences: [flowstate]
     jwks_url: https://kubernetes.default.svc.cluster.local/openid/v1/jwks
@@ -301,6 +302,7 @@ issuers:
 				"name": "idp",
 				"issuer": "https://issuer.example.com",
 				"audiences": ["flowstate"],
+				"actions": [],
 				"require": [{"claim": "sub", "any_of": ["runner"]}]
 			}]
 		}`))
@@ -309,38 +311,48 @@ issuers:
 		require.Equal(t, auth.RequireClaim("sub", "runner"), policy.Issuers[0].Require[0])
 	})
 
-	t.Run("action presence is preserved", func(t *testing.T) {
+	t.Run("an empty action list is kept, and survives a round trip", func(t *testing.T) {
 		policy, err := auth.ParsePolicy([]byte(`
 issuers:
-  - name: unrestricted
-    issuer: https://issuer.example.com
-    audiences: [flowstate]
   - name: denied
     issuer: https://other.example.com
     audiences: [flowstate]
     actions: []
+  - name: granted
+    issuer: https://issuer.example.com
+    audiences: [flowstate]
+    actions: [workload.read]
 `))
 		require.NoError(t, err)
-		require.Nil(t, policy.Issuers[0].Actions)
-		require.NotNil(t, policy.Issuers[1].Actions)
-		require.Empty(t, policy.Issuers[1].Actions)
+		require.NotNil(t, policy.Issuers[0].Actions)
+		require.Empty(t, policy.Issuers[0].Actions)
+		require.Equal(t, auth.ActionScopes{"workload.read"}, policy.Issuers[1].Actions)
 
 		encoded, err := json.Marshal(policy)
 		require.NoError(t, err)
 		roundTrip, err := auth.ParsePolicy(encoded)
 		require.NoError(t, err)
-		require.Nil(t, roundTrip.Issuers[0].Actions)
-		require.NotNil(t, roundTrip.Issuers[1].Actions)
+		require.NotNil(t, roundTrip.Issuers[0].Actions)
 
 		encoded, err = yaml.Marshal(policy)
 		require.NoError(t, err)
 		roundTrip, err = auth.ParsePolicy(encoded)
 		require.NoError(t, err)
-		require.Nil(t, roundTrip.Issuers[0].Actions)
-		require.NotNil(t, roundTrip.Issuers[1].Actions)
+		require.NotNil(t, roundTrip.Issuers[0].Actions)
 	})
 
-	t.Run("null actions are refused rather than treated as omitted", func(t *testing.T) {
+	t.Run("omitted actions are refused rather than granting everything", func(t *testing.T) {
+		_, err := auth.ParsePolicy([]byte(`
+issuers:
+  - name: idp
+    issuer: https://issuer.example.com
+    audiences: [flowstate]
+`))
+		require.ErrorIs(t, err, auth.ErrInvalidPolicy)
+		require.ErrorContains(t, err, "actions is required")
+	})
+
+	t.Run("null actions are refused the same way", func(t *testing.T) {
 		_, err := auth.ParsePolicy([]byte(`
 issuers:
   - name: idp
@@ -349,7 +361,17 @@ issuers:
     actions: null
 `))
 		require.Error(t, err)
-		require.ErrorContains(t, err, "actions is present but null")
+		require.ErrorContains(t, err, "actions is required")
+	})
+
+	t.Run("the anonymous caller's issuer label cannot name an entry", func(t *testing.T) {
+		for _, kind := range []string{"", auth.IssuerKindMTLS} {
+			err := auth.Policy{Issuers: []auth.TrustedIssuer{{
+				Name: "spoof", Kind: kind, Issuer: auth.AnonymousIssuer, Actions: auth.ActionScopes{"workload.read"},
+			}}}.Validate()
+			require.ErrorIs(t, err, auth.ErrInvalidPolicy, "kind %q", kind)
+			require.ErrorContains(t, err, "reserved for the anonymous caller", "kind %q", kind)
+		}
 	})
 
 	tests := []struct {
@@ -513,7 +535,7 @@ func TestNamespaceMapJSONRoundTrips(t *testing.T) {
 func TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey(t *testing.T) {
 	policy := auth.Policy{
 		Issuers: []auth.TrustedIssuer{
-			{
+			{Actions: []string{},
 				Name:           "idp",
 				Issuer:         "https://issuer.example.com",
 				Audiences:      []string{"flowstate"},
@@ -557,7 +579,7 @@ func TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey(t *testing.T) {
 		require.NoError(t, err)
 
 		doc := `{"issuers":[{"name":"idp","issuer":"https://issuer.example.com",` +
-			`"audiences":["flowstate"],"namespace_claim":"repository","namespace_map":` +
+			`"audiences":["flowstate"],"actions":[],"namespace_claim":"repository","namespace_map":` +
 			string(mapJSON) + `}]}`
 
 		decoded, err := auth.ParsePolicy([]byte(doc))
@@ -588,7 +610,7 @@ func TestParsePolicyRoundTripsAMergeKeyShapedNamespaceMapKey(t *testing.T) {
 func TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully(t *testing.T) {
 	policyDoc := func(namespaceMapJSON string) []byte {
 		return []byte(`{"issuers":[{"name":"idp","issuer":"https://issuer.example.com",` +
-			`"audiences":["flowstate"],"namespace_claim":"repository","namespace_map":` +
+			`"audiences":["flowstate"],"actions":[],"namespace_claim":"repository","namespace_map":` +
 			namespaceMapJSON + `}]}`)
 	}
 
@@ -644,6 +666,7 @@ func TestParsePolicyDecodesEscapedNamespaceMapKeysFaithfully(t *testing.T) {
 					"  - name: idp\n" +
 					"    issuer: https://issuer.example.com\n" +
 					"    audiences: [flowstate]\n" +
+					"    actions: []\n" +
 					"    namespace_claim: repository\n" +
 					"    namespace_map:\n" +
 					"      " + tt.yaml
@@ -682,6 +705,7 @@ func TestParsePolicyDoesNotCollapseAnEscapedKeyOntoAnotherTenants(t *testing.T) 
 		"  - name: idp\n" +
 		"    issuer: https://issuer.example.com\n" +
 		"    audiences: [flowstate]\n" +
+		"    actions: []\n" +
 		"    namespace_claim: repository\n" +
 		"    namespace_map:\n" +
 		"      \"v\\u0000v\": team-a\n" +
@@ -771,6 +795,7 @@ func TestParsePolicyAcceptsUntaggedScalarNamespaceMapKeysAndValues(t *testing.T)
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      " + tt.mapping + "\n")
@@ -803,6 +828,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      null: team-a\n",
@@ -814,6 +840,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      !!str foo: team-a\n",
@@ -825,6 +852,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      !mytag foo: team-a\n",
@@ -836,6 +864,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      key: |\n" +
@@ -848,6 +877,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      ? explicit\n" +
@@ -863,6 +893,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: other\n" +
 				"    issuer: https://other.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    role: &r deployer\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
@@ -870,6 +901,7 @@ func TestParsePolicyRefusesNonScalarNamespaceMapKeysAndValues(t *testing.T) {
 				"  - name: idp\n" +
 				"    issuer: https://issuer.example.com\n" +
 				"    audiences: [flowstate]\n" +
+				"    actions: []\n" +
 				"    namespace_claim: repository\n" +
 				"    namespace_map:\n" +
 				"      plain: *r\n",
