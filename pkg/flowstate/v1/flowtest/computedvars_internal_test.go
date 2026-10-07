@@ -337,6 +337,18 @@ func TestNestedContainersCountAgainstTheMaterializationBudget(t *testing.T) {
 	assert.Contains(t, p.err().Error(), "computed vars produce more than 15 values")
 }
 
+func TestBoundedNodesRefusesAValueDeeperThanAnyVarMayHold(t *testing.T) {
+	t.Parallel()
+
+	var v any = 1
+	for range v1.MaxStructureDepth + 2 {
+		v = []any{v}
+	}
+	_, ok := boundedNodes(types.DefaultTypeAdapter.NativeToValue(v), 1<<20)
+
+	assert.False(t, ok)
+}
+
 func TestBoundedNodesCountsEveryValueIncludingContainers(t *testing.T) {
 	t.Parallel()
 

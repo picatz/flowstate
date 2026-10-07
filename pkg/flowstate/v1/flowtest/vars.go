@@ -1576,8 +1576,11 @@ func walkNodes(v ref.Val, n *int, limit, depth int) bool {
 	if *n > limit {
 		return false
 	}
+	// Deeper than any value a var may hold is refused rather than left
+	// uncounted: stopping the walk here would let a subtree the conversion
+	// still copies go unseen by the budget.
 	if depth > v1.MaxStructureDepth {
-		return true
+		return false
 	}
 	switch c := v.(type) {
 	case traits.Lister:
