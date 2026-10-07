@@ -187,6 +187,12 @@ message Code {
 
 // Progress is a count of completed work against a total.
 message Progress {
+  option (buf.validate.message).cel = {
+    id: "progress.current_within_total"
+    message: "current must not exceed total"
+    expression: "this.current <= this.total"
+  };
+
   // current is the amount completed.
   int32 current = 1 [(buf.validate.field).int32 = {gte: 0}];
 
@@ -414,6 +420,11 @@ message Interaction {
     values: {string: {max_len: 4000}}
   }];
 
-  // respond_to is where to reply (Slack response_url, Discord interaction token).
-  string respond_to = 6 [(buf.validate.field).string.max_len = 2048];
+  // Field 6 carried the platform's reply capability (Slack response_url,
+  // Discord interaction token). It is removed: that value is a credential, and a
+  // plugin may declare an Interaction as an output, which becomes durable step
+  // history. An adapter reads it from the raw delivery and binds it through
+  // `with:` into the one gate it answers, as its README documents.
+  reserved 6;
+  reserved "respond_to";
 }

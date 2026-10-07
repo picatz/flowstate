@@ -362,10 +362,6 @@ func init() {
 			Leading: " form holds submitted field values, at most 64.\n",
 		},
 		{
-			Name:    "flowstate.chat.v1.Interaction.respond_to",
-			Leading: " respond_to is where to reply (Slack response_url, Discord interaction token).\n",
-		},
-		{
 			Name:    "flowstate.chat.v1.Interaction.Kind",
 			Leading: " Kind is what the person did.\n",
 		},

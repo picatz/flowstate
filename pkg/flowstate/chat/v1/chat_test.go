@@ -152,6 +152,8 @@ func TestChatStatusLogNoticeRules(t *testing.T) {
 		{"progress mid-way", status(&chatv1.Status{State: chatv1.State_STATE_RUNNING, Title: plain("t"), Progress: &chatv1.Progress{Current: 3, Total: 10}}), ""},
 		{"progress total zero", status(&chatv1.Status{Title: plain("t"), Progress: &chatv1.Progress{Total: 0}}), "status.progress.total"},
 		{"progress total over the limit", status(&chatv1.Status{Title: plain("t"), Progress: &chatv1.Progress{Total: 10001}}), "status.progress.total"},
+		{"progress current over total", status(&chatv1.Status{Title: plain("t"), Progress: &chatv1.Progress{Current: 10001, Total: 1}}), "status.progress"},
+		{"progress complete", status(&chatv1.Status{Title: plain("t"), Progress: &chatv1.Progress{Current: 10, Total: 10}}), ""},
 		{"progress current negative", status(&chatv1.Status{Title: plain("t"), Progress: &chatv1.Progress{Current: -1, Total: 1}}), "status.progress.current"},
 		{"status link over http", status(&chatv1.Status{Title: plain("t"), Link: "http://example.com"}), "status.link"},
 		{"status without a title", status(&chatv1.Status{}), "status.title"},

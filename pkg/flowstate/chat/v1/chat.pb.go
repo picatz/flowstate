@@ -1595,9 +1595,7 @@ type Interaction struct {
 	// kind is what the person did.
 	Kind Interaction_Kind `protobuf:"varint,4,opt,name=kind,proto3,enum=flowstate.chat.v1.Interaction_Kind" json:"kind,omitempty"`
 	// form holds submitted field values, at most 64.
-	Form map[string]string `protobuf:"bytes,5,rep,name=form,proto3" json:"form,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// respond_to is where to reply (Slack response_url, Discord interaction token).
-	RespondTo     string `protobuf:"bytes,6,opt,name=respond_to,json=respondTo,proto3" json:"respond_to,omitempty"`
+	Form          map[string]string `protobuf:"bytes,5,rep,name=form,proto3" json:"form,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1667,13 +1665,6 @@ func (x *Interaction) GetForm() map[string]string {
 	return nil
 }
 
-func (x *Interaction) GetRespondTo() string {
-	if x != nil {
-		return x.RespondTo
-	}
-	return ""
-}
-
 var File_flowstate_chat_v1_chat_proto protoreflect.FileDescriptor
 
 const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
@@ -1719,11 +1710,12 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\x06inline\x18\x03 \x01(\bR\x06inline\"A\n" +
 	"\x04Code\x12\x1c\n" +
 	"\x04text\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\xf0\x15R\x04text\x12\x1b\n" +
-	"\x04lang\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18\x10R\x04lang\"O\n" +
+	"\x04lang\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18\x10R\x04lang\"\xb0\x01\n" +
 	"\bProgress\x12!\n" +
 	"\acurrent\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\acurrent\x12 \n" +
 	"\x05total\x18\x02 \x01(\x05B\n" +
-	"\xbaH\a\x1a\x05\x18\x90N \x00R\x05total\"\xe6\x01\n" +
+	"\xbaH\a\x1a\x05\x18\x90N \x00R\x05total:_\xbaH\\\x1aZ\n" +
+	"\x1dprogress.current_within_total\x12\x1dcurrent must not exceed total\x1a\x1athis.current <= this.total\"\xe6\x01\n" +
 	"\x04Card\x129\n" +
 	"\bapproval\x18\x01 \x01(\v2\x1b.flowstate.chat.v1.ApprovalH\x00R\bapproval\x123\n" +
 	"\x06status\x18\x02 \x01(\v2\x19.flowstate.chat.v1.StatusH\x00R\x06status\x12*\n" +
@@ -1769,15 +1761,13 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\bplatform\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\bplatform\x12&\n" +
 	"\tworkspace\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\tworkspace\x12\x1c\n" +
 	"\x04user\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x04user\x12$\n" +
-	"\busername\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\busername\"\xbd\x04\n" +
+	"\busername\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\busername\"\xa6\x04\n" +
 	"\vInteraction\x12.\n" +
 	"\x05actor\x18\x01 \x01(\v2\x18.flowstate.chat.v1.ActorR\x05actor\x127\n" +
 	"\amessage\x18\x02 \x01(\v2\x1d.flowstate.chat.v1.MessageRefR\amessage\x127\n" +
 	"\bcallback\x18\x03 \x01(\v2\x1b.flowstate.chat.v1.CallbackR\bcallback\x12A\n" +
 	"\x04kind\x18\x04 \x01(\x0e2#.flowstate.chat.v1.Interaction.KindB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04kind\x12T\n" +
-	"\x04form\x18\x05 \x03(\v2(.flowstate.chat.v1.Interaction.FormEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\xa0\x1fR\x04form\x12'\n" +
-	"\n" +
-	"respond_to\x18\x06 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\trespondTo\x1a7\n" +
+	"\x04form\x18\x05 \x03(\v2(.flowstate.chat.v1.Interaction.FormEntryB\x16\xbaH\x13\x9a\x01\x10\x10@\"\x05r\x03\x18\x80\x02*\x05r\x03\x18\xa0\x1fR\x04form\x1a7\n" +
 	"\tFormEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x90\x01\n" +
@@ -1788,7 +1778,8 @@ const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\x11KIND_MODAL_SUBMIT\x10\x03\x12\x14\n" +
 	"\x10KIND_MODAL_CLOSE\x10\x04\x12\x10\n" +
 	"\fKIND_COMMAND\x10\x05\x12\x11\n" +
-	"\rKIND_SHORTCUT\x10\x06*Q\n" +
+	"\rKIND_SHORTCUT\x10\x06J\x04\b\x06\x10\aR\n" +
+	"respond_to*Q\n" +
 	"\tBroadcast\x12\x19\n" +
 	"\x15BROADCAST_UNSPECIFIED\x10\x00\x12\x12\n" +
 	"\x0eBROADCAST_HERE\x10\x01\x12\x15\n" +

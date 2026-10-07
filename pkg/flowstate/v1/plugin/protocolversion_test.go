@@ -56,7 +56,7 @@ func TestProtocolVersionNamesItsRoutes(t *testing.T) {
 		}
 	}
 
-	// Version 7 is what that package is worth today. Asserted so the constant
+	// Version 9 is what that package is worth today. Asserted so the constant
 	// cannot be renumbered back to something already spent.
 	if got, want := protocol.HostVersions(), []int{protocol.Version9}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("HostVersions() = %v, want %v", got, want)
