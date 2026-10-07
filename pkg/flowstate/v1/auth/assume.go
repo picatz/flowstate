@@ -57,7 +57,10 @@ const (
 	//
 	// Its subject is [WorkloadIdentity.SubjectFor] — what a relying party's own
 	// policy will see — and it carries the run context the caller has no notion
-	// of: deployment, workflow, run, step. Rules that gate on what Flowstate is
+	// of: deployment, workflow, run, step. It is always the step's subject, even
+	// for a target whose `subject_level` makes the assertion carry a coarser one,
+	// so a rule gates the step that asked and not the grain the relying party
+	// sees. Rules that gate on what Flowstate is
 	// about to assert belong here; rules that gate on who asked belong on
 	// [attrIdentity].
 	attrWorkload = "workload"

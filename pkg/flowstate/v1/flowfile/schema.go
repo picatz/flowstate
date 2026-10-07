@@ -116,8 +116,19 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		if field == nil {
 			continue
 		}
+		// A credential reference is minted for a task's declared secret input
+		// and nowhere else, so an input that is not one refuses it here rather
+		// than at the step that would have been handed a name it cannot use.
+		if task.GetInputs()[name].GetCredentialRef() != nil && !slices.Contains(def.SecretInputs, name) {
+			message := fmt.Sprintf("task %q does not accept a credential reference in input %q", def.Name, name)
+			if len(def.SecretInputs) > 0 {
+				message += fmt.Sprintf("; it accepts one in %s", strings.Join(slices.Sorted(slices.Values(def.SecretInputs)), ", "))
+			}
+			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message})
+			continue
+		}
 		if slices.Contains(def.RequiredSecretInputs, name) {
-			if task.GetInputs()[name].GetSecretRef() == nil {
+			if value := task.GetInputs()[name]; value.GetSecretRef() == nil && value.GetCredentialRef() == nil {
 				ds = append(ds, Diagnostic{
 					Step:    stepID,
 					Field:   name,

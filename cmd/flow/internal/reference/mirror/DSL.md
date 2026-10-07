@@ -1465,6 +1465,15 @@ decide and the implementation did.
   (or `${credential(...)}`) written one line further down. `flow validate` reports it at the reference; a
   specification built by hand rather than parsed is refused at submit by
   `BindRunInputs`, on both drivers (#169).
+- **`${credential('target')}` is minted for a declared secret input, and only there.** A plugin task
+  lists the inputs that take a reference in its manifest's `secret_inputs`; the worker resolves a
+  `${credential(...)}` written on one through the federation broker, under the same per-step
+  assumption policy `http`'s `credential:` is held to, and hands the plugin the bearer token as a
+  string, registered with the scrubber like a resolved secret. Any other input refuses it at
+  `flow validate`, and a hand-built specification is refused again where the step runs. The
+  relying party's view of the workload, the assertion `sub`, is the deployment's `subject_level`
+  for that target (`step`, `workflow` or `deployment`), never the Flowfile's: see
+  [Secrets and credentials](SECRETS.md#subject-level).
 - **`vars` written bare is a legal operand.** `${vars["region"]}` with a computed key,
   or `size(vars)`, resolve — the activation answers a root whole. `steps` was exempted
   from the bare-name check when rooting landed and `vars` was not, which is the shape

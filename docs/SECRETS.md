@@ -248,13 +248,71 @@ A target is one of `token_exchange`, `client_credentials`, `gcp`, `aws`, or
 `assertion` (present the signed assertion itself to a relying party that
 verifies OIDC).
 
+#### Subject level
+
+The assertion's `sub` names the whole position,
+`flowstate:NAMESPACE/DEPLOYMENT/WORKFLOW/STEP`, and that is right for a relying
+party that matches prefixes, such as an AWS trust policy. It is wrong for one that
+matches the subject exactly or bounds its length: an Azure federated identity
+credential holds one exact subject and an application has few of them, and a GCP
+`google.subject` is length-limited. A target says how much of the position its
+assertion names with `subject_level`:
+
+```yaml
+federation:
+  issuer: https://flowstate.example.com
+  allow:
+    - 'target == "azure-prod" && workload.workflow == "deploy-service"'
+  targets:
+    - name: azure-prod
+      subject_level: workflow
+      client_credentials:
+        token_url: https://login.microsoftonline.com/TENANT/oauth2/v2.0/token
+        client_id: 00000000-0000-0000-0000-000000000000
+        audience: api://AzureADTokenExchange
+```
+
+| `subject_level` | `sub` for step `push` of workflow `deploy-service` in deployment `prod`, tenant `acme` |
+| --- | --- |
+| `step` | `flowstate:acme/prod/deploy-service/push` |
+| `workflow` | `flowstate:acme/prod/deploy-service/_any` |
+| `deployment` | `flowstate:acme/prod/_any/_any` |
+
+The dropped components are `_any`, so the subject keeps its four components and a
+pattern written for the full shape still lines up; a workflow or step literally
+named `_any` is refused, so no workload can name itself into a coarser subject.
+Unset keeps what a target has always done: the whole step, except for a
+`client_credentials` target that authenticates with the assertion, whose subject
+RFC 7523 makes the client id. An explicit level on that target replaces the
+client id, which is what an Azure federated credential matches. Any other value
+is refused when the policy loads.
+
+The level changes only what the relying party reads. The assumption policy still
+decides per step, evaluating the real `workload.step` and `workload.subject`
+whatever the level, so a coarser subject lets the relying party tell fewer
+workloads apart and never lets Flowstate allow more. Pin the subject in the
+relying party at the level the target names, and do not widen a trust policy to
+`deployment` for a workflow you would not trust with every workflow of the
+deployment.
+
 A task input that takes a secret can take a target instead, written
 `${credential('partner-api')}` where it would write `${secret('env:KEY')}`. The
 specification carries the target's name, never a credential: the compiler turns
 it into a reference, workflow-side evaluation refuses to read it, and only the
 worker running the task mints it. It must be the whole value of the input, and
 it is refused in `vars:`, across a call, and anywhere the workflow evaluates
-the value itself. Naming a target the deployment's `federation:` does not
+the value itself.
+
+A plugin task opts an input in by listing it in its manifest's `secret_inputs`,
+the one declaration that says an input takes either spelling. The worker mints
+the credential through the same broker and the same assumption policy `http`'s
+`credential:` uses, per step, then hands the plugin the token as the string a
+stored secret would have been, and registers it with the scrubber that covers the
+task's output and logs. `flow validate` refuses `${credential(...)}` on an input
+the task did not declare. Only a bearer token can be a single string: an AWS
+session is three values that have to sign a request, so a task that needs one
+takes it through an AWS-aware plugin rather than a secret input, and a `target:`
+that mints one is refused here after the policy has allowed it. Naming a target the deployment's `federation:` does not
 configure fails when the workflow is validated (`flow validate` against a
 server, `flow run local` with a trust policy) or submitted, with a diagnostic
 that names the target and lists the configured ones; with no trust policy

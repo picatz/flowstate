@@ -1,10 +1,13 @@
 package lsp
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // TestHoverOnCredentialReferences covers what an author cannot see from the text:
@@ -17,10 +20,21 @@ func TestHoverOnCredentialReferences(t *testing.T) {
 	c.initialize()
 
 	t.Run("a well-formed reference", func(t *testing.T) {
+		const task = "test_credential_hover_probe"
+		require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
+			Name:         task,
+			Inputs:       (&v1.Task_Log_Inputs{}).ProtoReflect().Descriptor(),
+			SecretInputs: []string{"message"},
+			Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+				return nil, nil
+			},
+		}))
+		t.Cleanup(func() { v1.DefaultRegistry().Unregister(task) })
+
 		const src = `name: credentials
 steps:
   - id: a
-    log:
+    test_credential_hover_probe:
       message: ${credential('anthropic')}
 edition: v2026.4
 `

@@ -369,6 +369,52 @@ steps:
 	}
 }
 
+// TestCredentialReferenceIsAcceptedOnlyWhereATaskTakesASecret pins both
+// directions of the declared-input rule: ${credential(...)} is valid for an input
+// a task lists in SecretInputs, including one it requires to be a whole
+// reference, and is refused at validate time, naming the input, for any other.
+func TestCredentialReferenceIsAcceptedOnlyWhereATaskTakesASecret(t *testing.T) {
+	const (
+		takesOne = "test_credential_input_probe"
+		takesNon = "test_credential_input_refuser"
+	)
+	probe := func(name string, secretInputs, required []string) {
+		require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
+			Name:                 name,
+			Inputs:               (&v1.Task_Log_Inputs{}).ProtoReflect().Descriptor(),
+			SecretInputs:         secretInputs,
+			RequiredSecretInputs: required,
+			Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+				return nil, nil
+			},
+		}))
+		t.Cleanup(func() { v1.DefaultRegistry().Unregister(name) })
+	}
+	probe(takesOne, []string{"message"}, []string{"message"})
+	probe(takesNon, nil, nil)
+
+	source := func(task string) string {
+		return `edition: v2026.4
+name: t
+steps:
+  - id: a
+    ` + task + `:
+      message: ${credential('anthropic')}
+`
+	}
+
+	ds, err := flowfile.ValidateSource([]byte(source(takesOne)))
+	require.NoError(t, err)
+	require.Empty(t, ds, "a declared, required secret input takes a credential: %s", ds.Error())
+
+	ds, err = flowfile.ValidateSource([]byte(source(takesNon)))
+	require.NoError(t, err)
+	require.Len(t, ds, 1, ds.Error())
+	require.Equal(t, "a", ds[0].Step)
+	require.Equal(t, "message", ds[0].Field)
+	require.Contains(t, ds[0].Message, `does not accept a credential reference in input "message"`)
+}
+
 // TestExpressionInputTypeMismatchIsPositionedAndNamesBothTypes pins the #158
 // diagnostic exactly: one positioned message that names the type the field expects and
 // the type the reference resolves to, so an author reads what is wrong and where

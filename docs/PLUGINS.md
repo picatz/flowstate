@@ -624,7 +624,8 @@ The refusal is deny-by-default and names the input that does accept one
 (`pkg/flowstate/v1/plugin/task.go`). It arrives at execution because the
 validator's secret checking consults only `NestedSecretInputs`, for structures
 that hold a reference inside them (`pkg/flowstate/v1/flowfile/secret.go`), and
-not the manifest's `SecretInputs`. For a `RequiredSecretInputs` input the
+not the manifest's `SecretInputs`. A `${credential(...)}` is the exception: `flow validate`
+refuses one on an input the task did not list in `SecretInputs`. For a `RequiredSecretInputs` input the
 direction is covered: `flow validate` requires the input to be a whole secret
 reference, and the runtime repeats the check before resolution and dispatch, so
 a literal credential cannot enter durable history or reach the plugin.
@@ -684,7 +685,7 @@ The fields not covered above, each a claim the engine acts on:
 | `NeedsScope` | This task receives prior step outputs and enclosing loop variables. Most tasks do not, and asking for it puts data on the wire for nothing. | `pkg/flowstate/v1/plugin/sdk/sdk.go:260-264` |
 | `DeferredInputs` | This task evaluates these inputs' expressions itself, in a scope the workflow does not have. The engine passes them through untouched. | `pkg/flowstate/v1/plugin/sdk/sdk.go:231-239` |
 | `ExpressionInputs` | These inputs must be *written* as `${...}` rather than as a literal — a different question from who evaluates them. | `pkg/flowstate/v1/plugin/sdk/sdk.go:241-258` |
-| `SecretInputs` | A Flowfile may write `${secret(...)}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference. | `pkg/flowstate/v1/plugin/sdk/sdk.go:266-276` |
+| `SecretInputs` | A Flowfile may write `${secret(...)}` or `${credential('target')}` into these inputs. The host resolves the reference before your process sees the request, so `Fn` always receives a value and never a reference: the stored secret, or the bearer token of a credential the worker minted for the step. | `pkg/flowstate/v1/plugin/sdk/sdk.go:266-276` |
 | `ShapesOutputs` | This task returns the output names its `outputs` input maps, in place of its declared ones. | `pkg/flowstate/v1/plugin/sdk/sdk.go:285-304` |
 | `Health` | Whether the plugin can serve. Leave it nil unless you depend on something; report not-serving when that dependency is unreachable rather than failing every request. | `pkg/flowstate/v1/plugin/sdk/sdk.go:141-151` |
 
@@ -1151,7 +1152,8 @@ tracks the plugin-authoring gaps.
    `replace`, built in CI, would keep the answer honest, since CI would then
    build it the way an outside author does.
 3. **A secret reference in an undeclared input is caught only at run time.**
-   `flow validate --plugin-dir` does not consult a task's `SecretInputs`, so the
+   `flow validate --plugin-dir` consults a task's `SecretInputs` for a
+   `${credential(...)}` and not for a `${secret(...)}`, so a secret reference's
    refusal reaches whoever runs the workflow rather than whoever writes it.
 4. **A plugin that exits before its handshake is reported without its reason.**
    The plugin's own error line is logged at INFO and shown only under

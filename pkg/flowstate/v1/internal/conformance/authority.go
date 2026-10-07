@@ -74,6 +74,15 @@ type Federation struct {
 	// Token is the bearer material the fixture exchanger hands back.
 	Token string
 
+	// EchoSubject makes the fixture exchanger hand back the subject of the
+	// assertion it was given as the bearer material, in place of Token: the
+	// observation a case about [auth.SubjectLevel] needs, since the level is
+	// something only the relying party sees.
+	EchoSubject bool
+
+	// SubjectLevel is the target's subject_level; unset keeps the default.
+	SubjectLevel auth.SubjectLevel
+
 	// ExchangeCalls, when non-nil, counts how many times the fixture
 	// exchanger actually minted a credential — the JIT counterpart to
 	// [Authority.ProviderCalls], for a case naming the same ordering
@@ -155,8 +164,11 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 		tb.Fatalf("building fixture issuer: %v", err)
 	}
 	options := []auth.BrokerOption{
-		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, calls: a.Federation.ExchangeCalls}),
+		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, echoSubject: a.Federation.EchoSubject, calls: a.Federation.ExchangeCalls}),
 		auth.WithAssumeDenyRules(a.Federation.Deny...),
+	}
+	if a.Federation.SubjectLevel != "" {
+		options = append(options, auth.WithTargetSubjectLevel(a.Federation.Target, a.Federation.SubjectLevel))
 	}
 	switch {
 	case len(a.Federation.Allow) > 0:
@@ -206,8 +218,9 @@ func (p fixtureSecretProvider) Resolve(_ context.Context, req secrets.Request) (
 // it is registered under, mirroring the shape a real STS exchange takes
 // without making one.
 type fixtureExchanger struct {
-	token string
-	calls *atomic.Int32
+	token       string
+	echoSubject bool
+	calls       *atomic.Int32
 }
 
 func (e fixtureExchanger) Name() string { return "fixture-sts" }
@@ -216,12 +229,16 @@ func (e fixtureExchanger) Requirement() auth.Requirement {
 	return auth.Requirement{Audience: "https://resource.example"}
 }
 
-func (e fixtureExchanger) Exchange(context.Context, auth.Assertion) (auth.Credential, error) {
+func (e fixtureExchanger) Exchange(_ context.Context, assertion auth.Assertion) (auth.Credential, error) {
 	if e.calls != nil {
 		e.calls.Add(1)
 	}
+	token := e.token
+	if e.echoSubject {
+		token = assertion.Subject
+	}
 	return auth.NewCredential(auth.CredentialBearer, time.Now().Add(time.Hour),
-		map[string]string{"access_token": e.token})
+		map[string]string{"access_token": token})
 }
 
 // AuthorityCase is a [Case] that exercises secret resolution or JIT credential

@@ -1537,6 +1537,15 @@ namespace not listed has no issuer, no key and no URL: a worker for it does not
 start, and the server answers 404 for it, the same 404 it gives a path that is not
 a tenant at all, so the response does not say which tenants exist.
 
+A relying party that matches the subject exactly, or bounds its length, cannot take a
+subject per step: an Azure federated identity credential holds one exact subject and an
+application has few of them, and a GCP `google.subject` is length-limited. A target
+therefore says how much of the position its assertion names with `subject_level: step`,
+`workflow` or `deployment` (`flowstate:acme/prod/deploy-service/_any`,
+`flowstate:acme/prod/_any/_any`), validated when the policy loads. It changes only what
+the relying party reads: the assumption rules still decide per step. See
+[Secrets and credentials](SECRETS.md#subject-level) for the table and the Azure shape.
+
 Each tenant's key is its own, and each process holds only what it needs:
 
 - **A worker serves one tenant** (`flow worker --tenant acme`) and holds that
