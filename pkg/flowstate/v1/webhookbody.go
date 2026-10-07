@@ -95,21 +95,37 @@ func decodeWebhookJSON(raw []byte, what string) (any, error) {
 }
 
 func decodeWebhookForm(raw []byte) (any, error) {
-	values, err := url.ParseQuery(string(raw))
-	if err != nil {
-		return nil, fmt.Errorf("the delivery body is not a form: %w", err)
-	}
-	if len(values) > maxWebhookFormFields {
-		return nil, fmt.Errorf("the delivery form carries more than %d fields", maxWebhookFormFields)
-	}
+	// Read pair by pair rather than through [url.ParseQuery], which builds every
+	// pair's value slice before anything can be counted: the bound has to land
+	// where the work is spent, and a signed megabyte of `a=&a=&...` would
+	// otherwise be fully allocated before the field count was ever consulted.
+	fields := make(map[string]any)
+	pairs := 0
+	for pair := range strings.SplitSeq(string(raw), "&") {
+		if pair == "" {
+			continue
+		}
+		if pairs++; pairs > maxWebhookFormFields {
+			return nil, fmt.Errorf("the delivery form carries more than %d fields", maxWebhookFormFields)
+		}
+		if strings.Contains(pair, ";") {
+			return nil, errors.New("the delivery body is not a form: a `;` separates nothing in a form field")
+		}
 
-	fields := make(map[string]any, len(values))
-	for name, all := range values {
-		if len(all) != 1 {
+		name, value, _ := strings.Cut(pair, "=")
+		name, err := url.QueryUnescape(name)
+		if err != nil {
+			return nil, fmt.Errorf("the delivery body is not a form: %w", err)
+		}
+		value, err = url.QueryUnescape(value)
+		if err != nil {
+			return nil, fmt.Errorf("the delivery body is not a form: %w", err)
+		}
+		if _, repeated := fields[name]; repeated {
 			return nil, fmt.Errorf("the delivery form repeats the field %q: a field with several values "+
 				"has no single reading, so send each field once", name)
 		}
-		fields[name] = all[0]
+		fields[name] = value
 	}
 
 	if payload, only := fields[webhookFormPayloadField].(string); only && len(fields) == 1 {

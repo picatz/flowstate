@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
@@ -69,6 +70,21 @@ func TestFormBodiesAreRefusedWhenAmbiguousOrUnbounded(t *testing.T) {
 	}
 	_, err = v1.DecodeWebhookBody(slackT, form, []byte(many.String()))
 	require.ErrorContains(t, err, "more than 256 fields")
+
+	// The bound is on pairs read: a megabyte of them is refused at the 257th,
+	// and a repeated one at its second, before either is accumulated.
+	var flood strings.Builder
+	for i := range 100_000 {
+		fmt.Fprintf(&flood, "f%d=&", i)
+	}
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte(flood.String()))
+	require.ErrorContains(t, err, "more than 256 fields")
+
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte(strings.Repeat("a=&", 300_000)))
+	require.ErrorContains(t, err, "repeats")
+
+	_, err = v1.DecodeWebhookBody(slackT, form, []byte("a=1;b=2"))
+	require.Error(t, err)
 }
 
 // Only the form type selects the form reader: a form-shaped body under any other
