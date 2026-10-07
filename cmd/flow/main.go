@@ -13,6 +13,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto"
@@ -2008,9 +2009,15 @@ func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.Issuer, erro
 // [parseVerifyOnlyKey], which also accepts a private key for its public half;
 // this one refuses any private key, because the server must not read one.
 func parsePublicIdentityKey(path string, data []byte) (string, crypto.PublicKey, error) {
-	block, _ := pem.Decode(data)
+	block, rest := pem.Decode(data)
 	if block == nil {
 		return "", nil, fmt.Errorf("identity key %s is not PEM-encoded", path)
+	}
+
+	// Exactly one block: anything after it, a private key above all, would have
+	// been read into this process by the caller and then silently ignored.
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return "", nil, fmt.Errorf("identity key %s holds more than one PEM block; give the server a file with exactly one public key", path)
 	}
 
 	if strings.HasSuffix(block.Type, "PRIVATE KEY") {

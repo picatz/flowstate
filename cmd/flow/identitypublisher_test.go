@@ -31,6 +31,23 @@ func TestServerIdentityKeyRefusesAPrivateKey(t *testing.T) {
 	assert.Contains(t, err.Error(), "flow keys public")
 	assert.Contains(t, err.Error(), private)
 
+	t.Run("a private block after a public one is refused, not ignored", func(t *testing.T) {
+		dir := t.TempDir()
+		public := writeIdentityPublicKey(t, dir, "2026-08")
+		privateData, err := os.ReadFile(private)
+		require.NoError(t, err)
+		publicData, err := os.ReadFile(public)
+		require.NoError(t, err)
+
+		bundled := filepath.Join(dir, "2026-10.pem")
+		require.NoError(t, os.WriteFile(bundled, append(publicData, privateData...), 0o600))
+
+		_, err = identityPublisher(authFlags{identityKeyPaths: []string{bundled}}, federatingPolicy())
+
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "more than one PEM block")
+	})
+
 	t.Run("a private key among public ones is still refused", func(t *testing.T) {
 		public := writeIdentityPublicKey(t, t.TempDir(), "2026-08")
 

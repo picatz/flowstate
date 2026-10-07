@@ -904,8 +904,9 @@ No Kubernetes needed. Two systemd units on one host, or split across two hosts
 for Tier 2: one worker unit per tenant's Temporal namespace.
 
 Each unit runs as its own system user, so the server — the process that faces
-the network — cannot read the worker's secrets. The two share one group, and
-that group can read only the federation signing key, which both processes open.
+the network — cannot read the worker's secrets. Only the worker joins the key
+group, which can read only the federation signing key; the server reads a separate
+public copy of it and never holds a signing key.
 Neither user's home is under `/home`: the worker's `ProtectHome=yes` makes that
 unreadable, and `flow worker` reads Temporal's client configuration from
 `$HOME` and refuses to start on a file it cannot read. `PrivateTmp=yes` gives
