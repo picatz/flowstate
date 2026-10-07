@@ -638,8 +638,8 @@ type TrustedIssuer struct {
 	// a token that signals an overage (Entra's `_claim_names`/`hasgroups`) or
 	// exceeds a bound is refused with [ErrGroupsOverage], never read in part.
 	//
-	// A CarryClaims entry that is also named `groups` conflicts with this and is
-	// refused when the policy loads.
+	// The name `groups` is reserved for this field: a CarryClaims entry that
+	// carries it, with or without GroupsClaim, is refused when the policy loads.
 	GroupsClaim string `json:"groups_claim,omitempty" yaml:"groups_claim,omitempty"`
 
 	// GroupMap maps an IdP's group value (a name, a GUID) to the Flowstate group

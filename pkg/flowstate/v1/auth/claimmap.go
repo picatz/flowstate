@@ -347,9 +347,12 @@ func (t TrustedIssuer) validateClaimCarriage() error {
 		if name == "" || len(name) > MaxCarriedClaimNameBytes {
 			return fmt.Errorf("carry_claims[%d]: the carried name must be 1 to %d bytes", i, MaxCarriedClaimNameBytes)
 		}
-		if name == GroupsClaim && t.GroupsClaim != "" {
-			return fmt.Errorf("carry_claims[%d] carries %q, which groups_claim already carries: "+
-				"name one source of groups, or rename this claim with `as`", i, GroupsClaim)
+		if name == GroupsClaim {
+			// Reserved even without a groups_claim: groups carried here would skip the
+			// overage refusal, the bounds and the group_map allowlist, and a rule
+			// would decide on a prefix of someone's membership.
+			return fmt.Errorf("carry_claims[%d] carries %q, which is reserved for groups_claim, the one source of groups "+
+				"that refuses an incomplete list: use groups_claim, or rename this claim with `as`", i, GroupsClaim)
 		}
 		if _, dup := names[name]; dup {
 			return fmt.Errorf("carry_claims[%d]: %q is carried twice; rename one with `as`", i, name)

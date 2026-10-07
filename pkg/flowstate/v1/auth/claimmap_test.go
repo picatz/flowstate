@@ -318,16 +318,16 @@ func TestClaimCarriagePolicyValidation(t *testing.T) {
 		{name: "the same name carried twice", wantErr: "carried twice", change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: "team", Type: auth.ClaimTypeString}, {Claim: "org.team", As: "team", Type: auth.ClaimTypeString}}
 		}},
-		{name: "carry_claims and groups_claim both carrying groups", wantErr: `carries "groups", which groups_claim already carries`, change: func(i *auth.TrustedIssuer) {
+		{name: "carry_claims and groups_claim both carrying groups", wantErr: `which is reserved for groups_claim`, change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: "groups", Type: auth.ClaimTypeStringList}}
 			i.GroupsClaim = "realm_access.roles"
 		}},
-		{name: "a rename onto groups conflicts the same way", wantErr: `which groups_claim already carries`, change: func(i *auth.TrustedIssuer) {
+		{name: "groups carried with no groups_claim would skip the overage refusal", wantErr: `which is reserved for groups_claim`, change: func(i *auth.TrustedIssuer) {
+			i.CarryClaims = []auth.CarryClaim{{Claim: "groups", Type: auth.ClaimTypeStringList}}
+		}},
+		{name: "a rename onto groups conflicts the same way", wantErr: `which is reserved for groups_claim`, change: func(i *auth.TrustedIssuer) {
 			i.CarryClaims = []auth.CarryClaim{{Claim: "roles", As: "groups", Type: auth.ClaimTypeStringList}}
 			i.GroupsClaim = "groups"
-		}},
-		{name: "groups carried by carry_claims alone is fine", change: func(i *auth.TrustedIssuer) {
-			i.CarryClaims = []auth.CarryClaim{{Claim: "groups", Type: auth.ClaimTypeStringList}}
 		}},
 		{name: "group_map without groups_claim", wantErr: "group_map requires groups_claim", change: func(i *auth.TrustedIssuer) {
 			i.GroupMap = map[string]string{"a": "b"}
