@@ -24,6 +24,12 @@ issuers:
 federation:
   issuer: https://flowstate.example.com
 
+  # Each tenant is an issuer of its own, at <issuer>/tenants/<namespace>, with
+  # its own key set. The workload below runs in `acme`, so `acme` is listed:
+  # its assertions carry `iss: https://flowstate.example.com/tenants/acme`, and
+  # a compromised worker for another tenant cannot mint one that verifies there.
+  tenants: [acme]
+
   # The replay window of a directly presented assertion is its lifetime, and
   # this is the only knob that sets it. Two minutes is long enough to reach a
   # peer and short enough that a captured assertion is worth little.

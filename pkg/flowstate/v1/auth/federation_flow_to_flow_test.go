@@ -71,7 +71,7 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 			auth.Policy{
 				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "peer-flowstate",
-					Issuer:    deploymentA.URL,
+					Issuer:    deploymentA.URL + "/tenants/acme",
 					Audiences: []string{deploymentB.URL},
 					// B decides which of A's workloads it admits, and under
 					// what role, exactly as it would for any other issuer.
@@ -115,6 +115,7 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 	// assertion itself, bound to the one deployment it may be presented to.
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + deploymentA.URL + `
+tenants: [acme]
 assertion_lifetime: 2m
 declared_claims: [repository]
 allow:
@@ -129,11 +130,11 @@ targets:
 	key, err := auth.GenerateSigningKey("2026-08", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 	require.NoError(t, err)
 
 	mu.Lock()
-	handler = broker.Issuer().Handler()
+	handler = http.StripPrefix("/tenants/acme", broker.Issuer().Handler())
 	mu.Unlock()
 
 	// ── The call ────────────────────────────────────────────────────────────
@@ -156,7 +157,7 @@ targets:
 
 	// ── What B saw ──────────────────────────────────────────────────────────
 	principal := <-admitted
-	require.Equal(t, deploymentA.URL, principal.Issuer, "the caller is deployment A's issuer, verified against its published keys")
+	require.Equal(t, deploymentA.URL+"/tenants/acme", principal.Issuer, "the caller is deployment A's issuer, verified against its published keys")
 	require.Equal(t, "peer-flowstate", principal.IssuerName)
 	require.Equal(t, "flowstate:acme/prod/deploy-service/push-image", principal.Subject,
 		"the subject names the run and the step, not just the deployment")
@@ -188,6 +189,7 @@ targets:
 		// partner from being replayed here is the "aud" claim, and nothing else.
 		elsewhere, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + deploymentA.URL + `
+tenants: [acme]
 declared_claims: [repository]
 allow: ['true']
 targets:
@@ -197,12 +199,12 @@ targets:
 `))
 		require.NoError(t, err)
 
-		misdirected, err := elsewhere.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+		misdirected, err := elsewhere.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 		require.NoError(t, err)
 
 		mu.Lock()
 		previous := handler
-		handler = misdirected.Issuer().Handler()
+		handler = http.StripPrefix("/tenants/acme", misdirected.Issuer().Handler())
 		mu.Unlock()
 		t.Cleanup(func() {
 			mu.Lock()

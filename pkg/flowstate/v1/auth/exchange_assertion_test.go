@@ -224,6 +224,7 @@ func TestAssertionCredentialLifetimeIsTheIssuers(t *testing.T) {
 
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+tenants: [acme]
 assertion_lifetime: 90s
 declared_claims: [repository]
 allow: ['true']
@@ -237,7 +238,7 @@ targets:
 	key, err := auth.GenerateSigningKey("k1", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 	require.NoError(t, err)
 
 	credential, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "peer-flowstate")

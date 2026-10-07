@@ -190,6 +190,10 @@ type authFlags struct {
 	// (a worker) or to read the public keys to publish from (the server), in
 	// place of --identity-key. See [parseIdentitySigner].
 	identitySigner string
+
+	// identityKeyDir is a server's per-tenant public keys, DIR/TENANT/KEY.pem,
+	// for the tenants the trust policy lists. See [tenantPublicKeys].
+	identityKeyDir string
 }
 
 // identityKeyDefault is what --identity-key holds when it is not given: the one
@@ -229,6 +233,7 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 	insecure, _ := cmd.Flags().GetBool("insecure-no-auth")
 	identityKeyPaths, _ := cmd.Flags().GetStringArray("identity-key")
 	identitySigner, _ := cmd.Flags().GetString("identity-signer")
+	identityKeyDir, _ := cmd.Flags().GetString("identity-key-dir")
 
 	return authFlags{
 		policyPath:       policyPath,
@@ -236,6 +241,7 @@ func authFlagsOf(cmd *cobra.Command) authFlags {
 		insecure:         insecure,
 		identityKeyPaths: identityKeyPaths,
 		identitySigner:   identitySigner,
+		identityKeyDir:   identityKeyDir,
 	}
 }
 
@@ -1217,7 +1223,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	issuer, err := identityPublisher(authCfg, policy)
+	issuers, err := identityPublisher(authCfg, policy)
 	if err != nil {
 		return err
 	}
@@ -1231,7 +1237,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := checkProtectedResourceRouteCollision(protectedResource, issuer); err != nil {
+	if err := checkProtectedResourceRouteCollision(protectedResource, issuers); err != nil {
 		return err
 	}
 
@@ -1539,7 +1545,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// deployment cannot have this listener bind an address this function
 		// already refused.
 		Addr: publicAddr,
-		Handler: serverHandler(logger, verifier, peerVerifier, issuer, rpcResource, rpcMux, receiver, protectedResource,
+		Handler: serverHandler(logger, verifier, peerVerifier, issuers, rpcResource, rpcMux, receiver, protectedResource,
 			gatesOpts...),
 
 		// nil when no certificate was configured, which is only reachable here
@@ -1576,7 +1582,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 		logger.Warn("authentication is disabled; every caller is anonymous and can start workflows",
 			"use", "local development only")
 	}
-	if issuer != nil {
+	if issuers != nil {
 		// Log the discovery URL rather than the fact of federation: an operator
 		// configuring a relying party needs this exact string, and finding it by
 		// reading source is the sort of friction that gets solved by guessing.
@@ -1584,9 +1590,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// with a different --identity-key list and its whole result is which
 		// keys this process publishes and which one of them signs. An operator
 		// who cannot read that back has rehearsed nothing.
-		logger.Info("publishing workload identity keys; workers sign, this server holds no signing key",
-			"discovery", issuer.URL()+auth.DiscoveryPath,
-			"published_keys", verifyOnlyKeyIDs(issuer))
+		//
+		// One line per issuer, the tenant's name in it: the URL a relying party
+		// pins is the tenant's own, and a tenant missing here is a tenant whose
+		// assertions nothing will verify.
+		for _, tenant := range append([]string{""}, issuers.Tenants()...) {
+			issuer, ok := issuers.Issuer(tenant)
+			if !ok {
+				continue
+			}
+			logger.Info("publishing workload identity keys; workers sign, this server holds no signing key",
+				"tenant", tenant,
+				"discovery", issuer.URL()+auth.DiscoveryPath,
+				"published_keys", verifyOnlyKeyIDs(issuer))
+		}
 	}
 	if protectedResource != nil {
 		logger.Info("serving RFC 9728 protected resource metadata",
@@ -1900,13 +1917,29 @@ func warnUnreachableIssuers(logger *slog.Logger, policy *auth.Policy) {
 // entries publishing the same key id, refuses start-up rather than being
 // skipped. A key silently left out is a rotation the operator believes is
 // covered and is not.
-func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) {
+//
+// # One worker, one tenant
+//
+// tenant is the Flowstate namespace the process signs for: a worker's --tenant,
+// or a rehearsal's --as-namespace, and empty for the default tenant. The broker's
+// issuer is that tenant's own, at <issuer>/tenants/<tenant>, and it refuses to
+// mint for any other namespace. The key it is given is that tenant's alone, so a
+// compromise of this worker yields assertions that verify under this tenant's
+// issuer and no other's. A tenant the policy does not list is refused here, at
+// start-up, and not at the first mint.
+func identityBroker(flags authFlags, policy *auth.Policy, tenant string) (*auth.Broker, error) {
 	if policy == nil || policy.Federation == nil {
 		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" {
 			return nil, fmt.Errorf("--identity-key or --identity-signer was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
+	}
+
+	// Before any key is read, and before a signer is asked anything: a tenant
+	// with no issuer is refused without a round trip to the backend.
+	if _, err := policy.Federation.TenantIssuerURL(tenant); err != nil {
+		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
 
 	var (
@@ -1920,7 +1953,11 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 		return nil, fmt.Errorf("configure one source of signing keys, not both --identity-signer and --identity-key: " +
 			"a Transit key supplies its own previous versions, so there is nothing to list beside it")
 	case flags.identitySigner != "":
-		key, opts, err = identitySignerKeys(flags.identitySigner, policy)
+		var signer string
+		if signer, err = expandSignerTenant(flags.identitySigner, tenant); err != nil {
+			return nil, err
+		}
+		key, opts, err = identitySignerKeys(signer, policy)
 	case len(flags.identityKeyPaths) == 0:
 		return nil, fmt.Errorf("the trust policy configures federation but no signing key was given: " +
 			"pass --identity-key with a PKCS#8 PEM private key, or --identity-signer with a vault-transit:// " +
@@ -1935,7 +1972,7 @@ func identityBroker(flags authFlags, policy *auth.Policy) (*auth.Broker, error) 
 	// A duplicate id is refused by [auth.NewIssuer], which is where the key set
 	// being published actually lives, so the refusal cannot be bypassed by any
 	// other caller — see [auth.WithVerifyOnlyKey].
-	broker, err := policy.Federation.Broker(key, opts...)
+	broker, err := policy.Federation.Broker(key, append(opts, auth.WithFederationTenant(tenant))...)
 	if err != nil {
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
@@ -1972,58 +2009,81 @@ func identityFileKeys(paths []string) (auth.SigningKey, []auth.FederationOption,
 	return key, opts, nil
 }
 
-// identityPublisher builds the publish-only issuer a server serves its discovery
-// documents and key set from, or returns nil when the deployment does not
-// federate outward.
+// identityPublisher builds the publish-only issuers a server serves its
+// discovery documents and key sets from, one per tenant, or returns nil when the
+// deployment does not federate outward.
 //
 // The server never mints: assertions are signed in the worker that runs the
 // step, so the server is handed only the public keys to publish and never reads
-// private signing material. Every --identity-key entry is therefore a PKIX
-// public key PEM (`flow keys public --pem`), published for verification, and a
-// private key is refused at start-up rather than read for its public half — a
-// server that accepted one would be a server holding one. The key id is the file
-// name, as for a worker, so a worker's `2026-08.pem` and the server's
-// `2026-08.pem` publish and sign under one id.
+// private signing material. Every key it is given is therefore a PKIX public key
+// PEM (`flow keys public --pem`), published for verification, and a private key
+// is refused at start-up rather than read for its public half: a server that
+// accepted one would be a server holding one. The key id is the file name, as
+// for a worker, so a worker's `2026-08.pem` and the server's `2026-08.pem`
+// publish and sign under one id.
 //
-// Federation is a deployment-wide trust domain: every worker that signs with a
-// shared key signs as the same issuer, whatever tenant its run belongs to.
-func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.Issuer, error) {
+// # One issuer per tenant
+//
+// Each tenant the trust policy lists under `federation.tenants` is its own
+// issuer at <issuer>/tenants/<tenant>, with the keys that tenant's worker signs
+// with and no others ([tenantPublicKeys]). The default tenant, the runs that
+// carry no namespace, is the deployment's own issuer URL and takes
+// `--identity-key` or an `--identity-signer` without a {tenant}, as the
+// deployment-wide key always did. No key reaches two tenants' key sets: a key
+// that verified under both issuers would be one worker able to sign for either.
+func identityPublisher(flags authFlags, policy *auth.Policy) (*auth.TenantIssuers, error) {
 	if policy == nil || policy.Federation == nil {
-		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" {
-			return nil, fmt.Errorf("--identity-key or --identity-signer was given but the trust policy configures no federation: " +
+		if len(flags.identityKeyPaths) > 0 || flags.identitySigner != "" || flags.identityKeyDir != "" {
+			return nil, fmt.Errorf("--identity-key, --identity-key-dir or --identity-signer was given but the trust policy configures no federation: " +
 				"add a federation section, or drop the key")
 		}
 		return nil, nil
 	}
 
-	var (
-		opts []auth.FederationOption
-		err  error
-	)
+	keys, err := tenantPublicKeys(flags, policy)
+	if err != nil {
+		return nil, err
+	}
+
+	// A {tenant} signer names the named tenants' keys, so it is not also the
+	// default tenant's: that one takes --identity-key, or a signer of its own.
+	defaultSigner := flags.identitySigner
+	if strings.Contains(defaultSigner, identitySignerTenantPlaceholder) {
+		defaultSigner = ""
+	}
+
+	var opts []auth.FederationOption
 
 	switch {
-	case flags.identitySigner != "" && len(flags.identityKeyPaths) > 0:
+	case defaultSigner != "" && len(flags.identityKeyPaths) > 0:
 		return nil, fmt.Errorf("configure one source of published keys, not both --identity-signer and --identity-key")
-	case flags.identitySigner != "":
-		opts, err = identitySignerPublicKeys(flags.identitySigner, policy)
-	case len(flags.identityKeyPaths) == 0:
-		return nil, fmt.Errorf("the trust policy configures federation but no identity key was given: " +
-			"pass --identity-key with the PKIX public key PEM of each key workers sign with " +
-			"(flow keys public --in KEY.pem --pem), or --identity-signer with the vault-transit:// URL of the " +
-			"Transit key they sign with, since the server publishes keys and holds no signing key")
-	default:
+	case defaultSigner != "":
+		opts, err = identitySignerPublicKeys(defaultSigner, policy)
+	case len(flags.identityKeyPaths) > 0:
 		opts, err = identityPublicFileKeys(flags.identityKeyPaths)
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	// A duplicate id is refused by [auth.NewIssuer], as for a worker.
-	issuer, err := policy.Federation.PublishOnlyIssuer(opts...)
+	if opts != nil {
+		keys[""] = opts
+	}
+
+	if len(keys) == 0 {
+		return nil, fmt.Errorf("the trust policy configures federation but no identity key was given: " +
+			"pass --identity-key with the PKIX public key PEM of each key workers sign with " +
+			"(flow keys public --in KEY.pem --pem), or --identity-signer with the vault-transit:// URL of the " +
+			"Transit key they sign with, since the server publishes keys and holds no signing key")
+	}
+
+	// A duplicate id within a tenant is refused by [auth.NewIssuer], as for a
+	// worker, and a key shared between tenants by the set.
+	issuers, err := policy.Federation.PublishOnlyIssuers(keys)
 	if err != nil {
 		return nil, fmt.Errorf("configuring identity federation: %w", err)
 	}
-	return issuer, nil
+	return issuers, nil
 }
 
 // identityPublicFileKeys reads a server's --identity-key files, every one a
@@ -3080,6 +3140,7 @@ flow server --insecure-no-auth`,
 			"Repeatable: list the current key and any previous ones, so a rotation does "+
 			"not reject assertions signed with the old key")
 	addIdentitySignerFlag(serverCmd, true)
+	addIdentityKeyDirFlag(serverCmd)
 
 	// The server's deployment name is not the worker's Worker Deployment pair: it
 	// names this Flowstate installation in the identity every run carries, so an

@@ -297,6 +297,7 @@ func TestFederationPolicyCredentialLifetimeCeiling(t *testing.T) {
 
 		return auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+tenants: [acme]
 declared_claims: [repository]
 allow:
   - 'target == "partner"'
@@ -331,7 +332,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 		require.NoError(t, err)
 
 		return broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
@@ -365,6 +366,7 @@ targets:
 
 		policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+tenants: [acme]
 declared_claims: [repository]
 allow:
   - 'target == "partner"'
@@ -379,7 +381,7 @@ targets:
 		key, err := auth.GenerateSigningKey("k", jwa.ES256)
 		require.NoError(t, err)
 
-		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+		broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 		require.NoError(t, err)
 
 		_, err = broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")

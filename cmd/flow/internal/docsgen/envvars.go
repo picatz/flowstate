@@ -220,9 +220,15 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_IDENTITY_KEY_DIR",
+			value:   "unset",
+			purpose: "Default for `flow server --identity-key-dir`: a directory of per-tenant public keys, `DIR/TENANT/KEY.pem`, each a PKIX public key PEM, for every tenant the trust policy lists under `federation.tenants`. The server publishes each tenant's keys at that tenant's own issuer, `<issuer>/tenants/TENANT`, and holds no private key. It refuses to start when a listed tenant has no keys or the directory names a tenant the policy does not list.",
+			read:    "cmd/flow/tenantkeys.go",
+		},
+		{
 			name:    "FLOWSTATE_IDENTITY_SIGNER",
 			value:   "unset",
-			purpose: "Default for `--identity-signer`: a `vault-transit://HOST[:PORT]/KEY` URL naming a Vault or OpenBao Transit key to sign with, in place of `--identity-key`, so the private key never reaches the server or worker. A worker signs through Transit and publishes the key's previous versions; `flow server` only reads the public versions. The Vault token is never part of the URL: it comes from the URL's `token_file`, `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`, `$FLOWSTATE_SECRET_VAULT_TOKEN`, or Kubernetes auth (`kubernetes_role`).",
+			purpose: "Default for `--identity-signer`: a `vault-transit://HOST[:PORT]/KEY` URL naming a Vault or OpenBao Transit key to sign with, in place of `--identity-key`, so the private key never reaches the server or worker. A worker signs through Transit and publishes the key's previous versions; `flow server` only reads the public versions. A `{tenant}` in the key name stands for a tenant's namespace, so one URL names each tenant's own key: a worker fills it with its `--tenant`, and the server once per tenant the policy lists. The Vault token is never part of the URL: it comes from the URL's `token_file`, `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`, `$FLOWSTATE_SECRET_VAULT_TOKEN`, or Kubernetes auth (`kubernetes_role`).",
 			read:    "cmd/flow/identitysigner.go",
 		},
 		{

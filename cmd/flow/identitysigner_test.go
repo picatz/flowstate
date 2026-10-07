@@ -97,7 +97,7 @@ func TestIdentityBrokerSignsThroughTransit(t *testing.T) {
 	transit, signer, policy := transitFixture(t)
 	transit.RotateKey(transitSignerKey)
 
-	broker, err := identityBroker(authFlags{identitySigner: signer}, policy)
+	broker, err := identityBroker(authFlags{identitySigner: signer}, policy, "")
 	require.NoError(t, err)
 	require.NotNil(t, broker)
 
@@ -113,10 +113,10 @@ func TestIdentityPublisherReadsTransit(t *testing.T) {
 	transit, signer, policy := transitFixture(t)
 	transit.RotateKey(transitSignerKey)
 
-	issuer, err := identityPublisher(authFlags{identitySigner: signer}, policy)
+	issuers, err := identityPublisher(authFlags{identitySigner: signer}, policy)
 	require.NoError(t, err)
-	require.Empty(t, issuer.ActiveKeyID(), "the server holds no signing key")
-	require.ElementsMatch(t, []string{transitSignerKey + "-v2", transitSignerKey + "-v1"}, servedKeyIDs(t, issuer))
+	require.Empty(t, issuers.Default().ActiveKeyID(), "the server holds no signing key")
+	require.ElementsMatch(t, []string{transitSignerKey + "-v2", transitSignerKey + "-v1"}, servedKeyIDs(t, issuers))
 
 	for _, request := range transit.Requests() {
 		require.NotContains(t, request.Path, "/sign/", "publishing never asks the backend to sign")
@@ -129,14 +129,14 @@ func TestIdentitySignerRefusals(t *testing.T) {
 	t.Run("beside --identity-key", func(t *testing.T) {
 		flags := authFlags{identitySigner: signer, identityKeyPaths: []string{"/etc/flowstate/identity.pem"}}
 
-		_, err := identityBroker(flags, policy)
+		_, err := identityBroker(flags, policy, "")
 		require.ErrorContains(t, err, "not both")
 		_, err = identityPublisher(flags, policy)
 		require.ErrorContains(t, err, "not both")
 	})
 
 	t.Run("without federation", func(t *testing.T) {
-		_, err := identityBroker(authFlags{identitySigner: signer}, nil)
+		_, err := identityBroker(authFlags{identitySigner: signer}, nil, "")
 		require.ErrorContains(t, err, "configures no federation")
 		_, err = identityPublisher(authFlags{identitySigner: signer}, nil)
 		require.ErrorContains(t, err, "configures no federation")
@@ -145,7 +145,7 @@ func TestIdentitySignerRefusals(t *testing.T) {
 	t.Run("a backend that refuses fails start-up, and does not fall back", func(t *testing.T) {
 		transit.RevokeToken()
 
-		_, err := identityBroker(authFlags{identitySigner: signer}, policy)
+		_, err := identityBroker(authFlags{identitySigner: signer}, policy, "")
 		require.Error(t, err)
 		require.NotContains(t, err.Error(), authtest.TransitToken)
 		require.NotContains(t, err.Error(), authtest.TransitErrorMarker)

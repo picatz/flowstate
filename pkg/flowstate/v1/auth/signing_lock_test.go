@@ -299,8 +299,9 @@ func TestFederationPolicySigningTimeoutReachesTheIssuer(t *testing.T) {
 
 	broker, err := auth.FederationPolicy{
 		Issuer:         "https://flowstate.example",
+		Tenants:        []string{"acme"},
 		SigningTimeout: 50 * time.Millisecond,
-	}.Broker(key)
+	}.Broker(key, auth.WithFederationTenant("acme"))
 	require.NoError(t, err)
 
 	provider.arm()

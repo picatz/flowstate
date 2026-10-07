@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/picatz/flowstate/internal/strictyaml"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
@@ -141,4 +142,37 @@ func TestTheDocumentedEgressSection(t *testing.T) {
 	_, err := auth.ParsePolicy([]byte(withoutSection))
 	require.ErrorContains(t, err, "configure the trust policy's egress: section")
 	require.ErrorContains(t, err, "`schemes: [http, https]`")
+}
+
+// TestTheDocumentedTenantPolicyParses ties docs/DEPLOYMENT.md's per-tenant issuer
+// section to the schema: its policy is one ParsePolicy accepts, the tenants it
+// lists each have the issuer URL the section teaches, and a name it does not list
+// has none.
+func TestTheDocumentedTenantPolicyParses(t *testing.T) {
+	t.Parallel()
+
+	section := docSection(t, deploymentDoc(t), "### Per-tenant issuers")
+	blocks := yamlBlocks(section)
+	require.Len(t, blocks, 1, "the per-tenant policy was not found, so nothing was checked")
+
+	// The block is the `federation:` section of a trust policy, which a whole
+	// policy would surround with the issuers it authenticates callers by; the
+	// section is what the page teaches, so it is what is held to the schema.
+	var policy struct {
+		Federation auth.FederationPolicy `yaml:"federation"`
+	}
+	require.NoError(t, strictyaml.UnmarshalStrict([]byte(blocks[0]), &policy),
+		"docs/DEPLOYMENT.md teaches a federation policy the schema refuses:\n%s", blocks[0])
+	require.NoError(t, policy.Federation.Validate(), blocks[0])
+	require.Equal(t, []string{"acme", "globex"}, policy.Federation.Tenants)
+
+	for _, tenant := range policy.Federation.Tenants {
+		issuer, err := policy.Federation.TenantIssuerURL(tenant)
+		require.NoError(t, err)
+		require.Equal(t, policy.Federation.Issuer+"/tenants/"+tenant, issuer)
+		require.Contains(t, section, "https://HOST/tenants/NAMESPACE", "the section no longer teaches the issuer URL's shape")
+	}
+
+	_, err := policy.Federation.TenantIssuerURL("initech")
+	require.ErrorIs(t, err, auth.ErrUnknownTenant)
 }

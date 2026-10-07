@@ -233,6 +233,14 @@
 // what `flow`'s repeatable --identity-key builds, and [Issuer.Rotate] is its
 // in-process counterpart for a deployment that never restarts.
 //
+// A deployment with several tenants gives each its own issuer rather than one
+// key every tenant's worker shares. [FederationPolicy.Tenants] lists them, each
+// is an [Issuer] at [FederationPolicy.TenantIssuerURL] built with [WithTenant],
+// so its "iss", its key set and the one key its worker holds are that tenant's
+// alone, and it refuses to mint for any other namespace ([ErrTenantMismatch]).
+// The server holds [TenantIssuers], publish-only, and serves each tenant's
+// documents under /tenants/<namespace>/; a relying party pins the tenant's URL.
+//
 // The subject names the workload hierarchically, so a relying party can authorize
 // at whatever level it wants with a prefix match:
 //

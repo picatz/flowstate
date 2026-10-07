@@ -450,7 +450,10 @@ func workerRuntime(cmd *cobra.Command, registry *secrets.Registry, configured bo
 	if err != nil {
 		return engine.TaskRuntimeConfig{}, err
 	}
-	broker, err := identityBroker(authFlagsOf(cmd), policy)
+	// The tenant a worker serves is the one it is restricted to; a process with no
+	// --tenant (or no such flag, as on `flow server dev`) serves the default tenant.
+	tenant, _ := cmd.Flags().GetString("tenant")
+	broker, err := identityBroker(authFlagsOf(cmd), policy, tenant)
 	if err != nil {
 		return engine.TaskRuntimeConfig{}, err
 	}
@@ -579,7 +582,8 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	if err != nil {
 		return nil, err
 	}
-	broker, err := identityBroker(authFlagsOf(cmd), policy)
+	// A rehearsal signs for the tenant it rehearses as, as production would.
+	broker, err := identityBroker(authFlagsOf(cmd), policy, identity.Namespace)
 	if err != nil {
 		return nil, err
 	}

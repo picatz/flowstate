@@ -11,7 +11,9 @@
 issuers:
   - name: peer-flowstate
     actions: [workload.run, workload.read]
-    issuer: https://flowstate.example.com
+    # The tenant's own issuer: A's issuer plus /tenants/<namespace>, which is
+    # where A's server publishes acme's discovery document and key set.
+    issuer: https://flowstate.example.com/tenants/acme
 
     # The audience A minted for. This is what stops an assertion A obtained for
     # some other relying party from being replayed here — for a bearer token

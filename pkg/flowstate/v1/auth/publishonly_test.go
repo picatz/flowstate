@@ -97,12 +97,13 @@ func TestPublishOnlyPolicyIssuerPublishesWhatAWorkerSigns(t *testing.T) {
 		claims      = slices.Sorted(maps.Keys(testIdentity().Claims))
 	)
 
-	policy := auth.FederationPolicy{Issuer: restartable.server.URL, DeclaredClaims: claims}
+	policy := auth.FederationPolicy{Issuer: restartable.server.URL, Tenants: []string{"acme"}, DeclaredClaims: claims}
 
 	// The server: public key only.
-	server, err := policy.PublishOnlyIssuer(
+	server, err := policy.PublishOnlyIssuers(map[string][]auth.FederationOption{"acme": {
 		auth.WithFederationClock(clock.Now),
-		auth.WithFederationVerifyOnlyKey(pair.id, pair.public))
+		auth.WithFederationVerifyOnlyKey(pair.id, pair.public),
+	}})
 	require.NoError(t, err)
 	restartable.mu.Lock()
 	restartable.handler = server.Handler()
@@ -110,12 +111,12 @@ func TestPublishOnlyPolicyIssuerPublishesWhatAWorkerSigns(t *testing.T) {
 
 	// The worker: the matching private key, building its issuer from the same
 	// policy.
-	broker, err := policy.Broker(pair.signing, auth.WithFederationClock(clock.Now))
+	broker, err := policy.Broker(pair.signing, auth.WithFederationClock(clock.Now), auth.WithFederationTenant("acme"))
 	require.NoError(t, err)
 
 	verifier := newVerifier(t,
 		auth.Policy{Issuers: []auth.TrustedIssuer{{
-			Name: "flowstate-self", Issuer: restartable.server.URL, Audiences: []string{audience},
+			Name: "flowstate-self", Issuer: broker.Issuer().URL(), Audiences: []string{audience},
 		}}},
 		auth.WithClock(clock.Now),
 	)
@@ -130,7 +131,7 @@ func TestPublishOnlyPolicyIssuerPublishesWhatAWorkerSigns(t *testing.T) {
 	// Negative direction: a different key under the same id is not covered by
 	// what the server publishes, so a verifier that is told only the real public
 	// half refuses it.
-	forged, err := auth.NewIssuer(restartable.server.URL, stranger.signing,
+	forged, err := auth.NewIssuer(broker.Issuer().URL(), stranger.signing,
 		auth.WithIssuerClock(clock.Now), auth.WithDeclaredClaims(claims...))
 	require.NoError(t, err)
 	bad, err := forged.Mint(t.Context(), testIdentity(), testStepRef(), audience)
@@ -144,7 +145,7 @@ func TestPublishOnlyPolicyIssuerPublishesWhatAWorkerSigns(t *testing.T) {
 // TestPublishOnlyPolicyIssuerNeedsAKey keeps the policy-level builder from
 // serving an empty key set when a deployment forgot to name any key.
 func TestPublishOnlyPolicyIssuerNeedsAKey(t *testing.T) {
-	_, err := auth.FederationPolicy{Issuer: "https://flowstate.test"}.PublishOnlyIssuer()
+	_, err := auth.FederationPolicy{Issuer: "https://flowstate.test"}.PublishOnlyIssuers(nil)
 	require.ErrorIs(t, err, auth.ErrNoSigningKey)
 }
 

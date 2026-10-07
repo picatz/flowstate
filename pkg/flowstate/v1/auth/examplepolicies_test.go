@@ -52,3 +52,35 @@ func TestExamplePoliciesParse(t *testing.T) {
 		}
 	}
 }
+
+// TestFederationFlowToFlowNamesTheTenantIssuer holds the two halves of the
+// example to one agreement: A lists the tenant its workflow runs in, and B trusts
+// that tenant's own issuer URL, not A's bare one, which no assertion carries.
+func TestFederationFlowToFlowNamesTheTenantIssuer(t *testing.T) {
+	t.Parallel()
+
+	dir := filepath.Join("..", "..", "..", "..", "examples", "federation-flow-to-flow")
+	load := func(name string) auth.Policy {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		policy, err := auth.ParsePolicy(data)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		return policy
+	}
+
+	a, b := load("auth-policy.yaml"), load("trust.yaml")
+	if a.Federation == nil {
+		t.Fatal("auth-policy.yaml has no federation section")
+	}
+	want, err := a.Federation.TenantIssuerURL("acme")
+	if err != nil {
+		t.Fatalf("A does not list acme: %v", err)
+	}
+	if len(b.Issuers) != 1 || b.Issuers[0].Issuer != want {
+		t.Fatalf("trust.yaml must trust %q, the issuer of A's tenant acme; got %+v", want, b.Issuers)
+	}
+}
