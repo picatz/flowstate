@@ -1,6 +1,7 @@
 package flowtest
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"maps"
@@ -292,8 +293,8 @@ type depBudget struct {
 	edges, scans int
 }
 
-func newDepBudget() *depBudget {
-	return &depBudget{edges: maxVarDependencyEdges, scans: maxVarDependencyScans}
+func newDepBudget(scanLimit int) *depBudget {
+	return &depBudget{edges: maxVarDependencyEdges, scans: cmp.Or(scanLimit, maxVarDependencyScans)}
 }
 
 // varReference matches a whole-value reference: `${vars.<name>}` and nothing
@@ -1193,7 +1194,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 	}
 
 	declared := map[string]*varDeclaration{}
-	budget := newDepBudget()
+	budget := newDepBudget(f.scanLimit)
 	for _, id := range slices.Sorted(maps.Keys(nodes)) {
 		node := nodes[id]
 		text, fenced := fencedVarValue(node.value)

@@ -311,6 +311,12 @@ type File struct {
 	// Optional; a file that declares none is held to the default that every
 	// step should be reached by some case.
 	Coverage *CoverageStanza `yaml:"coverage"`
+
+	// scanLimit replaces [maxVarDependencyScans] when positive. Unexported so
+	// no YAML decoder or caller can raise it; it exists so a test can reach
+	// the refusal without spending the production budget, which is seconds of
+	// work under the race detector.
+	scanLimit int
 }
 
 // CoverageStanza is a file's record of the branches its cases deliberately do

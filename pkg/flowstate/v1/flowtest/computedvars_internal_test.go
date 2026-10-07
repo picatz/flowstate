@@ -247,60 +247,39 @@ func TestVarDependencyScansAreSpentByReadsThatMatchNothing(t *testing.T) {
 	assert.Equal(t, 1000, budget.edges, "a miss retains no edge")
 }
 
-// TestAFileOfNonMatchingReadsIsRefused is the load-level form of #1353: many
-// computed vars each reading many paths that name no leaf of a large table.
+// TestAFileOfNonMatchingReadsIsRefused is the load-level form of #1353: a
+// computed var reading paths that name no leaf retains no edge, so only the
+// scan budget can refuse the file. A small limit stands in for the production
+// one, which costs seconds of scanning to reach.
 func TestAFileOfNonMatchingReadsIsRefused(t *testing.T) {
 	t.Parallel()
 
-	var reads strings.Builder
-	for i := range 350 {
-		if i > 0 {
-			reads.WriteString(", ")
-		}
-		fmt.Fprintf(&reads, "vars.t.q%d", i)
+	file := &File{
+		Vars:      map[string]any{"t": []any{1, 2, 3}, "a": "${size([vars.t.x, vars.t.y])}"},
+		scanLimit: 7,
 	}
-	var b strings.Builder
-	b.WriteString("vars:\n  t: {")
-	for i := range 20_000 {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "k%d: %d", i, i)
-	}
-	b.WriteString("}\n")
-	for i := range 60 {
-		fmt.Fprintf(&b, "  a%03d: \"${size([%s])}\"\n", i, reads.String())
-	}
-	b.WriteString("tests:\n  - name: loads\n    workflow: ./workflow.yaml\n    expect:\n      failed: true\n")
+	p := newProblems(nil)
 
-	_, err := LoadSource([]byte(b.String()))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "computed vars exceed the dependency budget")
+	assert.Nil(t, file.declareVars(p))
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars exceed the dependency budget")
+
+	// The same file within its limit declares: the bound, not the shape, refuses.
+	file.scanLimit = 8
+	p = newProblems(nil)
+	assert.NotNil(t, file.declareVars(p))
+	assert.Nil(t, p.err())
 }
 
-// TestTheWidestOrdinaryScanIsAdmitted pins the budget's legitimate side: one
-// 20,000-leaf table and the 199 computed vars that fit beside it, each making
-// four reads, is 16.1M scan steps once the computed leaves are counted as
-// nodes, and has to load.
-func TestTheWidestOrdinaryScanIsAdmitted(t *testing.T) {
+// TestTheScanBudgetCoversTheWidestOrdinaryFile pins the budget's legitimate
+// side by arithmetic rather than by spending it: one 20,000-leaf table and
+// the 199 computed vars that fit beside it, each making four reads, with the
+// computed leaves counted as nodes too (Copilot, #2452).
+func TestTheScanBudgetCoversTheWidestOrdinaryFile(t *testing.T) {
 	t.Parallel()
 
-	var b strings.Builder
-	b.WriteString("vars:\n  t: [")
-	for i := range 20_000 {
-		if i > 0 {
-			b.WriteString(", ")
-		}
-		fmt.Fprintf(&b, "%d", i)
-	}
-	b.WriteString("]\n")
-	for i := range MaxVarsPerFile - 1 {
-		fmt.Fprintf(&b, "  a%03d: \"${size([vars.t[0], vars.t[1], vars.t[2], vars.t[3]])}\"\n", i)
-	}
-	b.WriteString("tests:\n  - name: loads\n    workflow: ./workflow.yaml\n    expect:\n      failed: true\n")
-
-	_, err := LoadSource([]byte(b.String()))
-	require.NoError(t, err)
+	const tableLeaves = 20_000
+	assert.GreaterOrEqual(t, maxVarDependencyScans, (MaxVarsPerFile-1)*4*(tableLeaves+MaxVarsPerFile-1))
 }
 
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
