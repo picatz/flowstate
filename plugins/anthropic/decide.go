@@ -7,11 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
+	"net/http/httptrace"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -177,6 +178,14 @@ func decide(ctx context.Context, client *http.Client, endpoint, key string, in *
 	ctx, cancel := context.WithTimeout(sdk.WithCredentials(ctx), requestTimeout)
 	defer cancel()
 
+	// Whether any byte of the request could have left this process. Before
+	// that a failure proves nothing was processed; after it a lost connection
+	// or a timeout does not, and the provider may be generating a paid answer.
+	var sent atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteHeaders: func() { sent.Store(true) },
+	})
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, sdk.Failed("building the Anthropic request: %v", err)
@@ -187,7 +196,7 @@ func decide(ctx context.Context, client *http.Client, endpoint, key string, in *
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, classifyTransportError(err)
+		return nil, classifyTransportError(err, sent.Load())
 	}
 	defer resp.Body.Close()
 
@@ -197,7 +206,7 @@ func decide(ctx context.Context, client *http.Client, endpoint, key string, in *
 		if errors.As(err, &tooLarge) {
 			return nil, sdk.Failed("Anthropic's response exceeded the %d-byte limit", tooLarge.Limit)
 		}
-		return nil, sdk.Unavailable("Anthropic's response could not be read")
+		return nil, sdk.OutcomeUnknown("Anthropic's response could not be read after the request was sent; the call may have been processed, so it is not retried automatically")
 	}
 	if len(raw) > maxResponseBytes {
 		return nil, sdk.Failed("Anthropic's response exceeded the %d-byte limit", maxResponseBytes)
@@ -259,9 +268,12 @@ func classifyStatus(resp *http.Response, reply *messagesResponse) error {
 	}
 }
 
-func classifyTransportError(err error) error {
+func classifyTransportError(err error, sent bool) error {
 	var limited *netpolicy.RateLimitedError
 	if errors.As(err, &limited) {
+		if limited.AfterRedirect {
+			return sdk.OutcomeUnknown("operator egress policy rate-limited a redirect hop after the request was sent; the call may have been processed, so it is not retried automatically")
+		}
 		delay := boundedRetryAfter(limited.RetryAfter)
 		return sdk.UnavailableAfter(delay, "operator egress policy rate-limited anthropic.decide; retry after %s", delay)
 	}
@@ -274,16 +286,18 @@ func classifyTransportError(err error) error {
 		return sdk.Failed("Anthropic's response exceeded the %d-byte limit", tooLarge.Limit)
 	}
 	// The transport's own error text names the URL and can wrap a proxy's
-	// message, so none of it is repeated. Nothing was written anywhere that a
-	// second attempt would duplicate, so a lost connection is retryable.
-	var netErr net.Error
-	if errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded) {
-		return sdk.Unavailable("the connection to Anthropic failed or timed out")
+	// message, so none of it is repeated. A failure before any byte was written
+	// (dial, DNS, TLS) proves nothing was processed and is retryable. After the
+	// request was written, a reset or a timeout does not: the provider may still
+	// answer and bill for it, so the outcome is unknown and is not retried
+	// automatically, as with any call that may have taken effect.
+	if sent {
+		return sdk.OutcomeUnknown("the connection to Anthropic failed or timed out after the request was sent; the call may have been processed, so it is not retried automatically")
 	}
 	if errors.Is(err, context.Canceled) {
-		return sdk.Unavailable("the request to Anthropic was canceled")
+		return sdk.Unavailable("the request to Anthropic was canceled before it was sent")
 	}
-	return sdk.Unavailable("the request to Anthropic failed")
+	return sdk.Unavailable("the connection to Anthropic could not be established before the request was sent")
 }
 
 func retryAfter(value string) time.Duration {

@@ -442,6 +442,53 @@ func TestAnUnreachableProviderIsRetryable(t *testing.T) {
 	}
 }
 
+// TestALostConnectionAfterTheRequestWasSentIsAnUnknownOutcome is the other side
+// of the unreachable-provider test: once the request has been written, a reset
+// or a timeout does not prove the provider did not process, and bill, the call,
+// so it is not retried automatically.
+func TestALostConnectionAfterTheRequestWasSentIsAnUnknownOutcome(t *testing.T) {
+	reset := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err == nil {
+			_ = conn.Close()
+		}
+	}))
+	t.Cleanup(reset.Close)
+
+	release := make(chan struct{})
+	hang := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(hang.Close)
+	t.Cleanup(func() { close(release) })
+
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithTimeout(300*time.Millisecond))
+	if err != nil {
+		t.Fatalf("building test egress policy: %v", err)
+	}
+
+	for name, url := range map[string]string{"a reset": reset.URL, "a timeout": hang.URL} {
+		t.Run(name, func(t *testing.T) {
+			_, err := decide(context.Background(), policy.Client(), url, testKey, inputs(true), questionSet(t))
+			if err == nil || !sdk.IsOutcomeUnknown(err) || sdk.IsUnavailable(err) {
+				t.Fatalf("error = %v, want OutcomeUnknown and not retryable", err)
+			}
+		})
+	}
+}
+
+func TestTransportFailuresAreClassifiedByWhetherTheRequestWasSent(t *testing.T) {
+	failure := io.ErrUnexpectedEOF
+	if err := classifyTransportError(failure, false); !sdk.IsUnavailable(err) {
+		t.Errorf("before the request was sent: %v, want retryable", err)
+	}
+	if err := classifyTransportError(failure, true); !sdk.IsOutcomeUnknown(err) {
+		t.Errorf("after the request was sent: %v, want OutcomeUnknown", err)
+	}
+	if err := classifyTransportError(context.DeadlineExceeded, true); !sdk.IsOutcomeUnknown(err) {
+		t.Errorf("a timeout after the request was sent: %v, want OutcomeUnknown", err)
+	}
+}
+
 func TestAQuestionSetThatBreaksTheSchemaIsRefusedBeforeARequest(t *testing.T) {
 	for name, set := range map[string]map[string]any{
 		"no questions": {"questions": []any{}},

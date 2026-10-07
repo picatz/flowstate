@@ -67,12 +67,17 @@ one, a reply cut off at `max_tokens`, a body that is not JSON, and a body over
 the response limit all fail the task with a typed `Failed` error. Nothing is
 repaired and no partial result is returned.
 
-A decision has no effect beyond the model's own cost, so failures about
-capacity are retryable and the rest are not:
+A decision writes nothing, but a call that reached the provider is paid for and
+may still be answered, so only failures that prove it was not processed are
+retried automatically:
 
 - HTTP 429 returns `UnavailableAfter` with the `Retry-After` delay, capped at
-  five minutes; HTTP 5xx (including the 529 overloaded response), a lost
-  connection and a timeout return `Unavailable`.
+  five minutes, and HTTP 5xx (including the 529 overloaded response) returns
+  `Unavailable`, because a response arrived.
+- A failure before any byte of the request was written (dial, DNS, TLS) returns
+  `Unavailable`. A reset or a timeout after the request was written, or a
+  response that could not be read, returns `OutcomeUnknown` and is not retried
+  automatically.
 - HTTP 401 and 403 are `PermissionDenied`; 400, 404, 413 and 422 are
   `InvalidInput`; anything else is `Failed`.
 - There are no hidden retries inside the plugin. The step's `retry:` policy is

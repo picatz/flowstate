@@ -22,9 +22,11 @@ vars:
   page_threshold: 0.8
 steps:
   - id: decide
-    # Retried by the engine's own policy on a rate limit or a provider outage,
-    # which the plugin reports as retryable. A refused credential, a malformed
-    # answer or an unknown model is permanent and is not retried.
+    # Retried by the engine's own policy on a rate limit, a provider outage
+    # response, or a failure before the request was sent, which the plugin
+    # reports as retryable. A refused credential, a malformed answer, an unknown
+    # model, or a connection lost after the request was sent (the call may have
+    # been processed and billed) is not retried.
     retry:
       attempts: 3
       backoff: 2.0

@@ -912,8 +912,8 @@ plugin it launches, and that is all a host can do; enforcement is each plugin's
 own code. The first-party destination clients read it and apply it on their
 real connection paths: `slack`, `github` and `anthropic` through the governed HTTP client,
 `git` and `vcs` on go-git's transport, `sql` on every resolved PostgreSQL socket
-target. A deny rule an operator writes therefore reaches a `git.*`, `github.*`,
-`slack.*`, `anthropic.*`, `sql.*` or `vcs.*` task. The first-party Codex plugin is different: it
+target, `ssh` on every address it resolves before dialing. A deny rule an operator writes therefore reaches a `git.*`, `github.*`,
+`slack.*`, `anthropic.*`, `sql.*`, `ssh.*` or `vcs.*` task. The first-party Codex plugin is different: it
 launches an operator-selected subprocess and does not pass the grant to it. The
 Codex CLI's own control-plane traffic therefore always bypasses the grant; its
 separate sandbox policy governs network access only for commands the agent
