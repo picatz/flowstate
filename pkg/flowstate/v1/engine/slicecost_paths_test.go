@@ -24,7 +24,9 @@ import (
 
 // heavySliceExpr is an expression every existing bound admits — comfortably
 // inside [v1.DefaultCostLimit] — repeated enough times to pass
-// [v1.DefaultWorkflowSliceCost]. It is the conformance corpus's own `heavy`.
+// [v1.DefaultWorkflowSliceCost]. It is the at-the-bound expression the
+// conformance corpus's `heavy` was sized from; the corpus now uses fewer
+// elements so its durable run stays inside the race build's wait.
 //
 // Its 10,000 elements are the largest input the element bound admits, which is
 // why the environment below is built with [atABound]: see

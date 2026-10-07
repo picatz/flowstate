@@ -72,8 +72,8 @@ func TestWorkflowSlicesCompleteDurably(t *testing.T) {
 			for i, history := range histories {
 				// The first segment ends at the new continuation and the last
 				// resumes from carried state and completes. Together they cover
-				// both distinct replay shapes without replaying 25 equivalent
-				// middle segments in this bounded test.
+				// both distinct replay shapes without replaying every equivalent
+				// middle segment in this bounded test.
 				if i == 0 || i == len(histories)-1 {
 					requireWorkflowSliceReplay(t, history)
 				}
