@@ -259,8 +259,18 @@ func PrincipalKindNamed(name string) PrincipalKind {
 func RespellPrincipalKind(principal *structpb.Value) {
 	fields := principal.GetStructValue().GetFields()
 
-	name, ok := fields["kind"].GetKind().(*structpb.Value_StringValue)
+	given, present := fields["kind"]
+	if !present {
+		return
+	}
+
+	name, ok := given.GetKind().(*structpb.Value_StringValue)
 	if !ok {
+		// protojson reads a number as an enum value (`kind: 1` is HUMAN, and
+		// `kind: 99` is kept as an unknown one), which no trust policy would
+		// accept. Only a name is a kind, so anything else is made a name the
+		// schema refuses, and the refusal quotes this constant, not the value.
+		fields["kind"] = structpb.NewStringValue("(a kind is a name, not a number)")
 		return
 	}
 

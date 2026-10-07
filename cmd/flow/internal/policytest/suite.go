@@ -205,6 +205,13 @@ func checkIdentity(who *v1.Principal) error {
 		return errors.New("principal.issuer_entry names a trust policy entry, which a case has none of")
 	}
 
+	// A claim nested deeper or holding more values than an identity may carry is
+	// dropped when the identity is read, which would let a case pass as a caller
+	// it did not describe. The bounds are the ones every mint is held to.
+	if err := v1.AuthIdentity(&v1.WorkloadIdentity{Principal: who}).ClaimsError(); err != nil {
+		return fmt.Errorf("principal.claims: %w", err)
+	}
+
 	return nil
 }
 

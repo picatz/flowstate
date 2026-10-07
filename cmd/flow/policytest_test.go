@@ -433,3 +433,52 @@ cases:
 	require.Equal(t, 0, res.ExitCode, res.Output())
 	require.Equal(t, 2, report.Passed, res.Output())
 }
+
+// A kind is a name: protojson would read `kind: 1` as HUMAN and keep `kind: 99`
+// as an unknown kind that renders as none, so a case would stand for a caller
+// it did not describe.
+func TestPolicyTestRefusesANumericKind(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "egress.yaml", tenantEgressPolicy)
+
+	for _, kind := range []string{"1", "99", "null", "[human]"} {
+		t.Run(kind, func(t *testing.T) {
+			t.Parallel()
+
+			res := runFlow(t, "policy", "test", policy, writeFile(t, "cases.yaml",
+				"surface: egress\ncases:\n  - {name: a, principal: {kind: "+kind+"}, request: {url: \"https://api.github.com/\"}, expect: allow}\n"))
+			require.NotEqual(t, 0, res.ExitCode, res.Output())
+			require.Empty(t, res.Stdout)
+		})
+	}
+}
+
+// A claim over the carried-claim bounds is dropped when the identity is read,
+// which would let a deny case pass for a caller it did not describe, so the
+// case is refused instead.
+func TestPolicyTestRefusesAnOverBoundClaim(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "egress.yaml", tenantEgressPolicy)
+
+	deep := "x"
+	for range 6 {
+		deep = "[" + deep + "]"
+	}
+
+	wide := "[" + strings.Repeat("a, ", 600) + "a]"
+
+	for name, claim := range map[string]string{"over depth": deep, "over count": wide} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			res := runFlow(t, "policy", "test", policy, writeFile(t, "cases.yaml",
+				"surface: egress\ncases:\n  - {name: a, principal: {claims: {groups: "+claim+"}}, request: {url: \"https://api.github.com/\"}, expect: deny}\n"))
+			require.NotEqual(t, 0, res.ExitCode, res.Output())
+			require.Empty(t, res.Stdout, "a refused suite must not print a verdict")
+			require.Contains(t, res.Output(), "principal.claims")
+			require.Contains(t, res.Output(), `"groups"`)
+		})
+	}
+}
