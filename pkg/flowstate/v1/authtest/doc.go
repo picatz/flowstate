@@ -16,6 +16,7 @@
 //			Name:      "ci",
 //			Issuer:    issuer.URL(),
 //			Audiences: []string{"flowstate"},
+//			Actions:   auth.ActionScopes{"workload.run", "workload.read"},
 //			Require:   []auth.ClaimRule{auth.RequireClaim("team", "platform")},
 //			Namespace: "acme",
 //		}},

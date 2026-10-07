@@ -25,12 +25,13 @@ func TestAPluginsSecretInputsReachTheTaskDef(t *testing.T) {
 	def, err := (&Plugin{name: "example"}).taskDef(&pluginv1.TaskManifest{
 		Name:                 "commit_push",
 		Summary:              "writes a commit to a branch",
-		InputMessage:         "flowstate.v1.Task.Log.Inputs",
+		InputDescriptor:      claimedInputs(map[string]flowstatev1.Secret{"message": flowstatev1.Secret_SECRET_REQUIRED}),
+		InputMessage:         claimedMessage,
 		OutputMessage:        "flowstate.v1.Task.Log.Outputs",
 		SecretInputs:         []string{"message"},
 		RequiredSecretInputs: []string{"message"},
 		NeedsScope:           true,
-	}, Config{})
+	}, Config{}.withDefaults())
 	require.NoError(t, err)
 
 	require.Equal(t, []string{"message"}, def.SecretInputs,
@@ -60,7 +61,7 @@ func TestAPluginThatDeclaresNoSecretInputsDescribesNone(t *testing.T) {
 		Summary:       "says nothing about its inputs",
 		InputMessage:  "flowstate.v1.Task.Log.Inputs",
 		OutputMessage: "flowstate.v1.Task.Log.Outputs",
-	}, Config{})
+	}, Config{}.withDefaults())
 	require.NoError(t, err)
 
 	described := flowstatev1.DescribeTask(def)
@@ -78,7 +79,7 @@ func TestRequiredSecretInputsMustAlsoPermitHostResolution(t *testing.T) {
 		InputMessage:         "flowstate.v1.Task.Log.Inputs",
 		OutputMessage:        "flowstate.v1.Task.Log.Outputs",
 		RequiredSecretInputs: []string{"message"},
-	}, Config{})
+	}, Config{}.withDefaults())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "requires")
 	assert.Contains(t, err.Error(), "secret_inputs")

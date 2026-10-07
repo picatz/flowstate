@@ -58,7 +58,7 @@ func TestSignalPolicyDeniesAnUnauthorizedSender(t *testing.T) {
 
 	// An authenticated caller, in the run's own tenant — everything
 	// `authorizeRun` alone requires — but not the subject the policy names.
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -99,7 +99,7 @@ func TestSignalPolicyAllowsTheAuthorizedSender(t *testing.T) {
 	workflowID := started.Msg.GetWorkflowId()
 	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
 
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 	})
@@ -148,7 +148,7 @@ func TestSignalPolicyZeroCaseBehavesAsBefore(t *testing.T) {
 
 	// Some engineer who was never named as an approver anywhere — the exact
 	// caller #206 says today's system cannot refuse.
-	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	ctx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "any-of-fifty-engineers@example.com",
 	})
@@ -212,7 +212,7 @@ func TestSignalPolicySurvivesContinueAsNew(t *testing.T) {
 
 	// The unauthorized sender must still be refused, on whichever segment is
 	// current after however many times this continued as new.
-	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -227,7 +227,7 @@ func TestSignalPolicySurvivesContinueAsNew(t *testing.T) {
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
 	// And the authorized sender still succeeds.
-	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 	})
@@ -354,7 +354,7 @@ func TestScheduledSignalPolicyDeniesAnUnauthorizedSender(t *testing.T) {
 	// the declared subject. Before the fix, this succeeded — the fired
 	// execution's memo carried only the tenant, so `authorizeSignal` read the
 	// zero case and allowed anyone.
-	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	deniedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})
@@ -377,7 +377,7 @@ func TestScheduledSignalPolicyDeniesAnUnauthorizedSender(t *testing.T) {
 
 	// The positive direction, in the same test as the negative one — a check
 	// that refused everyone would still pass the assertions above.
-	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	allowedCtx := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "release-manager@example.com",
 	})

@@ -54,9 +54,8 @@ import (
 // auditAllow records an authorization that was granted, before the mutation it
 // permits.
 //
-// This is also the shared per-action authorization seam. A policy entry with
-// no action list preserves legacy behavior; a configured list must contain the
-// exact scope bound to this RPC. The check is outside the recorder so disabling
+// This is also the shared per-action authorization seam. A caller's policy entry
+// must list the exact scope bound to this RPC; an entry cannot omit its list. The check is outside the recorder so disabling
 // audit output cannot disable authorization.
 func (s *FlowstateServer) auditAllow(ctx context.Context, rpc string, kind v1.AuditResourceKind, key string) error {
 	if err := s.authorizeAction(ctx, rpc, kind, key); err != nil {
@@ -93,7 +92,7 @@ func (s *FlowstateServer) authorizeAction(ctx context.Context, rpc string, kind 
 		return connect.NewError(connect.CodeInternal, err)
 	}
 
-	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	refusal := s.decide(ctx, action, authz.Implied).Refusal()
 	if refusal == nil {
 		return nil
 	}

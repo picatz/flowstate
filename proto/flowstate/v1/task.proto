@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 import "google/api/expr/v1alpha1/value.proto";
 import "google/api/field_behavior.proto";
@@ -177,7 +178,7 @@ message Task {
       // A header value may be a secret reference; such a mapping is carried as
       // a structure among the task's inputs instead of this field, and each
       // reference is resolved inside the activity only as its header is set.
-      map<string, string> headers = 3;
+      map<string, string> headers = 3 [(flowstate.v1.input).secret = SECRET_NESTED];
 
       // A raw request body, sent as written.
       //
@@ -257,7 +258,7 @@ message Task {
       // Fields may hold secret references at any depth: the task serializes the
       // body inside the activity, so a reference is resolved only as the bytes
       // are written.
-      Value json = 7;
+      Value json = 7 [(flowstate.v1.input).secret = SECRET_NESTED];
 
       // A form body, url-encoded with a matching Content-Type. Mutually exclusive
       // with `body` and `json`.
@@ -267,7 +268,7 @@ message Task {
       // difference from `query`, which is the same kind of map encoded by the same
       // function, is entirely the destination: a form body is sent in the request,
       // where a query string is written down by everything it passes.
-      map<string, Value> form = 8;
+      map<string, Value> form = 8 [(flowstate.v1.input).secret = SECRET_NESTED];
 
       // Which responses count as success, as a CEL expression over the same
       // `response` root `outputs` sees.

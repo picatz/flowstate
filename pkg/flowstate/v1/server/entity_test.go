@@ -217,7 +217,7 @@ func TestSignalWithStartAuthorizesCreateAndDeliverySeparately(t *testing.T) {
 		},
 	})
 
-	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	owner := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "owner@example.com",
 	})
@@ -235,7 +235,7 @@ func TestSignalWithStartAuthorizesCreateAndDeliverySeparately(t *testing.T) {
 	// choosing (see TestSignalWithStartCreatesOnceThenSignalsTheEntityThereafter),
 	// which is exactly why "may create" cannot be the question this handler
 	// asks when the target already exists.
-	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{
+	stranger := auth.ContextWithPrincipal(t.Context(), auth.Principal{Actions: everyAction,
 		Issuer:  "https://issuer.example.com",
 		Subject: "some-other-engineer@example.com",
 	})

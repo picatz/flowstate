@@ -69,7 +69,7 @@ func TestFlowstateToFlowstateFederation(t *testing.T) {
 	deploymentB = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		verifier, err := auth.NewOIDCVerifier(
 			auth.Policy{
-				Issuers: []auth.TrustedIssuer{{
+				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "peer-flowstate",
 					Issuer:    deploymentA.URL,
 					Audiences: []string{deploymentB.URL},

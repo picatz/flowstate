@@ -45,7 +45,7 @@ func writeAuthCheckToken(t *testing.T, token string) string {
 }
 
 func authCheckEntry(name, issuer string, rules ...auth.ClaimRule) auth.TrustedIssuer {
-	return auth.TrustedIssuer{
+	return auth.TrustedIssuer{Actions: []string{},
 		Name:      name,
 		Issuer:    issuer,
 		Audiences: []string{"flowstate"},
@@ -332,7 +332,7 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			policy := "issuers:\n  - name: vendor\n    issuer: " + tt.issuer +
+			policy := "issuers:\n  - name: vendor\n    actions: []\n    issuer: " + tt.issuer +
 				"\n    audiences: [flowstate]\n"
 			path := filepath.Join(t.TempDir(), "trust.yaml")
 			require.NoError(t, os.WriteFile(path, []byte(policy), 0o600))
@@ -370,7 +370,7 @@ func TestAuthCheckDoesNotEchoACredentialWrittenIntoAnIssuerURL(t *testing.T) {
 func TestAuthCheckRedactsAQueryBearingIssuerEvenWithoutACredential(t *testing.T) {
 	t.Parallel()
 
-	policy := "issuers:\n  - name: vendor\n    issuer: https://issuer.example.com/callback@handler?tenant=a" +
+	policy := "issuers:\n  - name: vendor\n    actions: []\n    issuer: https://issuer.example.com/callback@handler?tenant=a" +
 		"\n    audiences: [flowstate]\n"
 	path := filepath.Join(t.TempDir(), "trust.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(policy), 0o600))

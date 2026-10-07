@@ -449,8 +449,10 @@ for it in as many words — admits everyone anonymously into one empty namespace
 which is Tier 0's model reachable over a socket rather than a weaker Tier 1a.
 Read the ticks below as claims about a server started with a policy.
 
-An issuer entry may additionally restrict which control-plane actions its caller
-may perform. Actions use the schema-owned OAuth scope spellings advertised by the
+Every issuer entry says which control-plane actions its caller may perform, in
+an `actions:` list that is required: an entry without one is refused when the
+policy loads, because an omission that grants everything is how a caller ends up
+holding more than anyone decided. Actions use the schema-owned OAuth scope spellings advertised by the
 protected-resource metadata; `role` remains a descriptive audit label and grants
 nothing by itself:
 
@@ -474,23 +476,19 @@ issuers:
         any_of: [ci]
 ```
 
-A token can narrow what its entry grants but never widen it. When an entry has an
-`actions:` list, the token's `scope` (space-delimited) or `scp` (an array, or a space-delimited string as Microsoft Entra issues it) claim is
+A token can narrow what its entry grants but never widen it. The token's `scope` (space-delimited) or `scp` (an array, or a space-delimited string as Microsoft Entra issues it) claim is
 intersected with it: a token whose scopes name only some of the listed actions
 holds only those, one that names none of them holds none, and a scope the entry
 does not list adds nothing. A token with no scope claim holds the entry's full
-list, an entry without `actions:` ignores the claim, and a token carrying both
+list, and a token carrying both
 claims or either in the wrong shape is refused.
 
 These disjoint entries let the dashboard inspect and CI submit while neither may
-terminate. `actions` omitted preserves the pre-action-policy behavior for the RPC
-actions and adds no restriction there; `actions: []` grants no control-plane
-action. Disclosure actions are the exception: `workload.reveal_sensitive`
+terminate. `actions: []` grants no control-plane action. Every action is granted
+only to an entry that lists it; the disclosure actions `workload.reveal_sensitive`
 ([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
-([Payload encryption](ENCRYPTION.md)) are granted only to an entry that lists
-them, so an entry written before they existed can neither read declared-sensitive
-values nor decrypt history. A reader that may see sensitive values lists both
-the read and the reveal:
+([Payload encryption](ENCRYPTION.md)) also gate what is shown, so a reader that
+may see sensitive values lists both the read and the reveal:
 
 ```yaml
     actions: [workload.read, workload.reveal_sensitive]
@@ -752,6 +750,7 @@ $ flow keys public --in ./issuer.pem --jwks > ./issuer.jwks
 ```yaml
 issuers:
   - name: local-issuer
+    actions: [workload.run, workload.read]
     issuer: https://issuer.example.invalid
     audiences: [http://127.0.0.1:9233]
     namespace_claim: namespace

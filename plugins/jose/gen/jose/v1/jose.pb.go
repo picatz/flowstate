@@ -212,9 +212,9 @@ var File_jose_v1_jose_proto protoreflect.FileDescriptor
 
 const file_jose_v1_jose_proto_rawDesc = "" +
 	"\n" +
-	"\x12jose/v1/jose.proto\x12\ajose.v1\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"k\n" +
-	"\fVerifyInputs\x12)\n" +
-	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x14\n" +
+	"\x12jose/v1/jose.proto\x12\ajose.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"s\n" +
+	"\fVerifyInputs\x121\n" +
+	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x01R\x05token\x12\x14\n" +
 	"\x05trust\x18\x02 \x01(\tR\x05trust\x12\x1a\n" +
 	"\baudience\x18\x03 \x01(\tR\baudience\"\xf1\x01\n" +
 	"\rVerifyOutputs\x12\x16\n" +

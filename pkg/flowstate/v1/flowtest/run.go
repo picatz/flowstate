@@ -1023,6 +1023,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	}
 	if len(faultList) > 0 {
 		faults = newFaultPlan(workflow.GetName(), faultList)
+		faults.applySwarm(ctx)
 		ctx = contextWithFaultPlan(ctx, faults)
 	}
 	if record {

@@ -4,6 +4,7 @@ package github.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/github/gen/github/v1;githubv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 import "google/api/expr/v1alpha1/value.proto";
 
@@ -29,7 +30,7 @@ message PullRequestGetInputs {
   // Token authenticates the request. Unset means an unauthenticated request,
   // which GitHub permits for a public repository at a much lower rate limit.
   // A literal string here is refused - see auth.go.
-  flowstate.v1.Value token = 4;
+  flowstate.v1.Value token = 4 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
   // "https://github.example.com/api/v3". Unset means github.com.
@@ -87,7 +88,7 @@ message IssueCommentInputs {
   // Token authenticates the request and is required: GitHub does not accept
   // an anonymous comment, so the task refuses an unset token before making a
   // request. A literal string here is refused.
-  flowstate.v1.Value token = 5;
+  flowstate.v1.Value token = 5 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
   // "https://github.example.com/api/v3". Unset means github.com.
@@ -146,7 +147,7 @@ message PullRequestListInputs {
   // Token authenticates the request. Unset means an unauthenticated
   // request, which GitHub permits for a public repository at a much lower
   // rate limit. A literal string here is refused.
-  flowstate.v1.Value token = 7;
+  flowstate.v1.Value token = 7 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // BaseUrl overrides the API base for GitHub Enterprise Server.
   string base_url = 8;
@@ -299,7 +300,7 @@ message PullRequestFilesInputs {
   // Token authenticates the request. Unset means an unauthenticated request,
   // which GitHub permits for a public repository at a much lower rate limit.
   // A literal string here is refused.
-  flowstate.v1.Value token = 5;
+  flowstate.v1.Value token = 5 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
   // "https://github.example.com/api/v3". Unset means github.com.
@@ -384,7 +385,7 @@ message IssueGetInputs {
   // Token authenticates the request. Unset means an unauthenticated request,
   // which GitHub permits for a public repository at a much lower rate limit.
   // A literal string here is refused.
-  flowstate.v1.Value token = 4;
+  flowstate.v1.Value token = 4 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
   // "https://github.example.com/api/v3". Unset means github.com.
@@ -465,7 +466,7 @@ message IssueListInputs {
   // Token authenticates the request. Unset means an unauthenticated request,
   // which GitHub permits for a public repository at a much lower rate limit.
   // A literal string here is refused.
-  flowstate.v1.Value token = 7;
+  flowstate.v1.Value token = 7 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // BaseUrl overrides the API base for GitHub Enterprise Server, e.g.
   // "https://github.example.com/api/v3". Unset means github.com.

@@ -4,6 +4,7 @@
 # outbound — who this deployment may call, and as whom.
 issuers:
   - name: github-actions
+    actions: [workload.run, workload.read]
     issuer: https://token.actions.githubusercontent.com
     # Also the audience `flow server --rpc-resource` is started with: the
     # server requires the exact string it binds Connect RPC to to be listed by

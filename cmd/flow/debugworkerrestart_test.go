@@ -85,7 +85,7 @@ func TestADurableDebugSessionSurvivesItsWorkerBeingKilled(t *testing.T) {
 		return false
 	}, 30*time.Second, 100*time.Millisecond, "the run never parked at its gate")
 
-	sre := auth.ContextWithPrincipal(t.Context(), auth.Principal{Issuer: restartDebugIssuer, Subject: "sre@example.com"})
+	sre := auth.ContextWithPrincipal(t.Context(), auth.Principal{Issuer: restartDebugIssuer, Subject: "sre@example.com", Actions: everyAction})
 	attached, err := flowstate.DebugAttach(sre, connect.NewRequest(&v1.DebugAttachRequest{
 		WorkflowId: workflowID, RequestId: "attach", Lease: durationpb.New(10 * time.Minute),
 	}))

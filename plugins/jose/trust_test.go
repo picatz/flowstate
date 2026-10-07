@@ -24,6 +24,7 @@ func writeTrust(t *testing.T, document string) {
 const validTrust = `
 issuers:
   - name: build-system
+    actions: []
     issuer: https://token.actions.githubusercontent.com
     audiences: [flowstate]
     require:

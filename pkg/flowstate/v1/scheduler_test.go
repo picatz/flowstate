@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -240,4 +241,44 @@ func TestFaultDrawsDoNotSpendTheScheduleBudget(t *testing.T) {
 
 	fresh := v1.NewSeededScheduler(3)
 	require.Equal(t, fresh.Order(v1.SchedulePointParallelBranches, 6), scheduler.Order(v1.SchedulePointParallelBranches, 6))
+}
+
+// A swarm mask is a function of the seed alone, always leaves a kind on, and
+// over many seeds turns each kind both on and off; a scheduler that is not a
+// swarm one leaves every kind on.
+func TestSwarmMask(t *testing.T) {
+	t.Parallel()
+
+	plain := v1.NewSeededScheduler(7)
+	assert.Equal(t, []bool{true, true, true}, plain.SwarmMask(3))
+
+	on := make([]int, 3)
+	off := make([]int, 3)
+	for seed := uint64(1); seed <= 400; seed++ {
+		swarm := v1.NewSeededScheduler(seed)
+		swarm.EnableSwarm()
+
+		mask := swarm.SwarmMask(3)
+		again := v1.NewSeededScheduler(seed)
+		again.EnableSwarm()
+		assert.Equal(t, mask, again.SwarmMask(3), "the mask follows from the seed")
+		assert.Contains(t, mask, true, "no seed turns every kind off")
+
+		for i, kind := range mask {
+			if kind {
+				on[i]++
+			} else {
+				off[i]++
+			}
+		}
+	}
+	for i := range on {
+		assert.Greater(t, on[i], 100, "kind %d is on in a good share of seeds", i)
+		assert.Greater(t, off[i], 100, "kind %d is off in a good share of seeds", i)
+	}
+
+	one := v1.NewSeededScheduler(3)
+	one.EnableSwarm()
+	assert.Equal(t, []bool{true}, one.SwarmMask(1), "a lone kind is never swarmed away")
+	assert.Empty(t, one.SwarmMask(0))
 }

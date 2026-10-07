@@ -49,7 +49,7 @@ func testClientCAFile(t *testing.T) string {
 
 // mtlsPolicy returns a Policy with one kind: mtls entry naming caFile.
 func mtlsPolicy(caFile string) *auth.Policy {
-	return &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	return &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "mesh", Kind: auth.IssuerKindMTLS, Issuer: "flowstate:mtls/mesh",
 		ClientCAFile: caFile, SubjectFrom: auth.SubjectFromURISAN,
 	}}}
@@ -58,7 +58,7 @@ func mtlsPolicy(caFile string) *auth.Policy {
 // oidcOnlyPolicy returns a Policy with one ordinary kind: oidc entry and no
 // kind: mtls entries at all, for the "flag on, nothing to trust" refusal.
 func oidcOnlyPolicy() *auth.Policy {
-	return &auth.Policy{Issuers: []auth.TrustedIssuer{{
+	return &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: []string{},
 		Name: "idp", Issuer: "https://issuer.example.com", Audiences: []string{"flowstate"},
 	}}}
 }

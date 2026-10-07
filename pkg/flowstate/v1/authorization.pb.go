@@ -105,8 +105,8 @@ const (
 	// Releasing the plaintext of a Temporal namespace's stored payloads through
 	// the codec server (`flow codec serve`), which Temporal's Web UI and CLI
 	// call to display history. No RPC either. It reveals everything the
-	// namespace's runs wrote, so it is never implied: a principal whose policy
-	// entry lists no actions is not granted it, unlike the RPC actions above.
+	// namespace's runs wrote, so it is never implied: a principal holds it only when its policy
+	// entry lists it.
 	AuthorizationAction_AUTHORIZATION_ACTION_PAYLOAD_DECODE AuthorizationAction = 20
 	// Sealing payloads under a Temporal namespace's current key through the
 	// codec server, so a payload a person types into Temporal's UI or CLI (a
@@ -117,8 +117,7 @@ const (
 	// Reading the values a run's workflow declared `sensitive: true` in the
 	// clear, through GetRequest.reveal_sensitive or
 	// GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
-	// values. It is never implied: a policy entry that lists no actions is not
-	// granted it, unlike the RPC actions above.
+	// values. It is never implied: a caller holds it only when its policy entry lists it.
 	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE AuthorizationAction = 22
 )
 

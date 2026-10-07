@@ -521,6 +521,15 @@ any task faults, and the shrinker treats them alike. Duplicated and reordered
 deliveries are not faults: a second `signals:` entry with the same
 `delivery_id:` or a different `at:` already says them.
 
+`--swarm` (with `--seeds` or `--seed`) runs each seed with a random subset of
+the case's drawn `faults:` on instead of all of them, and at least one always on.
+Every kind of fault on at once lets each one's effect hide the others', so a
+failure that needs one kind alone, or two without a third, never occurs; a
+subset lets it. A pinned (`on:`) fault is a script and stays on. A finding under
+`--swarm` prints `--swarm` in its replay line, since the seed alone draws against
+every fault and is a different run; the printed pinned `faults:` list replays
+without either.
+
 A dropped delivery to a gate with no `timeout:` leaves a run nothing can wake.
 The harness reports that as a failure the moment it is true: `stuck: the run
 waits for signal "go" and nothing pending can deliver it`, naming any signal a
@@ -856,6 +865,62 @@ the caller and the inputs alone, as the server decides it. Like a case's
 `sender:`, an identity here is an assertion, not one anybody attested, and the
 check says nothing about whether a deployment would let that identity through its
 authenticator.
+
+### A deployment's policy, without a worker: `flow policy test`
+
+`flow signals check` is about a workflow's own gates. The policies an operator
+hands a worker (`--egress-policy`, `--task-policy`, `--exec-policy`) are the
+deployment's, and `flow policy test <policy-file> <cases-file>` puts cases to
+one of them, loaded as the worker loads it, with nothing started and no server
+contacted. Each case is decided by the function the engine enforces that policy
+with (`netpolicy.Policy.CheckURL` and `CheckAddr`, `TaskPolicy.Check`,
+`execpolicy.Policy.Check`), so a pass says what the worker would do.
+
+```yaml
+surface: egress            # egress, task or exec; one per file
+cases:
+  - name: team-a reaches its partner API
+    identity: {namespace: team-a}
+    request: {url: "https://partner-a.example.com/v1"}
+    expect: allow
+  - name: team-b is refused team-a's partner API   # the case that matters
+    identity: {namespace: team-b}
+    request: {url: "https://partner-a.example.com/v1"}
+    expect: deny
+    rule: allow rules
+```
+
+`identity` carries `subject`, `issuer`, `namespace` and `claims`, which every
+surface's rules read as `identity.<field>`; absent is no attested caller, which a
+rule that scopes by tenant declines to match. The `request` depends on the
+surface: `url`, `method` (default GET) and `ip` for egress, `task` for task
+shape, `argv`, `dir` and `env` for exec. `expect` is `allow` or `deny` and is
+required. `rule:` on a denial asserts which rule made it: a deny rule's source
+text exactly as the policy writes it, or, for a denial no deny rule made, the
+reason (`allow rules` when no allow rule matched, `rule error`, `scheme`, `port`
+or `address` for egress, `executable`, `argv`, `dir` or `env` for exec). A policy
+that denies for a different reason fails the case. Every denial, expected or
+not, is printed with the rule or reason behind it, which answers "which rule
+denied this?" without bisecting the file.
+
+The file is strict YAML (a misspelled key is a refusal, not an assertion that
+checks nothing), defined by `proto/flowstate/v1/policy_suite.proto`, and bounded
+at 512 cases and 256 KiB, with one document and no anchors, aliases or merge keys.
+`-o json` writes the report as a document. The exit status is 1 when any case
+does not get the outcome it expects. A rule that cannot be evaluated denies, as it
+does on a worker, so a `deny` case passes on it unless it names `rule: rule
+error`. A suite with no `expect: deny` case is reported with a warning, because it
+cannot catch a policy that allows too much.
+
+What it is not: egress is decided before DNS, so the scheme, port, request rules
+and the address checks for an IP-literal host or a case's `ip:` are asked (an `ip:` that
+disagrees with an IP-literal host is refused, as is a policy that sets
+`proxy_from_environment`, which would resolve the host), and
+rules over the connection's `ip` and the control-plane reservation, which need a
+dial, are not, and an egress rule over `credentials` is judged with it false, because a case cannot yet say its request carries a credential. An `exec` case is resolved against the machine the suite runs on.
+Secret-access and role-assumption policy (`--auth-policy`) are not covered: their
+decision needs the server's trust state. See
+[`examples/policy-test`](../examples/policy-test).
 
 ## Triggers
 

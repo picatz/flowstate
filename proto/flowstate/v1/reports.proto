@@ -322,6 +322,11 @@ message ScheduleDivergenceReport {
   // [fault_script] and keep the violation. False when the shrink budget ended
   // the search first, or nothing was shrunk.
   bool shrunk_minimal = 11;
+
+  // Swarm reports that the seed ran under `--swarm`, with only some of the
+  // case's `faults:` on. A replay of [seed] needs `--swarm` too, or it draws
+  // against every fault and is a different run.
+  bool swarm = 12;
 }
 
 // FuzzReport is what running a file's cases over generated inputs found: the

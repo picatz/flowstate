@@ -123,7 +123,7 @@ func TestVerifyOnlyKeysCarryAssertionsAcrossARestart(t *testing.T) {
 
 	verifier := newVerifier(t,
 		auth.Policy{
-			Issuers: []auth.TrustedIssuer{{
+			Issuers: []auth.TrustedIssuer{{Actions: []string{},
 				Name:      "flowstate-self",
 				Issuer:    restartable.server.URL,
 				Audiences: []string{audience},

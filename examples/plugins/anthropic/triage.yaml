@@ -1,0 +1,80 @@
+edition: v2026.4
+name: anthropic-ticket-triage
+description: Asks a Claude model two typed questions about a support ticket, then pages on-call only when the model said the ticket is urgent and reported enough confidence, and sends everything else to a person.
+plugins:
+  anthropic: v0.1.0
+inputs:
+  ticket:
+    type: string
+    required: true
+    description: the support ticket text the questions are about
+    example: The checkout page has returned a 500 for every customer since 14:02.
+    must: size(this) > 0 && size(this) <= 20000
+  model:
+    type: string
+    required: true
+    description: the Anthropic model identifier the questions are put to
+    example: claude-sonnet-5-5
+vars:
+  # The lowest self-reported confidence that may page a person. It is the
+  # model's claim about itself, not a measured probability, so it earns a
+  # threshold a person chose and wrote down here rather than one the model chose.
+  page_threshold: 0.8
+steps:
+  - id: decide
+    # Retried by the engine's own policy on a rate limit, a provider outage
+    # response, or a failure before the request was sent, which the plugin
+    # reports as retryable. A refused credential, a malformed answer, an unknown
+    # model, or a connection lost after the request was sent (the call may have
+    # been processed and billed) is not retried.
+    retry:
+      attempts: 3
+      backoff: 2.0
+    anthropic.decide:
+      # A whole secret reference, resolved on the worker that makes the call. It
+      # is never in the Flowfile, the run's history, or an error.
+      api_key: ${secret('env:ANTHROPIC_API_KEY')}
+      evidence: ${inputs.ticket}
+      model: ${inputs.model}
+      question_set:
+        questions:
+          - name: category
+            instructions: Which team should own this ticket?
+            choice:
+              options:
+                - billing
+                - outage
+                - other
+          - name: urgent
+            instructions: Is a customer-facing service down or losing money right now?
+            predicate: {}
+      # Ask the model to say how sure it is. What comes back is labelled
+      # self-reported; without this every answer is labelled as carrying none.
+      report_confidence: true
+  - id: urgent
+    value: ${steps.decide.answers.filter(a, a.name == "urgent")[0]}
+  - id: category
+    value: ${steps.decide.answers.filter(a, a.name == "category")[0].choice}
+  # The gate. Calibration 2 is CALIBRATION_SELF_REPORTED, the only value that
+  # carries a number from this provider; 3 is CALIBRATION_NONE, where the
+  # confidence field reads 0 because there is none. A model that did not report
+  # a confidence therefore cannot page anyone by being confident, and swapping
+  # in a provider that reports none sends every ticket to a person instead of
+  # silently passing.
+  - id: confident_and_urgent
+    value: ${steps.urgent.value.predicate && steps.urgent.value.calibration == 2 && steps.urgent.value.confidence >= vars.page_threshold}
+  - id: page
+    if: ${steps.confident_and_urgent.value}
+    log:
+      message: '${"paging on-call: urgent %s ticket, model confidence %.2f".format([steps.category.value, steps.urgent.value.confidence])}'
+  - id: review
+    if: ${!steps.confident_and_urgent.value}
+    log:
+      message: '${"queued for a person: %s ticket, not confidently urgent".format([steps.category.value])}'
+outputs:
+  paged:
+    value: ${steps.confident_and_urgent.value}
+    description: true only when the model answered urgent, said how sure it was, and was at least as sure as page_threshold
+  category:
+    value: ${steps.category.value}
+    description: the team the model chose, one of the options the question offered

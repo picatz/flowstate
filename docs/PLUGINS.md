@@ -839,7 +839,7 @@ either side of that change are refused at the handshake, naming both numbers.
 
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,
-`vcs`, `github` and `slack` do, so a worker nobody configured reaches public hosts
+`vcs`, `github`, `slack` and `anthropic` do, so a worker nobody configured reaches public hosts
 uniformly, and installing a plugin does not require writing a policy file to get
 back what the worker already does. A plugin whose authority is of another class
 refuses it: `sql` will not open a database connection under a policy no operator
@@ -909,11 +909,11 @@ line is.
 
 **Which first-party plugins enforce the grant.** The host grants it to every
 plugin it launches, and that is all a host can do; enforcement is each plugin's
-own code. The five first-party destination clients read it and apply it on their
-real connection paths: `slack` and `github` through the governed HTTP client,
+own code. The first-party destination clients read it and apply it on their
+real connection paths: `slack`, `github` and `anthropic` through the governed HTTP client,
 `git` and `vcs` on go-git's transport, `sql` on every resolved PostgreSQL socket
-target. A deny rule an operator writes therefore reaches a `git.*`, `github.*`,
-`slack.*`, `sql.*` or `vcs.*` task. The first-party Codex plugin is different: it
+target, `ssh` on every address it resolves before dialing. A deny rule an operator writes therefore reaches a `git.*`, `github.*`,
+`slack.*`, `anthropic.*`, `sql.*`, `ssh.*` or `vcs.*` task. The first-party Codex plugin is different: it
 launches an operator-selected subprocess and does not pass the grant to it. The
 Codex CLI's own control-plane traffic therefore always bypasses the grant; its
 separate sandbox policy governs network access only for commands the agent

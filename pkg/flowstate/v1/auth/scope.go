@@ -25,10 +25,9 @@ const (
 //
 // Narrowing is intersect-only: a token can give up authority the entry grants
 // and can never add any, so the result is always a subset of granted, and a
-// scope naming an action the entry does not grant is ignored. It is also opt-in:
-// an entry with a nil allowlist grants unrestricted actions and the token's
-// scopes do not apply, because intersecting with "everything" would have to
-// invent the vocabulary this package deliberately does not own.
+// scope naming an action the entry does not grant is ignored. A nil allowlist
+// never reaches here from a validated policy, and narrowing it yields nil,
+// which grants nothing.
 //
 // A token without a scope claim keeps everything the entry grants; one whose
 // scope claim is present and empty keeps nothing. A token carrying both "scope"

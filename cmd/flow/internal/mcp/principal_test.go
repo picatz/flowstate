@@ -51,7 +51,7 @@ func verifiedTokenInfo(t *testing.T, claims map[string]any) (*mcp.CallToolReques
 	t.Cleanup(func() { _ = issuer.Close() })
 
 	verifier, err := auth.NewOIDCVerifier(auth.Policy{
-		Issuers: []auth.TrustedIssuer{{
+		Issuers: []auth.TrustedIssuer{{Actions: everyAction,
 			Name:      "agent-idp",
 			Issuer:    issuer.URL(),
 			Audiences: []string{principalTestResource},
@@ -187,7 +187,7 @@ func TestToolHandlersWithoutATokenRunUnauthenticated(t *testing.T) {
 			Extra: &mcp.RequestExtra{TokenInfo: &mcpauth.TokenInfo{
 				UserID: "somebody",
 				Extra: map[string]any{
-					"flowstate.auth.principal": auth.Principal{Issuer: "https://forged.example.com", Subject: "mallory"},
+					"flowstate.auth.principal": auth.Principal{Actions: everyAction, Issuer: "https://forged.example.com", Subject: "mallory"},
 				},
 			}},
 		},

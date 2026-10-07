@@ -169,8 +169,8 @@ func init() {
 			Leading: " Releasing the plaintext of a Temporal namespace's stored payloads through\n" +
 				" the codec server (`flow codec serve`), which Temporal's Web UI and CLI\n" +
 				" call to display history. No RPC either. It reveals everything the\n" +
-				" namespace's runs wrote, so it is never implied: a principal whose policy\n" +
-				" entry lists no actions is not granted it, unlike the RPC actions above.\n",
+				" namespace's runs wrote, so it is never implied: a principal holds it only when its policy\n" +
+				" entry lists it.\n",
 		},
 		{
 			Name: "flowstate.v1.AUTHORIZATION_ACTION_PAYLOAD_ENCODE",
@@ -185,8 +185,7 @@ func init() {
 			Leading: " Reading the values a run's workflow declared `sensitive: true` in the\n" +
 				" clear, through GetRequest.reveal_sensitive or\n" +
 				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
-				" values. It is never implied: a policy entry that lists no actions is not\n" +
-				" granted it, unlike the RPC actions above.\n",
+				" values. It is never implied: a caller holds it only when its policy entry lists it.\n",
 		},
 		{
 			Name: "flowstate.v1.authorization_action",

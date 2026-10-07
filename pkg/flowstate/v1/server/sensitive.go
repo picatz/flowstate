@@ -32,9 +32,8 @@ import (
 // workload.read reads a run, as before, with its declared-sensitive values
 // withheld. Asking for them (reveal_sensitive) additionally needs
 // workload.reveal_sensitive, listed explicitly in the caller's policy entry:
-// an entry with no action list, which is unrestricted for every RPC action,
-// is not granted it, because it is a widening nobody configured and the
-// default must not be disclosure. Every reveal request that reaches the
+// a caller is never implied it, because it is a widening nobody configured
+// and the default must not be disclosure. Every reveal request that reaches the
 // service is audited, allowed or not, under the field's own action; one the
 // schema refuses (validate.NewInterceptor, before any handler) is refused
 // before anything is decided or read, and writes no record, exactly as for
@@ -152,7 +151,7 @@ func (s *FlowstateServer) revealAuthorized(ctx context.Context, rpc, field, work
 		return false, connect.NewError(connect.CodeInternal, err)
 	}
 
-	allowed := authz.Decide(ctx, action, authz.Explicit).Allowed
+	allowed := s.decide(ctx, action, authz.Explicit).Allowed
 
 	subject := s.auditSubject(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID)
 	subject.RequestField = field

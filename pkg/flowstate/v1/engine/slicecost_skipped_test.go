@@ -30,8 +30,9 @@ import (
 // skippedHeavyConditions is a workflow whose every step is skipped by an
 // individually bounded but expensive condition.
 //
-// The expression is the conformance corpus's own `heavy`, and the count is
-// chosen so the total is comfortably past [v1.DefaultWorkflowSliceCost] while
+// The expression is the at-the-bound one the conformance corpus's `heavy` was
+// sized from (the corpus now uses fewer elements so its durable run stays
+// inside the race build's wait), and the count is chosen so the total is comfortably past [v1.DefaultWorkflowSliceCost] while
 // each evaluation stays far inside [v1.DefaultCostLimit]: that gap is the whole
 // attack, an expression every existing bound admits, repeated.
 //

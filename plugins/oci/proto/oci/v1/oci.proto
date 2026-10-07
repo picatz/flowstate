@@ -4,6 +4,7 @@ package oci.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/oci/gen/oci/v1;ociv1";
 
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 import "google/api/expr/v1alpha1/value.proto";
 
@@ -36,7 +37,7 @@ message ResolveInputs {
   // reference, which the host resolves before execution, so it never enters
   // durable history. Left unset, the request is anonymous, which is what a
   // public repository wants.
-  flowstate.v1.Value password = 4;
+  flowstate.v1.Value password = 4 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 }
 
 // ResolveOutputs is what the registry says this reference is.
@@ -101,7 +102,7 @@ message ReferrersInputs {
 
   // Password is the registry credential, a secret reference as in
   // ResolveInputs.password. Left unset, the request is anonymous.
-  flowstate.v1.Value password = 5;
+  flowstate.v1.Value password = 5 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 }
 
 // ReferrersOutputs is the bounded attachment set.
@@ -146,7 +147,7 @@ message BlobInputs {
 
   // Password is the registry credential, a secret reference as in
   // ResolveInputs.password. Left unset, the request is anonymous.
-  flowstate.v1.Value password = 5;
+  flowstate.v1.Value password = 5 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 }
 
 // BlobOutputs is the verified blob.
