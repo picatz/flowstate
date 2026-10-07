@@ -57,6 +57,11 @@ cases:
     request: {url: "https://partner-a.example.com/v1", method: POST}
     expect: deny
     rule: 'method != "GET"'
+  - name: a lowercase method is judged as written, as the worker does
+    identity: {namespace: team-a}
+    request: {url: "https://partner-a.example.com/v1", method: get}
+    expect: deny
+    rule: 'method != "GET"'
   - name: a resolved loopback address is refused
     request: {url: "https://api.github.com/", ip: "127.0.0.1"}
     expect: deny
@@ -66,8 +71,8 @@ cases:
 	res, report := policyTestJSON(t, policy, cases)
 	require.Equal(t, 0, res.ExitCode, res.Output())
 	require.True(t, report.Matches)
-	require.Equal(t, 5, report.Total)
-	require.Equal(t, 4, report.Denials)
+	require.Equal(t, 6, report.Total)
+	require.Equal(t, 5, report.Denials)
 	require.Empty(t, report.Warnings)
 
 	byName := map[string]policytest.Result{}
@@ -84,7 +89,7 @@ cases:
 	require.Equal(t, 0, text.ExitCode, text.Output())
 	require.Contains(t, text.Stdout, "ok    team-b does not  (deny)")
 	require.Contains(t, text.Stdout, `denied: deny rule: method != "GET"`)
-	require.Contains(t, text.Stdout, "5 cases (egress policy): 5 passed, 0 failed")
+	require.Contains(t, text.Stdout, "6 cases (egress policy): 6 passed, 0 failed")
 }
 
 // The negative direction the verb exists for: a policy that wrongly allows
@@ -247,19 +252,20 @@ func TestPolicyTestRefusesWhatCannotBeTrusted(t *testing.T) {
 	policy := writeFile(t, "egress.yaml", tenantEgressPolicy)
 
 	for name, c := range map[string]struct{ cases, want string }{
-		"a misspelled key":     {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\"}\n    expct: deny\n    expect: allow\n", "expct"},
-		"no expectation":       {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\"}\n", "expect"},
-		"a rule on an allow":   {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\"}\n    expect: allow\n    rule: scheme\n", "expect: deny"},
-		"another surface's":    {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\", task: http}\n    expect: allow\n", "another surface"},
-		"no url":               {"surface: egress\ncases:\n  - name: a\n    request: {method: GET}\n    expect: allow\n", "request.url is required"},
-		"a duplicate name":     {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "used twice"},
-		"an unknown surface":   {"surface: secrets\ncases:\n  - {name: a, expect: allow}\n", "surface"},
-		"no cases":             {"surface: egress\ncases: []\n", "cases"},
-		"an alias":             {"surface: egress\nx: &a 1\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "anchors"},
-		"a second document":    {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n---\nsurface: egress\n", "one document"},
-		"a bad ip":             {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\", ip: nope}, expect: allow}\n", "request.ip"},
-		"a url with no port":   {"surface: egress\ncases:\n  - {name: a, request: {url: \"ftp://10.0.0.1/\"}, expect: allow}\n", "write the port"},
-		"a surface mismatched": {"surface: task\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "another surface"},
+		"a misspelled key":                      {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\"}\n    expct: deny\n    expect: allow\n", "expct"},
+		"no expectation":                        {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\"}\n", "expect"},
+		"a rule on an allow":                    {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\"}\n    expect: allow\n    rule: scheme\n", "expect: deny"},
+		"another surface's":                     {"surface: egress\ncases:\n  - name: a\n    request: {url: \"https://api.github.com/\", task: http}\n    expect: allow\n", "another surface"},
+		"no url":                                {"surface: egress\ncases:\n  - name: a\n    request: {method: GET}\n    expect: allow\n", "request.url is required"},
+		"a duplicate name":                      {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "used twice"},
+		"an unknown surface":                    {"surface: secrets\ncases:\n  - {name: a, expect: allow}\n", "surface"},
+		"no cases":                              {"surface: egress\ncases: []\n", "cases"},
+		"an alias":                              {"surface: egress\nx: &a 1\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "anchors"},
+		"a second document":                     {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n---\nsurface: egress\n", "one document"},
+		"a bad ip":                              {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\", ip: nope}, expect: allow}\n", "request.ip"},
+		"an ip that contradicts a literal host": {"surface: egress\ncases:\n  - {name: a, request: {url: \"https://127.0.0.1/\", ip: \"8.8.8.8\"}, expect: deny}\n", "IP-literal host"},
+		"a url with no port":                    {"surface: egress\ncases:\n  - {name: a, request: {url: \"ftp://10.0.0.1/\"}, expect: allow}\n", "write the port"},
+		"a surface mismatched":                  {"surface: task\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "another surface"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -280,6 +286,7 @@ func TestPolicyTestRefusesAPolicyThatDoesNotLoad(t *testing.T) {
 	for name, policy := range map[string]string{
 		"a rule that does not compile": "egress:\n  allow:\n    - host ==\n",
 		"a misspelled key":             "egress:\n  alow: [\"true\"]\n",
+		"a proxy, which needs DNS":     "egress:\n  proxy_from_environment: true\n  allow:\n    - host == \"api.github.com\"\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

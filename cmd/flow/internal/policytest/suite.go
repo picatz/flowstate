@@ -238,6 +238,13 @@ func (c *Case) bindEgress() error {
 		if err != nil {
 			return errors.New("request.ip is not an IP address")
 		}
+
+		// A worker judges an IP-literal host as the address it dials, whatever
+		// a resolver would have said, so a different `ip` would certify a
+		// destination the worker refuses.
+		if literal, lerr := netip.ParseAddr(u.Hostname()); lerr == nil && literal.Unmap() != ip.Unmap() {
+			return errors.New("request.ip differs from the IP-literal host in request.url; a worker dials the literal, so drop request.ip or make them agree")
+		}
 	default:
 		// A host that is an address is judged as one. Any other host is not
 		// address-checked: that takes DNS, which this verb does not do.

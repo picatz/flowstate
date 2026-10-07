@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/policytest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 )
 
 // `flow policy test` is the test verb a deployment policy lacked.
@@ -141,9 +142,21 @@ func runPolicyTest(cmd *cobra.Command, args []string) error {
 func loadPolicyDecider(surface, path string) (policytest.Decider, error) {
 	switch surface {
 	case policytest.SurfaceEgress:
-		_, policy, err := loadEgressPolicy(path)
+		data, policy, err := loadEgressPolicy(path)
 		if err != nil {
 			return nil, err
+		}
+
+		// With a proxy the policy resolves the target host itself before it
+		// judges a request, so a verdict would depend on live DNS and not on
+		// the suite. Refused rather than answered from a lookup.
+		cfg, err := netpolicy.ParseConfig(data)
+		if err != nil {
+			return nil, fmt.Errorf("parsing egress policy %s: %w", path, err)
+		}
+
+		if cfg.Egress.ProxyFromEnvironment {
+			return nil, fmt.Errorf("egress policy %s sets proxy_from_environment; a proxied request is judged by resolving its host, which a policy test does not do, so test the policy with the key removed", path)
 		}
 
 		return policytest.Egress{Policy: policy}, nil

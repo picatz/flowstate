@@ -904,7 +904,9 @@ error`. A suite with no `expect: deny` case is reported with a warning, because 
 cannot catch a policy that allows too much.
 
 What it is not: egress is decided before DNS, so the scheme, port, request rules
-and the address checks for an IP-literal host or a case's `ip:` are asked, and
+and the address checks for an IP-literal host or a case's `ip:` are asked (an `ip:` that
+disagrees with an IP-literal host is refused, as is a policy that sets
+`proxy_from_environment`, which would resolve the host), and
 rules over the connection's `ip` and the control-plane reservation, which need a
 dial, are not. An `exec` case is resolved against the machine the suite runs on.
 Secret-access and role-assumption policy (`--auth-policy`) are not covered: their

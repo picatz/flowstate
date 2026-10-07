@@ -1,6 +1,7 @@
 package policytest
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -86,12 +87,11 @@ func (e Egress) Decide(ctx context.Context, c Case) (Decision, error) {
 	return unclassified(err), nil
 }
 
+// methodOf is the method the http task would send: the case's spelling
+// verbatim, because the task passes it unchanged and egress rules read it
+// unchanged, so `method: get` is judged as `get`. Only an absent method is GET.
 func methodOf(c Case) string {
-	if c.req.GetMethod() == "" {
-		return http.MethodGet
-	}
-
-	return strings.ToUpper(c.req.GetMethod())
+	return cmp.Or(c.req.GetMethod(), http.MethodGet)
 }
 
 // Task decides cases with the check every dispatch is held to.
