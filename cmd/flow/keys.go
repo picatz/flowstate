@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/ed25519"
@@ -22,6 +23,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth/signers/vaulttransit"
 )
 
 // Issue #111 asked for a first-class way to generate and inspect the signing
@@ -99,25 +101,41 @@ flow keys generate --out identity/key.pem --id 2026-08`,
 func newKeysPublicCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "public",
-		Short: "Print the public JWK for an existing signing key",
-		Args:  cobra.NoArgs,
-		RunE:  runKeysPublic,
+		Short: "Print the public JWK for an existing signing key, or what a Transit key holds",
+		Long: "Print the public half of a signing key: from a PKCS#8 private key file with " +
+			"`--in`, or from a Vault or OpenBao Transit key with `--signer`, which reads " +
+			"what the backend itself holds (every version it still serves) and prints it as " +
+			"a JSON Web Key Set. Nothing about a Transit key is read from a local copy.",
+		Args: cobra.NoArgs,
+		RunE: runKeysPublic,
 		Example: `# What this key publishes:
 flow keys public --in identity/2026-08.pem
 
 # The PKIX public key PEM a server's --identity-key takes, so the server
 # never holds the private key (the file's base name is the key id):
-flow keys public --in identity/2026-08.pem --pem > server-identity/2026-08.pem`,
+flow keys public --in identity/2026-08.pem --pem > server-identity/2026-08.pem
+
+# What a Vault Transit key publishes, read from the backend (the token comes
+# from $FLOWSTATE_SECRET_VAULT_TOKEN_FILE, never from the URL):
+flow keys public \
+  --signer 'vault-transit://vault.example.com:8200/flowstate-identity'`,
 	}
 
-	cmd.Flags().String("in", "", "path to a PKCS#8 private key PEM (required)")
+	cmd.Flags().String("in", "", "path to a PKCS#8 private key PEM (one of `--in` or `--signer` is required)")
+	cmd.Flags().String("signer", "", "vault-transit://HOST[:PORT]/KEY[?mount=…&token_file=…] naming a Transit key: "+
+		"prints a key set of what the backend holds, current version and previous. Needs only `read` on transit/keys/KEY")
+	cmd.Flags().String("auth-policy", "", "with `--signer`: a trust policy whose `egress:` section bounds the request "+
+		"to the backend, so a Vault on a private network is reached the way every identity fetch is")
 	cmd.Flags().String("id", "", "key id published in the JWK "+
 		"(default: `--in`'s file name, without its extension)")
 	cmd.Flags().Bool("jwks", false, "wrap the public key in a JSON Web Key Set document for a trust policy's jwks_file")
 	cmd.Flags().Bool("pem", false, "print a PKIX public key PEM instead of a JWK: the only form "+
 		"`flow server --identity-key` accepts, which publishes keys workers sign with without holding them")
 	cmd.MarkFlagsMutuallyExclusive("pem", "jwks")
-	_ = cmd.MarkFlagRequired("in")
+	cmd.MarkFlagsMutuallyExclusive("in", "signer")
+	cmd.MarkFlagsMutuallyExclusive("pem", "signer")
+	cmd.MarkFlagsMutuallyExclusive("id", "signer")
+	cmd.MarkFlagsOneRequired("in", "signer")
 
 	return cmd
 }
@@ -350,6 +368,10 @@ func runKeysPublic(cmd *cobra.Command, _ []string) error {
 	jwksDocument, _ := cmd.Flags().GetBool("jwks")
 	pemOutput, _ := cmd.Flags().GetBool("pem")
 
+	if signer, _ := cmd.Flags().GetString("signer"); signer != "" {
+		return runKeysPublicSigner(cmd, surface, signer)
+	}
+
 	if id == "" {
 		id = keyIDFromPath(in)
 	}
@@ -385,6 +407,51 @@ func runKeysPublic(cmd *cobra.Command, _ []string) error {
 		return writeJWK(surface, map[string]any{"keys": []jwk.Value{jwkValue}})
 	}
 	return writeJWK(surface, jwkValue)
+}
+
+// runKeysPublicSigner prints what a Transit key holds: the current version first,
+// then the previous versions still served, as the key set a relying party would
+// fetch. The private half is not here to print.
+func runKeysPublicSigner(cmd *cobra.Command, surface *ui.UI, raw string) error {
+	var policy *auth.Policy
+	if path, _ := cmd.Flags().GetString("auth-policy"); path != "" {
+		data, err := readBoundedFile(path, "a trust policy", maxPolicyFileBytes)
+		if err != nil {
+			return fmt.Errorf("reading auth policy: %w", err)
+		}
+		parsed, err := auth.ParsePolicy(data)
+		if err != nil {
+			return fmt.Errorf("parsing auth policy %s: %w", path, err)
+		}
+		policy = &parsed
+	}
+
+	cfg, err := parseIdentitySigner(raw, policy)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(cmd.Context(), identitySignerTimeout)
+	defer cancel()
+
+	set, err := vaulttransit.Read(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", cfg.Address, err)
+	}
+
+	published := make([]jwk.Value, 0, 1+len(set.Previous))
+	for _, version := range append([]vaulttransit.PublicKey{set.Current}, set.Previous...) {
+		value, err := jwk.ValueFromPublicKey(version.Key)
+		if err != nil {
+			return fmt.Errorf("rendering public key %q: %w", version.ID, err)
+		}
+		value[jwk.KeyID] = version.ID
+		value[jwk.Algorithm] = version.Algorithm
+		value[jwk.PublicKeyUse] = "sig"
+		published = append(published, value)
+	}
+
+	return writeJWK(surface, map[string]any{"keys": published})
 }
 
 func writeJWK(surface *ui.UI, value any) error {
