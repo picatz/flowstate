@@ -134,6 +134,13 @@ func TestAMissingKeyListsOnlyNamesSpelledLikeDeclarations(t *testing.T) {
 	assert.Contains(t, err.Error(), "available: value")
 	assert.NotContains(t, err.Error(), "alice@example.com")
 	assert.NotContains(t, err.Error(), "/etc/passwd")
+
+	_, err = evalInProfile(t, `steps.fetch.nope`, map[string]any{
+		"steps": map[string]any{"fetch": map[string]any{"alice@example.com": int64(2)}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "none of its names can be shown", "a filtered map is not reported as empty")
+	assert.NotContains(t, err.Error(), "there are none")
 }
 
 // TestFailureDiagnosticsShareOneCostBudget pins that re-evaluating operands is

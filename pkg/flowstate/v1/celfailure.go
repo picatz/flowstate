@@ -141,12 +141,18 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 	}
 
 	var names []string
+	held := 0
 	for it := mapper.Iterator(); it.HasNext() == types.True; {
+		held++
 		if name, ok := it.Next().Value().(string); ok && declaredNameShape(name) {
 			names = append(names, name)
 		}
 	}
 	if len(names) == 0 {
+		if held > 0 {
+			return text + "; none of its names can be shown"
+		}
+
 		return text + "; there are none"
 	}
 
@@ -165,7 +171,7 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 const maxFailureEvals = 8
 
 // maxFailureNameLen bounds one listed candidate name.
-const maxFailureNameLen = 64
+const maxFailureNameLen = 128
 
 // failureWork is the one budget a failure's diagnostic work shares. Each operand
 // re-evaluation draws on the same cost the failed evaluation was allowed, so
@@ -373,15 +379,16 @@ func unparseNode(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) string {
 // declares: a step id or an output name, which validation holds to identifiers.
 // The names listed come from the run's own map, so this is the guard that keeps
 // a key shaped like data (an address, a path, a token with punctuation) out of
-// a durable sentence even if a step kind ever put one there.
+// a durable sentence even if a step kind ever put one there. It is defense in
+// depth, not the control: that is listing only `steps` and `steps.<id>`.
 func declaredNameShape(name string) bool {
 	if name == "" || len(name) > maxFailureNameLen {
 		return false
 	}
 	for i, r := range name {
 		switch {
-		case r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z':
-		case i > 0 && (r == '-' || r >= '0' && r <= '9'):
+		case r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9':
+		case i > 0 && r == '-':
 		default:
 			return false
 		}
