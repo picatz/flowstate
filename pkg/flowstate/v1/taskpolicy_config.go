@@ -19,8 +19,10 @@ type TaskPolicyConfig struct {
 	// allowlist: a dispatch must match at least one, or it is denied with
 	// [TaskPolicyReasonNoAllowRule]. Attributes available to a rule: `task`
 	// (the qualified task name) and `identity` (`identity.subject`,
-	// `identity.issuer`, `identity.namespace`, `identity.claims`) — the run's
-	// attested [WorkloadIdentity].
+	// `identity.issuer`, `identity.namespace`, `identity.kind`,
+	// `identity.principal`, `identity.actions`, `identity.claims`, where a claim
+	// keeps its JSON shape: `"sre" in identity.claims.groups`,
+	// `identity.claims.slack.user`) — the run's attested [WorkloadIdentity].
 	Allow []string `json:"allow,omitempty" yaml:"allow,omitempty"`
 
 	// Deny holds CEL deny rules. A matching rule denies the dispatch

@@ -1,16 +1,29 @@
 // Package principal is the CEL-typed rendering of an authenticated caller.
 //
-// Today it is the shape egress, exec and task-shape rules share: they bind the
-// same [Caller] type, so a field added here is readable in all three at once.
-// Secret access, credential assumption and signal predicates do not bind it
-// yet; they migrate in later slices, and until then they keep their own
-// spellings. The variable's name stays per surface (`identity`,
+// It is the one shape every policy surface shares: egress, exec, task-shape,
+// secret-access and credential-assumption rules, and the signal and manual-start
+// predicates, all bind the same [Caller] type, so a field added here is readable
+// on all of them at once. The variable's name stays per surface (`identity`,
 // `sender.identity`, `run.identity`); the type does not.
 //
 // The package is a leaf: it imports only the standard library and cel-go, so
 // the packages that evaluate rules (netpolicy, execpolicy) and the root
 // package that renders a run's attested identity into a [Caller] can all depend
 // on it without a cycle. How a Caller is established is outside this package.
+//
+// # The claims carrier
+//
+// Claims are JSON-shaped, not strings: a rule reads `identity.claims.groups`
+// as a list and `identity.claims.slack.user` as a nested object, and
+// `"k" in identity.claims` guards an absent key. cel-go's NativeTypes drops any
+// struct field whose Go type has no CEL type, which rules out an
+// interface-valued map, so [Claims] is a struct that implements the CEL value
+// interface itself and declares `map(string, dyn)`. Chosen over a custom
+// type provider (a second place that knows the field list) and over a
+// string-only map (which cannot carry a group list): it keeps one Caller type
+// and one rendering, and reading an absent claim is the standard CEL "no such
+// key" error, so a rule that names a claim the caller lacks denies rather than
+// permits.
 package principal
 
 import (
@@ -47,30 +60,44 @@ type Caller struct {
 	Kind string `cel:"kind"`
 	// Principal is `issuer#subject`, and empty unless both halves are present.
 	Principal string `cel:"principal"`
-	// Claims are the non-secret claims an operator configured to carry. They are
-	// strings today because cel-go native types cannot declare an `any` value
-	// type; list-valued claims need a different carrier.
-	Claims map[string]string `cel:"claims"`
+	// Claims are the non-secret claims an operator configured to carry, of any
+	// JSON shape; see [Claims] for how rules read them.
+	Claims Claims `cel:"claims"`
 	// Actions are the scopes the caller was granted.
 	Actions []string `cel:"actions"`
 }
 
 // Normalized returns the caller a rule is evaluated against: the same fields
-// with claims and actions guaranteed non-nil. CEL cannot index a null map or
-// take the size of a null list, so a rule reading `identity.claims[...]` or
+// with actions guaranteed non-nil. CEL cannot take the size of a null list, so
 // `"x" in identity.actions` against a caller that carries none would error, and
 // an errored rule denies, where the intent is for it simply not to match. An
 // absent claim key still errors, which is the documented convention
-// (`"k" in identity.claims` guards it); only the nil containers are smoothed.
+// (`"k" in identity.claims` guards it); [Claims] is already empty, never null.
 func (c Caller) Normalized() Caller {
-	if c.Claims == nil {
-		c.Claims = map[string]string{}
-	}
 	if c.Actions == nil {
 		c.Actions = []string{}
 	}
 
 	return c
+}
+
+// Map renders the caller as the plain map an expression reads where the engine
+// builds the value itself rather than binding the typed [Caller]: a wait's
+// `sender.identity` and a run's `run.identity`. It has the same keys as the CEL
+// type's fields, so one rendering serves every surface; the zero Caller renders
+// every string empty and claims and actions empty.
+func (c Caller) Map() map[string]any {
+	c = c.Normalized()
+
+	return map[string]any{
+		"issuer":    c.Issuer,
+		"subject":   c.Subject,
+		"namespace": c.Namespace,
+		"kind":      c.Kind,
+		"principal": c.Principal,
+		"claims":    c.Claims.Map(),
+		"actions":   c.Actions,
+	}
 }
 
 // EnvOptions registers [Caller] as a CEL native type. Declaring the fields is
@@ -84,4 +111,19 @@ func EnvOptions() cel.EnvOption {
 // type; pair it with [EnvOptions].
 func Var(name string) cel.EnvOption {
 	return cel.Variable(name, cel.ObjectType(TypeName))
+}
+
+// Qualified is the `principal` a rule compares: `issuer#subject` when both
+// halves are present, and "" otherwise. The rule lives here so every way of
+// building a [Caller] spells it once; an unauthenticated or half-formed caller
+// is "", never "#" or "issuer#", and a predicate must treat "" as missing.
+//
+// The join is injective because no trusted issuer contains '#' (policy
+// validation refuses one), so the first '#' always ends the issuer.
+func Qualified(issuer, subject string) string {
+	if issuer == "" || subject == "" {
+		return ""
+	}
+
+	return issuer + "#" + subject
 }

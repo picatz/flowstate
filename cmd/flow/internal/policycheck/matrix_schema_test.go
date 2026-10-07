@@ -45,7 +45,7 @@ func TestMatrixStrayShapesAreRefusedWithoutQuoting(t *testing.T) {
 	for name, doc := range map[string]string{
 		"a row that is text":       "identities:\n  - just-text\n",
 		"identities that is a map": "identities: {name: a}\n",
-		"a non-text claim":         "identities:\n  - name: a\n    claims: {team: [x]}\n",
+		"a non-text claim":         "identities:\n  - name: a\n    principal: {claims: {team: [x]}}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

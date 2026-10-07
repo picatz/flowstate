@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/cel-go/ext"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // DefaultAssumeRuleCostLimit bounds the CEL evaluation cost of a single
@@ -35,13 +36,12 @@ const (
 	// attrIdentity is the authenticated caller: whoever presented the token that
 	// started this run.
 	//
-	// It carries the same four fields, under the same names and with the same
-	// meanings, that an egress rule and a task-shape rule already see — subject,
-	// issuer, namespace, claims — so a clause about the caller is portable across
-	// every policy surface this system has (#548). "Same meaning" includes an
-	// unset namespace: it stays the empty string here, exactly as the other
-	// three surfaces render it, rather than substituting [defaultComponent] the
-	// way [workload.Namespace] does for subject composition (#568).
+	// It is the one [principal.Caller] every policy surface binds — issuer,
+	// subject, namespace, kind, principal, claims, actions — so a clause about
+	// the caller is portable across all of them (#548). "Same meaning" includes
+	// an unset namespace: it stays the empty string here, exactly as the other
+	// surfaces render it, rather than substituting [defaultComponent] the way
+	// [workload.Namespace] does for subject composition (#568).
 	//
 	// This is deliberately *not* an alias for [attrWorkload]. The first attempt at
 	// unifying the vocabulary made it one, and that was worse than the split it
@@ -65,54 +65,7 @@ const (
 	// workloadTypeName is how the workload object is named in CEL, which appears
 	// in a type error when a rule misuses a field.
 	workloadTypeName = "auth.workload"
-
-	// callerTypeName is the same, for the caller object.
-	callerTypeName = "auth.callerIdentity"
 )
-
-// callerIdentity is the authenticated caller as a rule sees it.
-//
-// The fields and tags are exactly netpolicy's and taskpolicy's, and that is the
-// point rather than a coincidence: `identity.namespace == "team-a"` has to mean
-// one thing whether it is written in an egress policy, a task-shape policy, or
-// here. Anything this package knows and they do not belongs on [workload].
-type callerIdentity struct {
-	// Subject is the caller's own subject, from the token they presented — not
-	// the subject of any assertion this request might mint. See [attrIdentity]
-	// for why conflating the two was the bug this type exists to prevent.
-	Subject string `cel:"subject"`
-
-	// Issuer is the issuer that vouched for the caller.
-	//
-	// It has no counterpart on [workload], and that absence was the gap left by
-	// the first attempt here: `identity.issuer` compiled on two policy surfaces
-	// and not the other two. Reading it from the caller closes that, and closes it
-	// honestly — this is a token Flowstate received rather than one it minted.
-	Issuer string `cel:"issuer"`
-
-	// Namespace is the caller's namespace exactly as attested, empty when none
-	// was set — the raw value, not [defaultComponent].
-	//
-	// [workload.Namespace] substitutes the placeholder because a minted subject
-	// must always have the same number of components (#568's issue explains why
-	// that reasoning belongs to [WorkloadIdentity.SubjectFor] and nowhere else).
-	// This field has no such constraint: it is compared against operator-written
-	// CEL on the same footing as netpolicy's and taskpolicy's `identity.namespace`,
-	// which both carry the raw value. Defaulting it here and not there made one
-	// name — `identity.namespace` — mean two different things depending on which
-	// policy surface evaluated it: a `deny: identity.namespace == "_default"` rule
-	// wired to secrets never matched the identical unnamespaced caller on egress or
-	// task-shape policy, and the reverse rule wired the other way. Keep this raw so
-	// a clause about the caller's namespace is portable, the same promise this
-	// type's own doc comment already makes for its other three fields.
-	Namespace string `cel:"namespace"`
-
-	// Claims are the caller's claims. Reading an absent one is an error and an
-	// errored rule refuses the request, so guard first:
-	//
-	//	"repository" in identity.claims && identity.claims["repository"] == "x"
-	Claims map[string]string `cel:"claims"`
-}
 
 // workload is the workload half of the attributes an assumption rule sees.
 //
@@ -214,11 +167,11 @@ func assumeRuleFailure(ctx context.Context, target, subject string, err error) e
 // startup error rather than a rule that quietly never matches.
 func newAssumeEnv() (*cel.Env, error) {
 	return cel.NewEnv(
-		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeFor[workload](), reflect.TypeFor[callerIdentity]()),
+		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[workload]()),
+		principal.EnvOptions(),
 		cel.Variable(attrTarget, cel.StringType),
 		cel.Variable(attrAudience, cel.StringType),
-		cel.Variable(attrIdentity, cel.ObjectType(callerTypeName)),
+		principal.Var(attrIdentity),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
 	)
@@ -256,13 +209,6 @@ func compileAssumeRules(allow, deny []string, costLimit uint64) (assumeRules, er
 
 // assumeVars builds the attributes a rule is evaluated against.
 func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentity, ref StepRef) map[string]any {
-	claims := identity.Claims
-	if claims == nil {
-		// CEL cannot index a null map, and a rule reading claims["x"] for a
-		// workload that carries none should simply not match.
-		claims = map[string]string{}
-	}
-
 	who := workload{
 		Subject:    mintedSubject,
 		Namespace:  orDefault(identity.Namespace),
@@ -276,13 +222,7 @@ func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentit
 		attrTarget:   target,
 		attrAudience: audience,
 		// Two principals, deliberately distinct. See [attrIdentity].
-		attrIdentity: callerIdentity{
-			Subject: identity.Subject,
-			Issuer:  identity.Issuer,
-			// Raw, deliberately not orDefault: see [callerIdentity.Namespace].
-			Namespace: identity.Namespace,
-			Claims:    claims,
-		},
+		attrIdentity: identity.Caller(),
 		attrWorkload: who,
 	}
 }

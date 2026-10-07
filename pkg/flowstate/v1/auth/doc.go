@@ -256,7 +256,7 @@
 // custom claims and can only condition a trust policy on "sub" and "aud" — a
 // run-mode marker carried only as a claim would be unenforceable there. The
 // mode is set by which constructor built the [WorkloadIdentity]
-// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal] or [IdentityFrom]),
+// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal]),
 // never by a flag, since the field recording it is unexported.
 //
 // A local run's [ClaimNamespace] claim and the workload attributes an
@@ -280,7 +280,7 @@
 // decides whether the workload may reach a target, mints an assertion for exactly
 // that target, exchanges it, and caches the result until shortly before it expires:
 //
-//	identity := auth.IdentityFrom(state.GetIdentity())
+//	identity := flowstatev1.AuthIdentity(state.GetIdentity())
 //	ref := auth.StepRef{Workflow: workflowName, Run: runID, Step: stepID}
 //
 //	credential, err := broker.Credential(ctx, identity, ref, "aws-prod")

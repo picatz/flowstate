@@ -250,7 +250,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor prot
 				Inputs: resolvedInputs,
 			},
 			Identity:  identity,
-			Namespace: identity.GetNamespace(),
+			Namespace: identity.GetPrincipal().GetNamespace(),
 		}
 
 		// The scope travels only when the manifest said the task evaluates its

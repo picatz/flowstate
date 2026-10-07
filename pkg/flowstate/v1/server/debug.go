@@ -573,7 +573,7 @@ func (s *FlowstateServer) DebugInspect(ctx context.Context, req *connect.Request
 	switch {
 	case snapshot.GetSession().GetSessionId() != req.Msg.GetSessionId():
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("the inspection does not name the session attached to this run"))
-	case v1.QualifiedSubject(holder.GetIssuer(), holder.GetSubject()) != v1.QualifiedSubject(caller.GetIssuer(), caller.GetSubject()):
+	case v1.QualifiedSubject(holder.GetPrincipal().GetIssuer(), holder.GetPrincipal().GetSubject()) != v1.QualifiedSubject(caller.GetPrincipal().GetIssuer(), caller.GetPrincipal().GetSubject()):
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only the session's holder may inspect the held run"))
 	case snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD:
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the run is not held, so there is nothing to inspect"))

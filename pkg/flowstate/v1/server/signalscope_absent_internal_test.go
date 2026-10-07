@@ -60,7 +60,7 @@ func TestAuthorizeSignalDeniesAPredicateWhoseRecordedScopeWasRemoved(t *testing.
 			"deploy-approved": {Allow: `!has(inputs.x) && sender.identity.claims["team"] == "payments"`},
 		},
 	}
-	entries, err := policyMemoEntries(wf, nil, &v1types.WorkloadIdentity{Issuer: "i", Subject: "s"})
+	entries, err := policyMemoEntries(wf, nil, &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "i", Subject: "s"}})
 	require.NoError(t, err)
 	require.Contains(t, entries, signalPolicyScopeMemoKey)
 

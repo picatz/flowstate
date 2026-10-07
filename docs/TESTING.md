@@ -828,16 +828,18 @@ refusal rather than an assertion that checks nothing:
 ```yaml
 identities:
   - name: sre-lead
-    subject: sre-lead@example.com
-    issuer: https://issuer.example.com
-    claims: {team: release-managers}
-    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    principal:
+      subject: sre-lead@example.com
+      issuer: https://issuer.example.com
+      claims: {team: release-managers}
+    starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}
     expect: admitted
   - name: self-approval            # the requester may not approve their own run
-    subject: dev@example.com
-    issuer: https://issuer.example.com
-    claims: {team: release-managers}
-    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    principal:
+      subject: dev@example.com
+      issuer: https://issuer.example.com
+      claims: {team: release-managers}
+    starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}
     expect: refused
   - name: anonymous
     starter: {}                    # started by nobody authenticated
@@ -849,7 +851,10 @@ identities:
 gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. A row's `inputs:` replace, by name,
 the `--input` arguments given for every row, and a row with no `starter:` or
 `expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
-reverse, is refused by the rule a test file's `sender:` is held to. A matrix is
+reverse, is refused by the rule a test file's `sender:` is held to. A row's
+`principal:` is the same `Principal` message a run records, so `kind:` is
+`human`, `workload` or `agent`; the check reads strings only, and refuses a
+claim that is not a string, `actions` and `issuer_entry` rather than ignore them. A matrix is
 bounded at 256 identities and 256 KiB, and holds one YAML document, with no
 anchors, aliases or merge keys. Nesting is bounded by counting bytes, not by
 reading YAML: the file may hold at most 4096 `[` and `{` characters, wherever

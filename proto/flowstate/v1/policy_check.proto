@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/identity.proto";
 import "google/protobuf/struct.proto";
 
 option go_package = "flowstatev1";
@@ -44,9 +45,15 @@ message PolicyCheckMatrix {
 // PolicyCheckRow is one named identity: who attempts the act, who started the
 // hypothetical run, and what the check must answer.
 //
-// The identity fields sit directly on the row, as a test file's `sender:`
-// writes them. All of them absent is an unauthenticated caller.
+// The caller is the row's [Principal], the same shape a run records and a policy
+// reads as `identity`. A row whose principal is absent is an unauthenticated
+// caller.
 message PolicyCheckRow {
+  // The fields that described the caller directly (`subject`, `issuer`,
+  // `namespace`, `claims`, `kind`) are the row's `principal` now.
+  reserved 2, 3, 4, 5, 10;
+  reserved "subject", "issuer", "namespace", "claims", "kind";
+
   // Name labels the row in the table and in a mismatch. Unique across the
   // file (checked by the reader, which a schema rule cannot say), at most 64
   // characters, and free of control characters (C0, DEL and C1, so no terminal
@@ -58,17 +65,12 @@ message PolicyCheckRow {
     pattern: "^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$"
   }];
 
-  // Subject, Issuer, Namespace and Claims are the identity attempting the act.
-  // A subject and an issuer travel together or not at all, which the reader
-  // enforces with the rule a test file's identities are held to.
-  string subject = 2 [(buf.validate.field).string.max_len = 1024];
-  string issuer = 3 [(buf.validate.field).string.max_len = 1024];
-  string namespace = 4 [(buf.validate.field).string.max_len = 1024];
-  map<string, string> claims = 5 [(buf.validate.field).map = {
-    max_pairs: 64
-    keys: {string: {max_len: 256}}
-    values: {string: {max_len: 4096}}
-  }];
+  // Principal is the identity attempting the act. A subject and an issuer travel
+  // together or not at all, which the reader enforces with the rule a test
+  // file's identities are held to; its kind is the one the trust policy entry
+  // that admitted it would have assigned (`human`, `workload` or `agent`), and
+  // empty assigns none, which a predicate naming a kind refuses.
+  Principal principal = 11;
 
   // Starter is who started the hypothetical run, which a predicate reads as
   // `run.identity`. Absent leaves the starter unknown, which refuses any
@@ -96,24 +98,14 @@ message PolicyCheckRow {
     keys: {string: {min_len: 1, max_len: 256}}
     values: {string: {in: ["admitted", "refused"]}}
   }];
-
-  // Kind is the sort of party the identity attempting the act is, as the trust
-  // policy entry that admitted it would have assigned it: `human`, `workload` or
-  // `agent`. Empty assigns none, which a predicate naming a kind refuses.
-  string kind = 10 [(buf.validate.field).string = {in: ["", "human", "workload", "agent"]}];
 }
 
-// PolicyCheckIdentity is an identity a row names for the run's starter.
+// PolicyCheckIdentity is an identity a row names for the run's starter, read as
+// `run.identity`. It is a [Principal]: the same shape as the row's own caller.
 message PolicyCheckIdentity {
-  string subject = 1 [(buf.validate.field).string.max_len = 1024];
-  string issuer = 2 [(buf.validate.field).string.max_len = 1024];
-  string namespace = 3 [(buf.validate.field).string.max_len = 1024];
-  map<string, string> claims = 4 [(buf.validate.field).map = {
-    max_pairs: 64
-    keys: {string: {max_len: 256}}
-    values: {string: {max_len: 4096}}
-  }];
+  reserved 1, 2, 3, 4, 5;
+  reserved "subject", "issuer", "namespace", "claims", "kind";
 
-  // Kind is the starter's kind, read as `run.identity.kind`; see the row's kind.
-  string kind = 5 [(buf.validate.field).string = {in: ["", "human", "workload", "agent"]}];
+  // Principal is the starter, with every field a caller has.
+  Principal principal = 6;
 }

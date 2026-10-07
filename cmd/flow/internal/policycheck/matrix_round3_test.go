@@ -53,9 +53,9 @@ func TestParseMatrixCountsBracketsInCommentsAndQuotes(t *testing.T) {
 
 	for name, doc := range map[string]string{
 		"a comment":      "identities:\n  - name: a # %s\n",
-		"double quoted":  "identities:\n  - name: a\n    claims: {team: \"%s\"}\n",
-		"single quoted":  "identities:\n  - name: a\n    claims: {team: '%s'}\n",
-		"a block scalar": "identities:\n  - name: a\n    claims:\n      team: |\n        %s\n",
+		"double quoted":  "identities:\n  - name: a\n    principal: {claims: {team: \"%s\"}}\n",
+		"single quoted":  "identities:\n  - name: a\n    principal: {claims: {team: '%s'}}\n",
+		"a block scalar": "identities:\n  - name: a\n    principal:\n      claims:\n        team: |\n          %s\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -84,11 +84,12 @@ func TestParseMatrixAcceptsRealisticTablesAtTheLimits(t *testing.T) {
 
 		for i := range rows {
 			fmt.Fprintf(&b, `  - name: row-%d
-    subject: "user:%d"
-    issuer: https://issuer.example
-    namespace: ops
-    claims: {team: sre, role: admin, org: platform}
-    starter: {subject: "user:%d", issuer: https://issuer.example, claims: {team: sre}}
+    principal:
+      subject: "user:%d"
+      issuer: https://issuer.example
+      namespace: ops
+      claims: {team: sre, role: admin, org: platform}
+    starter: {principal: {subject: "user:%d", issuer: https://issuer.example, claims: {team: sre}}}
     inputs:
       env: prod
       targets: [{name: a, ports: [80, 443]}, {name: b, ports: [8080]}]

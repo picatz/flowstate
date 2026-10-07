@@ -619,7 +619,7 @@ type SignalSender struct {
 	// credential-shaped material may not go (ARCHITECTURE.md invariant 7). A digest is fixed-length,
 	// alphabet-safe, and says nothing about the key it names.
 	//
-	// It is here rather than in `WorkloadIdentity.claims` because it is not a
+	// It is here rather than in `Principal.claims` because it is not a
 	// claim about a principal — every delivery from one trigger attests the same
 	// principal and carries a different one of these. What it is for is the
 	// engine's own dedupe: a run records the ids it has consumed

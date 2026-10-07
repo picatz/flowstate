@@ -20,10 +20,7 @@ import (
 func TestTaskPolicyZeroCase(t *testing.T) {
 	require.Nil(t, v1.DefaultTaskPolicy(), "no policy installed at test start")
 
-	err := v1.CheckTaskPolicy(context.Background(), "codex.exec", &v1.WorkloadIdentity{
-		Subject:   "anyone@example.com",
-		Namespace: "any-namespace",
-	}, false)
+	err := v1.CheckTaskPolicy(context.Background(), "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "anyone@example.com", Namespace: "any-namespace"}}, false)
 	require.NoError(t, err, "no policy configured must permit every dispatch")
 }
 
@@ -38,9 +35,7 @@ func TestTaskPolicyDenyRuleDenies(t *testing.T) {
 	policy, err := cfg.Policy()
 	require.NoError(t, err)
 
-	err = policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{
-		Namespace: "not-platform",
-	})
+	err = policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "not-platform"}})
 	require.Error(t, err)
 	require.True(t, errors.Is(err, v1.ErrTaskPolicyDenied))
 
@@ -75,15 +70,11 @@ func TestTaskPolicyDenyRuleAllowsOutsideMatch(t *testing.T) {
 	policy, err := cfg.Policy()
 	require.NoError(t, err)
 
-	err = policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{
-		Namespace: "platform",
-	})
+	err = policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "platform"}})
 	require.NoError(t, err, "a platform caller must not be caught by a rule scoped to non-platform ones")
 
 	// And a task the rule never names dispatches regardless of namespace.
-	err = policy.Check(context.Background(), "log", &v1.WorkloadIdentity{
-		Namespace: "not-platform",
-	})
+	err = policy.Check(context.Background(), "log", &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "not-platform"}})
 	require.NoError(t, err, "a deny rule scoped to codex.exec must not reach an unrelated task")
 }
 
@@ -278,7 +269,7 @@ func TestLocalOnlyChangesTheMessageNotTheDecision(t *testing.T) {
 	v1.SetDefaultTaskPolicy(policy)
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	identity := &v1.WorkloadIdentity{Namespace: "not-platform"}
+	identity := &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "not-platform"}}
 
 	rehearsalErr := v1.CheckTaskPolicy(context.Background(), "codex.exec", identity, true)
 	productionErr := v1.CheckTaskPolicy(context.Background(), "codex.exec", identity, false)
@@ -336,7 +327,7 @@ func TestDenialSaysWhichIdentityItEvaluated(t *testing.T) {
 	// A rehearsal that named somebody the allowlist still refuses. Same
 	// policy, same task, same venue: only the identity differs.
 	named := v1.CheckTaskPolicy(context.Background(), "codex.exec",
-		&v1.WorkloadIdentity{Namespace: "not-platform", Subject: "spiffe://acme/deployer"}, true)
+		&v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "not-platform", Subject: "spiffe://acme/deployer"}}, true)
 	require.Error(t, named)
 
 	anonymousDenied, ok := errors.AsType[*v1.TaskPolicyDeniedError](anonymous)
@@ -408,10 +399,7 @@ func TestDenialNeverRendersAClaimValue(t *testing.T) {
 	v1.SetDefaultTaskPolicy(policy)
 	t.Cleanup(func() { v1.SetDefaultTaskPolicy(nil) })
 
-	err = v1.CheckTaskPolicy(context.Background(), "codex.exec", &v1.WorkloadIdentity{
-		Namespace: "team-a",
-		Claims:    map[string]string{"session_token": claimValue},
-	}, false)
+	err = v1.CheckTaskPolicy(context.Background(), "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a", Claims: v1.StringClaimValues(map[string]string{"session_token": claimValue})}}, false)
 	require.Error(t, err)
 
 	denied, ok := errors.AsType[*v1.TaskPolicyDeniedError](err)
@@ -467,7 +455,7 @@ func TestDenialNamesTheTaskExactlyOnce(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := v1.NewContextWithTaskPolicy(context.Background(), policy)
-	err = v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Subject: "someone"}, true)
+	err = v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone"}}, true)
 	require.Error(t, err)
 
 	rendered := err.Error()
@@ -512,7 +500,7 @@ func TestDenialNamesTheTaskOnEverySurfaceExactlyOnce(t *testing.T) {
 
 	// The direct surface: a bare denial from Check, no wrapper. This is the one
 	// #184's first cut left naming no task at all.
-	direct := policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{Subject: "someone"})
+	direct := policy.Check(context.Background(), "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone"}})
 	require.Error(t, direct)
 	require.Contains(t, direct.Error(), `task "codex.exec"`,
 		"a direct TaskPolicy.Check caller must be told which task was refused")
@@ -523,7 +511,7 @@ func TestDenialNamesTheTaskOnEverySurfaceExactlyOnce(t *testing.T) {
 	// dispatch — each must still name the task once, now by deferring to the
 	// denial rather than adding a second naming of their own.
 	ctx := v1.NewContextWithTaskPolicy(context.Background(), policy)
-	wrapped := v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Subject: "someone"}, false)
+	wrapped := v1.CheckTaskPolicy(ctx, "codex.exec", &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone"}}, false)
 	require.Error(t, wrapped)
 
 	for name, rendered := range map[string]string{

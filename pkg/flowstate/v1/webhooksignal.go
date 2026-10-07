@@ -54,11 +54,11 @@ func WebhookTriggerSubject(workflow, trigger string) string {
 // file and has no deployment to ask. See [CheckWebhookSignalPolicy] for what
 // that omission does and does not let it conclude.
 func WebhookTriggerPrincipal(namespace, workflow, trigger string) *WorkloadIdentity {
-	return &WorkloadIdentity{
+	return &WorkloadIdentity{Principal: &Principal{
 		Issuer:    WebhookPrincipalIssuer,
 		Subject:   WebhookTriggerSubject(workflow, trigger),
 		Namespace: namespace,
-	}
+	}}
 }
 
 // CheckWebhookSignalBridges reports what is wrong with every `signal:` a
@@ -230,7 +230,7 @@ func CheckWebhookSignalCorrelate(webhook string, signal *WebhookTrigger_Signal) 
 func CheckWebhookSignalPolicy(wf *Workflow, webhook string, signal *WebhookTrigger_Signal) error {
 	name := signal.GetName()
 	principal := WebhookTriggerPrincipal("", wf.GetName(), webhook)
-	qualified := QualifiedSubject(principal.GetIssuer(), principal.GetSubject())
+	qualified := QualifiedSubject(principal.GetPrincipal().GetIssuer(), principal.GetPrincipal().GetSubject())
 
 	_, declared := wf.GetSignals()[name]
 	if !declared {

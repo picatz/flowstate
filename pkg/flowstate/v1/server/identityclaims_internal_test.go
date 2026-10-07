@@ -42,22 +42,22 @@ func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
 	)
 
 	id := s.identityFor(ctx)
-	if id.GetSubject() != principal.Subject {
-		t.Fatalf("subject = %q, want %q", id.GetSubject(), principal.Subject)
+	if id.GetPrincipal().GetSubject() != principal.Subject {
+		t.Fatalf("subject = %q, want %q", id.GetPrincipal().GetSubject(), principal.Subject)
 	}
-	if id.GetIssuer() != principal.Issuer {
-		t.Fatalf("issuer = %q, want %q", id.GetIssuer(), principal.Issuer)
+	if id.GetPrincipal().GetIssuer() != principal.Issuer {
+		t.Fatalf("issuer = %q, want %q", id.GetPrincipal().GetIssuer(), principal.Issuer)
 	}
 	// The verified caller's namespace wins over the server's fallback; the
 	// other order would make the tenant boundary decorative.
-	if id.GetNamespace() != "team-a" {
-		t.Fatalf("namespace = %q, want the principal's %q", id.GetNamespace(), "team-a")
+	if id.GetPrincipal().GetNamespace() != "team-a" {
+		t.Fatalf("namespace = %q, want the principal's %q", id.GetPrincipal().GetNamespace(), "team-a")
 	}
 	for claim, want := range map[string]string{
 		"repository": "example/service",
 		"ref":        "refs/heads/main",
 	} {
-		if got := id.GetClaims()[claim]; got != want {
+		if got := id.GetPrincipal().GetClaims()[claim].GetStringValue(); got != want {
 			t.Errorf("configured claim %q = %q, want %q", claim, got, want)
 		}
 	}
@@ -65,7 +65,7 @@ func TestIdentityForCarriesConfiguredClaims(t *testing.T) {
 	// history, so an unconfigured claim leaking through is a disclosure, not
 	// a convenience.
 	for _, claim := range []string{"workflow", "repository_owner"} {
-		if got, ok := id.GetClaims()[claim]; ok {
+		if got, ok := id.GetPrincipal().GetClaims()[claim]; ok {
 			t.Errorf("unconfigured claim %q carried into the identity as %q", claim, got)
 		}
 	}
@@ -83,11 +83,11 @@ func TestIdentityForWithNoConfiguredClaims(t *testing.T) {
 	})
 
 	id := mustNew(t, nil, WithNamespace("solo")).identityFor(ctx)
-	if len(id.GetClaims()) != 0 {
-		t.Fatalf("claims = %v, want none carried by default", id.GetClaims())
+	if len(id.GetPrincipal().GetClaims()) != 0 {
+		t.Fatalf("claims = %v, want none carried by default", id.GetPrincipal().GetClaims())
 	}
-	if id.GetNamespace() != "solo" {
-		t.Fatalf("namespace = %q, want the server fallback %q for a principal naming none", id.GetNamespace(), "solo")
+	if id.GetPrincipal().GetNamespace() != "solo" {
+		t.Fatalf("namespace = %q, want the server fallback %q for a principal naming none", id.GetPrincipal().GetNamespace(), "solo")
 	}
 }
 
@@ -108,7 +108,7 @@ func TestIdentityForCarriesThePolicyAssignedKind(t *testing.T) {
 		ctx := auth.ContextWithPrincipal(context.Background(), auth.Principal{
 			Issuer: "https://idp.example", Subject: "alice", Kind: kind,
 		})
-		if got := s.identityFor(ctx).GetPrincipalKind(); got != want {
+		if got := s.identityFor(ctx).GetPrincipal().GetKind(); got != want {
 			t.Errorf("kind %q became %s, want %s", kind, got, want)
 		}
 	}

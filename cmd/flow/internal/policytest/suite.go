@@ -99,12 +99,12 @@ type subject struct {
 // identity values. Egress, exec and task-shape rules all read the same
 // principal.Caller, rendered from the one WorkloadIdentity the case describes.
 func subjectOf(id *v1.PolicyTestIdentity) subject {
-	task := &v1.WorkloadIdentity{
+	task := &v1.WorkloadIdentity{Principal: &v1.Principal{
 		Subject:   id.GetSubject(),
 		Issuer:    id.GetIssuer(),
 		Namespace: id.GetNamespace(),
-		Claims:    id.GetClaims(),
-	}
+		Claims:    v1.StringClaimValues(id.GetClaims()),
+	}}
 	return subject{egress: v1.CallerOf(task), task: task}
 }
 

@@ -114,11 +114,7 @@ func taskSurfaceDenies(t *testing.T, rule string) bool {
 	}.Policy()
 	require.NoError(t, err)
 
-	identity := &v1.WorkloadIdentity{
-		Subject: "repo:picatz/flowstate:ref:refs/heads/main",
-		Issuer:  "https://token.actions.githubusercontent.com",
-		// Namespace deliberately unset.
-	}
+	identity := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "repo:picatz/flowstate:ref:refs/heads/main", Issuer: "https://token.actions.githubusercontent.com"}}
 
 	err = policy.Check(context.Background(), "log", identity)
 	return err != nil

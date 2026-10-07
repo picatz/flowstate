@@ -14,7 +14,7 @@ import (
 // conformance.TaskPolicyCases do not: the kind allow/deny pairs run there on
 // both drivers, so this keeps only the actions field and the load-time check.
 func TestTaskPolicyRulesReadIdentityActions(t *testing.T) {
-	workload := &v1.WorkloadIdentity{Subject: "ci", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
+	workload := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "ci", Kind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}}
 
 	// actions is declared on the shared type: a rule naming it compiles, and an
 	// identity carrying none is a non-match rather than an evaluation error.

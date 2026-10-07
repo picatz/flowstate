@@ -142,7 +142,7 @@ func TestADenialRecordsTheCodeAndNotTheRefusalsWords(t *testing.T) {
 
 	require.NoError(t, recorder.Deny(t.Context(), audit.Subject{
 		RPC:          "Signal",
-		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
 		ResourceKey:  "orders-42",
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH))
@@ -312,7 +312,7 @@ func TestMCPRecordUsesItsOwnOperationFieldAndBoundedProvenance(t *testing.T) {
 	long := strings.Repeat("é", audit.MaxProvenanceBytes)
 	require.NoError(t, recorder.Deny(t.Context(), audit.Subject{
 		MCPTool:    "flowstate_test",
-		Identity:   &v1.WorkloadIdentity{Subject: "agent", Claims: map[string]string{"secret": "claim-value"}},
+		Identity:   &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "agent", Claims: v1.StringClaimValues(map[string]string{"secret": "claim-value"})}},
 		IssuerName: long,
 		Role:       long,
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED))
@@ -321,7 +321,7 @@ func TestMCPRecordUsesItsOwnOperationFieldAndBoundedProvenance(t *testing.T) {
 	require.Equal(t, "flowstate_test", record.GetMcpTool())
 	require.Empty(t, record.GetRpc())
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST, record.GetAction())
-	require.Empty(t, record.GetIdentity().GetClaims())
+	require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims())
 	require.LessOrEqual(t, len(record.GetIssuerName()), audit.MaxProvenanceBytes)
 	require.LessOrEqual(t, len(record.GetRole()), audit.MaxProvenanceBytes)
 	require.True(t, isValidUTF8(record.GetIssuerName()))
@@ -583,12 +583,8 @@ func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) 
 	require.NoError(t, err)
 
 	require.NoError(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
-		Point: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
-		Identity: &v1.WorkloadIdentity{
-			Subject:   "deploy-bot",
-			Namespace: "acme",
-			Claims:    map[string]string{"team": "payments"},
-		},
+		Point:        v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme", Claims: v1.StringClaimValues(map[string]string{"team": "payments"})}},
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
 		ResourceKey:  strings.Repeat("é", audit.MaxResourceKeyBytes),
 		Rule:         strings.Repeat("é", audit.MaxRuleBytes),
@@ -600,8 +596,8 @@ func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) 
 	record := sink.records[0]
 	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
 	require.Equal(t, at, record.GetDecidedAt().AsTime())
-	require.Empty(t, record.GetIdentity().GetClaims())
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+	require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject())
 
 	require.LessOrEqual(t, len(record.GetResourceKey()), audit.MaxResourceKeyBytes)
 	require.True(t, isValidUTF8(record.GetResourceKey()), "the resource bound cut a rune in half")
@@ -729,7 +725,7 @@ func TestTheWriterSinkWritesOneParsableRecordPerLine(t *testing.T) {
 
 	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{
 		RPC:          "Get",
-		Identity:     &v1.WorkloadIdentity{Subject: "alice", Namespace: "acme"},
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "alice", Namespace: "acme"}},
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
 		ResourceKey:  "orders-1",
 	}))
@@ -839,7 +835,7 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
 		ResourceKey:  "http",
 		Rule:         `task == "http"`,
-		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 		Attempt:      2,
 		DispatchID:   "activity-12",
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE))
@@ -894,7 +890,7 @@ func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.
 	ctx := audit.ContextWithCorrelationID(t.Context(), "9b2c1c2e-0a5e-4a44-9b3e-1f0f5f2f0a1c")
 	require.NoError(t, recorder.InternalError(ctx, audit.Subject{
 		RPC:      "Get",
-		Identity: &v1.WorkloadIdentity{Subject: "agent-1", Namespace: "acme"},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "agent-1", Namespace: "acme"}},
 	}))
 	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get"}))
 

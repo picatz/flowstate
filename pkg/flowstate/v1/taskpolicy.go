@@ -188,20 +188,21 @@ const noPolicyIdentity = "no identity — every field a rule can read is empty"
 // provenance question — whether the claim a rule reads was carried at all —
 // and are the half a policy author already knows, since they wrote the rule.
 func describePolicyIdentity(identity *WorkloadIdentity) string {
-	claims := slices.Sorted(maps.Keys(identity.GetClaims()))
+	who := identity.GetPrincipal()
+	claims := slices.Sorted(maps.Keys(who.GetClaims()))
 
 	// "every field a rule can read" is exact rather than loose: the
 	// activation [TaskPolicy.Check] builds is subject, issuer, namespace and
 	// claims — `deployment` is on [WorkloadIdentity] and is not exposed to a
 	// task-shape rule — so an identity carrying only a deployment is, to
 	// this policy surface, no identity at all, and saying so is honest.
-	if identity.GetSubject() == "" && identity.GetIssuer() == "" &&
-		identity.GetNamespace() == "" && len(claims) == 0 {
+	if who.GetSubject() == "" && who.GetIssuer() == "" &&
+		who.GetNamespace() == "" && who.GetKind() == PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED && len(claims) == 0 {
 		return noPolicyIdentity
 	}
 
 	return fmt.Sprintf("identity subject=%q issuer=%q namespace=%q claims=%v",
-		identity.GetSubject(), identity.GetIssuer(), identity.GetNamespace(), claims)
+		who.GetSubject(), who.GetIssuer(), who.GetNamespace(), claims)
 }
 
 // Error implements the error interface. The message names what to do about

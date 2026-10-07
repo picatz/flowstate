@@ -19,6 +19,7 @@ import (
 	"github.com/google/cel-go/ext"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // `signals: <name>: allow: ${...}`, `debug: allow: ${...}` and
@@ -46,8 +47,8 @@ import (
 //
 // # The scope is closed
 //
-//	sender.identity.{principal,subject,issuer,namespace,kind,claims}
-//	run.identity.{principal,subject,issuer,namespace,kind,claims}   (the starter)
+//	sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}
+//	run.identity.{principal,subject,issuer,namespace,kind,claims,actions}   (the starter)
 //	inputs                                                      (the run's arguments)
 //
 // Nothing else: no steps, vars, secrets or clock. An unknown root or field is a
@@ -97,23 +98,11 @@ const SignalPolicyExprTimeout = time.Second
 // evaluated over a partial copy of its inputs would be a different predicate.
 const MaxSignalPolicyScopeBytes = 64 << 10
 
-// signalPolicyIdentity is the identity shape a predicate reads, for both
-// `sender.identity` and `run.identity`: the fields of [IdentityShape] a
-// predicate may compare, as a native CEL type so a misspelled one is refused
-// at compile time.
-type signalPolicyIdentity struct {
-	Principal string            `cel:"principal"`
-	Kind      string            `cel:"kind"`
-	Subject   string            `cel:"subject"`
-	Issuer    string            `cel:"issuer"`
-	Namespace string            `cel:"namespace"`
-	Claims    map[string]string `cel:"claims"`
-}
-
-// signalPolicyActor wraps an identity as the one field `sender` and `run` each
+// signalPolicyActor wraps a [principal.Caller] as the one field `sender` and
+// `run` each
 // expose.
 type signalPolicyActor struct {
-	Identity *signalPolicyIdentity `cel:"identity"`
+	Identity principal.Caller `cel:"identity"`
 }
 
 // ext.NativeTypes names a type by the last element of its package *path*
@@ -130,7 +119,7 @@ var manualPolicyEnv = sync.OnceValues(func() (*cel.Env, error) { return allowPol
 func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 	opts := []cel.EnvOption{
 		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeFor[signalPolicyActor](), reflect.TypeFor[signalPolicyIdentity]()),
+			reflect.TypeFor[signalPolicyActor](), reflect.TypeFor[principal.Caller]()),
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),
@@ -259,10 +248,10 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 	}}, nil
 }
 
-const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}`, " +
+const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}`, " +
 	"`run.identity` (the starter, same fields) and `inputs`"
 
-const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}` " +
+const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}` " +
 	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
 
 // CheckManualAllowExpr reports why src is not an acceptable `manual: allow`
@@ -544,20 +533,10 @@ func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool
 }
 
 func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
-	// The same rendering `run.identity` and a wait's `sender.identity` read,
-	// so principal means one thing everywhere ([IdentityShape]).
-	shape := IdentityShape(identity)
-	claims := make(map[string]string, len(identity.GetClaims()))
-	maps.Copy(claims, identity.GetClaims())
-
-	return &signalPolicyActor{Identity: &signalPolicyIdentity{
-		Principal: shape["principal"].(string),
-		Kind:      shape["kind"].(string),
-		Subject:   shape["subject"].(string),
-		Issuer:    shape["issuer"].(string),
-		Namespace: shape["namespace"].(string),
-		Claims:    claims,
-	}}
+	// The same principal.Caller every policy surface binds as `identity`, so a
+	// kind, a list claim or a nested claim reads the same here as in an egress
+	// or task rule ([CallerOf]).
+	return &signalPolicyActor{Identity: CallerOf(identity).Normalized()}
 }
 
 func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
@@ -629,7 +608,7 @@ func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
 		return ""
 	}
 
-	names := slices.Sorted(maps.Keys(sender.GetClaims()))
+	names := slices.Sorted(maps.Keys(sender.GetPrincipal().GetClaims()))
 	carried := "no claims"
 	if len(names) > 0 {
 		carried = "only the claims " + strings.Join(names, ", ")

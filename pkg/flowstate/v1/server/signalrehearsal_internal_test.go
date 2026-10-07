@@ -41,7 +41,7 @@ func runWithPolicyAndStarter(t *testing.T, c conformance.RehearsalSignalCase) *w
 	// predates the key.
 	if !c.StarterUnknown {
 		starter, err := converter.GetDefaultDataConverter().ToPayload(
-			v1types.QualifiedSubject(c.Starter.GetIssuer(), c.Starter.GetSubject()))
+			v1types.QualifiedSubject(c.Starter.GetPrincipal().GetIssuer(), c.Starter.GetPrincipal().GetSubject()))
 		require.NoError(t, err)
 
 		fields[starterMemoKey] = starter
@@ -120,10 +120,7 @@ func TestRehearsalSenderIsRefusedEvenWithNoPolicyDeclared(t *testing.T) {
 	t.Parallel()
 
 	err := mustNew(t, nil).authorizeSignal(memoWithNoSignalPolicy(), "deploy-approved",
-		v1types.RehearsalSignalSender(&v1types.WorkloadIdentity{
-			Subject: "sre-lead@example.com",
-			Issuer:  "https://issuer.example.com",
-		}))
+		v1types.RehearsalSignalSender(&v1types.WorkloadIdentity{Principal: &v1types.Principal{Subject: "sre-lead@example.com", Issuer: "https://issuer.example.com"}}))
 
 	require.Error(t, err,
 		"an unpoliced signal accepted a local rehearsal identity; the zero case widens which "+

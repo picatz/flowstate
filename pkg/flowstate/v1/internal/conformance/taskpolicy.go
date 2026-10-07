@@ -108,24 +108,14 @@ func TaskPolicyCases() []TaskPolicyCase {
 	// One tenant's identity and another's, distinct in every field a rule can
 	// read, so a case that passes cannot be passing because two identities
 	// looked alike where it mattered.
-	teamA := &v1.WorkloadIdentity{
-		Subject:   "spiffe://acme/team-a/deployer",
-		Issuer:    "https://issuer.example.com",
-		Namespace: "team-a",
-		Claims:    map[string]string{"team": "a"},
-	}
-	teamB := &v1.WorkloadIdentity{
-		Subject:   "spiffe://acme/team-b/deployer",
-		Issuer:    "https://issuer.example.com",
-		Namespace: "team-b",
-		Claims:    map[string]string{"team": "b"},
-	}
+	teamA := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/team-a/deployer", Issuer: "https://issuer.example.com", Namespace: "team-a", Claims: v1.StringClaimValues(map[string]string{"team": "a"})}}
+	teamB := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/team-b/deployer", Issuer: "https://issuer.example.com", Namespace: "team-b", Claims: v1.StringClaimValues(map[string]string{"team": "b"})}}
 
 	// Identities differing in the principal kind the operator's trust policy
 	// assigned, so a case on identity.kind cannot pass on any other field.
-	workload := &v1.WorkloadIdentity{Subject: "spiffe://acme/ci", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
-	human := &v1.WorkloadIdentity{Subject: "spiffe://acme/kent", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}
-	unassigned := &v1.WorkloadIdentity{Subject: "spiffe://acme/unassigned"}
+	workload := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/ci", Kind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}}
+	human := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/kent", Kind: v1.PrincipalKind_PRINCIPAL_KIND_HUMAN}}
+	unassigned := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "spiffe://acme/unassigned"}}
 
 	return []TaskPolicyCase{
 		{
@@ -209,6 +199,32 @@ func TaskPolicyCases() []TaskPolicyCase {
 			Identity:        teamA,
 			Policy:          v1.TaskPolicyConfig{Allow: []string{`identity.claims["team"] == "a"`}},
 			ExpectedOutputs: held("report"),
+		},
+		{
+			// The carrier on the allow: surface: the kind and a list claim, which a
+			// string-only identity could not hold, reach the rule on both drivers.
+			Name: "an allow rule keyed on the kind and a list claim permits the identity carrying them",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-identity-carrier",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this may run")},
+			},
+			Identity:        carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev", "sre"),
+			Policy:          v1.TaskPolicyConfig{Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack.user == "U1"`}},
+			ExpectedOutputs: held("report"),
+		},
+		{
+			Name: "the same rule refuses an identity whose list claim lacks the group",
+			Workflow: &v1.Workflow{
+				Name:    "task-policy-identity-carrier-other",
+				Profile: v1.CurrentProfile,
+				Steps:   []*v1.Node{says("report", "this must not run")},
+			},
+			Identity:       carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev"),
+			Policy:         v1.TaskPolicyConfig{Allow: []string{`identity.kind == "agent" && "sre" in identity.claims.groups && identity.claims.slack.user == "U1"`}},
+			DeniedTask:     "log",
+			DeniedReason:   v1.TaskPolicyReasonNoAllowRule,
+			DeniedIdentity: "spiffe://acme/agent",
 		},
 		{
 			// The run that names nobody, kept explicitly: a starter-less run

@@ -37,11 +37,7 @@ func tenantWorker(t *testing.T, tenant string) *testsuite.TestWorkflowEnvironmen
 func runFor(namespace string) *v1.RunState {
 	return &v1.RunState{
 		Workflow: conformance.RunIdentityWorkflow(),
-		Identity: &v1.WorkloadIdentity{
-			Subject:   "release-requester@example.com",
-			Issuer:    "flowstate:test",
-			Namespace: namespace,
-		},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "release-requester@example.com", Issuer: "flowstate:test", Namespace: namespace}},
 	}
 }
 

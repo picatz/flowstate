@@ -111,7 +111,7 @@ func (t *tenantWorkflowInbound) ExecuteWorkflow(
 				"for it to read a tenant from (%s)", flowWorkerTenantHint))
 	}
 
-	if got := state.GetIdentity().GetNamespace(); got != t.namespace {
+	if got := state.GetIdentity().GetPrincipal().GetNamespace(); got != t.namespace {
 		// Logged before returning, because the two audiences need different
 		// facts: the run's owner gets the message below, and whoever operates
 		// this worker gets both namespaces here, in a log nobody else reads.
@@ -209,13 +209,13 @@ func runStateArg(args []any) (*v1.RunState, bool) {
 func tenantArg(args []any) (string, bool) {
 	for _, arg := range args {
 		if identity, ok := arg.(*v1.WorkloadIdentity); ok && identity != nil {
-			return identity.GetNamespace(), true
+			return identity.GetPrincipal().GetNamespace(), true
 		}
 	}
 
 	for _, arg := range args {
 		if scope, ok := arg.(*v1.Scope); ok && scope != nil {
-			return scope.GetIdentity().GetNamespace(), true
+			return scope.GetIdentity().GetPrincipal().GetNamespace(), true
 		}
 	}
 

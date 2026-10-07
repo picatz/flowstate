@@ -217,22 +217,25 @@ func TestSignalsCheckMatrix(t *testing.T) {
 		return `
 identities:
   - name: sre-lead
-    subject: sre-lead@example.com
-    issuer: ` + gateIssuer + `
-    claims: {team: release-managers}
-    starter: {subject: dev@example.com, issuer: ` + gateIssuer + `}
+    principal:
+      subject: sre-lead@example.com
+      issuer: ` + gateIssuer + `
+      claims: {team: release-managers}
+    starter: {principal: {subject: dev@example.com, issuer: ` + gateIssuer + `}}
     expect: ` + leadExpect + `
   - name: self-approval
-    subject: sre-lead@example.com
-    issuer: ` + gateIssuer + `
-    claims: {team: release-managers}
-    starter: {subject: sre-lead@example.com, issuer: ` + gateIssuer + `}
+    principal:
+      subject: sre-lead@example.com
+      issuer: ` + gateIssuer + `
+      claims: {team: release-managers}
+    starter: {principal: {subject: sre-lead@example.com, issuer: ` + gateIssuer + `}}
     expect: ` + selfExpect + `
   - name: wrong-approver-by-input
-    subject: sre-lead@example.com
-    issuer: ` + gateIssuer + `
-    claims: {team: release-managers}
-    starter: {subject: dev@example.com, issuer: ` + gateIssuer + `}
+    principal:
+      subject: sre-lead@example.com
+      issuer: ` + gateIssuer + `
+      claims: {team: release-managers}
+    starter: {principal: {subject: dev@example.com, issuer: ` + gateIssuer + `}}
     inputs: {expected_approver: someone-else@example.com}
     expect: refused
   - name: nobody
@@ -283,7 +286,7 @@ func TestSignalsCheckMatrixIsBoundedAndStrict(t *testing.T) {
 		doc  string
 		want string
 	}{
-		{"a half identity", "identities:\n  - name: a\n    subject: s\n", "without the other"},
+		{"a half identity", "identities:\n  - name: a\n    principal: {subject: s}\n", "without the other"},
 		{"a misspelled key", "identities:\n  - name: a\n    expct: refused\n", "expct"},
 		{"an expectation about a gate not checked", "identities:\n  - name: a\n    expect_by_gate: {debug: refused}\n", "does not decide"},
 		{"an oversized file", "identities:\n  - name: a\n" + strings.Repeat("#", policycheck.MaxMatrixBytes), "limit"},
@@ -357,8 +360,8 @@ steps:
 		"an unparseable int":      run("--input", "attempts=9876501234x"),
 		"a must violation":        run("--input", "code=short-secret-77"),
 		"a must violation (file)": run("--input-file", writeFile(t, "in2.json", `{"code": "short-secret-77"}`)),
-		"a matrix row":            runFlow(t, "signals", "check", path, "--matrix", writeFile(t, "m.yaml", "identities:\n  - name: ops\n    subject: ops@example.com\n    issuer: "+gateIssuer+"\n    claims: {pin: "+claimValue+", team: "+claimValue+"}\n    inputs: {pin: 9876501234}\n")),
-		"a matrix row's int":      runFlow(t, "signals", "check", path, "--matrix", writeFile(t, "m2.yaml", "identities:\n  - name: ops\n    subject: ops@example.com\n    issuer: "+gateIssuer+"\n    claims: {pin: "+claimValue+"}\n    inputs: {attempts: 9876501234x}\n")),
+		"a matrix row":            runFlow(t, "signals", "check", path, "--matrix", writeFile(t, "m.yaml", "identities:\n  - name: ops\n    principal:\n      subject: ops@example.com\n      issuer: "+gateIssuer+"\n      claims: {pin: "+claimValue+", team: "+claimValue+"}\n    inputs: {pin: 9876501234}\n")),
+		"a matrix row's int":      runFlow(t, "signals", "check", path, "--matrix", writeFile(t, "m2.yaml", "identities:\n  - name: ops\n    principal:\n      subject: ops@example.com\n      issuer: "+gateIssuer+"\n      claims: {pin: "+claimValue+"}\n    inputs: {attempts: 9876501234x}\n")),
 	} {
 		for _, word := range forbidden {
 			require.NotContains(t, res.Output(), word, "%s echoed %q:\n%s", name, word, res.Output())

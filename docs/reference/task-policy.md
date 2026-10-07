@@ -10,6 +10,6 @@ remains the authority for whether a task dispatch is allowed.
 
 | YAML field | Value | Meaning |
 |---|---|---|
-| `allow` | sequence of string | Allow holds CEL allow rules. Configuring any turns the policy into an allowlist: a dispatch must match at least one, or it is denied with TaskPolicyReasonNoAllowRule. Attributes available to a rule: `task` (the qualified task name) and `identity` (`identity.subject`, `identity.issuer`, `identity.namespace`, `identity.claims`) — the run's attested WorkloadIdentity. |
+| `allow` | sequence of string | Allow holds CEL allow rules. Configuring any turns the policy into an allowlist: a dispatch must match at least one, or it is denied with TaskPolicyReasonNoAllowRule. Attributes available to a rule: `task` (the qualified task name) and `identity` (`identity.subject`, `identity.issuer`, `identity.namespace`, `identity.kind`, `identity.principal`, `identity.actions`, `identity.claims`, where a claim keeps its JSON shape: `"sre" in identity.claims.groups`, `identity.claims.slack.user`) — the run's attested WorkloadIdentity. |
 | `deny` | sequence of string | Deny holds CEL deny rules. A matching rule denies the dispatch regardless of the allow rules, and a rule that fails to evaluate denies it too — deny rules run first and always win. |
 | `rule_cost_limit` | integer | RuleCostLimit bounds the CEL evaluation cost of a single rule. Unset keeps DefaultTaskPolicyRuleCostLimit. |
