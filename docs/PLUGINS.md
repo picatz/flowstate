@@ -387,6 +387,17 @@ expression (a cross-field check, a computed bound) belongs in your plugin's own
 process, where your own limits apply; `now`, which protovalidate binds and `must:`
 refuses, is never reachable this way.
 
+Files under `flowstate/<domain>/v1/`, such as `flowstate/decision/v1/decision.proto`,
+are engine-provided in the same way as `flowstate/v1` and `flowstate/plugin/v1`: the
+host has them compiled in, so a plugin that imports one sends the import as a name and
+never ships its bytes (see [Proto packages: core versus
+domain](ARCHITECTURE.md#proto-packages-core-versus-domain)). That matters for the rules
+above. The host removes `cel` rules from files a plugin *ships*, but it resolves a
+domain file from its own registry, so that file's `cel` rules, such as the ones tying
+an `Answer` to its `Question` in a `Decision`, are intact when it validates against it.
+Import the domain file rather than copying its messages into your own schema, or the
+copy is a plugin-shipped file and loses them.
+
 ### Your field comments, in somebody else's editor
 
 Everything above travels: names, types, required-ness, protovalidate bounds. The

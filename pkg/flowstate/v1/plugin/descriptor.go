@@ -11,6 +11,13 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 
 	"github.com/picatz/flowstate/internal/textbound"
+
+	// The domain packages are engine-provided: a plugin sends their imports as
+	// names and the host resolves them from the registry, so the host binary
+	// must link them. flowstatev1 does not (a domain type is not core), and
+	// this is the one place a host needs them (docs/ARCHITECTURE.md, "Proto
+	// packages: core versus domain").
+	_ "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 )
 
 // maxDescriptorDepth bounds how deep an import graph may go.

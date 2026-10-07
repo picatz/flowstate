@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	decisionv1 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
@@ -52,7 +53,7 @@ func loopbackClient(t *testing.T) *http.Client {
 	return policy.Client()
 }
 
-func questionSet(t *testing.T) *flowstatev1.QuestionSet {
+func questionSet(t *testing.T) *decisionv1.QuestionSet {
 	t.Helper()
 
 	set, err := parseQuestionSet(flowstatev1.NewValue(map[string]any{
@@ -110,7 +111,7 @@ type recorded struct {
 	body   []byte
 }
 
-func run(t *testing.T, url string, in *anthropicv1.DecideInputs) ([]*flowstatev1.Answer, error) {
+func run(t *testing.T, url string, in *anthropicv1.DecideInputs) ([]*decisionv1.Answer, error) {
 	t.Helper()
 	return decide(context.Background(), loopbackClient(t), url, testKey, in, questionSet(t))
 }
@@ -135,19 +136,19 @@ func TestGoodAnswersAreTypedValidatedAndSelfReported(t *testing.T) {
 
 	want := []struct {
 		name       string
-		check      func(*flowstatev1.Answer) bool
+		check      func(*decisionv1.Answer) bool
 		confidence float64
 	}{
-		{"category", func(a *flowstatev1.Answer) bool { return a.GetChoice() == "outage" }, 0.9},
-		{"urgent", func(a *flowstatev1.Answer) bool { return a.GetPredicate() && a.GetResult() != nil }, 0.8},
-		{"severity", func(a *flowstatev1.Answer) bool { return a.GetScore() == "high" }, 0.7},
+		{"category", func(a *decisionv1.Answer) bool { return a.GetChoice() == "outage" }, 0.9},
+		{"urgent", func(a *decisionv1.Answer) bool { return a.GetPredicate() && a.GetResult() != nil }, 0.8},
+		{"severity", func(a *decisionv1.Answer) bool { return a.GetScore() == "high" }, 0.7},
 	}
 	for i, w := range want {
 		a := answers[i]
 		if a.GetName() != w.name || !w.check(a) {
 			t.Errorf("answer %d = %v, want %s", i, a, w.name)
 		}
-		if a.GetCalibration() != flowstatev1.Calibration_CALIBRATION_SELF_REPORTED {
+		if a.GetCalibration() != decisionv1.Calibration_CALIBRATION_SELF_REPORTED {
 			t.Errorf("%s calibration = %v, want SELF_REPORTED", w.name, a.GetCalibration())
 		}
 		if a.Confidence == nil || a.GetConfidence() != w.confidence {
@@ -228,7 +229,7 @@ func TestWithoutConfidenceTheCalibrationIsNone(t *testing.T) {
 		t.Fatalf("decide: %v", err)
 	}
 	for _, a := range answers {
-		if a.GetCalibration() != flowstatev1.Calibration_CALIBRATION_NONE || a.Confidence != nil || len(a.GetDistribution()) != 0 {
+		if a.GetCalibration() != decisionv1.Calibration_CALIBRATION_NONE || a.Confidence != nil || len(a.GetDistribution()) != 0 {
 			t.Errorf("%s = %v, want CALIBRATION_NONE and no numbers", a.GetName(), a)
 		}
 	}
@@ -246,11 +247,11 @@ func TestAskedButOmittedConfidenceIsNotInvented(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decide: %v", err)
 	}
-	if answers[0].GetCalibration() != flowstatev1.Calibration_CALIBRATION_SELF_REPORTED {
+	if answers[0].GetCalibration() != decisionv1.Calibration_CALIBRATION_SELF_REPORTED {
 		t.Errorf("an answer with a confidence = %v", answers[0].GetCalibration())
 	}
 	for _, a := range answers[1:] {
-		if a.GetCalibration() != flowstatev1.Calibration_CALIBRATION_NONE || a.Confidence != nil {
+		if a.GetCalibration() != decisionv1.Calibration_CALIBRATION_NONE || a.Confidence != nil {
 			t.Errorf("%s = %v, want NONE for an omitted confidence", a.GetName(), a)
 		}
 	}

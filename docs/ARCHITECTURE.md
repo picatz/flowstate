@@ -1066,6 +1066,30 @@ reaches it yet: `ArtifactRef` as a value kind, the `workspace:` and `produce:`
 step keys, and `exec` working in a materialized workspace are the next slice
 (#200), so authors cannot use artifacts today.
 
+## Proto packages: core versus domain
+
+A type belongs in `flowstate.v1` only if the engine itself consumes it: the
+compiler, Flowfile validation, the CEL environment, run, catalog and audit
+records, or the plugin protocol. A type whose only consumers are plugins is a
+**domain type**, and lives in its own package.
+
+| | Core | Domain |
+| --- | --- | --- |
+| Proto | `proto/flowstate/v1/*.proto` | `proto/flowstate/<domain>/v1/<domain>.proto` |
+| Package | `flowstate.v1` | `flowstate.<domain>.v1` |
+| Go | `pkg/flowstate/v1` | `pkg/flowstate/<domain>/v1` (name `<domain>v1`) |
+| Example | `Value`, `TaskDef`, `Workflow` | `flowstate.decision.v1` (`Question`, `Answer`, `Decision`) |
+
+A domain package is in the same buf module (`proto/`) and the same Go module as
+the core: no separate module and no BSR push, and `make plugin-proto` and
+`buf generate` produce it with the rest. It is engine-provided, so the host has it
+compiled in and a plugin never ships a copy: the SDK names it beside
+`flowstate.plugin.v1` in the `describeMessage` hook, and `flowstatev1` does not
+import it. `TestEveryDomainFileIsEngineProvided` walks the registry for every
+`flowstate/<domain>/v1` file and fails on one the SDK would still ship. A domain
+package is `v1` until it breaks; a break is a new `v2` directory and Go path, not
+an edit in place. `flowstate.chat.v1` is planned to follow this rule.
+
 ## Design tensions worth knowing
 
 Honest notes on where the design strains, so future work does not rediscover them:
