@@ -18,14 +18,6 @@ breaking:
   # the old and new behavior. If durable artifacts or deployed consumers must span
   # both meanings, make an explicit compatibility or version/edition decision;
   # passing this check is not that decision.
-  #
-  # TEMPORARY, remove in the very next commit after this lands: decision.proto
-  # moved from flowstate/v1 to flowstate/decision/v1 (docs/ARCHITECTURE.md,
-  # "Proto packages: core versus domain"), so the old path is deleted on purpose.
-  # No message or field changed; the types are the same under a new package.
-  ignore_only:
-    FILE_NO_DELETE:
-      - proto/flowstate/v1/decision.proto
 
   # Nothing suppressed, which is the only state this file should be found in
   # for longer than one commit. That includes the rules v2 added to FILE and
