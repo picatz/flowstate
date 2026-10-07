@@ -217,7 +217,7 @@ Follow and act on runs with `flow watch`, `flow get`, `flow timeline`,
 `flow signal`, `flow cancel`, and `flow list`.
 
 [Get started](docs/GETTING_STARTED.md) takes this further in twenty minutes: a
-release-approval workflow, its tests, the debugger, and a durable run that
+refund-approval workflow, its tests, the debugger, and a durable run that
 survives a restart while it waits for an approval.
 
 ## What you can build today

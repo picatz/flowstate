@@ -27,7 +27,7 @@ call rather than whatever happens to be checked out nearby.
 | --- | --- |
 | `flowstate://docs/language` | [The Flowfile language](LANGUAGE.md): every construct, its defaults, and where each expression root is in scope. Start here. |
 | `flowstate://catalog/tasks` | What this build can execute, as JSON: every task with its typed inputs and outputs, and every CEL function. Always this process's own registry. `flowstate_get_catalog` gives the same answer unless `--address` or `FLOWSTATE_ADDRESS` names a deployment, in which case the tool asks that deployment and the resource stays local. |
-| `flowstate://docs/examples/<name>` | One example workflow by its directory name under [`examples/`](../examples/), such as `flowstate://docs/examples/release-approval`. Each is also listed by name. |
+| `flowstate://docs/examples/<name>` | One example workflow by its directory name under [`examples/`](../examples/), such as `flowstate://docs/examples/refund-approval`. Each is also listed by name. |
 | `flowstate://docs/dsl` | [Language design decisions](DSL.md): why each construct is shaped the way it is. Long; read it for rationale, not to learn the syntax. |
 | `ui://flowstate/approval-card` | An [MCP Apps](https://modelcontextprotocol.io/) view a capable host renders for `flowstate_get`: a run's open approval gates. It displays; it grants no authority. |
 

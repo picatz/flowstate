@@ -1,0 +1,41 @@
+edition: v2026.4
+name: refund-approval
+description: Asks a person to approve a refund, then pays back each line of the order.
+inputs:
+  order_id:
+    type: string
+    required: true
+    description: the order being refunded
+  lines:
+    type: list(int)
+    default:
+      - 1500
+      - 4200
+    description: the cents to give back on each line of the order
+steps:
+  - id: total
+    value: ${inputs.lines.sum()}
+  - id: ask
+    log:
+      message: ${"refund of " + string(steps.total.value) + " cents on " + string(inputs.order_id) + " is waiting for approval"}
+  - id: approval
+    wait_for_signal:
+      name: refund-approved
+      prompt: ${"Approve refunding " + string(steps.total.value) + " cents on " + string(inputs.order_id) + "?"}
+      timeout: 1h
+  - id: approved
+    value: ${steps.approval.payload.?approved.orValue(false)}
+  - id: payout
+    if: ${steps.approved.value}
+    for_each:
+      items: ${inputs.lines}
+      as: line
+      steps:
+        - id: refund
+          log:
+            message: ${"refunding " + string(line) + " cents"}
+outputs:
+  approved:
+    value: ${steps.approved.value}
+  total_cents:
+    value: ${steps.total.value}

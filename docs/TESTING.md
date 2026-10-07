@@ -6,11 +6,11 @@ which signal and when. `flow test` runs those cases in milliseconds, with no
 server, no Temporal, and no network, so you can run it on every edit.
 
 ```console
-$ flow test examples/release-approval/
-PASS  examples/release-approval/workflow.test.yaml: an approval rolls out every planned target
-PASS  examples/release-approval/workflow.test.yaml: a rejection rolls out nothing
-PASS  examples/release-approval/workflow.test.yaml: nobody answering within the hour counts as a rejection
-examples/release-approval/workflow.test.yaml  6/6 steps reached
+$ flow test examples/refund-approval/
+PASS  examples/refund-approval/workflow.test.yaml: an approval pays back every line
+PASS  examples/refund-approval/workflow.test.yaml: a rejection pays back nothing
+PASS  examples/refund-approval/workflow.test.yaml: nobody answering within the hour counts as a rejection
+examples/refund-approval/workflow.test.yaml  6/6 steps reached
 
 1 file · 3 cases · 3 passed · 0.0s
 ```
@@ -91,49 +91,49 @@ flowchart TB
 
 ## Anatomy of a test file
 
-<!-- mirrors: examples/release-approval/workflow.test.yaml -->
+<!-- mirrors: examples/refund-approval/workflow.test.yaml -->
 ```yaml
 edition: v2026.4
 defaults:
   inputs:
-    version: 1.4.0
+    order_id: o-1000
   stubs:
     - task: log
       returns: {}
 tests:
-  - name: an approval rolls out every planned target
+  - name: an approval pays back every line
     workflow: ./workflow.yaml
     signals:
-      - name: release-approved
+      - name: refund-approved
         payload:
           approved: true
     expect:
-      ran: [plan, ask, approval, approved, rollout]
+      ran: [total, ask, approval, approved, payout]
       outputs:
         approved: true
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 
-  - name: a rejection rolls out nothing
+  - name: a rejection pays back nothing
     workflow: ./workflow.yaml
     signals:
-      - name: release-approved
+      - name: refund-approved
         payload:
           approved: false
     expect:
-      ran: [plan, ask, approval, approved]
+      ran: [total, ask, approval, approved]
       others: skipped
       outputs:
         approved: false
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 
   - name: nobody answering within the hour counts as a rejection
     workflow: ./workflow.yaml
     expect:
-      ran: [plan, ask, approval, approved]
+      ran: [total, ask, approval, approved]
       others: skipped
       outputs:
         approved: false
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 ```
 
 The top-level keys:

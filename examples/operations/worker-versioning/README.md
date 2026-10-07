@@ -71,14 +71,14 @@ do.
    has recorded nothing yet*) until some version is made current.
 
 4. Submit a run that will still be going when you deploy again. The
-   [release-approval example](../../release-approval/) waits up to an hour for
+   [refund-approval example](../../refund-approval/) waits up to an hour for
    an approval:
 
    ```console
-   $ ID=$(flow run --detach examples/release-approval/workflow.yaml --input version=1.4.0 -o json | jq -r .workflowId)
+   $ ID=$(flow run --detach examples/refund-approval/workflow.yaml --input order_id=o-1000 -o json | jq -r .workflowId)
    $ flow get "$ID"
    RUNNING workflow flowstate-request-… run 01a0e4fb-… (running for 25s) on approval
-     waiting at approval for signal "release-approved", lapsing in 59m56s
+     waiting at approval for signal "refund-approved", lapsing in 59m56s
    ```
 
 5. In a fourth terminal, deploy a second build beside the first:
