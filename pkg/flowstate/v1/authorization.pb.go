@@ -119,6 +119,14 @@ const (
 	// GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
 	// values. It is never implied: a caller holds it only when its policy entry lists it.
 	AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE AuthorizationAction = 22
+	// Asking who the server believes the caller is: Whoami. It reveals nothing
+	// but the caller's own principal, so every caller holds it without a policy
+	// entry listing it: authz.DecidePrincipal grants it to a verified caller
+	// whose entry names no actions, to the anonymous caller, and to a deployment
+	// with no authentication. It exists in the vocabulary so the RPC still has
+	// exactly one action to be audited under, and a policy entry that lists it
+	// is redundant, not wrong. An embedder's Decider can still refuse it.
+	AuthorizationAction_AUTHORIZATION_ACTION_IDENTITY_READ AuthorizationAction = 23
 )
 
 // Enum value maps for AuthorizationAction.
@@ -147,6 +155,7 @@ var (
 		20: "AUTHORIZATION_ACTION_PAYLOAD_DECODE",
 		21: "AUTHORIZATION_ACTION_PAYLOAD_ENCODE",
 		22: "AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE",
+		23: "AUTHORIZATION_ACTION_IDENTITY_READ",
 	}
 	AuthorizationAction_value = map[string]int32{
 		"AUTHORIZATION_ACTION_UNSPECIFIED":               0,
@@ -172,6 +181,7 @@ var (
 		"AUTHORIZATION_ACTION_PAYLOAD_DECODE":            20,
 		"AUTHORIZATION_ACTION_PAYLOAD_ENCODE":            21,
 		"AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE": 22,
+		"AUTHORIZATION_ACTION_IDENTITY_READ":             23,
 	}
 )
 
@@ -357,7 +367,7 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"\x04rpcs\x18\x03 \x03(\tB'\xbaH$\x92\x01!\x10\b\x18\x01\"\x1br\x19\x10\x01\x18@2\x13^[A-Z][A-Za-z0-9]*$R\x04rpcs\x12B\n" +
 	"\tmcp_tools\x18\x04 \x03(\tB%\xbaH\"\x92\x01\x1f\x10\b\x18\x01\"\x19r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\bmcpTools\x12r\n" +
 	"\x0erequest_fields\x18\x06 \x03(\tBK\xbaHH\x92\x01E\x10\b\x18\x01\"?r=\x10\x01\x18\x80\x0126^[a-z][a-z0-9_.]*\\.[A-Z][A-Za-z0-9]*\\.[a-z][a-z0-9_]*$R\rrequestFields\x12O\n" +
-	"\x0ehttp_endpoints\x18\x05 \x03(\tB(\xbaH%\x92\x01\"\x10\b\x18\x01\"\x1cr\x1a\x10\x02\x18@2\x14^/[a-z][a-z0-9/_-]*$R\rhttpEndpoints*\xd2\a\n" +
+	"\x0ehttp_endpoints\x18\x05 \x03(\tB(\xbaH%\x92\x01\"\x10\b\x18\x01\"\x1cr\x1a\x10\x02\x18@2\x14^/[a-z][a-z0-9/_-]*$R\rhttpEndpoints*\xfa\a\n" +
 	"\x13AuthorizationAction\x12$\n" +
 	" AUTHORIZATION_ACTION_UNSPECIFIED\x10\x00\x12%\n" +
 	"!AUTHORIZATION_ACTION_WORKLOAD_RUN\x10\x01\x12&\n" +
@@ -382,7 +392,8 @@ const file_flowstate_v1_authorization_proto_rawDesc = "" +
 	"+AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT\x10\x13\x12'\n" +
 	"#AUTHORIZATION_ACTION_PAYLOAD_DECODE\x10\x14\x12'\n" +
 	"#AUTHORIZATION_ACTION_PAYLOAD_ENCODE\x10\x15\x122\n" +
-	".AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE\x10\x16:v\n" +
+	".AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE\x10\x16\x12&\n" +
+	"\"AUTHORIZATION_ACTION_IDENTITY_READ\x10\x17:v\n" +
 	"\x14authorization_action\x12\x1e.google.protobuf.MethodOptions\x18ц\x03 \x01(\x0e2!.flowstate.v1.AuthorizationActionR\x13authorizationActionB\xb1\x01\n" +
 	"\x10com.flowstate.v1B\x12AuthorizationProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

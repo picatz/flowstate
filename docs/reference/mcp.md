@@ -51,6 +51,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` | `flowstate.v1.PauseScheduleResponse` |
 | `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` | `flowstate.v1.ResumeScheduleResponse` |
 | `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` | `flowstate.v1.TriggerScheduleResponse` |
+| `flowstate_whoami` | via a server | `flowstate.v1.WhoamiRequest` | `flowstate.v1.WhoamiResponse` |
 | `flowstate_run_local` | locally | — | — |
 | `flowstate_test` | locally | — | — |
 | `flowstate_debug` | locally | — | — |
@@ -252,6 +253,12 @@ TriggerSchedule fires a schedule now, without waiting for its cadence.
 It uses the schedule's stored arguments, tenant and queue, so it tests the schedule rather than only the workflow. It fires even a paused schedule: create paused, trigger once to see what happens, then resume.
 
 It answers with no run id. The cluster takes the action after answering, so what the firing started is read back with `DescribeSchedule`.
+
+## `flowstate_whoami`
+
+Whoami answers with the caller's own `Principal`: the issuer, subject, namespace, kind, admitting policy entry, carried claims and actions the server established from the credential on this request. It is what `flow auth whoami` prints.
+
+Any caller may ask, whatever its policy entry's `actions:` list holds, because the answer is only what the caller already is. A caller that was not authenticated, which only an explicitly insecure development server admits, is answered with `authenticated` false and an anonymous principal, not with an error. The answer never contains the credential.
 
 ## `flowstate_run_local`
 

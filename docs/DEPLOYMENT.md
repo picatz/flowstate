@@ -485,8 +485,11 @@ claims or either in the wrong shape is refused.
 
 These disjoint entries let the dashboard inspect and CI submit while neither may
 terminate. `actions: []` grants no control-plane action. Every action is granted
-only to an entry that lists it; the disclosure actions `workload.reveal_sensitive`
-([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
+only to an entry that lists it, with one exception: `identity.read`, which
+`Whoami` (`flow auth whoami`) needs, is held by every caller, because the answer
+is only the caller's own principal and withholding it would hide exactly the
+misconfiguration it diagnoses. An embedder's decider can still refuse it. The disclosure actions
+`workload.reveal_sensitive` ([Secrets](SECRETS.md)), `payload.decode`, and `payload.encode`
 ([Payload encryption](ENCRYPTION.md)) also gate what is shown, so a reader that
 may see sensitive values lists both the read and the reveal:
 

@@ -188,6 +188,16 @@ func init() {
 				" values. It is never implied: a caller holds it only when its policy entry lists it.\n",
 		},
 		{
+			Name: "flowstate.v1.AUTHORIZATION_ACTION_IDENTITY_READ",
+			Leading: " Asking who the server believes the caller is: Whoami. It reveals nothing\n" +
+				" but the caller's own principal, so every caller holds it without a policy\n" +
+				" entry listing it: authz.DecidePrincipal grants it to a verified caller\n" +
+				" whose entry names no actions, to the anonymous caller, and to a deployment\n" +
+				" with no authentication. It exists in the vocabulary so the RPC still has\n" +
+				" exactly one action to be audited under, and a policy entry that lists it\n" +
+				" is redundant, not wrong. An embedder's Decider can still refuse it.\n",
+		},
+		{
 			Name: "flowstate.v1.authorization_action",
 			Leading: " authorization_action is the action a WorkflowService method is authorized\n" +
 				" as, set on the method itself so that the binding and the RPC cannot drift:\n" +
