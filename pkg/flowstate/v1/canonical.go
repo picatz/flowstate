@@ -2,8 +2,11 @@ package flowstatev1
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 
 	v1alpha1 "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -15,14 +18,17 @@ import (
 // means, so two frontends that write the same program in different ways produce
 // the same message.
 //
-// Three things distinguish a program's meaning from how it was written down:
+// Two things distinguish a program's meaning from how it was written down:
 //
-//   - Where each expression sat in its source. A [v1alpha1.ParsedExpr] carries
-//     the byte offset of every node and the offsets of its line starts, so
-//     re-indenting a Flowfile, or emitting the same expression from a transpiler
-//     that has no source text at all, changes the message without changing a
-//     single evaluation. The offsets are cleared; the node ids and macro calls
-//     stay, because they are the tree.
+//   - Where each expression sat in its source, and how a parser happened to
+//     number it. A [v1alpha1.ParsedExpr] carries the code-point offset of every
+//     node, the offsets of its line starts, and an id on every node that only
+//     says in what order some parser met it, so re-indenting a source, or
+//     emitting the same tree from a producer with different numbering or no
+//     source text at all, changes the message without changing a single
+//     evaluation. The offsets are cleared and the ids are renumbered 1..n in a
+//     fixed walk of the tree, with the ids that key and fill the macro-call
+//     table rewritten to match, so the tree is what remains.
 //   - What the admitting control plane added. [Workflow.ResolvedPlugins] and
 //     [Workflow.ResolvedTaskCapabilities] pin the deployment a run was admitted
 //     on, not the program, and are cleared on every workflow in the call tree,
@@ -51,6 +57,8 @@ func CanonicalWorkflow(workflow *Workflow) *Workflow {
 // nesting protobuf itself accepts when the message was decoded.
 func canonicalize(m protoreflect.Message) {
 	switch msg := m.Interface().(type) {
+	case *v1alpha1.ParsedExpr:
+		renumberExprIDs(msg)
 	case *v1alpha1.SourceInfo:
 		msg.Positions = nil
 		msg.LineOffsets = nil
@@ -126,4 +134,95 @@ func MarshalCanonicalJSON(workflow *Workflow) ([]byte, error) {
 	out.WriteByte('\n')
 
 	return out.Bytes(), nil
+}
+
+// renumberExprIDs rewrites every node id in parsed to the order a fixed
+// pre-order walk of its tree meets the node, and rewrites the macro-call table
+// to the same ids.
+//
+// The ids of the macro-call table are the ids of the tree nodes the macro
+// replaced, so they are mapped, not renumbered on their own: an id first met in
+// the table (a macro argument the expansion no longer contains) is numbered after
+// the tree, in the order of the table's keys once those are mapped. The table is
+// rebuilt rather than edited because its keys are the ids.
+func renumberExprIDs(parsed *v1alpha1.ParsedExpr) {
+	ids := map[int64]int64{}
+	next := int64(0)
+	assign := func(old int64) int64 {
+		if id, ok := ids[old]; ok {
+			return id
+		}
+		next++
+		ids[old] = next
+
+		return next
+	}
+
+	var walk func(*v1alpha1.Expr)
+	walk = func(e *v1alpha1.Expr) {
+		if e == nil {
+			return
+		}
+		e.Id = assign(e.Id)
+		switch k := e.ExprKind.(type) {
+		case *v1alpha1.Expr_SelectExpr:
+			walk(k.SelectExpr.GetOperand())
+		case *v1alpha1.Expr_CallExpr:
+			walk(k.CallExpr.GetTarget())
+			for _, a := range k.CallExpr.GetArgs() {
+				walk(a)
+			}
+		case *v1alpha1.Expr_ListExpr:
+			for _, el := range k.ListExpr.GetElements() {
+				walk(el)
+			}
+		case *v1alpha1.Expr_StructExpr:
+			for _, en := range k.StructExpr.GetEntries() {
+				en.Id = assign(en.Id)
+				if key, ok := en.KeyKind.(*v1alpha1.Expr_CreateStruct_Entry_MapKey); ok {
+					walk(key.MapKey)
+				}
+				walk(en.GetValue())
+			}
+		case *v1alpha1.Expr_ComprehensionExpr:
+			c := k.ComprehensionExpr
+			walk(c.GetIterRange())
+			walk(c.GetAccuInit())
+			walk(c.GetLoopCondition())
+			walk(c.GetLoopStep())
+			walk(c.GetResult())
+		}
+	}
+	walk(parsed.GetExpr())
+
+	macros := parsed.GetSourceInfo().GetMacroCalls()
+	if len(macros) == 0 {
+		return
+	}
+	// Order the table by mapped key so ids first met here are numbered the same
+	// way whatever the producer's numbering; a key the tree never named sorts last,
+	// by its own value.
+	keys := slices.SortedFunc(maps.Keys(macros), func(a, b int64) int {
+		ia, oka := ids[a]
+		ib, okb := ids[b]
+		switch {
+		case oka && okb:
+			return cmp.Compare(ia, ib)
+		case oka != okb:
+			if oka {
+				return -1
+			}
+
+			return 1
+		}
+
+		return cmp.Compare(a, b)
+	})
+	rebuilt := make(map[int64]*v1alpha1.Expr, len(macros))
+	for _, key := range keys {
+		call := macros[key]
+		walk(call)
+		rebuilt[assign(key)] = call
+	}
+	parsed.SourceInfo.MacroCalls = rebuilt
 }
