@@ -60,16 +60,16 @@ func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parse
 		return ""
 	}
 
-	node := findNode(parsed.GetExpr(), celErr.NodeID())
+	node, bound := findNode(parsed.GetExpr(), celErr.NodeID())
 	if node == nil {
 		return ""
 	}
 
 	switch kind := node.GetExprKind().(type) {
 	case *v1alpha1.Expr_CallExpr:
-		return e.describeCall(ctx, env, parsed, activation, node, kind.CallExpr)
+		return e.describeCall(ctx, env, parsed, activation, bound, node, kind.CallExpr)
 	case *v1alpha1.Expr_SelectExpr:
-		return e.describeSelect(ctx, env, parsed, activation, node, kind.SelectExpr)
+		return e.describeSelect(ctx, env, parsed, activation, bound, node, kind.SelectExpr)
 	}
 
 	return ""
@@ -77,7 +77,7 @@ func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parse
 
 // describeCall renders an operator or function failure: its name, the types it
 // saw, and the subexpression.
-func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, node *v1alpha1.Expr, call *v1alpha1.Expr_Call) string {
+func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, bound []string, node *v1alpha1.Expr, call *v1alpha1.Expr_Call) string {
 	var operands []*v1alpha1.Expr
 	if call.GetTarget() != nil {
 		operands = append(operands, call.GetTarget())
@@ -87,7 +87,7 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 	names := make([]string, len(operands))
 	for i, operand := range operands {
 		names[i] = "?"
-		if value, ok := e.evalOperand(ctx, env, parsed, activation, operand); ok {
+		if value, ok := e.evalOperand(ctx, env, parsed, activation, bound, operand); ok {
 			names[i] = value.Type().TypeName()
 		}
 	}
@@ -109,21 +109,21 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 // author's own step ids and declared outputs, which `flow validate` already
 // prints. A map of data the run fetched is not listed, because its keys are the
 // data's and not the author's.
-func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, node *v1alpha1.Expr, selection *v1alpha1.Expr_Select) string {
+func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, bound []string, node *v1alpha1.Expr, selection *v1alpha1.Expr_Select) string {
 	text := fmt.Sprintf("selecting %q in `%s`", selection.GetField(), unparseNode(parsed, node))
 
-	if !underSteps(selection.GetOperand()) {
+	if !stepsMapOperand(selection.GetOperand()) {
 		return text
 	}
 
-	value, ok := e.evalOperand(ctx, env, parsed, activation, selection.GetOperand())
+	value, ok := e.evalOperand(ctx, env, parsed, activation, bound, selection.GetOperand())
 	if !ok {
 		// cel-go labels the outermost selection of a chain, but the key that is
 		// missing is the first one whose own operand does evaluate: for
 		// `steps.nope.value` the node named is `.value`, and `nope` is the miss.
 		// Walk inward to it.
 		if inner := selection.GetOperand().GetSelectExpr(); inner != nil {
-			return e.describeSelect(ctx, env, parsed, activation, selection.GetOperand(), inner)
+			return e.describeSelect(ctx, env, parsed, activation, bound, selection.GetOperand(), inner)
 		}
 
 		return text
@@ -155,7 +155,10 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 
 // evalOperand evaluates one operand of the failing node under the activation
 // and the evaluator's limits.
-func (e *Evaluator) evalOperand(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, operand *v1alpha1.Expr) (value ref.Val, ok bool) {
+func (e *Evaluator) evalOperand(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, bound []string, operand *v1alpha1.Expr) (value ref.Val, ok bool) {
+	if readsAny(operand, bound) {
+		return nil, false
+	}
 	programEnv, err := e.extendedEnvFor(env)
 	if err != nil {
 		return nil, false
@@ -172,58 +175,112 @@ func (e *Evaluator) evalOperand(ctx context.Context, env *cel.Env, parsed *v1alp
 	return out, true
 }
 
-// findNode returns the node with id, or nil. Iterative and bounded by
-// [maxFailureNodes], so a pathological expression cannot make a failure report
-// the expensive part of a failure.
-func findNode(root *v1alpha1.Expr, id int64) *v1alpha1.Expr {
-	stack := []*v1alpha1.Expr{root}
-	for visited := 0; len(stack) > 0 && visited < maxFailureNodes; visited++ {
-		node := stack[len(stack)-1]
-		stack = stack[:len(stack)-1]
+// findNode returns the node with id, and the comprehension variables bound at
+// that point (`[..].map(x, ..)` binds x), or nil. Bounded by [maxFailureNodes], so
+// a pathological expression cannot make a failure report the expensive part of
+// a failure.
+//
+// The bound names matter because an operand is re-evaluated on its own, against
+// the run's activation alone: an operand that reads a variable a comprehension
+// bound would resolve it to whatever the activation holds under that name, and
+// say something false. Such an operand is reported as `?` instead.
+func findNode(root *v1alpha1.Expr, id int64) (*v1alpha1.Expr, []string) {
+	visited := 0
+
+	var walk func(node *v1alpha1.Expr, bound []string) (*v1alpha1.Expr, []string)
+	walk = func(node *v1alpha1.Expr, bound []string) (*v1alpha1.Expr, []string) {
+		if node == nil || visited >= maxFailureNodes {
+			return nil, nil
+		}
+		visited++
 
 		if node.GetId() == id {
-			return node
+			return node, bound
 		}
+
+		var children []*v1alpha1.Expr
+		inner := bound
 
 		switch kind := node.GetExprKind().(type) {
 		case *v1alpha1.Expr_CallExpr:
-			stack = append(stack, kind.CallExpr.GetTarget())
-			stack = append(stack, kind.CallExpr.GetArgs()...)
+			children = append(children, kind.CallExpr.GetTarget())
+			children = append(children, kind.CallExpr.GetArgs()...)
 		case *v1alpha1.Expr_SelectExpr:
-			stack = append(stack, kind.SelectExpr.GetOperand())
+			children = append(children, kind.SelectExpr.GetOperand())
 		case *v1alpha1.Expr_ListExpr:
-			stack = append(stack, kind.ListExpr.GetElements()...)
+			children = append(children, kind.ListExpr.GetElements()...)
 		case *v1alpha1.Expr_StructExpr:
 			for _, entry := range kind.StructExpr.GetEntries() {
-				stack = append(stack, entry.GetValue(), entry.GetMapKey())
+				children = append(children, entry.GetValue(), entry.GetMapKey())
 			}
 		case *v1alpha1.Expr_ComprehensionExpr:
 			c := kind.ComprehensionExpr
-			stack = append(stack, c.GetIterRange(), c.GetAccuInit(), c.GetLoopCondition(), c.GetLoopStep(), c.GetResult())
+			// The range is evaluated outside the comprehension's own names.
+			if found, names := walk(c.GetIterRange(), bound); found != nil {
+				return found, names
+			}
+			inner = append(slices.Clone(bound), c.GetIterVar(), c.GetIterVar2(), c.GetAccuVar())
+			children = append(children, c.GetAccuInit(), c.GetLoopCondition(), c.GetLoopStep(), c.GetResult())
 		}
 
-		// A nil child is the absence of one (a function with no target).
-		stack = slices.DeleteFunc(stack, func(n *v1alpha1.Expr) bool { return n == nil })
+		for _, child := range children {
+			if found, names := walk(child, inner); found != nil {
+				return found, names
+			}
+		}
+
+		return nil, nil
 	}
 
-	return nil
+	return walk(root, nil)
 }
 
-// underSteps reports whether an expression is `steps` or a selection chain
-// rooted at it: `steps`, `steps.id`, `steps.id.output`.
-func underSteps(node *v1alpha1.Expr) bool {
-	for node != nil {
-		switch kind := node.GetExprKind().(type) {
-		case *v1alpha1.Expr_IdentExpr:
-			return kind.IdentExpr.GetName() == "steps"
-		case *v1alpha1.Expr_SelectExpr:
-			node = kind.SelectExpr.GetOperand()
-		default:
-			return false
+// readsAny reports whether an expression names any of the identifiers.
+func readsAny(node *v1alpha1.Expr, names []string) bool {
+	if node == nil || len(names) == 0 {
+		return false
+	}
+
+	switch kind := node.GetExprKind().(type) {
+	case *v1alpha1.Expr_IdentExpr:
+		return slices.Contains(names, kind.IdentExpr.GetName())
+	case *v1alpha1.Expr_CallExpr:
+		if readsAny(kind.CallExpr.GetTarget(), names) {
+			return true
 		}
+		return slices.ContainsFunc(kind.CallExpr.GetArgs(), func(n *v1alpha1.Expr) bool { return readsAny(n, names) })
+	case *v1alpha1.Expr_SelectExpr:
+		return readsAny(kind.SelectExpr.GetOperand(), names)
+	case *v1alpha1.Expr_ListExpr:
+		return slices.ContainsFunc(kind.ListExpr.GetElements(), func(n *v1alpha1.Expr) bool { return readsAny(n, names) })
+	case *v1alpha1.Expr_StructExpr:
+		return slices.ContainsFunc(kind.StructExpr.GetEntries(), func(e *v1alpha1.Expr_CreateStruct_Entry) bool {
+			return readsAny(e.GetValue(), names) || readsAny(e.GetMapKey(), names)
+		})
+	case *v1alpha1.Expr_ComprehensionExpr:
+		c := kind.ComprehensionExpr
+		return readsAny(c.GetIterRange(), names) || readsAny(c.GetAccuInit(), names) ||
+			readsAny(c.GetLoopCondition(), names) || readsAny(c.GetLoopStep(), names) || readsAny(c.GetResult(), names)
 	}
 
 	return false
+}
+
+// stepsMapOperand reports whether an expression is `steps` itself or one
+// selection of it, `steps.<id>`: the two maps whose keys are the author's own
+// names (step ids, and the outputs a step declares).
+//
+// No deeper. `steps.fetch.value` is data a step produced, and its keys are the
+// data's: an email address, an id, a token-shaped name. A failure text is
+// recorded durably and shown to callers, so those are not listed.
+func stepsMapOperand(node *v1alpha1.Expr) bool {
+	if ident := node.GetIdentExpr(); ident != nil {
+		return ident.GetName() == "steps"
+	}
+
+	selection := node.GetSelectExpr()
+
+	return selection != nil && selection.GetOperand().GetIdentExpr().GetName() == "steps"
 }
 
 // unparseNode renders a node back to expression text, or its function name when

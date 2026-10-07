@@ -404,7 +404,7 @@ func ErrorTextCases(baseURL string) []Case {
 				Steps: []*v1.Node{
 					{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
 					{
-						Id:     "bad",
+						Id:     "flaky",
 						Policy: &v1.StepPolicy{ContinueOnError: true},
 						Kind:   &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)},
 					},
@@ -413,7 +413,7 @@ func ErrorTextCases(baseURL string) []Case {
 			ExpectedOutputs: &v1.Workflow_StepOutputs{
 				StepValues: map[string]*v1.Node_Outputs{
 					"n": {NamedValues: map[string]*v1.Value{"value": v1.NewLiteral(int64(2))}},
-					"bad": v1.FailedStepOutputs(v1.StepFailure{
+					"flaky": v1.FailedStepOutputs(v1.StepFailure{
 						Kind: v1.ErrorKindExpression,
 						Text: "evaluating value: evaluate expression: no such overload " +
 							"(operator \"+\" applied to (int, string) in `steps.n.value + \"x\"`)",

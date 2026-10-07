@@ -74,3 +74,30 @@ func TestAFailureOutsideStepsDoesNotListWhatItHolds(t *testing.T) {
 	assert.NotContains(t, err.Error(), "secret-looking-key")
 	assert.NotContains(t, err.Error(), "available:")
 }
+
+// TestAFailureInsideAStepOutputDoesNotListItsKeys pins the reviewer's F1: a
+// step's output value is data the step fetched, so a miss one level below
+// `steps.<id>` names the selection and never the keys the data held.
+func TestAFailureInsideAStepOutputDoesNotListItsKeys(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `steps.fetch.value.missing`, map[string]any{
+		"steps": map[string]any{"fetch": map[string]any{"value": map[string]any{"alice@example.com": int64(1)}}},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no such key: missing")
+	assert.NotContains(t, err.Error(), "alice@example.com")
+	assert.NotContains(t, err.Error(), "available:")
+}
+
+// TestAComprehensionVariableIsNotResolvedFromTheOuterScope pins F2: an operand
+// that reads a comprehension variable cannot be re-evaluated standalone, so its
+// type is reported as unknown rather than taken from a same-named outer value.
+func TestAComprehensionVariableIsNotResolvedFromTheOuterScope(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `[1].map(x, x + "a")`, map[string]any{"x": "outer"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no such overload")
+	assert.NotContains(t, err.Error(), "(string, string)")
+}
