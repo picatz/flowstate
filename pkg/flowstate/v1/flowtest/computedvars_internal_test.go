@@ -300,10 +300,11 @@ func TestAChainOfWholeValueReadsIsRefusedByWhatItCopies(t *testing.T) {
 			prev = name
 		}
 
-		return &File{Vars: vars, leafLimit: 12}
+		return &File{Vars: vars, nodeLimit: 15}
 	}
 
-	// Three links of four leaves fit in twelve; the fourth does not.
+	// A copy of the four-leaf table is five values; three fit in fifteen and the
+	// fourth does not.
 	p := newProblems(nil)
 	build(3).evaluateVars(p, nil)
 	assert.Nil(t, p.err(), "a chain within the limit loads")
@@ -311,14 +312,36 @@ func TestAChainOfWholeValueReadsIsRefusedByWhatItCopies(t *testing.T) {
 	p = newProblems(nil)
 	build(4).evaluateVars(p, nil)
 	require.Error(t, p.err())
-	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 leaves")
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 15 values")
 }
 
-func TestBoundedLeavesCountsAnEmptyContainerOnce(t *testing.T) {
+// TestNestedContainersCountAgainstTheMaterializationBudget pins Copilot's
+// finding on #2456: three scalar leaves under three five-deep one-entry maps
+// are 3 leaves and 19 values, and it is the values the conversion allocates. A
+// leaf-only count admits this copy under a limit of 15; counting containers
+// refuses it.
+func TestNestedContainersCountAgainstTheMaterializationBudget(t *testing.T) {
+	t.Parallel()
+
+	deep := func() any {
+		return map[string]any{"a": map[string]any{"a": map[string]any{"a": map[string]any{"a": map[string]any{"a": 1}}}}}
+	}
+	file := &File{
+		Vars:      map[string]any{"t": []any{deep(), deep(), deep()}, "c": "${vars.t}"},
+		nodeLimit: 15,
+	}
+	p := newProblems(nil)
+	file.evaluateVars(p, nil)
+
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 15 values")
+}
+
+func TestBoundedNodesCountsEveryValueIncludingContainers(t *testing.T) {
 	t.Parallel()
 
 	count := func(v any) int {
-		n, ok := boundedLeaves(types.DefaultTypeAdapter.NativeToValue(v), 1000)
+		n, ok := boundedNodes(types.DefaultTypeAdapter.NativeToValue(v), 1000)
 		require.True(t, ok)
 
 		return n
@@ -326,15 +349,16 @@ func TestBoundedLeavesCountsAnEmptyContainerOnce(t *testing.T) {
 	assert.Equal(t, 1, count(1))
 	assert.Equal(t, 1, count(map[string]any{}))
 	assert.Equal(t, 1, count([]any{}))
-	assert.Equal(t, 3, count(map[string]any{"a": []any{1, 2}, "b": "x"}))
+	// A container is a value of its own: the map, the list, two ints and a string.
+	assert.Equal(t, 5, count(map[string]any{"a": []any{1, 2}, "b": "x"}))
 }
 
-// TestBoundedLeavesStopsAtTheLimit pins the reviewer's finding on #2456: one
+// TestBoundedNodesStopsAtTheLimit pins the reviewer's finding on #2456: one
 // expression naming a large table many times builds far more than the budget
 // in a single evaluation, so the count has to stop walking at the limit rather
 // than sizing the whole value. A thousand references to a hundred-leaf table is
 // a hundred thousand leaves; a limit of 250 must cost about 250 of them.
-func TestBoundedLeavesStopsAtTheLimit(t *testing.T) {
+func TestBoundedNodesStopsAtTheLimit(t *testing.T) {
 	t.Parallel()
 
 	table := make([]any, 100)
@@ -346,7 +370,7 @@ func TestBoundedLeavesStopsAtTheLimit(t *testing.T) {
 		fan[i] = table
 	}
 
-	n, ok := boundedLeaves(types.DefaultTypeAdapter.NativeToValue(fan), 250)
+	n, ok := boundedNodes(types.DefaultTypeAdapter.NativeToValue(fan), 250)
 
 	assert.False(t, ok)
 	assert.LessOrEqual(t, n, 251, "the walk must stop at the limit, not size the whole value")
@@ -362,13 +386,13 @@ func TestOneExpressionNamingATableManyTimesIsRefused(t *testing.T) {
 			"t":   []any{1, 2, 3, 4},
 			"big": "${[vars.t, vars.t, vars.t, vars.t]}",
 		},
-		leafLimit: 12,
+		nodeLimit: 12,
 	}
 	p := newProblems(nil)
 	file.evaluateVars(p, nil)
 
 	require.Error(t, p.err())
-	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 leaves")
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 values")
 }
 
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {

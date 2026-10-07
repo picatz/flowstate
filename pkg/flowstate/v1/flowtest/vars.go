@@ -271,7 +271,7 @@ const maxVarExpressions = MaxVarsPerFile
 // it: the per-read scan over the node map (a probe that retains no new edge
 // spends no edge budget; [maxVarDependencyScans] bounds it), and the material evaluation itself retains (a chain of
 // whole-value container reads copies the table once per link on ~one edge per
-// link; [maxVarMaterializedLeaves] bounds that). Those are the dependency
+// link; [maxVarMaterializedNodes] bounds that). Those are the dependency
 // model's costs, not this budget's; collapsing
 // a container read to one edge on the container would remove the quadratic
 // product — and most of this constant's job — entirely.
@@ -291,20 +291,20 @@ const maxVarDependencyEdges = 2 * maxExpandedNodes
 // about 0.9s.
 const maxVarDependencyScans = 20_000_000
 
-// maxVarMaterializedLeaves bounds the leaves the computed vars of one file may
+// maxVarMaterializedNodes bounds the values the computed vars of one file may
 // produce between them. A whole-value read of a container yields a fresh copy
 // of it, and a chain of such reads depends on one var per link, so neither the
 // edge budget nor the scan budget sees it: 100 links over a 20,000-leaf table
-// is about 20,000 edges and 2,000,000 copied leaves, 17.7s and 2.6GB from a
+// is about 20,000 edges and 2,000,000 copied values, 17.7s and 2.6GB from a
 // small file (#1317). The copy is the resource, so the copy is what is counted,
-// on the CEL value and before it is converted: see [boundedLeaves].
+// on the CEL value and before it is converted: see [boundedNodes].
 //
 // Three times [maxExpandedNodes]: it must admit everything the edge budget
 // does, since a direct reader of a table of L leaves both costs L edges and
-// yields L leaves, and [maxVarDependencyEdges] admits up to 200,000 of those.
-// 300,000 leaves is tens of megabytes at the worst, far under the 1GiB the
+// yields L+1 values, and [maxVarDependencyEdges] admits up to 200,000 of those.
+// 300,000 values is tens of megabytes at the worst, far under the 1GiB the
 // repository's tests run under.
-const maxVarMaterializedLeaves = 3 * maxExpandedNodes
+const maxVarMaterializedNodes = 3 * maxExpandedNodes
 
 // depBudget is what one load's dependency scan may still spend: edges
 // retained and node visits made. Separate because they bound different
@@ -1108,7 +1108,7 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 			// expression reads already holds its value, and a var can read
 			// nothing else.
 			activation := map[string]any{v1.VarsRoot: f.Vars}
-			leavesLeft := cmp.Or(f.leafLimit, maxVarMaterializedLeaves)
+			nodesLeft := cmp.Or(f.nodeLimit, maxVarMaterializedNodes)
 
 			for _, name := range order {
 				d := declared[name]
@@ -1124,9 +1124,9 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 					continue
 				}
 
-				value, leaves, err := evaluateVar(base, d, activation, leavesLeft)
-				if errors.Is(err, errVarLeavesExceeded) {
-					p.report(site{at: block}, "computed vars produce more than %d leaves between them; each `${vars.name}` read of a container copies it, so read a leaf of it, or read it from fewer vars", cmp.Or(f.leafLimit, maxVarMaterializedLeaves))
+				value, nodes, err := evaluateVar(base, d, activation, nodesLeft)
+				if errors.Is(err, errVarNodesExceeded) {
+					p.report(site{at: block}, "computed vars produce more than %d values between them; each `${vars.name}` read of a container copies it, so read a leaf of it, or read it from fewer vars", cmp.Or(f.nodeLimit, maxVarMaterializedNodes))
 
 					break
 				}
@@ -1139,7 +1139,7 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 				// Charged for the copy the evaluation just made, before it is
 				// stored: past the budget the file is refused whole, and no
 				// later link gets to copy again (#1317).
-				leavesLeft -= leaves
+				nodesLeft -= nodes
 				if len(d.path) > 1 {
 					switch value.(type) {
 					case map[string]any, []any:
@@ -1526,7 +1526,7 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 // [cel.RefValueToValue] then [literalToGo] — rather than a second conversion
 // beside it, so a map a var builds and a map a run produces reach a comparison
 // as the same Go value.
-func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any, leaves int) (any, int, error) {
+func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any, nodes int) (any, int, error) {
 	// Background rather than a caller's context, because this loader has none
 	// to thread: the bound that matters here is cost, not time (CLAUDE.md), and
 	// [maxVarCost] is enforced whatever the context says.
@@ -1535,13 +1535,13 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any, le
 		return nil, 0, err
 	}
 	// Counted on the CEL value, before it is converted: the conversion below is
-	// the copy [maxVarMaterializedLeaves] exists to bound, and a CEL cost of
+	// the copy [maxVarMaterializedNodes] exists to bound, and a CEL cost of
 	// one per reference does not price how large a referenced container is, so
 	// one expression naming a table many times can build far more than the
 	// budget before any count of the finished value sees it.
-	n, within := boundedLeaves(out, leaves)
+	n, within := boundedNodes(out, nodes)
 	if !within {
-		return nil, n, errVarLeavesExceeded
+		return nil, n, errVarNodesExceeded
 	}
 	literal, err := cel.RefValueToValue(out)
 	if err != nil {
@@ -1552,51 +1552,49 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any, le
 	return value, n, err
 }
 
-// errVarLeavesExceeded reports that one var's value alone is past the leaves
+// errVarNodesExceeded reports that one var's value alone is past the values
 // the file has left. It carries no text of its own: [File.evaluateVars] words
 // the refusal, naming the limit.
-var errVarLeavesExceeded = errors.New("computed var exceeds the leaf budget")
+var errVarNodesExceeded = errors.New("computed var exceeds the materialization budget")
 
-// boundedLeaves counts the leaves of a CEL value the way [leafCount] counts a
-// decoded one, and stops as soon as the count passes limit, so the work is
-// proportional to the limit and not to the value. The bool is false past it.
-func boundedLeaves(v ref.Val, limit int) (int, bool) {
+// boundedNodes counts the values in a CEL value, scalars and containers alike,
+// and stops as soon as the count passes limit, so the work is proportional to
+// the limit and not to the value. The bool is false past it.
+//
+// Containers count as well as leaves because the conversion allocates both: a
+// table of one-entry maps nested thirty levels deep costs thirty maps per
+// scalar, and a leaf-only count admits millions of them (Copilot, #2456).
+func boundedNodes(v ref.Val, limit int) (int, bool) {
 	n := 0
-	ok := walkLeaves(v, &n, limit, 0)
+	ok := walkNodes(v, &n, limit, 0)
 
 	return n, ok
 }
 
-func walkLeaves(v ref.Val, n *int, limit, depth int) bool {
-	if depth > v1.MaxStructureDepth {
-		*n += 1
-
-		return *n <= limit
+func walkNodes(v ref.Val, n *int, limit, depth int) bool {
+	*n++
+	if *n > limit {
+		return false
 	}
-	before := *n
+	if depth > v1.MaxStructureDepth {
+		return true
+	}
 	switch c := v.(type) {
 	case traits.Lister:
 		for it := c.Iterator(); it.HasNext() == types.True; {
-			if !walkLeaves(it.Next(), n, limit, depth+1) {
+			if !walkNodes(it.Next(), n, limit, depth+1) {
 				return false
 			}
 		}
 	case traits.Mapper:
 		for it := c.Iterator(); it.HasNext() == types.True; {
-			if !walkLeaves(c.Get(it.Next()), n, limit, depth+1) {
+			if !walkNodes(c.Get(it.Next()), n, limit, depth+1) {
 				return false
 			}
 		}
-	default:
-		*n += 1
-
-		return *n <= limit
-	}
-	if *n == before {
-		*n += 1
 	}
 
-	return *n <= limit
+	return true
 }
 
 // scrubbedVarError is what one evaluation failure may say.

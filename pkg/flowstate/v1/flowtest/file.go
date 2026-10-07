@@ -318,9 +318,9 @@ type File struct {
 	// work under the race detector.
 	scanLimit int
 
-	// leafLimit replaces [maxVarMaterializedLeaves] when positive, unexported
+	// nodeLimit replaces [maxVarMaterializedNodes] when positive, unexported
 	// for the same reason as scanLimit.
-	leafLimit int
+	nodeLimit int
 }
 
 // CoverageStanza is a file's record of the branches its cases deliberately do
