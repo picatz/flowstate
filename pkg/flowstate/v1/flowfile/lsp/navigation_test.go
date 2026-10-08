@@ -589,6 +589,27 @@ steps:
 	pos := positionOf(t, src, "${path}", 2)
 	assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
 
+	// The step's own vars are not bound in its own `if:` or in another var's
+	// value, where the validator refuses them, so there is nothing to jump to.
+	const unbound = `name: u
+steps:
+  - id: a
+    if: ${path != ""}
+    vars:
+      path: /x
+      other: ${path}
+    log:
+      message: ${path}
+`
+	c.open("file:///unbound.yaml", unbound)
+	for at, want := range map[string]bool{`${path != ""}`: false, "${path}\n    log": false, "message: ${path}": true} {
+		pos = positionOf(t, unbound, at, 2)
+		if at == "message: ${path}" {
+			pos = positionOf(t, unbound, at, len("message: ${"))
+		}
+		assert.Equal(t, want, len(c.definition("file:///unbound.yaml", pos.Line, pos.Character)) == 1, at)
+	}
+
 	// A member nothing declares goes nowhere.
 	const missing = `name: m
 steps:

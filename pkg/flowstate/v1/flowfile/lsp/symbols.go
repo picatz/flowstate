@@ -4,6 +4,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/sourcegraph/go-lsp"
@@ -159,7 +160,7 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 						return
 					}
 				}
-				if at := declaredNameAt(doc, from, ref); at != nil {
+				if at := declaredNameAt(doc, from, ref, ownVars(from, in)); at != nil {
 					locations = []lsp.Location{{URI: doc.uri, Range: at.keyRange}}
 				}
 				return
@@ -182,7 +183,8 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	return nil
 }
 
-// declaredNameAt is the `vars:` or `inputs:` key a bare reference names.
+// declaredNameAt is the `vars:` or `inputs:` key a bare reference names, with the
+// step's own `vars:` counted only when ownVars says they are bound at the cursor.
 //
 // Three spellings reach a declaration that is not a step or an iterator:
 //
@@ -195,7 +197,7 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 //
 // The key is the answer, not the value: it is the word the author renames and the
 // one every other reference spells.
-func declaredNameAt(doc *document, from *parsedStep, ref reference) *entry {
+func declaredNameAt(doc *document, from *parsedStep, ref reference, ownVars bool) *entry {
 	switch ref.local {
 	case v1.VarsRoot:
 		return varEntry(doc.parsed.varsEntry, ref.member)
@@ -207,12 +209,28 @@ func declaredNameAt(doc *document, from *parsedStep, ref reference) *entry {
 		}
 		return nil
 	}
-	for _, block := range append([]*parsedStep{from}, blocksAround(from)...) {
+	blocks := blocksAround(from)
+	if ownVars {
+		blocks = append([]*parsedStep{from}, blocks...)
+	}
+	for _, block := range blocks {
 		if e := varEntry(block.varsEntry, ref.local); e != nil {
 			return e
 		}
 	}
 	return nil
+}
+
+// ownVars reports whether the step's own `vars:` are bound where the expression
+// in entry is evaluated. They are bound for the step's run, not for its `if:`
+// (decided before the vars exist) or for the vars' own values (evaluated against
+// the outer scope, so one var cannot read another), and the validator refuses a
+// reference written there; pointing at the var would claim it works.
+func ownVars(from *parsedStep, in *entry) bool {
+	if in == from.conditionEntry {
+		return false
+	}
+	return !slices.Contains(nestedEntries(from.varsEntry), in)
 }
 
 // callDefinition resolves a `call:` step's target — when the cursor is on it —
