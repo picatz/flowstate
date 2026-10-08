@@ -116,6 +116,9 @@ func attachWithTUI(
 		// Refreshed by the target's own revisions, never by a clock.
 		Watch:    true,
 		Accepted: acceptInto(recording),
+		// A line breakpoint has no line a script could replay, so the recording is
+		// the prefix before it, as it is before a step back.
+		Unscripted: recording.rewound,
 		// A double click on a step of the flow is judged by this clock; the screen
 		// reads none of its own.
 		Now: time.Now,

@@ -575,7 +575,7 @@ func headingNote(face sourceFace, src *Source) string {
 // addressBody is what the pane draws where it has no lines: why, and the held
 // step's address.
 func addressBody(face sourceFace, f flowdebug.Frame, o pane.Options) string {
-	text := wrapWords(face.why, max(1, o.Width-2))
+	text := pane.WrapWords(face.why, max(1, o.Width-2))
 	lines := make([]string, 0, o.Height)
 	for line := range strings.SplitSeq(text, "\n") {
 		lines = append(lines, o.Theme.Muted.Render("  "+ui.EscapeControl(line)))

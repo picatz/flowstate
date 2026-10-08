@@ -71,6 +71,11 @@ type Config struct {
 	// Accepted is called with each line the run took, for a recording.
 	Accepted func(line string)
 
+	// Unscripted is called when a command with no spelling a script could replay
+	// (a breakpoint on a line) was taken by the run. A recording must end there:
+	// what followed would replay from a different stop than it was typed at.
+	Unscripted func()
+
 	// Now is the clock a double click is judged by. The screen reads no clock of
 	// its own; a screen given none never sees a double click, and a click then
 	// only selects.
@@ -500,8 +505,13 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 	if state := result.Unarmed; state != nil {
 		m.toast(ui.ToneWarning, fmt.Sprintf("the breakpoint %s was not armed: %s", state.GetId(), state.GetMessage()))
 	}
-	if m.cfg.Accepted != nil && !msg.unscripted && (result.Receipt == nil || flowdebug.Accepted(result.Receipt)) && result.Unarmed == nil {
-		m.cfg.Accepted(msg.line)
+	if taken := (result.Receipt == nil || flowdebug.Accepted(result.Receipt)) && result.Unarmed == nil; taken {
+		switch {
+		case msg.unscripted && m.cfg.Unscripted != nil:
+			m.cfg.Unscripted()
+		case !msg.unscripted && m.cfg.Accepted != nil:
+			m.cfg.Accepted(msg.line)
+		}
 	}
 
 	if msg.line == "detach" && flowdebug.Accepted(result.Receipt) {

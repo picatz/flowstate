@@ -509,7 +509,7 @@ func FlowView(flow *Flow, f flowdebug.Frame, loaded bool, o pane.Options) string
 		return pane.Heading(paneFlow, "", o.Width, o)
 	}
 	if f.Program == nil {
-		return pane.Heading(paneFlow, "", o.Width, o) + "\n" + o.Theme.Muted.Render(wrapWords(NoProgramNote, o.Width))
+		return pane.Heading(paneFlow, "", o.Width, o) + "\n" + o.Theme.Muted.Render(pane.WrapWords(NoProgramNote, o.Width))
 	}
 
 	l := flow.ladderOf(f)

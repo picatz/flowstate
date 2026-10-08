@@ -191,7 +191,11 @@ func TestAGutterClickSetsALineBreakpoint(t *testing.T) {
 	fx := newSourceFixture(t)
 	f := newFake()
 	var recorded []string
-	m := sourceModel(t, fx, f, func(c *Config) { c.Accepted = func(line string) { recorded = append(recorded, line) } })
+	unscripted := 0
+	m := sourceModel(t, fx, f, func(c *Config) {
+		c.Accepted = func(line string) { recorded = append(recorded, line) }
+		c.Unscripted = func() { unscripted++ }
+	})
 
 	fetch := lineOf(t, mainText, "id: fetch")
 	x, y := find(t, m, gutterPrefix+strconv.Itoa(fetch))
@@ -228,6 +232,9 @@ func TestAGutterClickSetsALineBreakpoint(t *testing.T) {
 
 	// Neither has a spelling a script could replay, so neither is recorded.
 	assert.Empty(t, recorded)
+	// But a recording must not carry on past a change it cannot say: each was
+	// reported so the recording can end where it happened.
+	assert.Equal(t, 2, unscripted, "an unscripted command the run took was not reported")
 	m = send(m, tuitest.Key("s"))
 	assert.Equal(t, []string{"step"}, recorded, "a line that is a command still is")
 }
