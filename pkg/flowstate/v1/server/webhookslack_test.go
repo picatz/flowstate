@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -142,4 +143,36 @@ func TestASlackInteractivePayloadIsUnwrappedAndAmbiguityIsRefused(t *testing.T) 
 	twice := "payload=" + url.QueryEscape(payload) + "&payload=" + url.QueryEscape(payload)
 	refused := deliverSlack(t, receiver, twice, "application/x-www-form-urlencoded", webhookSecret)
 	assert.Equal(t, http.StatusBadRequest, refused.StatusCode)
+}
+
+// Slack shows a clicker anything but a bodyless 200 as a failure, so an accepted
+// interactive payload and its duplicate are both answered with exactly that,
+// while a sender that reads the run address (the generic scheme) still gets its
+// 202 and a body: the status is a property of the scheme, not of the route.
+func TestASlackDeliveryIsAnsweredWithAnEmpty200AndOtherSchemesKeepTheirs(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	startWorker(t, temporal)
+
+	receiver, err := mustNew(t, temporal).NewWebhookReceiver(t.Context(), "",
+		[]*v1.Workflow{
+			slackWorkflow(map[string]*v1.Value{"what": v1.NewExpr(`event.body.actions[0].action_id`)}),
+			orderWebhookWorkflow(),
+		}, keyStore(t, webhookSecret))
+	require.NoError(t, err)
+
+	payload := `{"type":"block_actions","trigger_id":"t-empty-200","actions":[{"action_id":"approve"}]}`
+	form := "payload=" + url.QueryEscape(payload)
+	for _, attempt := range []string{"the first click", "a redelivery of it"} {
+		resp := deliverSlack(t, receiver, form, "application/x-www-form-urlencoded", webhookSecret)
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, http.StatusOK, resp.StatusCode, attempt)
+		assert.Empty(t, body, "%s was answered with a body Slack shows to the clicker", attempt)
+	}
+
+	resp := deliver(t, receiver, "/webhooks/order-webhook/storefront", deliveryBody("evt_still_202"), signed)
+	assert.Equal(t, http.StatusAccepted, resp.StatusCode, "a scheme that reads the run address lost its 202")
+	assert.NotEmpty(t, readAccepted(t, resp).RunID)
 }
