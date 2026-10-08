@@ -645,7 +645,9 @@ what is true of every row on the entry.
 
 Two stubs that select the same calls in the same way (same target, same
 `where:`, the first without `times:`) are refused, since the second can never
-answer. A case stub whose `where:` differs from a filtered default's for the
+answer. So is a filtered stub written after an unfiltered one for the same target
+with no `times:`: the first answers every call, so write the filtered stubs first
+and the catch-all last, or give the catch-all a `times:`. A case stub whose `where:` differs from a filtered default's for the
 same target draws a warning, because both stay live.
 
 ### `testdefaults.yaml`
