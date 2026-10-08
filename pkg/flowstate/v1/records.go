@@ -215,7 +215,7 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // until the type has one, and the checks that walk a value would be the only
 // thing standing between an author and an unbounded literal. An input or an
 // output whose type holds a `sensitive` field must be sensitive itself (see
-// [HoldsSensitive]).
+// [TypeTable.HoldsSensitive]).
 //
 // The compiler runs it with a position to point at through the same
 // function, and [CheckDeclarationTypes] runs it again for a specification that
