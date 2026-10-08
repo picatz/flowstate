@@ -59,6 +59,8 @@ func TestRunValidatesAgainstTheDeploymentsPluginCatalog(t *testing.T) {
 	t.Run("the deployment has the plugin", func(t *testing.T) {
 		output, err := runFlowCapturing(t, bin, "run", exampleGreetWorkflow, "--address", serve(t, &advertised))
 		require.Error(t, err, "the stub server refuses every submission, so a pass is a mistake:\n%s", output)
+		assert.Contains(t, output, "checked against the deployment's catalog (1 plugin(s))",
+			"the answer does not name the deployment as its source:\n%s", output)
 		assert.NotContains(t, output, "no plugin task",
 			"the client refused a plugin task the deployment advertises:\n%s", output)
 		assert.Contains(t, output, "starting plugin-greeting",
@@ -68,6 +70,8 @@ func TestRunValidatesAgainstTheDeploymentsPluginCatalog(t *testing.T) {
 	t.Run("the deployment lacks it", func(t *testing.T) {
 		output, err := runFlowCapturing(t, bin, "run", exampleGreetWorkflow, "--address", serve(t, nil))
 		require.Error(t, err)
+		assert.Contains(t, output, "checked against the deployment's catalog (0 plugin(s))",
+			"the refusal does not name the deployment as its source:\n%s", output)
 		assert.Contains(t, output, "no plugin task",
 			"a plugin the deployment does not have was accepted:\n%s", output)
 	})

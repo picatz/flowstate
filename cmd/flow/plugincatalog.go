@@ -214,10 +214,18 @@ func registerDeploymentCatalog(cmd *cobra.Command, client flowstatev1connect.Wor
 
 	resp, err := client.GetCatalog(cmd.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
 	if err != nil {
-		return nil
+		// A cancelled command is not an unreachable deployment: carrying on
+		// would parse the file and reach for a submission nobody wants.
+		return cmd.Context().Err()
 	}
 
 	catalog := resp.Msg.GetPlugins()
+
+	// On the account stream, once, so the answer a refusal below rests on has a
+	// named source: a plugin the file names and this line does not count is
+	// unknown to the deployment, not merely to this process.
+	fmt.Fprintf(cmd.ErrOrStderr(), "plugin tasks checked against the deployment's catalog (%d plugin(s)).\n",
+		len(catalog.GetPlugins()))
 	if len(catalog.GetPlugins()) == 0 {
 		return nil
 	}
