@@ -672,14 +672,17 @@ func window(n, at, budget int) (first, last int) {
 // emphasis and no information.
 func stepRow(step flowdebug.Step, held bool, qualifier, label string, overridden bool, theme ui.Theme, symbols ui.SymbolSet) string {
 	gutter := " "
-	name := step.ID
+	// Ids and workflow names are the author's file, and a file can be anything:
+	// nothing in a pane reaches the terminal with a control character in it.
+	name := ui.EscapeControl(step.ID)
+	qualifier = ui.EscapeControl(qualifier)
 	if overridden {
-		name = label
+		name = ui.EscapeControl(label)
 	} else if qualifier != "" {
 		// The qualifier first, muted, because the id is still the name: a
 		// reader scanning the column is looking for `build`, and the prefix is
 		// there to tell two of them apart rather than to be read.
-		name = theme.Muted.Render(qualifier+".") + step.ID
+		name = theme.Muted.Render(qualifier+".") + name
 	}
 
 	id := name

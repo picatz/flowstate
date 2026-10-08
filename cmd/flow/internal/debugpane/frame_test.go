@@ -218,3 +218,19 @@ func TestAPaneDrawsNoControlSequenceAFrameCarried(t *testing.T) {
 	assert.NotContains(t, text, "\x07")
 	assert.Contains(t, text, "steps.fetch", "the row vanished instead of being escaped")
 }
+
+// TestAPaneDrawsNoControlSequenceAStepIdCarried: an id is the author's file,
+// and no pane draws one raw.
+func TestAPaneDrawsNoControlSequenceAStepIdCarried(t *testing.T) {
+	t.Parallel()
+
+	frame := debugpane.Frame{
+		Paused: true, Held: -1, StepsTotal: 1,
+		Steps: []flowdebug.Step{{ID: "build\x1b[2J\x1b]0;owned\x07"}},
+	}
+	text := drawn(t, frame)
+
+	assert.NotContains(t, text, "\x1b[2J")
+	assert.NotContains(t, text, "\x07")
+	assert.Contains(t, text, "build")
+}

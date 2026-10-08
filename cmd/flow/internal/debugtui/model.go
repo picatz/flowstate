@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -102,6 +103,7 @@ type (
 		err   error
 	}
 	pageMsg struct {
+		rev   uint64
 		req   pane.Request
 		nodes []pane.Node
 		total int
@@ -125,8 +127,12 @@ type Model struct {
 
 	// readSeq numbers frame reads; only the latest is applied, so a slow read
 	// cannot overwrite a newer one.
-	readSeq  uint64
-	frameRev uint64
+	readSeq uint64
+
+	// reading is a frame read in flight, and dirty that the run moved while it
+	// was: one read at a time, one more after it, however fast revisions come.
+	reading, dirty bool
+	frameRev       uint64
 
 	watching bool
 	stalled  int
@@ -156,6 +162,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		keys:    keys,
 		ring:    ring,
 		readSeq: 1,
+		reading: true,
 		screen: Screen{
 			Size: cfg.Size, Tree: pane.NewTree(nil), Console: NewConsole(), Keys: keys, Verbs: cfg.Verbs,
 			Focus: ring.Current(), Pane: paneSteps,
@@ -265,8 +272,15 @@ func (m Model) read(seq uint64) tea.Cmd {
 	}
 }
 
-// reread starts a new read, which supersedes any in flight.
+// reread asks for a fresh read. One runs at a time: a run whose revisions come
+// faster than a read completes costs one more read afterwards, not one each.
 func (m *Model) reread() tea.Cmd {
+	if m.reading {
+		m.dirty = true
+
+		return nil
+	}
+	m.reading = true
 	m.readSeq++
 
 	return m.read(m.readSeq)
@@ -307,12 +321,14 @@ func (m Model) framed(msg frameMsg) (tea.Model, tea.Cmd) {
 	if msg.seq != m.readSeq {
 		return m, nil
 	}
+	m.reading = false
 	if msg.err != nil {
 		if m.ctx.Err() != nil {
 			return m, nil
 		}
 		m.screen.Problem = ui.EscapeControl(msg.err.Error())
 		m.toast(ui.ToneDanger, "cannot read the run: "+msg.err.Error())
+		m.dirty = false
 
 		return m, nil
 	}
@@ -322,13 +338,17 @@ func (m Model) framed(msg frameMsg) (tea.Model, tea.Cmd) {
 	m.screen.Tree.SetRoots(ScopeNodes(msg.frame))
 	m.revealSelection()
 
+	var cmds []tea.Cmd
+	if m.dirty {
+		m.dirty = false
+		cmds = append(cmds, m.reread())
+	}
 	if m.cfg.Watch && !m.watching && !m.ended() {
 		m.watching = true
-
-		return m, m.wait(m.frameRev)
+		cmds = append(cmds, m.wait(m.frameRev))
 	}
 
-	return m, nil
+	return m, tea.Batch(cmds...)
 }
 
 func (m Model) watched(msg watchMsg) (tea.Model, tea.Cmd) {
@@ -377,7 +397,9 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 		m.screen.Console.Say(msg.err.Error())
 		m.toast(ui.ToneDanger, msg.err.Error())
 
-		return m, m.reread()
+		cmd := m.reread()
+
+		return m, cmd
 	}
 
 	result := msg.result
@@ -386,7 +408,9 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
 		m.toast(ui.ToneWarning, "the command was not applied: "+strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
 
-		return m, m.reread()
+		cmd := m.reread()
+
+		return m, cmd
 	}
 	if state := result.Unarmed; state != nil {
 		m.toast(ui.ToneWarning, fmt.Sprintf("the breakpoint %s was not armed: %s", state.GetId(), state.GetMessage()))
@@ -399,13 +423,19 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 		return m.leave(OutcomeDetach)
 	}
 
-	return m, m.reread()
+	cmd := m.reread()
+
+	return m, cmd
 }
 
 func (m Model) paged(msg pageMsg) (tea.Model, tea.Cmd) {
 	if msg.err != nil {
 		m.toast(ui.ToneWarning, "cannot load more: "+msg.err.Error())
 
+		return m, nil
+	}
+	if msg.rev != m.frameRev {
+		// A page of the stop before this one is not appended to this one's tree.
 		return m, nil
 	}
 	m.screen.Tree.Fill(msg.req.Parent, msg.req.Offset, msg.nodes, msg.total)
@@ -422,6 +452,11 @@ func (m Model) completed(msg completeMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	line, offers := applyCompletion(msg.line, msg.answer)
+	// A candidate is the target's text: one with a control character, or one
+	// that would outgrow a command, is not put on the line.
+	if strings.ContainsFunc(line, unicode.IsControl) || len(line) > flowdebug.MaxCommandBytes {
+		line = msg.line
+	}
 	m.screen.Console.Text = line
 	if len(offers) > 0 {
 		m.screen.Console.Say(strings.Join(offers, "  "))
@@ -493,10 +528,10 @@ func (m Model) pageCmd(req pane.Request) tea.Cmd {
 			Revision: revision, Expression: expression, Children: true, Offset: int32(req.Offset), Limit: pageSize,
 		})
 		if err != nil {
-			return pageMsg{req: req, err: err}
+			return pageMsg{rev: revision, req: req, err: err}
 		}
 		if reason := answer.GetError(); reason != "" {
-			return pageMsg{req: req, err: errors.New(reason)}
+			return pageMsg{rev: revision, req: req, err: errors.New(reason)}
 		}
 		nodes := make([]pane.Node, 0, len(answer.GetChildren()))
 		for _, child := range answer.GetChildren() {
@@ -509,7 +544,7 @@ func (m Model) pageCmd(req pane.Request) tea.Cmd {
 			})
 		}
 
-		return pageMsg{req: req, nodes: nodes, total: int(answer.GetTotal())}
+		return pageMsg{rev: revision, req: req, nodes: nodes, total: int(answer.GetTotal())}
 	}
 }
 

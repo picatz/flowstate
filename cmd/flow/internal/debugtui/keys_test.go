@@ -255,3 +255,81 @@ func TestAHostileNameIsNotPutOnTheInputLine(t *testing.T) {
 	c.Insert("a\u009bb\x1bc")
 	assert.Equal(t, "abc", c.Text)
 }
+
+// TestOneReadRunsAtATimeHoweverFastTheRunMoves: revisions that arrive while a
+// read is in flight cost one more read afterwards, not one each.
+func TestOneReadRunsAtATimeHoweverFastTheRunMoves(t *testing.T) {
+	t.Parallel()
+
+	m := modelFor(t, newFake()) // its first read is in flight
+	require.True(t, m.reading)
+
+	for range 50 {
+		assert.Nil(t, m.reread(), "a read was started while another was in flight")
+	}
+	require.True(t, m.dirty)
+
+	seq := m.readSeq
+	next, cmd := m.framed(frameMsg{seq: seq, frame: frameOf(t, newFake(), true)})
+	m = next.(Model)
+	assert.NotNil(t, cmd, "the revisions that arrived meanwhile were forgotten")
+	assert.Greater(t, m.readSeq, seq)
+	assert.True(t, m.reading)
+	assert.False(t, m.dirty)
+
+	// With nothing arriving meanwhile, a landed read starts nothing.
+	next, _ = m.framed(frameMsg{seq: m.readSeq, frame: frameOf(t, newFake(), true)})
+	m = next.(Model)
+	assert.False(t, m.reading)
+	seq = m.readSeq
+	_, cmd = m.framed(frameMsg{seq: seq, frame: frameOf(t, newFake(), true)})
+	assert.Equal(t, seq, m.readSeq)
+	_ = cmd
+}
+
+// TestACandidateWithAControlCharacterIsNotPutOnTheLine: completions are the
+// target's names, and Enter would submit what is on the line.
+func TestACandidateWithAControlCharacterIsNotPutOnTheLine(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake())
+	m.screen.Console.Text = "inspect st"
+	next, _ := m.completed(completeMsg{line: "inspect st", answer: flowdebug.Completion{Prefix: "st", Candidates: []flowdebug.Candidate{{Text: "steps\x1b[2J"}}}})
+	assert.Equal(t, "inspect st", next.(Model).screen.Console.Text)
+
+	m.screen.Console.Text = "inspect st"
+	next, _ = m.completed(completeMsg{line: "inspect st", answer: flowdebug.Completion{Prefix: "st", Candidates: []flowdebug.Candidate{{Text: "steps"}}}})
+	assert.Equal(t, "inspect steps ", next.(Model).screen.Console.Text, "an ordinary candidate was refused")
+}
+
+// TestKeysDoNothingWhereOnlyTheTooSmallMessageShows: a key that acted would act
+// on a screen nobody can see.
+func TestKeysDoNothingWhereOnlyTheTooSmallMessageShows(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake(), func(c *Config) { c.Size = tui.Size{W: 40, H: 8} })
+	before := m.screen.Console.Text
+	for _, k := range []string{"c", "n", "q", "i", ":", "?"} {
+		next, cmd := m.key(tuitest.Key(k))
+		assert.Nil(t, cmd, k)
+		assert.Equal(t, before, next.(Model).screen.Console.Text, k)
+		assert.False(t, next.(Model).screen.Help, k)
+	}
+
+	_, cmd := m.key(tuitest.Key("ctrl+c"))
+	assert.NotNil(t, cmd, "ctrl+c must still leave a screen that cannot be drawn")
+}
+
+// TestAPageOfAnEarlierStopIsNotAppended: the run moved between asking for a
+// page and its arrival.
+func TestAPageOfAnEarlierStopIsNotAppended(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake())
+	m.frameRev = 9
+	parent := "g:inputs"
+	next, _ := m.paged(pageMsg{rev: 8, req: pane.Request{Parent: parent, Offset: 2}, nodes: []pane.Node{{ID: "inputs.stale"}}, total: 3})
+	for _, row := range next.(Model).screen.Tree.Rows() {
+		assert.NotEqual(t, "inputs.stale", row.ID)
+	}
+}

@@ -64,6 +64,12 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.screen.Toast = m.screen.Toast.Clear()
 	name := tui.KeyName(msg)
 
+	if _, err := m.screen.geometry(); err != nil && name != "ctrl+c" && name != "ctrl+d" {
+		// Only the message "too small" is on screen; a key that acted would act
+		// on something nobody can see.
+		return m, nil
+	}
+
 	if m.screen.Help {
 		switch name {
 		case "esc", "?", "q":
@@ -90,7 +96,8 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // act performs a binding.
 func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 	if verb, ok := strings.CutPrefix(b.Name, verbBindPrefix); ok {
-		return m, m.run(verb)
+		cmd := m.run(verb)
+		return m, cmd
 	}
 
 	switch b.Name {
@@ -119,7 +126,8 @@ func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 	case bindHelp:
 		m.screen.Help = true
 	case bindQuit:
-		return m, m.quit()
+		cmd := m.quit()
+		return m, cmd
 	case bindInterrupt:
 		return m.leave(OutcomeInterrupt)
 	case bindLeave:
@@ -182,7 +190,8 @@ func (m Model) navigate(name string) (tea.Model, tea.Cmd) {
 		}
 		tree.Reveal(rows)
 		if load {
-			return m, m.pageCmd(request)
+			cmd := m.pageCmd(request)
+			return m, cmd
 		}
 	}
 
@@ -241,7 +250,9 @@ func (m Model) consoleKey(name string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd)
 		if m.screen.Busy == "" {
 			m.screen.Busy = busyCompleting
 
-			return m, m.completeCmd(con.Text)
+			cmd := m.completeCmd(con.Text)
+
+			return m, cmd
 		}
 	case "shift+tab":
 		m.setFocus(m.ring.Prev().Current())
@@ -261,10 +272,13 @@ func (m Model) submit(line string) (tea.Model, tea.Cmd) {
 	case "disconnect":
 		return m.leave(OutcomeDisconnect)
 	case "quit", "q", "exit", "detach":
-		return m, m.quit()
+		cmd := m.quit()
+		return m, cmd
 	}
 
-	return m, m.run(line)
+	cmd := m.run(line)
+
+	return m, cmd
 }
 
 // click handles a mouse click. It is resolved against what the screen draws
@@ -306,7 +320,8 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		request, load := m.screen.Tree.Activate(id)
 		m.screen.Tree.Reveal(max(1, m.scopeRows()))
 		if load {
-			return m, m.pageCmd(request)
+			cmd := m.pageCmd(request)
+			return m, cmd
 		}
 	}
 
