@@ -32,9 +32,10 @@ func AttachSources(wf *v1.Workflow, positions *Positions, file string) {
 		return
 	}
 	file = sourceFileName(file)
+	unique := positions.UniqueStepPaths()
 
 	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
-		path, ok := positions.UniqueStepPath(node.GetId())
+		path, ok := unique[node.GetId()]
 		if !ok {
 			return
 		}

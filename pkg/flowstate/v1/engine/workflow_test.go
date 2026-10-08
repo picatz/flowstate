@@ -2897,7 +2897,7 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 			Name: "callee",
 			Steps: []*v1.Node{
 				{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
-				{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
+				{Id: "bad", Source: &v1.SourceLocation{File: "callee.yaml", Line: 9, Column: 3}, Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
 			},
 		}
 		caller := &v1.Workflow{

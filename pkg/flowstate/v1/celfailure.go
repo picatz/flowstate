@@ -568,6 +568,9 @@ func (f *ExpressionFailure) AttributeStep(step string, source *SourceLocation) {
 func (f *ExpressionFailure) QualifyStep(workflow string) {
 	if f != nil && f.Step != "" {
 		f.Step = textbound.Cut(workflow+"/"+f.Step, maxFailureFieldBytes)
+		// The position was read from the callee's file, which the caller's
+		// reader does not hold; a qualified step names it without a line.
+		f.Location = nil
 	}
 }
 

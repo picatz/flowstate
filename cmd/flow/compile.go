@@ -123,7 +123,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	// the validator does — a parse can succeed on a file validation would still
 	// object to — so the full check runs too, on the workflow already in hand
 	// rather than on the file a second time.
-	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
+	workflow, positions, diagnostics, err := flowfile.ParseAndValidateFileAt(path)
 	surface := newSurface(cmd)
 	if err != nil {
 		if _, ok := errors.AsType[*os.PathError](err); ok {
@@ -154,6 +154,10 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		writeDiagnostics(surface.Err, surface.ErrTheme.Muted.Render(path), diagnostics)
 		return errCompileRefused
 	}
+
+	// The specification carries where each step is written, so a run from it
+	// (`flow run --spec`) can still point a failure back at this file.
+	flowfile.AttachSources(workflow, positions, path)
 
 	// Indented unless the line-per-record form was asked for. There is one document
 	// either way, because there is one specification — `jsonl` here is the compact
