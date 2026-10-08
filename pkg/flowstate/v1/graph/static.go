@@ -6,6 +6,8 @@ import (
 	"maps"
 	"slices"
 
+	"google.golang.org/protobuf/proto"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -16,6 +18,11 @@ const (
 	MaxNodes = 1000
 	MaxEdges = 4000
 	maxNotes = 100
+
+	// MaxNameBytes is the longest name a node carries, so every id and label the
+	// builder writes satisfies the schema's own bounds. A longer name is left out
+	// with a note rather than truncated into a different name.
+	MaxNameBytes = 256
 
 	// maxCallDepth bounds how far a `call:` chain is followed. The compiler
 	// refuses deeper nesting at submission, so this only guards a hand-built
@@ -64,6 +71,11 @@ func (b *builder) node(kind v1.GraphNodeKind, name string) (string, bool) {
 	id := NodeID(kind, name)
 	if _, ok := b.nodes[id]; ok {
 		return id, true
+	}
+	if len(name) > MaxNameBytes {
+		b.note("%s name of %d bytes is over the %d-byte limit and was left out", prefix(kind), len(name), MaxNameBytes)
+
+		return id, false
 	}
 	if len(b.nodes) >= MaxNodes {
 		b.note("node limit of %d reached; %s %q and later nodes were left out", MaxNodes, prefix(kind), name)
@@ -133,7 +145,7 @@ func (b *builder) workflow(wf *v1.Workflow, depth int) {
 		// The same workflow reached twice, as a callee and as a file of its own,
 		// is one workflow. Only a different one under the same name is worth a
 		// note, and its relations are merged rather than dropped.
-		if v1.CanonicalDigest(prior) == v1.CanonicalDigest(wf) {
+		if sameProgram(prior, wf) {
 			return
 		}
 		b.note("workflow %q is declared more than once; its relations are merged into one node", name)
@@ -181,4 +193,23 @@ func (b *builder) workflow(wf *v1.Workflow, depth int) {
 		}
 		b.workflow(callee, depth+1)
 	}
+}
+
+// sameProgram reports whether a and b are the same program: equal in
+// everything [v1.CanonicalDigest] keeps, and in the digest of the file each was
+// read from, which names bytes rather than a program. A callee inlined by a
+// `call:` and the file it was read from differ in exactly that field.
+//
+// The digest is cleared here, on clones, rather than in the canonical form: a
+// stored checkpoint's spec hash is a canonical digest, and changing what that
+// covers would refuse every checkpoint written before the change.
+func sameProgram(a, b *v1.Workflow) bool {
+	return v1.CanonicalDigest(withoutSourceDigest(a)) == v1.CanonicalDigest(withoutSourceDigest(b))
+}
+
+func withoutSourceDigest(wf *v1.Workflow) *v1.Workflow {
+	clone := proto.CloneOf(wf)
+	clone.SourceDigest = ""
+
+	return clone
 }

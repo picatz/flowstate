@@ -135,3 +135,71 @@ func TestTextEmptyAndPartial(t *testing.T) {
 	require.NoError(t, graph.Text(&sb, graph.Static()))
 	require.Equal(t, "no workflows\n", sb.String())
 }
+
+func TestStaticBoundsEdgesAndSaysSo(t *testing.T) {
+	// 100 workflows x 50 tasks = 5000 distinct edges on 150 nodes: under the
+	// node bound, over the edge bound.
+	var workflows []*v1.Workflow
+	for w := range 100 {
+		var steps []*v1.Node
+		for k := range 50 {
+			steps = append(steps, task(fmt.Sprintf("s%d", k), fmt.Sprintf("task%d", k)))
+		}
+		workflows = append(workflows, &v1.Workflow{Name: fmt.Sprintf("wf%d", w), Steps: steps})
+	}
+
+	g := graph.Static(workflows...)
+
+	require.Len(t, g.GetEdges(), graph.MaxEdges)
+	require.True(t, g.GetPartial())
+	require.Contains(t, strings.Join(g.GetNotes(), "\n"), "edge limit")
+	require.NoError(t, v1.Validate(g))
+}
+
+func TestStaticBoundsNotes(t *testing.T) {
+	var workflows []*v1.Workflow
+	for i := range 150 {
+		workflows = append(workflows, &v1.Workflow{Name: "dup", Steps: []*v1.Node{task("x", fmt.Sprintf("t%d", i))}})
+	}
+
+	g := graph.Static(workflows...)
+
+	require.True(t, g.GetPartial())
+	require.Len(t, g.GetNotes(), 100, "notes are capped, and the graph stays partial")
+	require.NoError(t, v1.Validate(g))
+}
+
+func TestStaticStopsFollowingCallsPastTheDepthBound(t *testing.T) {
+	leaf := &v1.Workflow{Name: "w0", Steps: []*v1.Node{task("x", "log")}}
+	current := leaf
+	for i := 1; i <= 40; i++ {
+		current = &v1.Workflow{Name: fmt.Sprintf("w%d", i), Steps: []*v1.Node{call("c", current)}}
+	}
+
+	g := graph.Static(current)
+
+	require.True(t, g.GetPartial())
+	require.Contains(t, strings.Join(g.GetNotes(), "\n"), "deeper than")
+	require.Less(t, len(g.GetNodes()), 41+2, "the chain was cut, not followed to the leaf")
+	require.NoError(t, v1.Validate(g))
+}
+
+func TestStaticTerminatesOnWorkflowsThatCallEachOtherByName(t *testing.T) {
+	inner := &v1.Workflow{Name: "a", Steps: []*v1.Node{task("x", "log")}}
+	b := &v1.Workflow{Name: "b", Steps: []*v1.Node{call("c", inner)}}
+	a := &v1.Workflow{Name: "a", Steps: []*v1.Node{call("c", b)}}
+
+	g := graph.Static(a)
+
+	require.NotEmpty(t, g.GetNodes())
+	require.NoError(t, v1.Validate(g))
+}
+
+func TestStaticLeavesOutANameTheSchemaCannotHold(t *testing.T) {
+	g := graph.Static(&v1.Workflow{Name: strings.Repeat("n", graph.MaxNameBytes+1), Steps: []*v1.Node{task("x", "log")}})
+
+	require.True(t, g.GetPartial())
+	require.Contains(t, g.GetNotes()[0], "over the 256-byte limit")
+	require.Empty(t, g.GetNodes(), "a workflow whose name does not fit is left out with everything it declares")
+	require.NoError(t, v1.Validate(g), "what is returned satisfies the schema")
+}

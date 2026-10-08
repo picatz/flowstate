@@ -137,14 +137,3 @@ func TestCanonicalDigestIgnoresExpressionNumbering(t *testing.T) {
 	require.NotEqual(t, v1.WorkflowIRDigest(a), v1.WorkflowIRDigest(b))
 	require.Equal(t, v1.CanonicalDigest(a), v1.CanonicalDigest(b))
 }
-
-// The digest of the file a workflow came from names bytes, not a program: the
-// same logic read from a file and inlined as a callee is one program.
-func TestCanonicalDigestIgnoresSourceDigest(t *testing.T) {
-	a := parseCanonical(t, canonicalBase)
-	b := proto.CloneOf(a)
-	b.SourceDigest = "sha256:" + strings.Repeat("ab", 32)
-
-	require.NotEqual(t, v1.WorkflowIRDigest(a), v1.WorkflowIRDigest(b))
-	require.Equal(t, v1.CanonicalDigest(a), v1.CanonicalDigest(b))
-}
