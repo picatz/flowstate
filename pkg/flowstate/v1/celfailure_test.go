@@ -348,3 +348,23 @@ func TestAttributeToStepKeepsTheInnermostStep(t *testing.T) {
 	assert.NotPanics(t, func() { AttributeToStep(nil, "x") })
 	assert.Equal(t, "plain", AttributeToStep(errors.New("plain"), "x").Error())
 }
+
+// TestQualifyStepMarksAFailureThatCrossedACall pins that a callee's step is
+// prefixed with its workflow, so the caller's file cannot claim it, and that an
+// enclosing step does not overwrite it afterwards.
+func TestQualifyStepMarksAFailureThatCrossedACall(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `steps.n.value + "x"`, map[string]any{
+		"steps": map[string]any{"n": map[string]any{"value": int64(2)}},
+	})
+	require.Error(t, err)
+
+	AttributeToStep(err, "first")
+	QualifyStepWithin(err, "callee")
+	AttributeToStep(err, "called")
+	assert.Equal(t, "callee/first", ExpressionFailureOf(err).GetStep())
+
+	var nilFailure *ExpressionFailure
+	assert.NotPanics(t, func() { nilFailure.QualifyStep("x"); nilFailure.AttributeStep("x") })
+}

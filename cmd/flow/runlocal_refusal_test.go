@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -436,4 +437,37 @@ steps:
 
 	assert.NotContains(t, stderr+err.Error(), "^")
 	assert.NotContains(t, stderr+err.Error(), "-->", "the location is drawn from the same account the excerpt is")
+}
+
+// TestAFailureInsideACalleeIsNotLocatedInTheCallersFile pins that a step id is
+// read within the file that declares it: a callee's `first` colliding with the
+// caller's `first` must not print the caller's line.
+func TestAFailureInsideACalleeIsNotLocatedInTheCallersFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"), []byte(`edition: v2026.4
+name: callee
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: first
+    value: ${steps.n.value.k + "x"}
+`), 0o600))
+	caller := filepath.Join(dir, "caller.yaml")
+	require.NoError(t, os.WriteFile(caller, []byte(`edition: v2026.4
+name: caller
+steps:
+  - id: first
+    value: ${3}
+  - id: called
+    call: ./callee.yaml
+`), 0o600))
+
+	_, stderr, err := runLocalFile(t, caller)
+	require.Error(t, err)
+
+	rendered := stderr + err.Error()
+	assert.Contains(t, rendered, "steps.n.value.k + \"x\"", "the excerpt still shows")
+	assert.NotContains(t, rendered, "-->", "the caller's own `first` is not where this failed")
 }

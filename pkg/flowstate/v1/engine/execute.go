@@ -1163,7 +1163,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		//
 		// Carrying what the callee withholds, for a debugger rendering the
 		// failure at the caller (#2210), as the local driver's runCall does.
-		return withFailureSensitive(stepFailed(err, "workflow %q", callee.GetName()), nested.debugFailureSensitive())
+		return withFailureSensitive(stepFailed(qualifyStep(err, callee.GetName()), "workflow %q", callee.GetName()), nested.debugFailureSensitive())
 	}
 
 	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)

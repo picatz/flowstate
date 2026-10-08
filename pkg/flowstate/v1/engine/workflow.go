@@ -324,14 +324,24 @@ func failedAt(err error, position string) error {
 // nested failure keeps the step it was raised in.
 func attributeToStep(err error, step string) error {
 	if inner, ok := errors.AsType[*ErrRunFailed](err); ok && inner.expression != nil {
-		if inner.expression.Step == "" {
-			inner.expression.Step = step
-		}
+		inner.expression.AttributeStep(step)
 
 		return err
 	}
 
 	return v1.AttributeToStep(err, step)
+}
+
+// qualifyStep is [attributeToStep]'s counterpart at a `call:` boundary: the
+// failure keeps its step, qualified by the workflow it crossed into.
+func qualifyStep(err error, workflow string) error {
+	if inner, ok := errors.AsType[*ErrRunFailed](err); ok && inner.expression != nil {
+		inner.expression.QualifyStep(workflow)
+
+		return err
+	}
+
+	return v1.QualifyStepWithin(err, workflow)
 }
 
 // expressionOf finds the structured account of an expression failure: the one an
