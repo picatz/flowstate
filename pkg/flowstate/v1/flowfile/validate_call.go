@@ -152,14 +152,15 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 			return nil
 		}
 
-		env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(v1.ValueSite{Step: stepID})))
+		leaves := table.leavesFor(parsed, table.before(v1.ValueSite{Step: stepID}))
+		env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 		if err != nil {
 			// A defect in this build rather than in the file; see typeErrors,
 			// which makes the identical call for the identical reason.
 			return nil
 		}
 
-		checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+		checked, issues := env.Check(cel.ParsedExprToAst(typeReads(parsed, leaves)))
 		if issues != nil && issues.Err() != nil {
 			// Does not even type-check on its own terms, which
 			// checkExpressionTypes already reports; restating it here under a

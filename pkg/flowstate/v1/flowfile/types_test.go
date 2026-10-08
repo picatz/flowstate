@@ -372,6 +372,13 @@ func TestARecordFieldIsTypedWhereItIsRead(t *testing.T) {
 		{"an optional read of a declared field", `inputs.order.?id.orValue("") == "x"`, ""},
 		{"an optional read of an undeclared field", `inputs.order.?idd.hasValue()`, `the record Order has no field "idd"`},
 		{"an index by a declared field", `inputs.order["id"] == "x"`, ""},
+		{"an optional read of a string is an optional string", `inputs.order.?id.orValue(0) == 0`, "no matching overload"},
+		{"an optional read used as its bare value", `inputs.order.?id == "x"`, "no matching overload"},
+		{"an optional read chained through hasValue", `inputs.order.?id.hasValue()`, ""},
+		{"an index read is typed as the field", `inputs.order["id"] + 1 > 0`, "no matching overload"},
+		{"an index read is the field's own type", `inputs.order["id"].startsWith("o-")`, ""},
+		{"a presence test through an index", `has(inputs["order"].id) && true`, ""},
+		{"a presence test through an optional", `has(inputs.?order.id) && true`, ""},
 		{"an index by an empty key", `inputs.order[""] == "x"`, `has no field ""`},
 		{"an index by an undeclared field", `inputs.order["idd"] == "x"`, `the record Order has no field "idd"`},
 		{"a comprehension variable named like the root", `[inputs].exists(inputs, has(inputs.order.coupon))`, ""},
@@ -642,5 +649,56 @@ func TestAFieldDefaultIsCheckedWhereTheFileLoads(t *testing.T) {
 		ds := flowfile.Validate(wf)
 		require.NotEmpty(t, ds, name)
 		assert.Contains(t, ds.Error(), `type "Order" field "status"`, name)
+	}
+}
+
+// The optional and indexed spellings are typed in the checks that hold a value to a
+// declared contract too: a call argument against the callee's input, and a computed
+// output against its `type:`.
+func TestAnIndexedRecordReadMeetsDeclaredContracts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+inputs:
+  n:
+    type: int
+    required: true
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+
+	source := func(read string) string {
+		return `edition: v2026.4
+name: caller
+types:
+  Order:
+    fields:
+      id:
+        type: string
+inputs:
+  order:
+    type: Order
+    required: true
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+      n: ${` + read + `}
+outputs:
+  total:
+    value: ${` + read + `}
+    type: int
+`
+	}
+
+	for _, read := range []string{`inputs.order["id"]`, `inputs.order.id`} {
+		ds, err := flowfile.ValidateSourceAt([]byte(source(read)), dir+"/caller.yaml")
+		require.NoError(t, err)
+		require.NotEmpty(t, ds, read)
+		assert.Len(t, ds, 2, "one for the argument, one for the output: %s", ds.Error())
 	}
 }
