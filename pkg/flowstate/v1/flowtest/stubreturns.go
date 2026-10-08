@@ -114,7 +114,7 @@ func literalReturnsMismatch(def v1.TaskDef, task string, returns map[string]any)
 	var validation *v1.ValidationError
 	if err := v1.Validate(message); errors.As(err, &validation) {
 		for _, violation := range validation.Violations {
-			if _, returned := literals[violation.Field]; returned {
+			if _, returned := literals[v1.ViolationRoot(violation.Field)]; returned {
 				return fmt.Sprintf("returns %q, which task %q's output schema refuses: %s", violation.Field, task, violation.String())
 			}
 		}

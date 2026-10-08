@@ -581,11 +581,13 @@ func (s *Session) hold(
 		sensitive: s.sensitiveAt(ctx),
 	})
 	defer s.prompting(promptSubject{})
-	// Said before the stop is published: a front that waits for the held state
-	// writes its prompt the moment it sees it, and a heading printed after would
-	// race that prompt for the terminal. A session that ends in between has said
-	// one heading too many, which is the lesser fault.
-	if s.endedOrDetached() {
+	// The heading is written before the stop is published, not after: a front
+	// that waits for the held state and then writes its own prompt would
+	// otherwise put the prompt ahead of the line that says where the run is.
+	// A detach or an end that lands between this check and enterHeld costs one
+	// heading for a stop that is not held, which is harmless; the other order
+	// loses the heading's place at the prompt.
+	if s.cannotHold() {
 		return nil
 	}
 	announce()
@@ -647,14 +649,6 @@ func (s *Session) hold(
 	}
 }
 
-// endedOrDetached reports whether the session can no longer hold a stop.
-func (s *Session) endedOrDetached() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return terminal(s.contract.state) || s.contract.detached
-}
-
 // enterHeld records a stop in the typed state, and reports false, recording
 // nothing, when the session has ended or detached: a terminal state is one a
 // session never leaves, so there is no stop to record and nobody to prompt.
@@ -677,6 +671,15 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.bump()
 
 	return true
+}
+
+// cannotHold is whether a stop would be refused: the run has ended or the
+// debugger has detached.
+func (s *Session) cannotHold() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return terminal(s.contract.state) || s.contract.detached
 }
 
 // leaveHeld records that the run left its stop.
