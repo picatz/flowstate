@@ -13,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -376,6 +377,11 @@ func TestAFailureIsClassifiedByWhoStoppedTheRun(t *testing.T) {
 				wantKind = v1.ClassifyError(test.runErr).String()
 			}
 			assert.Equal(t, wantKind, run.GetError().GetKind())
+
+			if test.want == v1.RunResponse_STATUS_TIMED_OUT {
+				assert.True(t, proto.Equal(v1.RunTimeoutFailure(test.runErr.Error()), run.GetError()),
+					"the local timeout must be the shared v1.RunTimeoutFailure, not a second spelling of it")
+			}
 		})
 	}
 }

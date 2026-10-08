@@ -516,7 +516,7 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		// deadline: that the run exceeded the bound this driver itself
 		// enforced is a fact it does know, and it is the same fact, in the
 		// same field, that the durable driver reports for its own run bound
-		// (server.timeoutFailure), so a client branching on the kind sees
+		// (v1.RunTimeoutFailure, which that driver calls too), so a client branching on the kind sees
 		// one answer from either driver (#1310).
 		errorResponse := &v1.RunResponse_Error{Message: runErr.Error()}
 		switch response.GetStatus() {
@@ -524,7 +524,7 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 			errorResponse.Kind = v1.ClassifyError(runErr).String()
 			errorResponse.Expression = v1.ExpressionFailureOf(runErr)
 		case v1.RunResponse_STATUS_TIMED_OUT:
-			errorResponse.Kind = v1.ErrorKindRunTimeout.String()
+			errorResponse = v1.RunTimeoutFailure(runErr.Error())
 		}
 		response.Kind = &v1.GetResponse_Error{Error: errorResponse}
 
