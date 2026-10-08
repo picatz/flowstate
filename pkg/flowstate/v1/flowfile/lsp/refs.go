@@ -336,7 +336,7 @@ func renameAt(doc *document, pos lsp.Position, newName string) (*lsp.WorkspaceEd
 		return nil, renameError(fmt.Sprintf("%q is punctuation in CEL rather than a name, so a reference to it cannot be parsed", newName))
 	}
 	for _, s := range doc.parsed.steps {
-		if s.id == newName {
+		if s.id == newName && sharesNamespace(s, ss.target) {
 			return nil, renameError(fmt.Sprintf("a step is already named %q", newName))
 		}
 	}
@@ -370,6 +370,26 @@ func renameAt(doc *document, pos lsp.Position, newName string) (*lsp.WorkspaceEd
 		edits = append(edits, lsp.TextEdit{Range: s.rng, NewText: text})
 	}
 	return &lsp.WorkspaceEdit{Changes: map[string][]lsp.TextEdit{string(doc.uri): edits}}, nil
+}
+
+// sharesNamespace reports whether two steps can see each other's ids. A
+// for_each or loop body keeps its outputs to itself, so steps in sibling bodies
+// may reuse an id; parallel branches and switch cases merge into the enclosing
+// namespace, and a nested step sees every id of the bodies around it. Two steps
+// are separate exactly when their chains of loop bodies diverge.
+func sharesNamespace(a, b *parsedStep) bool {
+	bodies := func(s *parsedStep) []*parsedStep {
+		var out []*parsedStep
+		for _, f := range s.scope {
+			if f.loopBody() {
+				out = append(out, f.block)
+			}
+		}
+		return out
+	}
+	x, y := bodies(a), bodies(b)
+	n := min(len(x), len(y))
+	return slices.Equal(x[:n], y[:n])
 }
 
 // idScalarRange is the whole `id:` scalar, quotes included, for the rare name

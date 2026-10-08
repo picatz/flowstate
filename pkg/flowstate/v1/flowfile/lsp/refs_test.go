@@ -312,3 +312,42 @@ func TestReferencesAndRenameOverTheWire(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "inputs")
 }
+
+// A sibling loop body may already use the name: bodies do not share outputs, so
+// the rename is legal, and it still must not touch the other body's step.
+func TestRenameIntoASiblingLoopsNameIsAllowed(t *testing.T) {
+	t.Parallel()
+	const src = `name: scoped
+steps:
+  - id: first
+    loop:
+      as: n
+      init: 0
+      until: ${steps.page.status_code == 200}
+      update: ${n + 1}
+      steps:
+        - id: page
+          http:
+            url: https://example.com
+  - id: second
+    loop:
+      as: n
+      init: 0
+      until: ${steps.fetch.status_code == 404}
+      update: ${n + 1}
+      steps:
+        - id: fetch
+          http:
+            url: https://example.org
+`
+	doc := refsDoc(t, src)
+	edit, err := renameAt(doc, positionOf(t, src, "id: page", len("id: ")), "fetch")
+	require.NoError(t, err)
+	got := applyEdits(t, src, edit.Changes["file:///refs.yaml"])
+	assert.Equal(t, 2, strings.Count(got, "id: fetch"))
+	assert.Contains(t, got, "steps.fetch.status_code == 200")
+
+	// A top-level step sees every id its loop bodies' parent can, so it collides.
+	_, err = renameAt(doc, positionOf(t, src, "id: first", len("id: ")), "second")
+	assert.Error(t, err)
+}
