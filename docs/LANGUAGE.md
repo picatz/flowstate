@@ -309,7 +309,9 @@ at submit for a value that arrives. Expressions are checked against the record,
 so `inputs.order.id + 1` is refused before the run starts and a misspelled field
 gets the nearest real one. A field's `default:` fills in where a value leaves it
 out, so a step can read it; a field marked `sensitive:` makes every input and
-output the record types sensitive whole. See `examples/record-types/`.
+output the record types sensitive whole. `flow compile --schema inputs` (or `outputs`)
+writes the contract as a JSON Schema, with the records under `$defs`, for an editor form, an
+agent, or a gateway. See `examples/record-types/`.
 
 ### Labels
 
