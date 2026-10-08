@@ -144,15 +144,16 @@ func TestSecretProviderWithoutPolicyFailsClosed(t *testing.T) {
 	require.ErrorContains(t, err, "--auth-policy")
 }
 
-// TestTheMissingPolicyRefusalNamesItsCauseAndBothRemedies is #1545: a plugin
+// TestTheMissingPolicyRefusalNamesItsCauseAndTheRemedy is #1545: a plugin
 // that advertises a secrets capability registers a provider the operator never
 // asked for, so the refusal says which scheme is held and what to do about it.
-func TestTheMissingPolicyRefusalNamesItsCauseAndBothRemedies(t *testing.T) {
+func TestTheMissingPolicyRefusalNamesItsCauseAndTheRemedy(t *testing.T) {
 	err := missingSecretPolicyError([]string{"example", "env"})
 	require.ErrorContains(t, err, "scheme example, env")
 	require.ErrorContains(t, err, "plugins that advertise a secrets capability")
 	require.ErrorContains(t, err, "--auth-policy")
-	require.ErrorContains(t, err, "--plugin-scheme")
+	require.NotContains(t, err.Error(), "--plugin-scheme",
+		"that flag refuses the plugin outright, so it is not a way to continue")
 
 	none := missingSecretPolicyError(nil)
 	require.ErrorContains(t, none, "no access policy", "with no scheme to name the refusal keeps its short form")

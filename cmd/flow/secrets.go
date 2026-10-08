@@ -423,9 +423,10 @@ func newSecretStore(cmd *cobra.Command, registry *secrets.Registry) (*secrets.St
 //
 // It names what registered the providers, because the person reading it often
 // configured nothing: a plugin that advertises a secrets capability registers
-// its scheme when it launches (#1545). Both ways out are in the sentence, the
-// policy that admits the provider and the flag that stops a plugin claiming a
-// scheme at all.
+// its scheme when it launches (#1545). The way out is the policy that admits
+// the provider. --plugin-scheme is deliberately not offered: it refuses a
+// plugin that claims an unpermitted scheme outright rather than launching it
+// task-only, so it is not a way to continue this invocation.
 func missingSecretPolicyError(schemes []string) error {
 	if len(schemes) == 0 {
 		return errors.New("a secret provider is configured but no access policy is: pass --auth-policy with a secrets section")
@@ -433,7 +434,7 @@ func missingSecretPolicyError(schemes []string) error {
 
 	return fmt.Errorf("this process holds secret providers (scheme %s), from --secret-* flags or from plugins that advertise a secrets capability, "+
 		"and a provider with no access policy is readable by anyone in the process: "+
-		"pass --auth-policy with a secrets section, or restrict what plugins may claim with --plugin-scheme",
+		"pass --auth-policy with a secrets section (examples/plugins/greet/auth.yaml is one)",
 		strings.Join(schemes, ", "))
 }
 
