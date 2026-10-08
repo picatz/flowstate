@@ -746,9 +746,12 @@ time a record is a map keyed by field name, so an older reader sees what it sees
 where the value is bound (a run's input, a call's argument, an output), at any depth and in a list
 too, so `inputs.order.status` is there to read whether or not the caller sent it, and a supplied
 value, including a zero one, always wins. A default is held when the type is declared to what
-an input's is (the field's type, its `values:` and its `must:`), and a field marked `required:`
-cannot have one, since a required field is never absent. `example:` is held the same way and never
-bound. A record an expression builds mid-run is its own: defaults apply at the boundaries a value
+an input's is (the field's type, its `values:`, `min_len:`, `max_len:`, `min_items:`, `max_items:`
+and `must:`), and a field marked `required:` cannot have one, since a required field is never
+absent. A type whose defaults expand past 4096 entries once a value leaves every field out (a
+default that is a record whose fields default to records) is refused where it is declared, and a
+submitted value that would fill more than 65536 defaults is refused before it is filled.
+`example:` is held the same way and never bound. A record an expression builds mid-run is its own: defaults apply at the boundaries a value
 crosses, not inside an expression. Beyond that nothing more is carried yet: a field that sets
 `sensitive:` is refused with that reason rather than parsed and silently not enforced.
 

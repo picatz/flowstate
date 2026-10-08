@@ -218,3 +218,61 @@ func TestAnInputThatWouldFillTooManyDefaultsIsRefusedBeforeItIsFilled(t *testing
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fields that take a default")
 }
+
+// A default that is a record whose fields default to records multiplies down the
+// type, so a type whose empty expansion is past the bound is refused where it is
+// declared, before any value reaches it.
+func TestATypeWhoseDefaultsExpandWithoutBoundIsRefusedAtDeclaration(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{Name: "fan", Profile: v1.CurrentProfile}
+	for level := range 3 {
+		declaration := &v1.TypeDeclaration{Name: fmt.Sprintf("L%d", level)}
+		for i := range v1.MaxRecordFields {
+			field := &v1.InputDeclaration{Name: fmt.Sprintf("f%02d", i)}
+			if level == 0 {
+				field.Type = v1.InputDeclaration_TYPE_INT
+				field.Default = v1.NewLiteral(int64(i))
+			} else {
+				field.Type = v1.InputDeclaration_TYPE_STRUCT
+				field.ValueType = recordTypeOf(fmt.Sprintf("L%d", level-1))
+				field.Default = v1.NewLiteralMap(map[string]any{})
+			}
+			declaration.Fields = append(declaration.Fields, field)
+		}
+		wf.DeclaredTypes = append(wf.DeclaredTypes, declaration)
+	}
+
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expands to more than")
+}
+
+// A narrow chain that fans out at every level is refused by counting, not by
+// expanding: eight fields over twelve levels would write 8^12 entries if judging the
+// default filled it first.
+func TestADeepNarrowDefaultFanOutIsRefusedWithoutExpandingIt(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{Name: "chain", Profile: v1.CurrentProfile}
+	for level := range 12 {
+		declaration := &v1.TypeDeclaration{Name: fmt.Sprintf("L%d", level)}
+		for i := range 8 {
+			field := &v1.InputDeclaration{Name: fmt.Sprintf("f%d", i)}
+			if level == 0 {
+				field.Type = v1.InputDeclaration_TYPE_INT
+				field.Default = v1.NewLiteral(int64(i))
+			} else {
+				field.Type = v1.InputDeclaration_TYPE_STRUCT
+				field.ValueType = recordTypeOf(fmt.Sprintf("L%d", level-1))
+				field.Default = v1.NewLiteralMap(map[string]any{})
+			}
+			declaration.Fields = append(declaration.Fields, field)
+		}
+		wf.DeclaredTypes = append(wf.DeclaredTypes, declaration)
+	}
+
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "expands to more than")
+}

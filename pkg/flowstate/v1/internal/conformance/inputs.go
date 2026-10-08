@@ -184,6 +184,48 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedOutputs: held("show"),
 		},
 		{
+			// Filled at every element of a list, not only at the top of a value.
+			Name: "a record field left out of a list element takes its default",
+			Workflow: func() *v1.Workflow {
+				wf := pairWorkflow("inputs-record-default-list", `inputs.ps[0].n == 3 && inputs.ps[1].n == 7`)
+				wf.DeclaredInputs = []*v1.InputDeclaration{{
+					Name: "ps", Type: v1.InputDeclaration_TYPE_LIST, Required: true,
+					ValueType: &v1.Type{Kind: &v1.Type_List{List: &v1.Type{Kind: &v1.Type_Message{Message: "Pair"}}}},
+				}}
+
+				return wf
+			}(),
+			Inputs: map[string]*v1.Value{"ps": v1.NewLiteralList(
+				map[string]any{"name": "a"},
+				map[string]any{"name": "b", "n": int64(7)},
+			)},
+			ExpectedOutputs: held("show"),
+		},
+		{
+			// And at the other boundary a value crosses: an output an expression
+			// builds is reported with its record's defaults filled in.
+			Name: "a computed record output takes its field defaults",
+			Workflow: func() *v1.Workflow {
+				wf := pairWorkflow("outputs-record-default", `true`)
+				wf.DeclaredInputs = nil
+				wf.DeclaredOutputs = []*v1.OutputDeclaration{{
+					Name: "pair", Type: v1.InputDeclaration_TYPE_STRUCT,
+					ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Pair"}},
+					Value:     v1.NewExpr(`{"name": "x"}`),
+				}}
+
+				return wf
+			}(),
+			ExpectedOutputs: answers(held("show"), map[string]*v1.Value{
+				// In the order the record declares its fields, which is the order the
+				// value was built and then filled.
+				"pair": {Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: []*expr.MapValue_Entry{
+					{Key: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "name"}}, Value: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "x"}}},
+					{Key: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "n"}}, Value: &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: 3}}},
+				}}}}}},
+			}),
+		},
+		{
 			Name: "a supplied record field wins over its default",
 			Workflow: connectionWorkflow("inputs-record-default-overridden",
 				`inputs.c.retries == 0 && inputs.c.region == "eu"`),
@@ -1083,6 +1125,28 @@ func connectionWorkflow(name, claim string) *v1.Workflow {
 			{Name: "retries", Type: v1.InputDeclaration_TYPE_INT, Default: v1.NewLiteral(int64(3))},
 			{Name: "region", Type: v1.InputDeclaration_TYPE_STRING, Default: v1.NewLiteral("eu")},
 			{Name: "window", Type: v1.InputDeclaration_TYPE_DURATION, Default: v1.NewLiteral("30s")},
+		},
+	}}
+
+	return wf
+}
+
+// pairWorkflow declares the record `Pair{name (required), n: int default 3}`, one
+// input of that type, and a pinned claim about it.
+func pairWorkflow(name, claim string) *v1.Workflow {
+	wf := declares(name,
+		[]*v1.InputDeclaration{{
+			Name: "p", Type: v1.InputDeclaration_TYPE_STRUCT, Required: true,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Pair"}},
+		}},
+		nil,
+		pins("show", claim)...,
+	)
+	wf.DeclaredTypes = []*v1.TypeDeclaration{{
+		Name: "Pair",
+		Fields: []*v1.InputDeclaration{
+			{Name: "name", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
+			{Name: "n", Type: v1.InputDeclaration_TYPE_INT, Default: v1.NewLiteral(int64(3))},
 		},
 	}}
 

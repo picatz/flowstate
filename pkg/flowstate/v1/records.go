@@ -279,8 +279,47 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		return err
 	}
 
-	return checkRecordDepth(wf.GetDeclaredTypes(), table)
+	if err := checkRecordDepth(wf.GetDeclaredTypes(), table); err != nil {
+		return err
+	}
+
+	if err := checkRecordFillBound(wf.GetDeclaredTypes(), table); err != nil {
+		return err
+	}
+
+	for _, declaration := range wf.GetDeclaredTypes() {
+		for _, field := range declaration.GetFields() {
+			if err := checkRecordFieldValues(declaration.GetName(), field, table, wf.GetProfile()); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
+
+// maxTypeFill bounds the field defaults one record, left empty, expands to once its
+// nested records take their own defaults. Each default is a small literal, but a
+// default can be a record whose fields default to records, so the expansion
+// multiplies down the type; it is refused where the type is declared, ahead of any
+// value that reaches it.
+const maxTypeFill = 4096
+
+func checkRecordFillBound(declared []*TypeDeclaration, table TypeTable) error {
+	empty := &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{}}}
+	for _, declaration := range declared {
+		budget := maxTypeFill
+		countFills(table, recordTypeNamed(declaration.GetName()), empty, 0, &budget)
+		if budget < 0 {
+			return fmt.Errorf("type %q expands to more than %d field defaults when a value leaves its fields out; "+
+				"flatten the defaults of the records it names", declaration.GetName(), maxTypeFill)
+		}
+	}
+
+	return nil
+}
+
+func recordTypeNamed(name string) *Type { return &Type{Kind: &Type_Message{Message: name}} }
 
 func checkRecordField(record string, field *InputDeclaration, table TypeTable, profile string) error {
 	name := field.GetName()
@@ -324,14 +363,20 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable, p
 			"a required field is never absent, so the default can never be used; remove one", record, name)
 	}
 
-	// A default and an example are held to what an input's are: a literal of the
-	// field's type that satisfies the field's own rules, so a stale one is a defect
-	// in the file rather than a surprise at the first run that leaves the field out.
+	return nil
+}
+
+// checkRecordFieldValues holds a field's default and example to what an input's are:
+// a literal of the field's type that satisfies the field's own rules, so a stale one
+// is a defect in the file rather than a surprise at the first run that leaves the
+// field out. It runs once the whole table has passed its structural checks (cycles,
+// depth and the fill bound), because judging a default fills the records it names.
+func checkRecordFieldValues(record string, field *InputDeclaration, table TypeTable, profile string) error {
 	if err := CheckInputDefaultIn(table, profile, field); err != nil {
-		return fmt.Errorf("type %q field %q default: %w", record, name, err)
+		return fmt.Errorf("type %q field %q default: %w", record, field.GetName(), err)
 	}
 	if err := CheckInputExampleIn(table, profile, field); err != nil {
-		return fmt.Errorf("type %q field %q %w", record, name, err)
+		return fmt.Errorf("type %q field %q %w", record, field.GetName(), err)
 	}
 
 	return nil

@@ -256,11 +256,20 @@ func countFills(table TypeTable, t *Type, lit *expr.Value, depth int, budget *in
 			return
 		}
 
+		// Every entry, as [normalizeEntries] walks them, so a key written twice
+		// cannot hide the nested work of the one that is not first.
+		fields := make(map[string]*InputDeclaration, len(declared.GetFields()))
 		for _, field := range declared.GetFields() {
-			given := slices.IndexFunc(m.GetEntries(), func(e *expr.MapValue_Entry) bool { return e.GetKey().GetStringValue() == field.GetName() })
-			if given >= 0 {
-				countFills(table, field.DeclaredType(), m.GetEntries()[given].GetValue(), depth+1, budget)
+			fields[field.GetName()] = field
+		}
+		for _, entry := range m.GetEntries() {
+			if field := fields[entry.GetKey().GetStringValue()]; field != nil {
+				countFills(table, field.DeclaredType(), entry.GetValue(), depth+1, budget)
+			}
+		}
 
+		for _, field := range declared.GetFields() {
+			if slices.ContainsFunc(m.GetEntries(), func(e *expr.MapValue_Entry) bool { return e.GetKey().GetStringValue() == field.GetName() }) {
 				continue
 			}
 
