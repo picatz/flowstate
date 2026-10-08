@@ -736,6 +736,44 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
 
+## `flow explore`
+
+Explore how workflows connect, and what is running, on a screen
+
+```
+flow explore [path]... [flags]
+```
+
+Open the graph `flow graph` writes as a screen you move around in: every workflow is a row, and opening one shows what it calls, the signals it waits for and the tasks it runs, to any depth. The pane beside it describes the selected row, including what calls it.
+
+It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
+
+Keys are the debugger's: j and k move, enter or l opens, h closes or goes to the parent, ? lists them all, q leaves. Rows can be clicked and the wheel scrolls.
+
+It needs a terminal at least 40 columns by 10 rows. For a script or an agent, `flow graph --output json` is the same graph as data.
+
+Examples:
+
+```sh
+# How the examples connect:
+flow explore examples
+
+# What is running, over what the files declare:
+flow explore examples --live
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env, login. An unknown or unusable source is an error, never anonymous |
+| `--filter <string>` | `string` | — | — | with --live, a CEL expression over runs, as `flow list --filter` takes |
+| `--live` | `bool` | `false` | — | also show the runs on the server at --address, counted by workflow and status |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
+
 ## `flow fix`
 
 Rewrite Flowfiles into the current edition
