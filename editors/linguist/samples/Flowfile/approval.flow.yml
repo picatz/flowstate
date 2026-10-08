@@ -1,0 +1,100 @@
+edition: v2026.4
+name: approval-gate
+description: Waits for a human to approve a deploy, then acts on what an attested sender actually sent — authorization lives in `signals:`, not in this file's own `if:`.
+inputs:
+  version:
+    type: string
+    required: true
+    description: the semver version being deployed, with or without a leading "v"
+    example: v1.4.2
+    must: this.matches(r'^v?[0-9]+\.[0-9]+\.[0-9]+$')
+  environment:
+    type: string
+    required: true
+    description: which environment this deploy targets
+    example: production
+    must: this in ["staging", "production"]
+
+  # This narrows the literal release-manager grant below; it cannot widen it.
+  expected_approver:
+    type: string
+    required: true
+    description: who this run expects to approve it
+    example: sre-lead@example.com
+    must: this.matches(r'^[^@]+@[^@]+$')
+
+  # Accepted and ignored, which is the honest shape for taking authority out of
+  # a request that callers already send. It does not compose the issuer half of
+  # the subject below, for the reason written there. It stays declared because
+  # removing a declared input breaks every caller passing it — `flow breaking`
+  # reports exactly that — and because a deployment fixing
+  # this mistake in its own file wants the fix to land without a coordinated
+  # release. Its type and default are unchanged on purpose: a loosening is not a
+  # break, and this is neither.
+  expected_approver_issuer:
+    type: string
+    default: https://issuer.example.com
+    description: not read; the issuer is written in `signals:` below
+    example: https://issuer.example.com
+    must: this.startsWith("https://")
+signals:
+  deploy-approved:
+    # The issuer is written here rather than taken as an input, and that is the
+    # half that makes `expected_approver` a narrowing. A subject is only unique
+    # within the issuer that attested it, and claims are issuer-specific: a
+    # deployment trusting two issuers has two unrelated populations who can each
+    # carry `team: release-managers`. An issuer the requester supplies would let
+    # them choose which population the gate asks, which is the run picking its
+    # own authority rather than narrowing the one this file grants.
+    #
+    # So a deployment edits this line to name its own issuer, the same way it
+    # edits any other policy it owns. The walkthrough in README.md substitutes
+    # its local issuer into a copy of this file for exactly that reason.
+    allow: ${sender.identity.principal.split("#").size() == 2 && sender.identity.principal == "https://issuer.example.com#" + inputs.expected_approver && sender.identity.claims.team == "release-managers" && sender.identity.principal != run.identity.principal}
+debug:
+  # Debugging and approval are separate authorities.
+  allow: ${sender.identity.claims.team == "sre"}
+steps:
+  - id: request
+    log:
+      message: '${"%s requests deploying %s to %s".format([(run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.version, inputs.environment])}'
+
+  # A durable timer delays the gate without occupying a worker.
+  - id: settle
+    sleep: 5s
+  - id: approval
+    wait_for_signal:
+      name: deploy-approved
+      prompt: '${"Approve deploying %s to %s, requested by %s?".format([inputs.version, inputs.environment, (run.identity.subject == "") ? "an unattested caller" : run.identity.subject])}'
+      timeout: 24h
+      outputs:
+        # Missing `approved` is distinct from an explicit rejection.
+        outcome: '${payload.?approved.optMap(approved, approved ? "deployed" : "rejected").orValue("undecided")}'
+        sender: ${sender}
+        timed_out: ${timed_out}
+  - id: decision
+    switch:
+      value: ${steps.approval.outcome}
+      cases:
+        - case: deployed
+          steps:
+            - id: deploy
+              log:
+                message: ${"deploying %s to %s, approved by %s".format([inputs.version, inputs.environment, steps.approval.sender.identity.subject])}
+        - case: rejected
+          steps:
+            - id: rejected
+              log:
+                message: ${"%s declined the deploy of %s".format([steps.approval.sender.identity.subject, inputs.version])}
+        - case: undecided
+          steps:
+            - id: undecided
+              log:
+                message: '${steps.approval.timed_out ? "nobody approved deploying %s in time".format([inputs.version]) : "the approval for %s carried no decision".format([inputs.version])}'
+outputs:
+  decision:
+    value: ${steps.approval.outcome}
+    description: which branch this run ended on
+  approver_subject:
+    value: '${(steps.approval.outcome == "deployed") ? steps.approval.sender.identity.subject : ""}'
+    description: who the server attests approved this, empty unless a deploy happened

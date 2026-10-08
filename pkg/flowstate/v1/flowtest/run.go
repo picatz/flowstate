@@ -905,7 +905,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// makes stubbing a plugin task's name actually usable rather than merely
 	// advertised. Only task-form stubs can name a missing task; a step-form
 	// stub names a step whose task the compiler already knows.
-	unregistered := unregisteredTasks(stubTaskNames(compiled))
 	restore := swapRegistry(stubTaskNames(compiled))
 	// Released once the case has its own registry, and on any exit before: the
 	// process-wide one is held for compilation and for building [caseRegistry]
@@ -1097,7 +1096,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	durableUnanswered := &unstubbedTasks{}
 	durableSkipped := ""
 	if durableFrom(base) != nil && v1.SchedulerFromContext(base) == v1.WrittenOrder {
-		if durableSkipped = durableIneligible(test, workflow, compiled, unregistered); durableSkipped == "" {
+		if durableSkipped = durableIneligible(test, workflow, compiled); durableSkipped == "" {
 			durableRegistry, err = freshCaseRegistry(test, workflow, boundaries, durableUnanswered)
 			if err != nil {
 				caseError("%s", err)

@@ -50,11 +50,10 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 	}}}
 
 	for name, tc := range map[string]struct {
-		test         *Test
-		workflow     *v1.Workflow
-		compiled     []compiledStub
-		unregistered []string
-		want         string
+		test     *Test
+		workflow *v1.Workflow
+		compiled []compiledStub
+		want     string
 	}{
 		"nothing in the way":     {test: &Test{}, workflow: plain},
 		"reads run indexed":      {test: &Test{}, workflow: readsIndexed, want: "run.local"},
@@ -62,13 +61,12 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 		"signals":                {test: &Test{Signals: []SignalScript{{}}}, workflow: plain},
 		"reads run.local":        {test: &Test{}, workflow: readsLocal, want: "run.local"},
 		"faults":                 {test: &Test{Faults: []Fault{{}}}, workflow: plain, want: "injects faults"},
-		"unregistered stub task": {test: &Test{}, workflow: plain, unregistered: []string{"nope.task"}, want: "nope.task"},
 		"step stub, plain":       {test: &Test{}, workflow: plain, compiled: []compiledStub{{step: "a"}}},
 		"step stub, compensated": {test: &Test{}, workflow: compensated, compiled: []compiledStub{{step: "a"}}, want: "stubs a step by id"},
 		"task stub, compensated": {test: &Test{}, workflow: compensated, compiled: []compiledStub{{task: "log"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			got := durableIneligible(tc.test, tc.workflow, tc.compiled, tc.unregistered)
+			got := durableIneligible(tc.test, tc.workflow, tc.compiled)
 			if tc.want == "" {
 				assert.Empty(t, got)
 
@@ -77,9 +75,4 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 			assert.Contains(t, got, tc.want)
 		})
 	}
-}
-
-func TestUnregisteredTasksFiltersToWhatThisBuildLacks(t *testing.T) {
-	assert.Equal(t, []string{"nope.task"}, unregisteredTasks([]string{"log", "nope.task"}))
-	assert.Empty(t, unregisteredTasks([]string{"log"}))
 }

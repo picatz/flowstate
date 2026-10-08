@@ -215,6 +215,11 @@ specific they are:
 Adjust these to your layout. Pointing the server at every `*.yaml` in a repository
 works, but you will get Flowfile diagnostics on your Kubernetes manifests.
 
+GitHub does not recognize Flowfiles yet. The Linguist entry, samples and grammar
+scopes are prepared in [`editors/linguist`](../editors/linguist) and not submitted,
+because Linguist asks for thousands of indexed files per extension first (see its
+[usage requirements](https://github.com/github-linguist/linguist/blob/main/CONTRIBUTING.md)).
+
 ### What the server provides for a test file
 
 A `*.test.yaml` and a `testdefaults.yaml` speak their own, narrower language, and

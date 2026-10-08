@@ -97,15 +97,12 @@ func durableFrom(ctx context.Context) DurableRunner {
 // durableIneligible says why a case cannot be run on the durable driver, or
 // the empty string when it can. The reason is reported, never swallowed: a
 // green that silently skipped the proof would read as one that passed it.
-func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStub, unregistered []string) string {
+func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStub) string {
 	switch {
 	case len(test.Faults) > 0:
 		return "it injects faults, which only the local driver's scheduler can"
 	case test.Trigger != nil:
 		return "it replays a trigger delivery"
-	}
-	if pins, err := v1.PinnedPlugins(workflow); err != nil || len(pins) > 0 {
-		return "the workflow requires plugins, which a durable worker takes from a deployment's selection"
 	}
 	if readsRunFacts(workflow) {
 		return "it reads run.local, run.identity, run.workflow_id or run.run_id, which differ by design between a local run and a durable one"
@@ -120,10 +117,6 @@ func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStu
 			}
 		}
 	}
-	if len(unregistered) > 0 {
-		return fmt.Sprintf("it stubs %q, a task this build does not register, which the durable worker refuses", unregistered[0])
-	}
-
 	return ""
 }
 
@@ -209,20 +202,6 @@ func exprReadsRunFacts(e *expr.Expr, depth int) bool {
 
 // stepScopeAmbiguity matches a workflow that calls another or compensates a step.
 var stepScopeAmbiguity = regexp.MustCompile(`\b(call|undo)\s*:`)
-
-// unregisteredTasks is the subset of names this build registers no task for.
-// Asked before a case swaps placeholders for them in ([swapRegistry]), which
-// would make every stubbed name look registered.
-func unregisteredTasks(names []string) []string {
-	var missing []string
-	for _, name := range names {
-		if _, known := v1.LookupTask(name); !known {
-			missing = append(missing, name)
-		}
-	}
-
-	return missing
-}
 
 // durableDisagreements runs the case's workflow durably under ctx, whose
 // registry carries a fresh set of the case's stubs, and reports where it

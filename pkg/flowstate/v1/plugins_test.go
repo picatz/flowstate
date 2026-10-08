@@ -521,3 +521,31 @@ func TestTheProgramDigestIgnoresPinsAcrossTheCallTree(t *testing.T) {
 	admitted.Steps[0].Id = "alert"
 	require.NotEqual(t, v1.WorkflowIRDigest(compiled), v1.WorkflowIRDigest(admitted))
 }
+
+// The rehearsal catalog holds each required plugin once, at the highest floor
+// any workflow in the call tree asks for, and a specification pinned against it
+// is admitted by the real check; a worker with no catalog still refuses it.
+func TestRehearsalPluginCatalogSatisfiesExactlyWhatIsRequired(t *testing.T) {
+	t.Parallel()
+
+	callee := &v1.Workflow{Name: "callee", PluginRequirements: []*v1.PluginRequirement{
+		{Name: "git", MinimumVersion: "v0.3.0"}, {Name: "slack", MinimumVersion: "v1.0.0"},
+	}}
+	wf := &v1.Workflow{Name: "root", PluginRequirements: []*v1.PluginRequirement{
+		{Name: "git", MinimumVersion: "v0.1.0"},
+	}, Steps: []*v1.Node{{Id: "c", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}}}}
+
+	catalog, err := v1.RehearsalPluginCatalog(wf)
+	require.NoError(t, err)
+	require.Len(t, catalog.GetPlugins(), 2)
+	require.Equal(t, "git", catalog.GetPlugins()[0].GetName())
+	require.Equal(t, "v0.3.0", catalog.GetPlugins()[0].GetVersion())
+
+	require.NoError(t, v1.ResolvePlugins(wf, catalog))
+	require.NoError(t, v1.CheckResolvedPlugins(wf, catalog))
+	require.Error(t, v1.CheckResolvedPlugins(wf, nil), "a worker with no plugins refuses the pinned run")
+
+	bad := &v1.Workflow{PluginRequirements: []*v1.PluginRequirement{{Name: "x", MinimumVersion: "latest"}}}
+	_, err = v1.RehearsalPluginCatalog(bad)
+	require.Error(t, err)
+}
