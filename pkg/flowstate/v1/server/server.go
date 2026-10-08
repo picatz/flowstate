@@ -2698,10 +2698,7 @@ func timeoutFailure(status v1.RunResponse_Status, kind enums.TimeoutType) *v1.Ru
 		}
 	}
 
-	return &v1.RunResponse_Error{
-		Message: status.String() + ": timed out (" + timeoutKindText(kind) + ")",
-		Kind:    v1.ErrorKindRunTimeout.String(),
-	}
+	return v1.RunTimeoutFailure(timeoutKindText(kind))
 }
 
 // timeoutKindText names a Temporal timeout type in words an author's Flowfile
