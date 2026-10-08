@@ -28,3 +28,13 @@ Both are settings under the plugin's `/plugin` config screen.
 | --- | --- | --- |
 | `flowBinary` | `flow` | The executable the mod runs; set it when `flow` is not on `PATH`. |
 | `validateOnEdit` | `true` | Turn the after-edit validation off. |
+
+## Types come from the schema
+
+The mod reads `flow validate -o jsonl`, which is the schema's
+`flowstate.v1.DiagnosticReport`. Its TypeScript declarations,
+`types/flowstate.d.ts`, are generated from `proto/` by
+`cmd/protoc-gen-flowstate-ts` in the same `buf generate` run as the Go types, with
+the schema's comments as TSDoc, and CI fails if they drift. To declare another
+answer for a new feature, add a `message=` option for it in `buf.gen.yaml` and run
+`go tool -modfile=tools/external/go.mod buf generate`.
