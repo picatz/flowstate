@@ -1488,13 +1488,18 @@ message GetCheckpointRequest {
 // GetCheckpointResponse is the checkpoint a segment started from, or why there
 // is none.
 message GetCheckpointResponse {
-  // Checkpoint is set when the segment's start is a legal starting state.
-  CheckpointInfo checkpoint = 1;
+  // Result is the checkpoint, or why there is none. Exactly one is set.
+  oneof result {
+    option (buf.validate.oneof).required = true;
 
-  // UnavailableReason is set, and checkpoint is not, when it is not: the
-  // position is inside a call, a loop or concurrent work, or the segment's
-  // state could not be read. Never empty when checkpoint is unset.
-  string unavailable_reason = 2;
+    // Checkpoint is set when the segment's start is a legal starting state.
+    CheckpointInfo checkpoint = 1;
+
+    // UnavailableReason is set when it is not: the position is inside a call,
+    // a loop or concurrent work, the carried state is invalid or too large to
+    // resume, or it could not be read.
+    string unavailable_reason = 2 [(buf.validate.field).string.min_len = 1];
+  }
 }
 
 // GetTimelineResponse is what one run did.

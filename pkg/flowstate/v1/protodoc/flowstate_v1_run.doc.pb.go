@@ -1346,8 +1346,8 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.CheckpointInfo.size_bytes",
-			Leading: " SizeBytes is the serialized size of the carried state, which a resume\n" +
-				" weighs against [MaxRunStateBytes].\n",
+			Leading: " SizeBytes is the size of the carried state as a resume weighs it against\n" +
+				" [MaxRunStateBytes]: the payload encoding, not the binary wire size.\n",
 		},
 		{
 			Name: "flowstate.v1.TimelineEntry",

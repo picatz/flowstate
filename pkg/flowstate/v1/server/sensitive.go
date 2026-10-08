@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
@@ -307,6 +308,14 @@ func (s *FlowstateServer) startedRunState(ctx context.Context, namespace, workfl
 	if err != nil {
 		return nil, err
 	}
+
+	return s.startedRunStateVia(ctx, temporal, workflowID, runID)
+}
+
+// startedRunStateVia is [FlowstateServer.startedRunState] through a client the
+// caller already holds, for one that must read the history through the client
+// its authorization check used.
+func (s *FlowstateServer) startedRunStateVia(ctx context.Context, temporal client.Client, workflowID, runID string) (*v1.RunState, error) {
 	iter := temporal.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 	if iter == nil || !iter.HasNext() {
 		return nil, errors.New("the run has no history")

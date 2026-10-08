@@ -1057,9 +1057,13 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.GetCheckpointResponse.unavailable_reason",
-			Leading: " UnavailableReason is set, and checkpoint is not, when it is not: the\n" +
-				" position is inside a call, a loop or concurrent work, or the segment's\n" +
-				" state could not be read. Never empty when checkpoint is unset.\n",
+			Leading: " UnavailableReason is set when it is not: the position is inside a call,\n" +
+				" a loop or concurrent work, the carried state is invalid or too large to\n" +
+				" resume, or it could not be read.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetCheckpointResponse.result",
+			Leading: " Result is the checkpoint, or why there is none. Exactly one is set.\n",
 		},
 		{
 			Name:    "flowstate.v1.GetTimelineResponse",

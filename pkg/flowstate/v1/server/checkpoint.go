@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"connectrpc.com/connect"
-	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -28,36 +27,48 @@ func (s *FlowstateServer) GetCheckpoint(
 	// Authorized, and the run resolved, before its history is read: an empty
 	// run id means the latest, and the read must be of the execution the check
 	// was made against.
-	_, described, err := s.authorizeRun(ctx, "GetCheckpoint", req.Msg.GetWorkflowId(), req.Msg.GetRunId())
+	temporal, described, err := s.authorizeRun(ctx, "GetCheckpoint", req.Msg.GetWorkflowId(), req.Msg.GetRunId())
 	if err != nil {
 		return nil, err
 	}
 	execution := described.GetWorkflowExecutionInfo().GetExecution()
 
-	state, err := s.startedRunState(ctx, s.identityFor(ctx).GetPrincipal().GetNamespace(),
-		execution.GetWorkflowId(), execution.GetRunId())
+	state, err := s.startedRunStateVia(ctx, temporal, execution.GetWorkflowId(), execution.GetRunId())
 	if err != nil {
 		// Said rather than hidden: the caller asked about a run they may read,
 		// and "could not read its start" is an answer, not a server fault.
-		return connect.NewResponse(&v1.GetCheckpointResponse{
-			UnavailableReason: fmt.Sprintf("the segment's carried state could not be read: %v", err),
-		}), nil
+		return unavailable(fmt.Sprintf("the segment's carried state could not be read: %v", err)), nil
 	}
 
+	// The same admission a resume applies, so a point is never reported
+	// available that Verify would refuse.
+	if err := v1.Validate(state); err != nil {
+		return unavailable(fmt.Sprintf("the segment's carried state is invalid: %v", err)), nil
+	}
+	if err := v1.CheckRunStateSize(state); err != nil {
+		return unavailable(err.Error()), nil
+	}
 	if err := v1.CheckpointUnavailable(state); err != nil {
-		return connect.NewResponse(&v1.GetCheckpointResponse{UnavailableReason: unavailableReason(err)}), nil
+		return unavailable(unavailableReason(err)), nil
 	}
 
-	return connect.NewResponse(&v1.GetCheckpointResponse{
+	return connect.NewResponse(&v1.GetCheckpointResponse{Result: &v1.GetCheckpointResponse_Checkpoint{
 		Checkpoint: &v1.CheckpointInfo{
 			WorkflowId: execution.GetWorkflowId(),
 			RunId:      execution.GetRunId(),
 			Segment:    state.GetSegment(),
 			Step:       v1.CheckpointStep(state),
 			SpecHash:   v1.CanonicalDigest(state.GetWorkflow()),
-			SizeBytes:  int64(proto.Size(state)),
+			SizeBytes:  int64(v1.RunStateEncodedSize(state)),
 		},
-	}), nil
+	}}), nil
+}
+
+// unavailable is the answer for a segment that is not a legal starting state.
+func unavailable(reason string) *connect.Response[v1.GetCheckpointResponse] {
+	return connect.NewResponse(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_UnavailableReason{UnavailableReason: reason},
+	})
 }
 
 // unavailableReason is the sentence a caller reads for a position that is not a

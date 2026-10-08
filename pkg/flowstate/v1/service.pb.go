@@ -2553,14 +2553,15 @@ func (x *GetCheckpointRequest) GetRunId() string {
 // is none.
 type GetCheckpointResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Checkpoint is set when the segment's start is a legal starting state.
-	Checkpoint *CheckpointInfo `protobuf:"bytes,1,opt,name=checkpoint,proto3" json:"checkpoint,omitempty"`
-	// UnavailableReason is set, and checkpoint is not, when it is not: the
-	// position is inside a call, a loop or concurrent work, or the segment's
-	// state could not be read. Never empty when checkpoint is unset.
-	UnavailableReason string `protobuf:"bytes,2,opt,name=unavailable_reason,json=unavailableReason,proto3" json:"unavailable_reason,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// Result is the checkpoint, or why there is none. Exactly one is set.
+	//
+	// Types that are valid to be assigned to Result:
+	//
+	//	*GetCheckpointResponse_Checkpoint
+	//	*GetCheckpointResponse_UnavailableReason
+	Result        isGetCheckpointResponse_Result `protobuf_oneof:"result"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetCheckpointResponse) Reset() {
@@ -2593,19 +2594,50 @@ func (*GetCheckpointResponse) Descriptor() ([]byte, []int) {
 	return file_flowstate_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
+func (x *GetCheckpointResponse) GetResult() isGetCheckpointResponse_Result {
+	if x != nil {
+		return x.Result
+	}
+	return nil
+}
+
 func (x *GetCheckpointResponse) GetCheckpoint() *CheckpointInfo {
 	if x != nil {
-		return x.Checkpoint
+		if x, ok := x.Result.(*GetCheckpointResponse_Checkpoint); ok {
+			return x.Checkpoint
+		}
 	}
 	return nil
 }
 
 func (x *GetCheckpointResponse) GetUnavailableReason() string {
 	if x != nil {
-		return x.UnavailableReason
+		if x, ok := x.Result.(*GetCheckpointResponse_UnavailableReason); ok {
+			return x.UnavailableReason
+		}
 	}
 	return ""
 }
+
+type isGetCheckpointResponse_Result interface {
+	isGetCheckpointResponse_Result()
+}
+
+type GetCheckpointResponse_Checkpoint struct {
+	// Checkpoint is set when the segment's start is a legal starting state.
+	Checkpoint *CheckpointInfo `protobuf:"bytes,1,opt,name=checkpoint,proto3,oneof"`
+}
+
+type GetCheckpointResponse_UnavailableReason struct {
+	// UnavailableReason is set when it is not: the position is inside a call,
+	// a loop or concurrent work, the carried state is invalid or too large to
+	// resume, or it could not be read.
+	UnavailableReason string `protobuf:"bytes,2,opt,name=unavailable_reason,json=unavailableReason,proto3,oneof"`
+}
+
+func (*GetCheckpointResponse_Checkpoint) isGetCheckpointResponse_Result() {}
+
+func (*GetCheckpointResponse_UnavailableReason) isGetCheckpointResponse_Result() {}
 
 // GetTimelineResponse is what one run did.
 type GetTimelineResponse struct {
@@ -3389,12 +3421,13 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
 	"workflowId\x12\"\n" +
-	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\"\x84\x01\n" +
-	"\x15GetCheckpointResponse\x12<\n" +
+	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\"\xa2\x01\n" +
+	"\x15GetCheckpointResponse\x12>\n" +
 	"\n" +
-	"checkpoint\x18\x01 \x01(\v2\x1c.flowstate.v1.CheckpointInfoR\n" +
-	"checkpoint\x12-\n" +
-	"\x12unavailable_reason\x18\x02 \x01(\tR\x11unavailableReason\"\xc7\x02\n" +
+	"checkpoint\x18\x01 \x01(\v2\x1c.flowstate.v1.CheckpointInfoH\x00R\n" +
+	"checkpoint\x128\n" +
+	"\x12unavailable_reason\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01H\x00R\x11unavailableReasonB\x0f\n" +
+	"\x06result\x12\x05\xbaH\x02\b\x01\"\xc7\x02\n" +
 	"\x13GetTimelineResponse\x125\n" +
 	"\aentries\x18\x01 \x03(\v2\x1b.flowstate.v1.TimelineEntryR\aentries\x12\x15\n" +
 	"\x06run_id\x18\x06 \x01(\tR\x05runId\x12\x1c\n" +
@@ -3691,6 +3724,10 @@ func file_flowstate_v1_service_proto_init() {
 	}
 	file_flowstate_v1_service_proto_msgTypes[7].OneofWrappers = []any{}
 	file_flowstate_v1_service_proto_msgTypes[11].OneofWrappers = []any{}
+	file_flowstate_v1_service_proto_msgTypes[26].OneofWrappers = []any{
+		(*GetCheckpointResponse_Checkpoint)(nil),
+		(*GetCheckpointResponse_UnavailableReason)(nil),
+	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

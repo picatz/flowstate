@@ -2633,8 +2633,8 @@ type CheckpointInfo struct {
 	// SpecHash is the canonical digest of the workflow the checkpoint carries; see
 	// [Checkpoint.spec_hash].
 	SpecHash string `protobuf:"bytes,5,opt,name=spec_hash,json=specHash,proto3" json:"spec_hash,omitempty"`
-	// SizeBytes is the serialized size of the carried state, which a resume
-	// weighs against [MaxRunStateBytes].
+	// SizeBytes is the size of the carried state as a resume weighs it against
+	// [MaxRunStateBytes]: the payload encoding, not the binary wire size.
 	SizeBytes     int64 `protobuf:"varint,6,opt,name=size_bytes,json=sizeBytes,proto3" json:"size_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

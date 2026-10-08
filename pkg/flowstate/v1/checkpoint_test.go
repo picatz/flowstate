@@ -263,3 +263,18 @@ func TestCheckpointUnavailableNamesTheIneligiblePositions(t *testing.T) {
 	require.NoError(t, v1.CheckpointUnavailable(state), "the end of the steps is a legal position")
 	require.Empty(t, v1.CheckpointStep(state))
 }
+
+func TestGetCheckpointResponseHoldsExactlyOneAnswer(t *testing.T) {
+	t.Parallel()
+
+	require.Error(t, v1.Validate(&v1.GetCheckpointResponse{}), "neither a checkpoint nor a reason")
+	require.Error(t, v1.Validate(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_UnavailableReason{},
+	}), "an unavailable answer must say why")
+	require.NoError(t, v1.Validate(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_UnavailableReason{UnavailableReason: "inside a loop"},
+	}))
+	require.NoError(t, v1.Validate(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_Checkpoint{Checkpoint: &v1.CheckpointInfo{WorkflowId: "wf"}},
+	}))
+}
