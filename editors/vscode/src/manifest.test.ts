@@ -174,6 +174,15 @@ test("both suite extensions are associated", () => {
   }
 });
 
+test("the .flow.yaml naming convention is associated", () => {
+  for (const pattern of ["**/*.flow.yaml", "**/*.flow.yml"]) {
+    assert.ok(
+      filenamePatterns.includes(pattern),
+      `filenamePatterns is missing ${pattern}; docs/EDITORS.md lists it as a Flowfile name`,
+    );
+  }
+});
+
 // The debug type is what makes a Flowfile's gutter accept a breakpoint and F5
 // start `flow dap`. Both halves are manifest entries nothing else checks: a
 // missing `breakpoints` contribution leaves line breakpoints unsettable with no

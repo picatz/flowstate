@@ -23,7 +23,7 @@ change that would have the extension judge a Flowfile belongs in
    naming the problem and offers to open the setting, rather than silently
    doing nothing.
 2. **Syntax association and language configuration.** `Flowfile`,
-   `Flowfile.yaml`, `workflow.yaml`, `workflow.yml`, `workflows/*.yaml`,
+   `Flowfile.yaml`, `workflow.yaml`, `workflow.yml`, `workflows/*.yaml`, `*.flow.yaml`,
    `*.test.yaml` and `testdefaults.yaml` are recognized
    (`docs/EDITORS.md`'s "Which files are Flowfiles" list, mirrored here);
    the server checks the two test-file shapes with `flow test`'s own loader

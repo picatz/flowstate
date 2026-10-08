@@ -204,6 +204,8 @@ specific they are:
 
 - a file literally named `Flowfile` or `Flowfile.yaml`
 - `workflow.yaml` or `workflow.yml`
+- `*.flow.yaml` or `*.flow.yml` — the name to give a Flowfile that is not alone in
+  its directory (`orders.flow.yaml`); a suite for it is `orders.flow.test.yaml`
 - anything under a `workflows/` directory
 - `*.test.yaml` and `testdefaults.yaml` — `flow test`'s suite format and its
   shared directory fixture, which the server recognizes by name and checks with
@@ -328,6 +330,7 @@ vim.filetype.add({
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.flow%.ya?ml'] = 'flowfile',
     ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
@@ -465,6 +468,8 @@ file-types = [
   { glob = "Flowfile.yaml" },
   { glob = "workflow.yaml" },
   { glob = "workflow.yml" },
+  { glob = "*.flow.yaml" },
+  { glob = "*.flow.yml" },
   { glob = "workflows/*.yaml" },
 ]
 language-servers = ["flowstate"]
@@ -559,6 +564,7 @@ whichever of the three you actually have:
 (add-to-list 'auto-mode-alist '("/Flowfile\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflow\\.ya?ml\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflows/.*\\.ya?ml\\'" . flowfile-mode))
+(add-to-list 'auto-mode-alist '("\\.flow\\.ya?ml\\'" . flowfile-mode))
 
 (with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs

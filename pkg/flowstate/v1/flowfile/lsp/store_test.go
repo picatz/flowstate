@@ -363,3 +363,24 @@ func TestChangeDropsAnIncrementalEditWhoseBaseDocumentWasReplacedDuringItsParse(
 		assert.Equal(t, 5, current.version)
 	})
 }
+
+// TestKindOfURIReadsTheBasename pins the naming convention the editor
+// configurations share: `name.flow.yaml` is a Flowfile, its suite
+// `name.flow.test.yaml` is a test file, and nothing else about the directory
+// matters. The negative direction is the one that costs: a suite that fell
+// through to the workflow grammar would draw a workflow's diagnostics.
+func TestKindOfURIReadsTheBasename(t *testing.T) {
+	t.Parallel()
+
+	for uri, want := range map[string]documentKind{
+		"file:///repo/Flowfile":                   docWorkflow,
+		"file:///repo/orders.flow.yaml":           docWorkflow,
+		"file:///repo/orders.flow.yml":            docWorkflow,
+		"file:///repo/orders.flow.test.yaml":      docTestFile,
+		"file:///repo/orders.test.yaml":           docTestFile,
+		"file:///repo/testdefaults.yaml":          docTestDefaults,
+		"file:///repo/flow.test.yaml/orders.yaml": docWorkflow,
+	} {
+		require.Equal(t, want, kindOfURI(lsp.DocumentURI(uri)), uri)
+	}
+}

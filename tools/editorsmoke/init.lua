@@ -18,6 +18,7 @@ vim.filetype.add({
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.flow%.ya?ml'] = 'flowfile',
     ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
