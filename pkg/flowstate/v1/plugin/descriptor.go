@@ -17,6 +17,7 @@ import (
 	// must link them. flowstatev1 does not (a domain type is not core), and
 	// this is the one place a host needs them (docs/ARCHITECTURE.md, "Proto
 	// packages: core versus domain").
+	_ "github.com/picatz/flowstate/pkg/flowstate/chat/v1"
 	_ "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 )
 
