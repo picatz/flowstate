@@ -275,4 +275,28 @@ message ExpressionFailure {
   // steps nest, so a consumer that holds the Flowfile can find the line the
   // sentence is about. Empty when the failure was raised outside any step.
   string step = 8 [(buf.validate.field).string.max_bytes = 256];
+
+  // Location is where that step is written, when the specification carried it
+  // (`Node.source`). Unset for a hand-built specification, for a step of a
+  // called workflow, and for an id declared in more than one place.
+  SourceLocation location = 9;
+}
+
+// SourceLocation is where a step is written in the file it was compiled from.
+//
+// Advisory: it is carried so a failure can point back at the file without the
+// reader holding it, and it is never part of the program. It is cleared from
+// every digest ([CanonicalWorkflow], [WorkflowIRDigest]) and counts against the
+// specification's size like any other field. Lines and columns are 1-based and
+// count characters, as `Diagnostic.line` and `Diagnostic.column` do.
+message SourceLocation {
+  // File is the path as the submitter named it, or its base name when that was
+  // absolute, so a home directory does not travel into durable history.
+  string file = 1 [(buf.validate.field).string.max_bytes = 256];
+
+  // Line is the 1-based line.
+  int32 line = 2 [(buf.validate.field).int32.gte = 1];
+
+  // Column is the 1-based column, or zero when only the line is known.
+  int32 column = 3 [(buf.validate.field).int32.gte = 0];
 }

@@ -62,6 +62,8 @@ func TestStepGrammarKeysCoverNodeSchema(t *testing.T) {
 		switch name {
 		case "task":
 			// A dynamic key supplied by the active task registry.
+		case "source":
+			// An advisory position the loader stamps; never author input.
 		case "condition":
 			schema = append(schema, "if")
 		case "policy":

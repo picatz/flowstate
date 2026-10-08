@@ -2664,14 +2664,6 @@ func loadCompiledSpec(path string) (*v1.Workflow, error) {
 // its step was reached, by which point earlier steps had already made their
 // requests.
 func loadWorkflow(path string) (*v1.Workflow, error) {
-	workflow, _, err := loadWorkflowAt(path)
-
-	return workflow, err
-}
-
-// loadWorkflowAt is [loadWorkflow] that also returns where the file's steps are
-// written, for a command that points a run-time failure back at the file.
-func loadWorkflowAt(path string) (*v1.Workflow, *flowfile.Positions, error) {
 	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
 	// a `call:` step is resolved relative to this file's own directory, and only
 	// the path-aware entry points know it.
@@ -2687,15 +2679,20 @@ func loadWorkflowAt(path string) (*v1.Workflow, *flowfile.Positions, error) {
 		// (#384). A failure that is not diagnostics is about the invocation rather
 		// than the file, and keeps its own wrapping.
 		if parsed, ok := errors.AsType[flowfile.Diagnostics](err); ok {
-			return nil, nil, diagnosticsError(path, parsed)
+			return nil, diagnosticsError(path, parsed)
 		}
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(diagnostics) > 0 {
-		return nil, nil, diagnosticsError(path, diagnostics)
+		return nil, diagnosticsError(path, diagnostics)
 	}
 
-	return workflow, positions, nil
+	// Where each step is written travels with the specification it is run from, so
+	// a failure can point back at this file wherever it is read, not only in this
+	// process. Advisory, and cleared from every digest.
+	flowfile.AttachSources(workflow, positions, path)
+
+	return workflow, nil
 }
 
 // newRootCommand builds the whole CLI: every command, its flags, and the groups the

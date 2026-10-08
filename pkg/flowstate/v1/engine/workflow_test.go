@@ -2847,7 +2847,7 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		Name: "expression-failure-structured",
 		Steps: []*v1.Node{
 			{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
-			{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
+			{Id: "bad", Source: &v1.SourceLocation{File: "w.yaml", Line: 6, Column: 5}, Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
 		},
 	}
 	want := &v1.ExpressionFailure{
@@ -2857,6 +2857,7 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		Offset:        proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
 		Caret:         proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
 		Step:          "bad",
+		Location:      &v1.SourceLocation{File: "w.yaml", Line: 6, Column: 5},
 	}
 
 	t.Run("local", func(t *testing.T) {
@@ -2905,6 +2906,7 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		}
 		qualified := proto.CloneOf(want)
 		qualified.Step = "callee/bad"
+		qualified.Location = nil
 
 		_, err := v1.Run(t.Context(), caller)
 		require.Error(t, err)

@@ -1478,6 +1478,12 @@ func init() {
 				" work, it is a property of a step doing some other kind.\n",
 		},
 		{
+			Name: "flowstate.v1.Node.source",
+			Leading: " Source is where this step is written, set by the compiler front end that read\n" +
+				" a file and cleared from every digest. Advisory: absent on a hand-built\n" +
+				" specification and on a step whose id the file declares more than once.\n",
+		},
+		{
 			Name:    "flowstate.v1.Node.kind",
 			Leading: " A node must be a specific kind of operation.\n",
 		},

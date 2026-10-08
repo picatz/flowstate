@@ -1624,7 +1624,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// reached (#2124).
 			observeGuardFailed(ctx, node, err)
 
-			return fmt.Errorf("step %q: %w", node.GetId(), AttributeToStep(err, node.GetId()))
+			return fmt.Errorf("step %q: %w", node.GetId(), AttributeToStep(err, node))
 		}
 		if !run {
 			// The one fact the transcript cannot carry — a skipped step
@@ -1768,7 +1768,7 @@ const registerAtCompletion = -1
 // handed back.
 func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, err error, scope *Scope, tolerated map[string]struct{}, returned SensitiveValues) error {
 	if err != nil {
-		AttributeToStep(err, node.GetId())
+		AttributeToStep(err, node)
 
 		// Cancellation is not a step failure, so `continue_on_error` does not
 		// get to tolerate it — the durable driver says the same thing at the

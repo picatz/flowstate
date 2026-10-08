@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -535,21 +536,26 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
 }
 
-// AttributeToStep records on err's structured account the step it failed in,
-// when err carries one and no inner step claimed it first, so nesting names the
-// innermost. It returns err unchanged: both drivers call it where they wrap a
-// failure with the step's name, which is the one place the id is in hand.
-func AttributeToStep(err error, step string) error {
-	ExpressionFailureOf(err).AttributeStep(step)
+// AttributeToStep records on err's structured account the step it failed in and
+// where that step is written, when err carries one and no inner step claimed it
+// first, so nesting names the innermost. It returns err unchanged: both drivers
+// call it where they wrap a failure with the step's name, which is the one place
+// the node is in hand.
+func AttributeToStep(err error, node *Node) error {
+	ExpressionFailureOf(err).AttributeStep(node.GetId(), node.GetSource())
 
 	return err
 }
 
-// AttributeStep sets the step the failure happened in unless an inner step
-// already did. It is safe on a nil receiver.
-func (f *ExpressionFailure) AttributeStep(step string) {
+// AttributeStep sets the step the failure happened in, and the location the
+// specification carried for it, unless an inner step already did. It is safe on
+// a nil receiver.
+func (f *ExpressionFailure) AttributeStep(step string, source *SourceLocation) {
 	if f != nil && f.Step == "" {
 		f.Step = textbound.Cut(step, maxFailureFieldBytes)
+		if source != nil {
+			f.Location = proto.CloneOf(source)
+		}
 	}
 }
 

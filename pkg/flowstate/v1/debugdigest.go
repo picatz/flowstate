@@ -25,6 +25,10 @@ func WorkflowIRDigest(workflow *Workflow) string {
 		_ = walkEmbeddedWorkflows(workflow, 0, func(wf *Workflow) error {
 			wf.ResolvedPlugins = nil
 			wf.ResolvedTaskCapabilities = nil
+			// Where a step is written is advisory and never part of the program,
+			// so a source map bound to this digest still verifies a run whose
+			// specification carries locations.
+			WalkNodes(wf.GetSteps(), Walk{Node: func(node *Node) { node.Source = nil }})
 
 			return nil
 		})
