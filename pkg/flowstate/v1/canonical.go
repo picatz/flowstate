@@ -28,7 +28,10 @@ import (
 //     source text at all, changes the message without changing a single
 //     evaluation. The offsets are cleared and the ids are renumbered 1..n in a
 //     fixed walk of the tree, with the ids that key and fill the macro-call
-//     table rewritten to match, so the tree is what remains.
+//     table rewritten to match, so the tree is what remains. The digest of the
+//     file a workflow was read from is cleared for the same reason: it names
+//     the bytes the program came from, and a callee inlined into a caller is the
+//     same program as the file it was read from.
 //   - What the admitting control plane added. [Workflow.ResolvedPlugins] and
 //     [Workflow.ResolvedTaskCapabilities] pin the deployment a run was admitted
 //     on, not the program, and are cleared on every workflow in the call tree,
@@ -66,6 +69,7 @@ func canonicalize(m protoreflect.Message) {
 	case *Workflow:
 		msg.ResolvedPlugins = nil
 		msg.ResolvedTaskCapabilities = nil
+		msg.SourceDigest = ""
 	case *Node:
 		// Where a step is written is not what it does: the same program
 		// compiled from a re-indented file is the same program.
