@@ -478,3 +478,17 @@ tests:
 	assert.Contains(t, all, "[redacted]",
 		"and what it should read as is the marker every other rendering uses")
 }
+
+// TestTestDebugRecordsTheSession: the same file the run-local verb writes, from
+// the test verb, and it replays as a script.
+func TestTestDebugRecordsTheSession(t *testing.T) {
+	dir := writeDebugFixture(t)
+	recording := filepath.Join(t.TempDir(), "session.script")
+
+	res := runFlowStdin(t, "step\nbogus\nstep\n", "test", "--debug", "--record", recording, "--run", "the debugged case", dir)
+	require.NoError(t, res.Err)
+
+	got, err := os.ReadFile(recording)
+	require.NoError(t, err)
+	assert.Equal(t, "step\nstep\n", string(got))
+}

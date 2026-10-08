@@ -2949,6 +2949,7 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 		"hold the run before each step and read commands from the terminal — step, "+
 			"continue, until, break, inspect, scope, quit; the console shares stderr "+
 			"with the run's account, so stdout stays the answer under every `--output`")
+	addRecordFlag(runLocalCmd)
 
 	// Supplying signals up front, and naming who they are from. Declared
 	// through a helper because `flow debug replay` is the same local run with

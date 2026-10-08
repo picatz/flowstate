@@ -88,6 +88,7 @@ func newDebugCommand() *cobra.Command {
 	addPluginFlags(replayCmd)
 	addLocalRehearsalFlags(replayCmd)
 	addLocalSignalFlags(replayCmd)
+	addRecordFlag(replayCmd)
 
 	// How this command tells the shared local-run path that its run is
 	// debugged. It is not part of the verb's surface — a replay with no

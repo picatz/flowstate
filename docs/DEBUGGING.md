@@ -70,6 +70,11 @@ $ flow run local --debug examples/loop-accumulate/workflow.yaml
 $ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
 ```
 
+Add `--record session.script` to `flow run local --debug` or `flow test --debug` and the
+commands the session accepted are written to that file when it ends, however it ends
+(`quit` and ctrl-C included): a mistyped command or a refused `break` is not in it, the file
+is readable by you alone, and `flow debug replay` reaches the same stops from it.
+
 [examples/debugging](../examples/debugging) walks one small workflow — a loop, a
 parallel block and a call — through every front, local and durable.
 
