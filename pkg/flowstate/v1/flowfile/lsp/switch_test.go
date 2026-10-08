@@ -67,9 +67,31 @@ func TestSwitchBodiesAreInTheModel(t *testing.T) {
 	pos.Character = len("                message: ${steps.") + 1
 	assert.Empty(t, definitionAt(doc, pos), "a sibling case's step is not visible: only one body runs")
 
-	// `default:` is written after the cases' bodies, in the last body's range, and
-	// still documents itself.
-	h := hoverAt(doc, positionOf(t, switchSource, "default:", 1))
+}
+
+// A step's range ends where its first nested step begins, so a `default:` written
+// after the cases' bodies sits in the last body's range. Hover still documents it
+// by trying each enclosing block's keys.
+func TestHoverFindsADefaultWrittenAfterTheCaseBodies(t *testing.T) {
+	t.Parallel()
+	const src = `name: routed
+steps:
+  - id: on_event
+    switch:
+      value: ${"opened"}
+      cases:
+        - case: opened
+          steps:
+            - id: triage
+              http:
+                url: https://example.com
+      default:
+        steps: []
+`
+	doc := refsDoc(t, src)
+	pos := positionOf(t, src, "default:", 1)
+	require.Equal(t, "triage", doc.parsed.stepAt(pos).id, "the key sits in the last body's range")
+	h := hoverAt(doc, pos)
 	require.NotNil(t, h)
 }
 
