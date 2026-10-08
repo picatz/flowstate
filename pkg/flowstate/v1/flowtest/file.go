@@ -2285,7 +2285,16 @@ func checkDefaults(p *problems, d *Defaults, from contribution) bool {
 		if !checkStubShape(p, spot, where, s) {
 			continue
 		}
-		twins.note(p, spot, where, s)
+		// A stub a directory's testdefaults.yaml wrote is ordered after this
+		// file's own by the fold and cannot be reordered from here, so it is
+		// judged for twins but never for shadowing, like any inherited stub.
+		judged := s
+		if elsewhere {
+			copied := *s
+			copied.fromDefaults = true
+			judged = &copied
+		}
+		twins.note(p, spot, where, judged)
 		checkNoExpressions(p, spot.in(spot.at.field("where")), where+".where", defaultsAreFixtures, s.Where, 0)
 		checkNoExpressions(p, spot.in(spot.at.field("returns")), where+".returns", defaultsAreFixtures, s.Returns, 0)
 	}

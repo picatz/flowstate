@@ -291,3 +291,35 @@ tests:
 	assert.Empty(t, report.GetRefused())
 	assert.NotEmpty(t, report.GetCases())
 }
+
+// A suite's `defaults:` catch-all over a filtered stub from the directory's
+// testdefaults.yaml is the same override one fold level up: the directory's stub
+// is ordered after the suite's and cannot be moved from the suite.
+func TestASuiteDefaultsCatchAllOverADirectoryFilteredStubIsNotShadowRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+	writeFile(t, dir+"/"+flowtest.DirDefaultsName, `
+defaults:
+  stubs:
+    - task: log
+      where: inputs.message == "hello"
+      returns: {}
+`)
+	path := dir + "/workflow.test.yaml"
+	writeFile(t, path, `
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the override
+    workflow: ./workflow.yaml
+    expect:
+      ran: [greet]
+`)
+	report := flowtest.RunFile(path)
+	assert.Empty(t, report.GetRefused())
+	assert.NotEmpty(t, report.GetCases())
+}
