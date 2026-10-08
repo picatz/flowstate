@@ -494,3 +494,26 @@ func TestPluginMaxCallTimeoutIsReachableFromAShippedBinary(t *testing.T) {
 		t.Cleanup(func() { _ = host.Close(t.Context()) })
 	})
 }
+
+// TestPluginsListSaysASecretsPluginNeedsAnAccessPolicy is #1545: a plugin that
+// advertises a secret scheme registers a provider when it launches, and a
+// process holding one refuses to run tasks without --auth-policy, so the
+// listing says so before the refusal does, and says nothing for a plugin that
+// advertises no scheme.
+func TestPluginsListSaysASecretsPluginNeedsAnAccessPolicy(t *testing.T) {
+	t.Parallel()
+
+	catalog := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{
+		{Name: "vaultish", Path: "/bin/flowstate-plugin-vaultish", SecretSchemes: []string{"vaultish"}},
+		{Name: "plain", Path: "/bin/flowstate-plugin-plain"},
+	}}
+
+	var out bytes.Buffer
+	require.NoError(t, writePluginCatalog(ui.Plain(&out, &bytes.Buffer{}), catalog))
+
+	rendered := out.String()
+	const advice = "launching it needs --auth-policy with a secrets section"
+	assert.Equal(t, 1, strings.Count(rendered, advice), "only the secrets plugin carries the advice")
+	assert.Less(t, strings.Index(rendered, "vaultish"), strings.Index(rendered, advice))
+	assert.Less(t, strings.Index(rendered, advice), strings.Index(rendered, "plain\n"), "the advice sits under the plugin that needs it")
+}
