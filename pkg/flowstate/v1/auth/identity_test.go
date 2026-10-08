@@ -2,6 +2,7 @@ package auth_test
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -11,103 +12,81 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
 	"github.com/picatz/jose/pkg/jwa"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/structpb"
 )
-
-// protoIdentity has the accessors the generated flowstate.v1.WorkloadIdentity
-// message has, and stands in for it here so this package's tests do not depend on
-// the generated types.
-//
-// That [auth.IdentityFrom] accepts this at all is the point of the
-// [auth.IdentitySource] interface: the auth package cannot import the generated
-// protobuf types, because the package that defines them needs to import auth.
-type protoIdentity struct {
-	subject    string
-	issuer     string
-	claims     map[string]string
-	namespace  string
-	deployment string
-}
-
-func (p *protoIdentity) GetSubject() string           { return p.subject }
-func (p *protoIdentity) GetIssuer() string            { return p.issuer }
-func (p *protoIdentity) GetClaims() map[string]string { return p.claims }
-func (p *protoIdentity) GetNamespace() string         { return p.namespace }
-func (p *protoIdentity) GetDeployment() string        { return p.deployment }
-
-// TestIdentityFrom covers the conversion the engine uses to turn the identity
-// carried in run state into one this package can mint for.
-func TestIdentityFrom(t *testing.T) {
-	t.Run("a populated identity", func(t *testing.T) {
-		source := &protoIdentity{
-			subject:    "repo:picatz/flowstate:ref:refs/heads/main",
-			issuer:     "https://token.actions.githubusercontent.com",
-			claims:     map[string]string{"repository": "picatz/flowstate"},
-			namespace:  "acme",
-			deployment: "prod",
-		}
-
-		identity := auth.IdentityFrom(source)
-		require.Equal(t, testIdentity(), identity)
-		require.NoError(t, identity.Validate())
-
-		// The claims are copied, so a later change to the run state cannot change
-		// what an assertion will say.
-		source.claims["repository"] = "attacker/fork"
-		require.Equal(t, "picatz/flowstate", identity.Claims["repository"])
-	})
-
-	t.Run("no identity at all", func(t *testing.T) {
-		// A run submitted before identity was recorded, or by a path that does not
-		// establish one, must not become a usable identity.
-		identity := auth.IdentityFrom(nil)
-		require.True(t, identity.IsZero())
-		require.ErrorIs(t, identity.Validate(), auth.ErrInvalidIdentity)
-	})
-
-	t.Run("a typed nil, as an unset protobuf field arrives", func(t *testing.T) {
-		var source *protoIdentity
-
-		identity := auth.IdentityFrom(source)
-		require.True(t, identity.IsZero())
-		require.ErrorIs(t, identity.Validate(), auth.ErrInvalidIdentity)
-	})
-}
 
 // TestIdentityFromPrincipal covers deriving a workload's identity from the caller
 // that submitted the run, which is where the two halves of federation meet.
 func TestIdentityFromPrincipal(t *testing.T) {
 	principal := auth.Principal{
-		Subject: "repo:picatz/flowstate:ref:refs/heads/main",
-		Issuer:  "https://token.actions.githubusercontent.com",
+		Subject:    "repo:picatz/flowstate:ref:refs/heads/main",
+		Issuer:     "https://token.actions.githubusercontent.com",
+		IssuerName: "github-actions",
+		Kind:       auth.PrincipalKindWorkload,
+		Actions:    auth.ActionScopes{"run.start"},
 		Claims: map[string]any{
 			"repository": "picatz/flowstate",
 			"ref":        "refs/heads/main",
-			"email":      "someone@example.com",
 			"verified":   true,
+			"groups":     []any{"eng", "oncall"},
+			"slack":      map[string]any{"user": "U1"},
 		},
 	}
 
-	identity := auth.IdentityFromPrincipal(principal, "acme", "prod", "repository", "ref", "absent", "verified")
+	identity := auth.IdentityFromPrincipal(principal, "acme", "prod")
 
 	require.Equal(t, principal.Subject, identity.Subject)
 	require.Equal(t, principal.Issuer, identity.Issuer)
+	require.Equal(t, "github-actions", identity.IssuerEntry)
+	require.Equal(t, "workload", identity.Kind)
+	require.Equal(t, []string{"run.start"}, identity.Actions)
 	require.Equal(t, "acme", identity.Namespace)
 	require.Equal(t, "prod", identity.Deployment)
 
-	// Only the named claims are carried, and only the ones that are strings: an
+	// The principal's claims are carried whole, of every JSON shape: a list such
+	// as groups and a nested object are what a rule needs to read. They are
+	// already only what the admitting entry carries (see MapClaims), and an
 	// assertion goes to a third party, so what it says about the caller should be
 	// what an operator chose to say.
-	require.Equal(t, map[string]string{
+	require.Equal(t, map[string]any{
 		"repository": "picatz/flowstate",
 		"ref":        "refs/heads/main",
+		"verified":   true,
+		"groups":     []any{"eng", "oncall"},
+		"slack":      map[string]any{"user": "U1"},
 	}, identity.Claims)
 
-	require.NotContains(t, identity.Claims, "email", "a claim nobody named must not be carried")
-	require.NotContains(t, identity.Claims, "absent")
-	require.NotContains(t, identity.Claims, "verified")
+	// The identity owns its claims: a later change to the caller's token cannot
+	// change what an assertion will say.
+	principal.Claims["groups"].([]any)[0] = "attacker"
+	require.Equal(t, []any{"eng", "oncall"}, identity.Claims["groups"])
 
-	t.Run("naming no claims carries none", func(t *testing.T) {
-		identity := auth.IdentityFromPrincipal(principal, "acme", "prod")
+	t.Run("the caller a rule reads is the one rendering", func(t *testing.T) {
+		caller := identity.Caller()
+		require.Equal(t, "workload", caller.Kind)
+		require.Equal(t, principal.Issuer+"#"+principal.Subject, caller.Principal)
+		require.Equal(t, []string{"run.start"}, caller.Actions)
+		require.Equal(t, []any{"eng", "oncall"}, caller.Claims.Map()["groups"])
+	})
+
+	t.Run("a claim over the bounds is carried whole and refused, never trimmed", func(t *testing.T) {
+		many := make([]any, 400)
+		for i := range many {
+			many[i] = strings.Repeat("g", 20)
+		}
+		big := auth.Principal{Subject: "s", Issuer: "i", Claims: map[string]any{"many": many, "ok": "v"}}
+
+		identity := auth.IdentityFromPrincipal(big, "", "")
+		require.Len(t, identity.Claims["many"], 400, "nothing is trimmed")
+		require.ErrorIs(t, identity.Validate(), auth.ErrInvalidIdentity)
+		require.Contains(t, identity.Validate().Error(), "many")
+		require.NotContains(t, identity.Validate().Error(), "gggg", "a claim value never appears in an error")
+	})
+
+	t.Run("a principal with no claims yields none", func(t *testing.T) {
+		bare := principal
+		bare.Claims = nil
+		identity := auth.IdentityFromPrincipal(bare, "acme", "prod")
 		require.Empty(t, identity.Claims)
 		require.NoError(t, identity.Validate())
 	})
@@ -116,6 +95,46 @@ func TestIdentityFromPrincipal(t *testing.T) {
 		identity := auth.IdentityFromPrincipal(auth.Principal{}, "", "")
 		require.True(t, identity.IsZero())
 		require.ErrorIs(t, identity.Validate(), auth.ErrInvalidIdentity)
+	})
+}
+
+// TestClaimsRoundTripThroughTheWireForm pins that the proto reader and writer
+// agree with each other, and that what the reader will not walk is refused.
+func TestClaimsRoundTripThroughTheWireForm(t *testing.T) {
+	claims := map[string]any{
+		"groups": []any{"eng", "oncall"},
+		"slack":  map[string]any{"user": "U1", "n": float64(2), "on": true, "none": nil},
+		"repo":   "x/y",
+	}
+
+	wire := auth.ClaimsToStruct(claims)
+	require.Len(t, wire, 3)
+
+	base := testIdentity()
+	got := base.WithWireClaims(wire)
+	require.Equal(t, claims, got.Claims)
+	require.NoError(t, got.Validate())
+
+	t.Run("a hostile value is bounded where it is read and refuses the identity", func(t *testing.T) {
+		deep := structpb.NewStringValue("leaf")
+		for range 10_000 {
+			deep = structpb.NewListValue(&structpb.ListValue{Values: []*structpb.Value{deep}})
+		}
+		got := base.WithWireClaims(map[string]*structpb.Value{"deep": deep, "ok": structpb.NewStringValue("v")})
+		require.Equal(t, map[string]any{"ok": "v"}, got.Claims, "the claim is left out, so a rule reading it errors")
+		require.ErrorIs(t, got.Validate(), auth.ErrInvalidIdentity, "and a mint is refused, not made without it")
+		require.Contains(t, got.Validate().Error(), "deep")
+		require.False(t, got.IsZero())
+	})
+
+	t.Run("no more than the claim count is read", func(t *testing.T) {
+		in := map[string]*structpb.Value{}
+		for i := range auth.MaxCarriedClaims * 2 {
+			in[fmt.Sprintf("c%03d", i)] = structpb.NewStringValue("v")
+		}
+		got := base.WithWireClaims(in)
+		require.Len(t, got.Claims, auth.MaxCarriedClaims)
+		require.ErrorIs(t, got.Validate(), auth.ErrInvalidIdentity)
 	})
 }
 
@@ -155,7 +174,7 @@ func TestOutboundValuesNeverLogSecrets(t *testing.T) {
 	require.NoError(t, err)
 
 	identity := testIdentity()
-	identity.Claims = map[string]string{"email": "someone@example.com"}
+	identity.Claims = map[string]any{"email": "someone@example.com"}
 
 	var buffer bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buffer, nil))
@@ -277,6 +296,7 @@ func TestFederationHTTPClientIsUsed(t *testing.T) {
 
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: https://flowstate.example.com
+tenants: [acme]
 declared_claims: [repository]
 allow: ['true']
 targets:
@@ -295,6 +315,7 @@ targets:
 	broker, err := policy.Broker(key,
 		auth.WithFederationHTTPClient(&http.Client{Transport: transport}),
 		auth.WithFederationClock(clock.Now),
+		auth.WithFederationTenant("acme"),
 	)
 	require.NoError(t, err)
 

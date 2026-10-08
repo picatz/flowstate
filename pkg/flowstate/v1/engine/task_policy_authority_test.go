@@ -94,11 +94,7 @@ func TestTaskPolicyDeniesAuthorityCarryingTaskDurably(t *testing.T) {
 		env := newAuthorizedTestEnv(t)
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow(),
-			Identity: &v1.WorkloadIdentity{
-				Subject:   "someone@example.com",
-				Issuer:    "flowstate:test",
-				Namespace: namespace,
-			},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com", Issuer: "flowstate:test", Namespace: namespace}},
 		})
 		require.True(t, env.IsWorkflowCompleted())
 		return env.GetWorkflowError()
@@ -177,11 +173,7 @@ func TestTaskPolicyDeniesAuthorityCarryingCompensationDurably(t *testing.T) {
 		env := newAuthorizedTestEnv(t)
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow(),
-			Identity: &v1.WorkloadIdentity{
-				Subject:   "someone@example.com",
-				Issuer:    "flowstate:test",
-				Namespace: namespace,
-			},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com", Issuer: "flowstate:test", Namespace: namespace}},
 		})
 		require.True(t, env.IsWorkflowCompleted())
 		return env.GetWorkflowError()
@@ -224,7 +216,7 @@ func TestTaskPolicyDeniesScopedCompensationByIdentityDurably(t *testing.T) {
 		env := newAuthorizedTestEnv(t)
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow,
-			Identity: &v1.WorkloadIdentity{Namespace: namespace},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: namespace}},
 		})
 		require.True(t, env.IsWorkflowCompleted())
 
@@ -283,11 +275,7 @@ func TestTaskPolicyIdentityMatchesOnPlainTaskActivity(t *testing.T) {
 
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow,
-			Identity: &v1.WorkloadIdentity{
-				Subject:   "someone@example.com",
-				Issuer:    "flowstate:test",
-				Namespace: namespace,
-			},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com", Issuer: "flowstate:test", Namespace: namespace}},
 		})
 		require.True(t, env.IsWorkflowCompleted())
 		return env.GetWorkflowError()

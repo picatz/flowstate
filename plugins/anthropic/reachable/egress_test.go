@@ -62,8 +62,8 @@ func TestAnOperatorDenyRuleStopsAnAnthropicDecision(t *testing.T) {
 	}
 
 	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{
-		Subject: "https://issuer.example.com#worker",
-		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
+		Principal: &flowstatev1.Principal{Subject: "https://issuer.example.com#worker"},
+		Mode:      flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION,
 	})
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, taskRuntimeResolvingTheTestToken(t))
 

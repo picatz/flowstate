@@ -89,6 +89,72 @@ type RunOptions struct {
 	// fail-closed posture, which matches `flow run local` invoked with none
 	// of its own secret or identity-broker flags.
 	Secrets *Secrets
+
+	// Starter is who is starting this run, when the embedding program has
+	// authenticated one and wants the workflow's own `triggers.manual:` block
+	// to decide whether that caller may. Nil is the posture `flow run local`
+	// has: the block is not consulted, because a rehearsal on the author's own
+	// machine has no principal to attest and gating it on a policy whose
+	// inputs only exist in production would make a regulated workflow
+	// untestable.
+	//
+	// Set, [RunLocal] and [Debug] refuse before any step runs when the block
+	// says `denied`, when its `allow:` predicate does not admit the caller, or
+	// when it requires a `reason:` and [Starter.Reason] is empty, with the
+	// same [v1.CheckManualStart] the server calls. A principal with no
+	// issuer-qualified identity, or the anonymous one, can never satisfy an
+	// `allow:` predicate. Starter only narrows: a workflow with no `manual:`
+	// block is startable by any Starter, exactly as it is on a server.
+	//
+	// The embedding program is the authority on who this is; nothing here
+	// verifies it. Authenticate first (see [auth.Verifier]) and pass what
+	// that returned, never an identity read from the request being served.
+	Starter *Starter
+}
+
+// Starter names the caller of a local run and why they started it. See
+// [RunOptions.Starter].
+type Starter struct {
+	// Principal is the authenticated caller, as an [auth.Verifier] returned it.
+	Principal auth.Principal
+
+	// Reason is what the caller said when starting the run, read by a
+	// `manual: require_reason` block.
+	Reason string
+
+	// Namespace is the tenant a principal that names none falls into, the way
+	// a server's `WithNamespace` is. The verified principal's own namespace
+	// always wins over it.
+	Namespace string
+}
+
+// checkStarter applies the workflow's `triggers.manual:` block to
+// opts.Starter, deciding what a server would at its submit boundary.
+func checkStarter(ctx context.Context, workflow *Workflow, opts RunOptions, verb string) error {
+	if opts.Starter == nil {
+		return nil
+	}
+
+	bound, err := v1.BindRunInputs(workflow, v1.NewNamedValues(opts.Inputs))
+	if err != nil {
+		return err
+	}
+
+	// The same rule as the server's: only a verified, non-anonymous caller
+	// has a principal a predicate can say anything true about.
+	var principal string
+	identity := &v1.WorkloadIdentity{}
+	if p := opts.Starter.Principal; !p.IsZero() && !p.IsAnonymous() {
+		principal = p.ID()
+		derived := auth.IdentityFromPrincipal(p, opts.Starter.Namespace, "")
+		identity = v1.ProtoWorkloadIdentity(derived)
+	}
+
+	if err := v1.CheckManualStart(ctx, workflow, identity, principal, opts.Starter.Reason, bound); err != nil {
+		return fmt.Errorf("flowstate/embed: %s: %w", verb, err)
+	}
+
+	return nil
 }
 
 // RunLocal compiles [RunOptions] into a run and executes workflow in this
@@ -230,6 +296,10 @@ func localContext(ctx context.Context, workflow *Workflow, opts RunOptions, verb
 	// Left unchanged otherwise: no [v1.TaskRuntime] on the context at all is
 	// exactly what [v1.ResolveSecret] and [v1.AuthorizeCredential] treat as
 	// "not configured on this worker" and refuse — see [Secrets]'s doc.
+
+	if err := checkStarter(ctx, workflow, opts, verb); err != nil {
+		return nil, err
+	}
 
 	return ctx, nil
 }

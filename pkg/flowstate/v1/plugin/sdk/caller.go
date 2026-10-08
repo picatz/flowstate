@@ -83,12 +83,7 @@ type callerKey struct{}
 func contextWithCaller(ctx context.Context, identity *flowstatev1.WorkloadIdentity, namespace string) context.Context {
 	ctx = context.WithValue(ctx, callerKey{}, Caller{Identity: identity, Namespace: namespace})
 
-	return netpolicy.ContextWithIdentity(ctx, netpolicy.Identity{
-		Subject:   identity.GetSubject(),
-		Issuer:    identity.GetIssuer(),
-		Namespace: identity.GetNamespace(),
-		Claims:    identity.GetClaims(),
-	})
+	return netpolicy.ContextWithIdentity(ctx, flowstatev1.CallerOf(identity))
 }
 
 // CallerFromContext returns who invoked the task running on ctx, and which

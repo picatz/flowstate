@@ -66,7 +66,7 @@ func TestCheckManualStartRefusesAnAnonymousCallerWhateverThePredicateSays(t *tes
 	} {
 		workflow := &v1.Workflow{Name: "manual-policy", Triggers: &v1.Triggers{Manual: &v1.ManualTrigger{Allow: expression}}}
 
-		for _, caller := range []*v1.WorkloadIdentity{nil, {}, {Issuer: "https://issuer.example.com", Subject: "runner"}} {
+		for _, caller := range []*v1.WorkloadIdentity{nil, {}, {Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "runner"}}} {
 			err := v1.CheckManualStart(t.Context(), workflow, caller, "", "", nil)
 			require.Error(t, err, "%s admitted an anonymous start", name)
 			assert.Contains(t, err.Error(), "anonymous", name)

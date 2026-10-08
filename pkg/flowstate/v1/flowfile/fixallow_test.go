@@ -13,6 +13,8 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // `flow fix` bringing who-may-act into the one predicate that says it
@@ -334,7 +336,7 @@ func TestFixDoesNotRootAStepNamedSenderInsideThePredicate(t *testing.T) {
 // Equivalence: the same decision, asked of the engine.
 
 func ident(issuer, subject, namespace string, claims map[string]string) *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{Issuer: issuer, Subject: subject, Namespace: namespace, Claims: claims}
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: issuer, Subject: subject, Namespace: namespace, Claims: v1.StringClaimValues(claims)}}
 }
 
 // senderGrid is every caller the cases below can tell apart, and several they
@@ -402,7 +404,7 @@ func decide(t *testing.T, stanza string, wf *v1.Workflow, sender, starter *v1.Wo
 
 	switch stanza {
 	case "manual":
-		return v1.CheckManualStart(ctx, wf, sender, v1.Principal(sender.GetIssuer(), sender.GetSubject()), "because", inputs) == nil
+		return v1.CheckManualStart(ctx, wf, sender, principal.Qualified(sender.GetPrincipal().GetIssuer(), sender.GetPrincipal().GetSubject()), "because", inputs) == nil
 	case "debug":
 		return v1.DebugPolicyCheck(ctx, wf.GetDebug(), sender, starter, hasStarter, inputs) == nil
 	default:
@@ -520,7 +522,7 @@ func TestFixedPredicateDecidesLikeTheRulesItReplaced(t *testing.T) {
 						// Whatever the predicate admits is a sender with a whole
 						// principal, never an unauthenticated or half-formed one that
 						// an empty or computed subject could equal.
-						if v1.Principal(sender.GetIssuer(), sender.GetSubject()) == "" && tc.unusable {
+						if principal.Qualified(sender.GetPrincipal().GetIssuer(), sender.GetPrincipal().GetSubject()) == "" && tc.unusable {
 							t.Errorf("the predicate admits a sender without a principal: sender=%v starter=%v inputs=%v\nrewritten: %s",
 								sender, starter, in, rewrittenPolicy(string(result.Source)))
 
@@ -574,7 +576,7 @@ func TestFixedInterpolatedSubjectKeepsTheConjunctionThatNarrowsIt(t *testing.T) 
 	in := inputsOf(map[string]string{"approver": "alice@example.com"})
 	named := ident(policyIssuer, "alice@example.com", "", map[string]string{"team": "other"})
 	assert.False(t, decide(t, "signals", wf, named, nil, in))
-	named.Claims["team"] = "release-managers"
+	named.Principal.Claims["team"] = structpb.NewStringValue("release-managers")
 	assert.True(t, decide(t, "signals", wf, named, nil, in))
 }
 

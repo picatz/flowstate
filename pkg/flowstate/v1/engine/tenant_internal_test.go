@@ -12,7 +12,7 @@ import (
 )
 
 func TestTenantArgFindsScopedTaskIdentity(t *testing.T) {
-	got, ok := tenantArg([]any{&v1.Task{}, &v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: "team-a"}}})
+	got, ok := tenantArg([]any{&v1.Task{}, &v1.Scope{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}}})
 
 	require.True(t, ok)
 	require.Equal(t, "team-a", got)
@@ -71,7 +71,7 @@ func TestTenantActivityGuardRefusesAnotherTenantsScopedTask(t *testing.T) {
 	scopedTask := func(namespace string) []any {
 		return []any{
 			&v1.Task{Name: "http"},
-			&v1.Scope{Identity: &v1.WorkloadIdentity{Namespace: namespace}},
+			&v1.Scope{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: namespace}}},
 		}
 	}
 
@@ -115,7 +115,7 @@ func TestTenantActivityGuardRefusesAnotherTenantsScopedTask(t *testing.T) {
 // This asserts the shapes are admitted once they carry it — the direction a
 // test of the refusal alone cannot see.
 func TestTenantGuardAdmitsAScopeBuiltAtItsCallSite(t *testing.T) {
-	identity := &v1.WorkloadIdentity{Namespace: "team-a"}
+	identity := &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "team-a"}}
 
 	for name, args := range map[string][]any{
 		"workflow vars": {&v1.Scope{

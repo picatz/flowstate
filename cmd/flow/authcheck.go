@@ -20,9 +20,10 @@ import (
 func newAuthCommand() *cobra.Command {
 	authCmd := &cobra.Command{
 		Use:   "auth",
-		Short: "Diagnose caller authentication against an auth policy",
+		Short: "Diagnose caller authentication: check a token against a policy, or ask who the server sees",
 	}
 	authCmd.AddCommand(newAuthCheckCommand())
+	authCmd.AddCommand(newAuthWhoamiCommand())
 	return authCmd
 }
 
@@ -120,8 +121,19 @@ func runAuthCheck(cmd *cobra.Command, _ []string) error {
 
 	for index, entry := range policy.Issuers {
 		if entry.Name == principal.IssuerName {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "accepted by issuers[%d] (%q)\n", index, entry.Name)
-			return err
+			if _, err := fmt.Fprintf(cmd.OutOrStdout(), "accepted by issuers[%d] (%q)\n", index, entry.Name); err != nil {
+				return err
+			}
+			if principal.Delegated() {
+				// The chain and what is left of the entry's actions once each
+				// actor has narrowed them: what a policy author needs to see
+				// to know what a delegated caller can do. Both are the
+				// issuer's statement and the entry's allowlist, never a token
+				// value beyond the actors' own names.
+				_, err := io.WriteString(cmd.OutOrStdout(), principal.DelegationReport())
+				return err
+			}
+			return nil
 		}
 	}
 

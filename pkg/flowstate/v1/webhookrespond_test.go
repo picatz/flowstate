@@ -271,6 +271,12 @@ func TestRespondWithinIsRefusedWhereItCannotWork(t *testing.T) {
 			},
 		},
 		{
+			name: "under a scheme whose sender needs a bodyless 200", within: time.Second, refused: "bodyless 200",
+			mutate: func(_ *v1.Workflow, trigger *v1.WebhookTrigger) {
+				trigger.Verify = map[string]*v1.Value{v1.WebhookSchemeSlack: {}}
+			},
+		},
+		{
 			name: "without outputs", within: time.Second, refused: "`outputs:`",
 			mutate: func(wf *v1.Workflow, _ *v1.WebhookTrigger) { wf.DeclaredOutputs = nil },
 		},

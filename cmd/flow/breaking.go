@@ -77,7 +77,10 @@ func newBreakingCommand() *cobra.Command {
 			"A workflow is its path: two files declaring one `name:` in different directories are " +
 			"two workflows, each compared against the file at its own path at the ref. A file that " +
 			"moved since the ref is matched with `--moved old=new`; without it the old path reads " +
-			"as removed and the new one as brand new.",
+			"as removed and the new one as brand new.\n\n" +
+			"A removed workflow breaks its callers, so it is a finding. A deliberate removal is " +
+			"acknowledged with `--removed path`, naming the file at the ref; the flag is a no-op " +
+			"once the ref no longer has that file, and an error while the file still exists.",
 		Args:          cobra.MinimumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -92,7 +95,11 @@ flow breaking --against HEAD~1 examples/hello-world/workflow.yaml
 
 # A file that moved is compared against its old path, not reported as removed:
 flow breaking --against origin/main \
-  --moved shared/notify.yaml=workflows/notify.yaml .`,
+  --moved shared/notify.yaml=workflows/notify.yaml .
+
+# A workflow deleted on purpose, with no callers left, is acknowledged:
+flow breaking --against origin/main \
+  --removed examples/release-approval/workflow.yaml examples/`,
 	}
 
 	cmd.Flags().String("against", "",
@@ -100,6 +107,8 @@ flow breaking --against origin/main \
 	_ = cmd.MarkFlagRequired("against")
 	cmd.Flags().StringArray("moved", nil,
 		"a Flowfile that moved since the ref, as old=new paths, so it is compared against its old self (repeatable)")
+	cmd.Flags().StringArray("removed", nil,
+		"a Flowfile deliberately deleted since the ref, as its path at the ref, so its removal is not reported (repeatable)")
 
 	return cmd
 }
@@ -131,6 +140,14 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	removedArgs, err := cmd.Flags().GetStringArray("removed")
+	if err != nil {
+		return err
+	}
+	removed, err := parseRemoved(root, removedArgs)
+	if err != nil {
+		return err
+	}
 
 	// The working-tree (HEAD) side: the same walk fix, lint, and audit use.
 	files, err := collectFlowfiles(paths)
@@ -141,6 +158,9 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	newByPath := compileHead(root, files)
 	oldByPath := compileRef(root, ref, paths, files, moveSources(moves))
 	if err := applyMoves(ref, moves, oldByPath, newByPath); err != nil {
+		return err
+	}
+	if err := checkRemoved(removed, newByPath); err != nil {
 		return err
 	}
 
@@ -166,6 +186,9 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 			// There is no working-tree file to position it in, so it names the ref
 			// path instead. A file that moved looks exactly like this from the old
 			// path, so the sentence says how to say so.
+			if slices.Contains(removed.paths, path) {
+				continue
+			}
 			failed = true
 			printBreak(out, theme, old.path, flowfile.Diagnostic{
 				Field: "name",
@@ -213,6 +236,45 @@ func parseMoves(root string, args []string) ([]move, error) {
 		moves = append(moves, m)
 	}
 	return moves, nil
+}
+
+// removals is the set of workflows a caller acknowledged as deliberately
+// deleted: each `--removed` argument with every repository-relative spelling of
+// its path.
+type removals struct {
+	args      []string
+	spellings [][]string
+	paths     []string
+}
+
+// parseRemoved reads the `--removed` paths the way `--moved` reads its sides, so
+// the two flags accept the same spellings. A path that escapes the repository is
+// refused.
+func parseRemoved(root string, args []string) (removals, error) {
+	r := removals{args: args}
+	for _, arg := range args {
+		spellings := moveSpellings(root, arg)
+		if len(spellings) == 0 {
+			return removals{}, fmt.Errorf("--removed %q: outside the repository", arg)
+		}
+		r.spellings = append(r.spellings, spellings)
+		r.paths = append(r.paths, spellings...)
+	}
+	return r, nil
+}
+
+// checkRemoved refuses an acknowledgement of a file that was not removed: a
+// `--removed` path still present in the working tree is a mistake, and passing it
+// quietly would hide a break in a workflow that is still there. A path the ref no
+// longer has is not an error, so the flag can outlive the change it acknowledged
+// until it is dropped.
+func checkRemoved(r removals, newByPath map[string]compiled) error {
+	for i, spellings := range r.spellings {
+		if rel, ok := firstPresent(spellings, newByPath); ok {
+			return fmt.Errorf("--removed %s: %s is still a Flowfile in the working tree, so it was not removed", r.args[i], rel)
+		}
+	}
+	return nil
 }
 
 // moveSpellings is the repository-relative paths one `--moved` side could name:

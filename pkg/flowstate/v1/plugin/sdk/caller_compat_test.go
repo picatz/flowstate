@@ -38,7 +38,10 @@ func TestNewSDKReadsOldHostIdentityAsUnknown(t *testing.T) {
 
 	var identity flowstatev1.WorkloadIdentity
 	require.NoError(t, proto.Unmarshal(raw, &identity))
-	assert.Equal(t, "legacy", identity.GetSubject())
+	// The fixture's subject sat in field 1, which is reserved now: the shape that
+	// travels is a Principal, and an identity from before it reads as no caller.
+	// What it must still never read as is production.
+	assert.Empty(t, identity.GetPrincipal().GetSubject())
 	assert.Equal(t, flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_UNSPECIFIED,
 		(Caller{Identity: &identity}).Mode(),
 		"absence from an old host must never be read as production")
@@ -51,14 +54,12 @@ func TestOldPluginDescriptorIgnoresNewHostMode(t *testing.T) {
 	require.NoError(t, err)
 	oldIdentity := dynamicpb.NewMessage(oldFile.Messages().ByName("WorkloadIdentity"))
 
-	raw, err := proto.Marshal(&flowstatev1.WorkloadIdentity{
-		Subject: "new-host",
-		Mode:    flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL,
-	})
+	raw, err := proto.Marshal(&flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "new-host"}, Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_REHEARSAL})
 	require.NoError(t, err)
 	require.NoError(t, proto.Unmarshal(raw, oldIdentity))
 
-	assert.Equal(t, "new-host", oldIdentity.Get(oldIdentity.Descriptor().Fields().ByName("subject")).String())
+	assert.Empty(t, oldIdentity.Get(oldIdentity.Descriptor().Fields().ByName("subject")).String(),
+		"the caller moved to a field the old descriptor does not know, so it reads as no caller")
 	assert.Nil(t, oldIdentity.Descriptor().Fields().ByName("mode"),
 		"the old plugin descriptor must remain able to decode the message without understanding mode")
 }

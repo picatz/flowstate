@@ -85,10 +85,8 @@ func TestTheExpiryTimerNamesItsHolder(t *testing.T) {
 	t.Parallel()
 
 	summary := debugLeaseSummary(&v1.DebugSession{
-		SessionId: "run-1/debug/0",
-		AttachedBy: &v1.WorkloadIdentity{
-			Issuer: "https://issuer.example.com", Subject: "sre-1@example.com",
-		},
+		SessionId:  "run-1/debug/0",
+		AttachedBy: &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "sre-1@example.com"}},
 	})
 
 	assert.Contains(t, summary, "run-1/debug/0", "the summary does not say which lease expired")
@@ -140,7 +138,7 @@ func TestTheSummaryBoundsWhatACallerPutInIt(t *testing.T) {
 	// And through the function that uses it, so the bound is on the path rather
 	// than only on the helper.
 	assert.NotContains(t, debugLeaseSummary(&v1.DebugSession{
-		AttachedBy: &v1.WorkloadIdentity{Issuer: "https://i", Subject: overlong},
+		AttachedBy: &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://i", Subject: overlong}},
 	}), overlong, "the summary rendered an unbounded subject a caller's issuer minted")
 }
 
@@ -154,9 +152,7 @@ func TestTheSummaryBoundsWhatACallerPutInIt(t *testing.T) {
 func TestAnAskPutByGoesOnTheRunsOwnCarry(t *testing.T) {
 	t.Parallel()
 
-	sender := &v1.SignalSender{Identity: &v1.WorkloadIdentity{
-		Issuer: "https://issuer.example.com", Subject: "sre-2@example.com",
-	}}
+	sender := &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "sre-2@example.com"}}}
 	payload := v1.NewDebugAsk(v1.DebugVerbPause, 45*time.Second)
 
 	exec := &executor{signals: &signalCarry{}}
@@ -169,7 +165,7 @@ func TestAnAskPutByGoesOnTheRunsOwnCarry(t *testing.T) {
 	kept := exec.signals.pending[0]
 	assert.Equal(t, v1.DebugSignal, kept.GetName(),
 		"it waits on the channel it arrived on, so the next boundary reads it as a pause ask")
-	assert.Equal(t, "sre-2@example.com", kept.GetSender().GetIdentity().GetSubject(),
+	assert.Equal(t, "sre-2@example.com", kept.GetSender().GetIdentity().GetPrincipal().GetSubject(),
 		"with the sender the server attested, because that is who the lease will name")
 	assert.Equal(t, 45*time.Second, v1.DebugLeaseRequested(kept.GetPayload()),
 		"and the duration it asked for, which is the only thing read back out of the payload")

@@ -116,6 +116,16 @@ func checkNodeVars(nodes []*Node, depth int) error {
 // than as a rule.
 func checkVarsMap(vars map[string]*Value, where string) error {
 	for _, name := range slices.Sorted(maps.Keys(vars)) {
+		if ValueHoldsCredentialRef(vars[name]) {
+			// The same rule for a credential reference, for the same reason: a
+			// var's value is written to durable history, and nothing on that path
+			// mints a credential, so a reference held here has no contained place
+			// to be resolved.
+			return fmt.Errorf("%s var %q is a credential reference, which a var may not hold: "+
+				"a var is evaluated by the workflow and its value is written to durable history, "+
+				"so write the credential reference on the task input that consumes it instead",
+				where, name)
+		}
 		if !holdsSecretRef(vars[name], 0) {
 			continue
 		}
@@ -162,4 +172,12 @@ func holdsSecretRef(value *Value, depth int) bool {
 		}
 	}
 	return false
+}
+
+// holdsReference reports whether a value is, or holds nested in a structure, a
+// secret reference or a credential reference. It is the question the places a
+// value is rendered to a reader ask: both kinds name something that must not be
+// shown, and neither is worth a second walk written at each call site.
+func holdsReference(value *Value) bool {
+	return holdsSecretRef(value, 0) || ValueHoldsCredentialRef(value)
 }

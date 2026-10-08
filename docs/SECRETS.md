@@ -171,11 +171,14 @@ secrets:
 - No `secrets:` section, or no `allow` rule, means nothing may be read. A `deny`
   that matches wins, and a rule that errors denies.
 - A rule sees `secret.scheme` and `secret.name`; the authenticated caller as
-  `identity.subject`, `identity.issuer`, `identity.namespace`, and
-  `identity.claims`; and the workload as `workload.namespace`,
+  `identity.subject`, `identity.issuer`, `identity.namespace`, `identity.kind`
+  (`human`, `workload` or `agent`), `identity.actions`, `identity.claims`, and, for a
+  delegated caller, `identity.actors` and `identity.delegated`;
+  and the workload as `workload.namespace`,
   `workload.workflow`, `workload.run`, `workload.step`, and related fields.
   Reading a claim that is not present is an error, which denies; guard it with
-  `"team" in identity.claims`.
+  `"team" in identity.claims`. A claim keeps its JSON shape, so a list reads as
+  `"sre" in identity.claims.groups` and a scalar read from a nested path (`{claim: slack.user, as: slack_user}`) as `identity.claims.slack_user`.
 - The file must also contain at least one valid `issuers:` entry, even on a
   worker, which does not authenticate callers itself. A server and its workers
   normally share one reviewed file.
@@ -243,8 +246,80 @@ federation:
 
 A target is one of `token_exchange`, `client_credentials`, `gcp`, `aws`, or
 `assertion` (present the signed assertion itself to a relying party that
-verifies OIDC). The generic `http` task does not apply AWS session credentials,
-which require SigV4 signing. [examples/http-federated](../examples/http-federated/)
+verifies OIDC).
+
+#### Subject level
+
+The assertion's `sub` names the whole position,
+`flowstate:NAMESPACE/DEPLOYMENT/WORKFLOW/STEP`, and that is right for a relying
+party that matches prefixes, such as an AWS trust policy. It is wrong for one that
+matches the subject exactly or bounds its length: an Azure federated identity
+credential holds one exact subject and an application has few of them, and a GCP
+`google.subject` is length-limited. A target says how much of the position its
+assertion names with `subject_level`:
+
+```yaml
+federation:
+  issuer: https://flowstate.example.com
+  allow:
+    - 'target == "azure-prod" && workload.workflow == "deploy-service"'
+  targets:
+    - name: azure-prod
+      subject_level: workflow
+      client_credentials:
+        token_url: https://login.microsoftonline.com/TENANT/oauth2/v2.0/token
+        client_id: 00000000-0000-0000-0000-000000000000
+        audience: api://AzureADTokenExchange
+```
+
+| `subject_level` | `sub` for step `push` of workflow `deploy-service` in deployment `prod`, tenant `acme` |
+| --- | --- |
+| `step` | `flowstate:acme/prod/deploy-service/push` |
+| `workflow` | `flowstate:acme/prod/deploy-service/_any` |
+| `deployment` | `flowstate:acme/prod/_any/_any` |
+
+The dropped components are `_any`, so the subject keeps its four components and a
+pattern written for the full shape still lines up; a workflow or step literally
+named `_any` is refused, so no workload can name itself into a coarser subject.
+Unset keeps what a target has always done: the whole step, except for a
+`client_credentials` target that authenticates with the assertion, whose subject
+RFC 7523 makes the client id. An explicit level on that target replaces the
+client id, which is what an Azure federated credential matches. Any other value
+is refused when the policy loads.
+
+The level changes only what the relying party reads. The assumption policy still
+decides per step, evaluating the real `workload.step` and `workload.subject`
+whatever the level, so a coarser subject lets the relying party tell fewer
+workloads apart and never lets Flowstate allow more. Pin the subject in the
+relying party at the level the target names, and do not widen a trust policy to
+`deployment` for a workflow you would not trust with every workflow of the
+deployment.
+
+A task input that takes a secret can take a target instead, written
+`${credential('partner-api')}` where it would write `${secret('env:KEY')}`. The
+specification carries the target's name, never a credential: the compiler turns
+it into a reference, workflow-side evaluation refuses to read it, and only the
+worker running the task mints it. It must be the whole value of the input, and
+it is refused in `vars:`, across a call, and anywhere the workflow evaluates
+the value itself.
+
+A plugin task opts an input in by listing it in its manifest's `secret_inputs`,
+the one declaration that says an input takes either spelling. The worker mints
+the credential through the same broker and the same assumption policy `http`'s
+`credential:` uses, per step, then hands the plugin the token as the string a
+stored secret would have been, and registers it with the scrubber that covers the
+task's output and logs. `flow validate` refuses `${credential(...)}` on an input
+the task did not declare. Only a bearer token can be a single string: an AWS
+session is three values that have to sign a request, so a task that needs one
+takes it through an AWS-aware plugin rather than a secret input, and a `target:`
+that mints one is refused here after the policy has allowed it.
+
+Naming a target that the deployment's `federation:` does not
+configure fails when the workflow is validated (`flow validate` against a
+server, `flow run local` with a trust policy) or submitted, with a diagnostic
+that names the target and lists the configured ones; with no trust policy
+configured there is nothing to check it against. The generic `http` task does
+not apply AWS session credentials, which require SigV4 signing. [examples/http-federated](../examples/http-federated/)
 and [examples/federation-flow-to-flow](../examples/federation-flow-to-flow/) are
 worked examples.
 
@@ -254,20 +329,38 @@ worked examples.
 flow keys generate --out /etc/flowstate/keys/2026-09.pem
 ```
 
-`--identity-key` names the key. The worker signs assertions; the server
-publishes the public keys at `/.well-known/jwks.json`, beside
-`/.well-known/openid-configuration`, so relying parties can verify them. Give
-both processes the same ordered list of keys. Configuring `federation:` without
-a key, or a key without `federation:`, refuses to start.
+`--identity-key` names the key. The worker signs assertions with the PKCS#8
+private key; the server publishes the public keys at `/.well-known/jwks.json`,
+beside `/.well-known/openid-configuration`, so relying parties can verify them.
+The server's `--identity-key` takes only the PKIX public key PEM that
+`flow keys public --in KEY.pem --pem` prints, named like the worker's file so
+both publish one key id, and it refuses a private key at start-up: the server
+holds no signing key. Configuring `federation:` without a key, or a key without
+`federation:`, refuses to start.
 
-`--identity-key` repeats, and order matters: the first key signs, and every
-later one is published for verification only. To rotate:
+On a worker `--identity-key` repeats, and order matters: the first key signs,
+and every later one is published for verification only. The server's list is
+every key to publish, newest first. To rotate:
 
-1. Generate a new key.
+1. Generate a new key, and print its public half for the server.
 2. Restart the server and every worker with the new key first and the old key
    second. New assertions use the new key, and ones already issued still verify.
 3. After `federation.key_retention` (default 24h), restart them all with the new
    key alone, and delete the old one.
+
+With named tenants each tenant has a key of its own: a worker's `--identity-key`
+is its `--tenant`'s alone, and the server publishes each tenant's public keys at
+that tenant's issuer from `--identity-key-dir DIR`, laid out as
+`DIR/TENANT/KEY.pem`. Rotation is the procedure above, for one tenant at a time.
+See [per-tenant issuers](DEPLOYMENT.md#per-tenant-issuers).
+
+The key need not be a file. `--identity-signer vault-transit://HOST/KEY` signs
+through a Vault or OpenBao Transit key whose private half never reaches the worker,
+and the server publishes the public versions it reads from the same key, in place
+of `--identity-key` on both. Rotation is then a rotation in Transit and a restart,
+with the older versions published for the overlap automatically; see
+[Signing keys in Vault Transit](DEPLOYMENT.md#signing-keys-in-vault-transit) for the
+policy it needs.
 
 [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) describes the
 metadata documents a relying party reads and what each cloud requires of them.

@@ -152,6 +152,12 @@ type Options struct {
 	// must refuse any other listener.
 	Insecure bool
 
+	// Decider adds an authorization check to the trust policy's own: the
+	// policy decides first from the caller's issuer entry, and this is asked
+	// only about what the policy allows, so it can refuse and never grant. See
+	// [authz.Restrict]. Nil is the trust policy alone.
+	Decider authz.Decider
+
 	// AllowedOrigins are the browser origins permitted to call this server,
 	// compared exactly, such as "https://temporal.example.com". A request
 	// carrying any other Origin is refused. Empty permits no browser at all.
@@ -388,20 +394,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The same coordinates an RPC decision records, from the same
 		// derivation, so one caller's codec and RPC records correlate.
 		derived := auth.IdentityFromPrincipal(principal, "", "")
-		subject.Identity = &v1.WorkloadIdentity{
-			Subject:   derived.Subject,
-			Issuer:    derived.Issuer,
-			Namespace: derived.Namespace,
-		}
+		subject.Identity = &v1.WorkloadIdentity{Principal: &v1.Principal{
+			Subject: derived.Subject, Issuer: derived.Issuer, Namespace: derived.Namespace,
+			Actors: v1.ProtoActors(derived.Actors),
+		}}
 	}
 
-	if status, msg, code := h.authorize(principal, endpoint, namespace); status != 0 {
+	if status, msg, code, missing := h.authorize(r.Context(), principal, endpoint, namespace); status != 0 {
 		// Only a missing action is a scope problem a new token can fix; a
 		// namespace or shared-namespace refusal is not, and a client told
 		// otherwise would keep asking for a scope it already holds.
-		if decision := authz.DecidePrincipal(principal, true, mustAction(endpoint), authz.Explicit); status == http.StatusForbidden &&
-			!decision.Allowed {
-			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, decision.Scope))
+		if missing != "" {
+			header.Set("WWW-Authenticate", fmt.Sprintf(`Bearer error="insufficient_scope", scope=%q`, missing))
 		}
 		h.refuse(ctx, w, subject, code, status, msg)
 		return
@@ -537,35 +541,47 @@ func (h *Handler) process(ctx context.Context, codec payloadcodec.Codec, endpoin
 	return out, nil
 }
 
+// decide asks whether the caller holds the endpoint's explicit action.
+func (h *Handler) decide(ctx context.Context, principal auth.Principal, endpoint string) authz.Decision {
+	return authz.Restrict(nil, h.opts.Decider).Decide(ctx, authz.Request{
+		Principal: principal, Authenticated: true, Action: mustAction(endpoint), Mode: authz.Explicit,
+	})
+}
+
 // authorize answers 0 to proceed, or the status, message, and audit code of a
 // refusal. The messages say what is missing and never whether a namespace
 // exists.
-func (h *Handler) authorize(principal auth.Principal, endpoint, namespace string) (int, string, v1.AuditDenyCode) {
+func (h *Handler) authorize(ctx context.Context, principal auth.Principal, endpoint, namespace string) (status int, msg string, code v1.AuditDenyCode, missing string) {
 	if h.opts.Insecure {
-		return 0, "", 0
+		return 0, "", 0, ""
 	}
 	if principal.IsZero() {
-		return http.StatusUnauthorized, "authentication required", v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+		return http.StatusUnauthorized, "authentication required", v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, ""
 	}
 
-	if decision := authz.DecidePrincipal(principal, true, mustAction(endpoint), authz.Explicit); !decision.Allowed {
+	if decision := h.decide(ctx, principal, endpoint); !decision.Allowed {
+		if decision.Embedder {
+			return http.StatusForbidden, "the request was refused by this deployment's authorization rules",
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, ""
+		}
+
 		return http.StatusForbidden,
 			fmt.Sprintf("the caller's policy entry does not grant %q, which this endpoint requires explicitly", decision.Scope),
-			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, decision.Scope
 	}
 
 	own, shared, err := h.temporalNamespaceOf(principal.Namespace)
 	if err != nil || own != namespace {
 		return http.StatusForbidden, "the caller is not authorized for that namespace",
-			v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH
+			v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH, ""
 	}
 	if shared && !h.opts.AllowSharedNamespaces {
 		return http.StatusForbidden,
 			"that Temporal namespace is shared with other tenants, and a payload does not say whose it is; " +
 				"this server refuses shared namespaces unless started with --allow-shared-namespaces",
-			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED
+			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED, ""
 	}
-	return 0, "", 0
+	return 0, "", 0, ""
 }
 
 // temporalNamespaceOf is the Temporal namespace a tenant's runs execute in,

@@ -19,7 +19,7 @@ func delivery(issuer, subject string, approved *bool) *v1.SignalDelivery {
 		d.Payload.NamedValues["approved"] = v1.NewLiteral(*approved)
 	}
 	if subject != "" || issuer != "" {
-		d.Sender = &v1.SignalSender{Identity: &v1.WorkloadIdentity{Issuer: issuer, Subject: subject}}
+		d.Sender = &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: issuer, Subject: subject}}}
 	}
 
 	return d

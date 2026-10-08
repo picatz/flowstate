@@ -384,7 +384,7 @@ func TestFederationRoundTrip(t *testing.T) {
 			auth.Policy{
 				Issuers: []auth.TrustedIssuer{{Actions: []string{},
 					Name:      "flowstate",
-					Issuer:    identityServer.URL,
+					Issuer:    identityServer.URL + "/tenants/acme",
 					Audiences: []string{relyingParty.URL},
 					// The relying party's own authorization: only this workload,
 					// acting for this repository, may exchange here.
@@ -392,7 +392,8 @@ func TestFederationRoundTrip(t *testing.T) {
 						auth.RequireClaim(auth.ClaimWorkflow, "deploy-service"),
 						auth.RequireClaim(auth.ClaimOnBehalfOf, "repo:picatz/flowstate:ref:refs/heads/main"),
 					},
-					Role: "partner-client",
+					Role:        "partner-client",
+					CarryClaims: []auth.CarryClaim{{Claim: auth.ClaimOnBehalfOf, As: "peer_on_behalf_of", Type: auth.ClaimTypeString}},
 				}},
 			},
 			auth.WithClock(clock.Now),
@@ -424,6 +425,7 @@ func TestFederationRoundTrip(t *testing.T) {
 	// the one system it may present it to.
 	policy, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
+tenants: [acme]
 declared_claims: [repository]
 allow:
   - 'target == "partner" && identity.subject.startsWith("repo:picatz/flowstate:")'
@@ -438,11 +440,11 @@ targets:
 	key, err := auth.GenerateSigningKey("2026-07", jwa.ES256)
 	require.NoError(t, err)
 
-	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+	broker, err := policy.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 	require.NoError(t, err)
 
 	mu.Lock()
-	handler = broker.Issuer().Handler()
+	handler = http.StripPrefix("/tenants/acme", broker.Issuer().Handler())
 	mu.Unlock()
 
 	credential, err := broker.Credential(t.Context(), testIdentity(), testStepRef(), "partner")
@@ -457,10 +459,10 @@ targets:
 	// including who the workload was acting for.
 	principal := <-verified
 	require.Equal(t, "flowstate:acme/prod/deploy-service/push-image", principal.Subject)
-	require.Equal(t, identityServer.URL, principal.Issuer)
+	require.Equal(t, identityServer.URL+"/tenants/acme", principal.Issuer)
 	require.Equal(t, "partner-client", principal.Role)
 
-	onBehalfOf, ok := principal.StringClaim(auth.ClaimOnBehalfOf)
+	onBehalfOf, ok := principal.StringClaim("peer_on_behalf_of")
 	require.True(t, ok)
 	require.Equal(t, "repo:picatz/flowstate:ref:refs/heads/main", onBehalfOf)
 
@@ -476,6 +478,7 @@ targets:
 		// refuses it: both sides get a say, which is what federation means.
 		permissive, err := auth.ParseFederationPolicy([]byte(`
 issuer: ` + identityServer.URL + `
+tenants: [acme]
 declared_claims: [repository]
 allow: ['true']
 targets:
@@ -486,11 +489,11 @@ targets:
 `))
 		require.NoError(t, err)
 
-		permissiveBroker, err := permissive.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()))
+		permissiveBroker, err := permissive.Broker(key, auth.WithFederationClock(clock.Now), auth.WithFederationEgressPolicy(authtest.EgressPolicy()), auth.WithFederationTenant("acme"))
 		require.NoError(t, err)
 
 		mu.Lock()
-		handler = permissiveBroker.Issuer().Handler()
+		handler = http.StripPrefix("/tenants/acme", permissiveBroker.Issuer().Handler())
 		mu.Unlock()
 
 		_, err = permissiveBroker.Credential(t.Context(), other, testStepRef(), "partner")
@@ -500,7 +503,7 @@ targets:
 
 	t.Run("a different step of the same workload gets its own identity", func(t *testing.T) {
 		mu.Lock()
-		handler = broker.Issuer().Handler()
+		handler = http.StripPrefix("/tenants/acme", broker.Issuer().Handler())
 		mu.Unlock()
 
 		ref := auth.StepRef{Workflow: "deploy-service", Run: "run-2", Step: "notify"}

@@ -306,10 +306,7 @@ func signalWhenParked(stepID, name string, payload *v1.Node_Outputs) func(contex
 		require.NoError(tb, c.SignalWorkflow(ctx, workflowID, "", name, &v1.SignalDelivery{
 			Payload: payload,
 			Sender: &v1.SignalSender{
-				Identity: &v1.WorkloadIdentity{
-					Subject: "replay-corpus",
-					Issuer:  "flowstate:test",
-				},
+				Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "replay-corpus", Issuer: "flowstate:test"}},
 			},
 		}), "signalling %s with %q", workflowID, name)
 	}

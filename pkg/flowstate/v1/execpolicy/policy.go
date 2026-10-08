@@ -11,7 +11,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -23,6 +22,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/procgroup"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // Ceilings the policy file cannot raise. A bound an operator cannot remove is
@@ -69,12 +69,6 @@ const (
 	MaxEnvNameBytes  = 128
 	MaxEnvValueBytes = 8192
 )
-
-// identityTypeName is how [netpolicy.Identity] is named in CEL: the type is
-// shared with the egress surface, so a deployment gates every policy on one
-// notion of who is running. [ext.NativeTypes] derives the name from the type's
-// Go directory.
-const identityTypeName = "netpolicy.Identity"
 
 // Config describes a policy in Go terms. The operator-facing file is the
 // flowstate.v1.ExecPolicy message, which the root package decodes, validates
@@ -398,14 +392,15 @@ func isLoaderVar(key string) bool {
 // rule that quietly never matches.
 func newRuleEnv() (*cel.Env, error) {
 	return cel.NewEnv(
-		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[netpolicy.Identity]()),
+		principal.EnvOptions(),
 		cel.Variable("argv", cel.ListType(cel.StringType)),
 		cel.Variable("executable", cel.StringType),
 		cel.Variable("name", cel.StringType),
 		cel.Variable("dir", cel.StringType),
 		cel.Variable("env_keys", cel.ListType(cel.StringType)),
-		cel.Variable("identity", cel.ObjectType(identityTypeName)),
+		principal.Var("identity"),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	)
 }
 
@@ -444,7 +439,7 @@ type Request struct {
 
 	// Identity is the run's attested identity as a rule reads it; the zero
 	// value is "no attested caller".
-	Identity netpolicy.Identity
+	Identity principal.Caller
 }
 
 // Command is an invocation the policy admitted: every value in it is the
@@ -510,17 +505,14 @@ func (p *Policy) Check(ctx context.Context, req Request) (*Command, error) {
 	cmd := &Command{policy: p, argv: slices.Clone(req.Argv), exe: exe, dir: dir, env: env, keys: keys}
 
 	if !p.rules.Empty() {
-		identity := req.Identity
-		if identity.Claims == nil {
-			identity.Claims = map[string]string{}
-		}
+		identity := req.Identity.Normalized()
 		decision, err := p.rules.Decide(ctx, map[string]any{
 			"argv":       cmd.argv,
 			"executable": exe.path,
 			"name":       req.Argv[0],
 			"dir":        dir,
 			"env_keys":   keys,
-			"identity":   identity,
+			"identity":   identity.Bind(),
 		})
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {

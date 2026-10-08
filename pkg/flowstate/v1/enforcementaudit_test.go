@@ -89,12 +89,7 @@ func auditing(t *testing.T, opts ...audit.Option) (context.Context, *auditSink) 
 }
 
 func testIdentity() *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{
-		Subject:   "deploy-bot",
-		Issuer:    "https://issuer.example",
-		Namespace: "acme",
-		Claims:    map[string]string{"team": "payments"},
-	}
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Issuer: "https://issuer.example", Namespace: "acme", Claims: v1.StringClaimValues(map[string]string{"team": "payments"})}}
 }
 
 // TestTaskDispatchRecordsBothDirectionsAndTheRuleThatDecided is #353's
@@ -129,9 +124,9 @@ func TestTaskDispatchRecordsBothDirectionsAndTheRuleThatDecided(t *testing.T) {
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_UNSPECIFIED, allowed.GetDenyCode())
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_UNSPECIFIED, allowed.GetAction(),
 		"an enforcement decision is not named by the caller-facing scope vocabulary")
-	require.Equal(t, "deploy-bot", allowed.GetIdentity().GetSubject())
-	require.Equal(t, "acme", allowed.GetIdentity().GetNamespace())
-	require.Empty(t, allowed.GetIdentity().GetClaims(),
+	require.Equal(t, "deploy-bot", allowed.GetIdentity().GetPrincipal().GetSubject())
+	require.Equal(t, "acme", allowed.GetIdentity().GetPrincipal().GetNamespace())
+	require.Empty(t, allowed.GetIdentity().GetPrincipal().GetClaims(),
 		"claims are removed before emission; their values say nothing about who decided what")
 	require.NotNil(t, allowed.GetDecidedAt())
 
@@ -307,7 +302,7 @@ func TestSecretAccessRecordsTheReferenceAndNeverTheValue(t *testing.T) {
 		allowed.GetEnforcementPoint())
 	require.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET, allowed.GetResourceKind())
 	require.Equal(t, "env:API_TOKEN", allowed.GetResourceKey())
-	require.Equal(t, "deploy-bot", allowed.GetIdentity().GetSubject())
+	require.Equal(t, "deploy-bot", allowed.GetIdentity().GetPrincipal().GetSubject())
 
 	requireRecordContains(t, allowed, material)
 
@@ -413,7 +408,7 @@ func TestEgressRecordsTheDestinationAndNoOtherPartOfTheURL(t *testing.T) {
 	require.Equal(t, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_ENDPOINT, record.GetResourceKind())
 	require.Equal(t, server.URL, record.GetResourceKey(),
 		"the destination, and nothing else of the URL")
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject())
 
 	requireRecordContains(t, record, pathToken)
 }
@@ -562,7 +557,7 @@ func TestARequestCancelledAfterThePolicyPermittedItIsStillRecorded(t *testing.T)
 		record.GetEnforcementPoint())
 	require.Equal(t, server.URL, record.GetResourceKey(),
 		"the destination the policy permitted, which is where the request went")
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject())
 }
 
 // contextHonouringSink refuses to write once the context it is handed is done,
@@ -1060,7 +1055,7 @@ func TestAPermittedAssumptionIsRecordedEvenWhenTheExchangeFails(t *testing.T) {
 	require.Equal(t, v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_CREDENTIAL_ASSUMPTION,
 		record.GetEnforcementPoint())
 	require.Equal(t, "partner-api", record.GetResourceKey())
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject())
 
 	// An evaluation the context interrupted is still no decision at all.
 	ctx, sink = auditing(t)
@@ -1183,9 +1178,9 @@ func TestAnUnconfiguredAuthorityRecordsWhoAsked(t *testing.T) {
 
 	record := sink.only(t)
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, record.GetDenyCode())
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject(),
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject(),
 		"a worker with no broker still refused a workload, and the record must name it")
-	require.Equal(t, "acme", record.GetIdentity().GetNamespace())
+	require.Equal(t, "acme", record.GetIdentity().GetPrincipal().GetNamespace())
 
 	storeless := runtime
 	storeless.Store, storeless.Policy = nil, nil
@@ -1198,7 +1193,7 @@ func TestAnUnconfiguredAuthorityRecordsWhoAsked(t *testing.T) {
 
 	record = sink.only(t)
 	require.Equal(t, v1.AuditDenyCode_AUDIT_DENY_CODE_NOT_CONFIGURED, record.GetDenyCode())
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject(),
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject(),
 		"the same ordering, at the seam that reads secrets")
 }
 

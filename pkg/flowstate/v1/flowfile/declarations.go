@@ -3,6 +3,7 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -192,6 +193,12 @@ func validateInputDefault(table v1.TypeTable, profile string, declaration *v1.In
 			Message: "a default may not be a secret reference: it stands in for what a caller would have " +
 				"sent, and a secret is resolved inside the task that needs it rather than carried as an argument",
 		}}
+	case *v1.Value_CredentialRef:
+		return Diagnostics{{
+			Field: defaultField,
+			Message: "a default may not be a credential reference: it stands in for what a caller would have " +
+				"sent, and a credential is minted inside the task that needs it rather than carried as an argument",
+		}}
 	}
 
 	var ds Diagnostics
@@ -294,6 +301,9 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 		}
 
 		if d := checkOutputValueType(wf, scope.types, declaration, field); d != nil {
+			ds = append(ds, *d)
+		}
+		if d := checkOutputEnumDomain(wf, scope, declaration, field); d != nil {
 			ds = append(ds, *d)
 		}
 	}
@@ -437,6 +447,69 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 
 		return nil
 	}
+}
+
+// checkOutputEnumDomain refuses an enum output whose `values:` omits a value
+// its expression can produce, where that is a property of the file (#1554).
+//
+// The domain is the one `switch:` already infers for a discriminant
+// ([switchDomain]): conditionals over string literals, a declared enum input.
+// Without this the omission surfaced only after every step had run, as the
+// completion check [v1.CheckOutputValue] refusing the value the run produced.
+// An expression whose domain is open stays silent, as it does for a switch.
+func checkOutputEnumDomain(wf *v1.Workflow, scope refScope, declaration *v1.OutputDeclaration, field string) *Diagnostic {
+	if declaration.GetType() != v1.InputDeclaration_TYPE_ENUM || len(declaration.GetValues()) == 0 {
+		return nil
+	}
+	value := declaration.GetValue()
+	if _, isExpr := value.GetKind().(*v1.Value_Expr); !isExpr {
+		return nil
+	}
+
+	domain, known := switchDomain(value, scope, wf)
+	if !known {
+		return nil
+	}
+
+	// Membership is built once: both lists are author-controlled and a Validate
+	// request may carry two large ones, so a scan of one per member of the other
+	// would be quadratic work an attacker chooses.
+	declared := make(map[string]struct{}, len(declaration.GetValues()))
+	for _, value := range declaration.GetValues() {
+		declared[value] = struct{}{}
+	}
+	var missing []string
+	for _, produced := range domain {
+		if _, ok := declared[produced]; !ok {
+			missing = append(missing, produced)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return &Diagnostic{
+		Field: field, Value: declaration.GetName(),
+		Code: v1.DiagnosticCodeTypeMismatch,
+		Message: fmt.Sprintf(
+			"output %q is declared an enum of %s, but this expression can produce %s; "+
+				"add the missing values, or change the expression",
+			declaration.GetName(), quotedList(clipForMessage(declaration.GetValues())), quotedList(clipForMessage(missing))),
+	}
+}
+
+// maxListedValues bounds how many values a diagnostic spells out, so a message
+// about an oversized list stays a message.
+const maxListedValues = 10
+
+// clipForMessage is values cut to [maxListedValues] with a final element
+// saying how many more there are.
+func clipForMessage(values []string) []string {
+	if len(values) <= maxListedValues {
+		return values
+	}
+
+	return append(slices.Clone(values[:maxListedValues]), fmt.Sprintf("… and %d more", len(values)-maxListedValues))
 }
 
 // staticExpressionType reports the declared type an output expression is known

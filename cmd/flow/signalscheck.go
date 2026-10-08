@@ -83,10 +83,11 @@ func newSignalsCheckCommand() *cobra.Command {
 			"senders-by-gates table. The file is a strict YAML document:\n\n" +
 			"  identities:\n" +
 			"    - name: sre-lead\n" +
-			"      subject: sre-lead@example.com\n" +
-			"      issuer: https://issuer.example.com\n" +
-			"      claims: {team: release-managers}\n" +
-			"      starter: {subject: dev@example.com, issuer: https://issuer.example.com}\n" +
+			"      principal:\n" +
+			"        subject: sre-lead@example.com\n" +
+			"        issuer: https://issuer.example.com\n" +
+			"        claims: {team: release-managers}\n" +
+			"      starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}\n" +
 			"      inputs: {expected_approver: sre-lead@example.com}\n" +
 			"      expect: admitted\n\n" +
 			"`expect` is one outcome for every gate, and `expect_by_gate` a map from gate (`signals.NAME`, " +
@@ -423,7 +424,7 @@ func refusedCheckInputs(cmd *cobra.Command, workflow *v1.Workflow, submitted map
 }
 
 // writeCheckJSON writes the report in the format a job reads.
-func writeCheckJSON(cmd *cobra.Command, format OutputFormat, report policycheck.Report) error {
+func writeCheckJSON(cmd *cobra.Command, format OutputFormat, report any) error {
 	var (
 		encoded []byte
 		err     error

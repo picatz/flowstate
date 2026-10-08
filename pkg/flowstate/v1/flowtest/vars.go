@@ -1,17 +1,21 @@
 package flowtest
 
 import (
+	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 
 	"github.com/google/cel-go/cel"
 	celast "github.com/google/cel-go/common/ast"
+	"github.com/google/cel-go/common/types"
+	"github.com/google/cel-go/common/types/ref"
+	"github.com/google/cel-go/common/types/traits"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -265,12 +269,53 @@ const maxVarExpressions = MaxVarsPerFile
 //
 // What this constant does not bound, named so its next reader does not credit
 // it: the per-read scan over the node map (a probe that retains no new edge
-// spends no budget), and the material evaluation itself retains (a chain of
+// spends no edge budget; [maxVarDependencyScans] bounds it), and the material evaluation itself retains (a chain of
 // whole-value container reads copies the table once per link on ~one edge per
-// link). Those are the dependency model's costs, not this budget's; collapsing
+// link; [maxVarMaterializedNodes] bounds that). Those are the dependency
+// model's costs, not this budget's; collapsing
 // a container read to one edge on the container would remove the quadratic
 // product — and most of this constant's job — entirely.
 const maxVarDependencyEdges = 2 * maxExpandedNodes
+
+// maxVarDependencyScans bounds the node visits the dependency scan spends
+// across the whole file, the resource [maxVarDependencyEdges] does not see: a
+// read that matches no leaf retains no edge and still walks the whole node
+// map, so 190 computed vars each holding 350 non-matching reads of a
+// 20,000-leaf table cost over a minute from a 785KB file with the edge budget
+// untouched (#1353). Each read charges one visit per node.
+//
+// 20,000,000 admits one 20,000-leaf table read four times by each of the 199
+// computed vars a file may add beside it: 199 * 4 * 20,199 nodes is 16.1M,
+// because the computed leaves are nodes too. That is far past any fixture that
+// is not an attack, and at roughly 45ns a visit it bounds the loader's scan to
+// about 0.9s.
+const maxVarDependencyScans = 20_000_000
+
+// maxVarMaterializedNodes bounds the values the computed vars of one file may
+// produce between them. A whole-value read of a container yields a fresh copy
+// of it, and a chain of such reads depends on one var per link, so neither the
+// edge budget nor the scan budget sees it: 100 links over a 20,000-leaf table
+// is about 20,000 edges and 2,000,000 copied values, 17.7s and 2.6GB from a
+// small file (#1317). The copy is the resource, so the copy is what is counted,
+// on the CEL value and before it is converted: see [boundedNodes].
+//
+// Three times [maxExpandedNodes]: it must admit everything the edge budget
+// does, since a direct reader of a table of L leaves both costs L edges and
+// yields L+1 values, and [maxVarDependencyEdges] admits up to 200,000 of those.
+// 300,000 values is tens of megabytes at the worst, far under the 1GiB the
+// repository's tests run under.
+const maxVarMaterializedNodes = 3 * maxExpandedNodes
+
+// depBudget is what one load's dependency scan may still spend: edges
+// retained and node visits made. Separate because they bound different
+// resources and neither substitutes for the other.
+type depBudget struct {
+	edges, scans int
+}
+
+func newDepBudget(scanLimit int) *depBudget {
+	return &depBudget{edges: maxVarDependencyEdges, scans: cmp.Or(scanLimit, maxVarDependencyScans)}
+}
 
 // varReference matches a whole-value reference: `${vars.<name>}` and nothing
 // around it. The name grammar is CEL's identifier grammar, because a var must
@@ -620,23 +665,16 @@ func checkVarLeaves(p *problems, r site, where string, value any, depth int) {
 	case string:
 		if strings.Contains(v, "${") {
 			if _, fenced := flowfile.SplitFence(v); !fenced {
-				// Quotes the fences and never the text around them: this runs
-				// before [File.evaluateVars] knows what the file withholds,
-				// and the literal text is exactly what a secret-holding leaf
-				// would carry (#2080). The fences are the expression as
-				// written — what [varDeclaration.fence] quotes — and together
-				// no longer than the leaf; a literal inside one still prints
-				// (#2108).
-				var quoted []string
-				for _, fence := range flowfile.Fences(v) {
-					quoted = append(quoted, strconv.Quote(v[fence.Open:fence.End]))
-				}
+				// Quotes neither the text around the fences nor the fences:
+				// this runs before [File.evaluateVars] knows what the file
+				// withholds, and both are text the author wrote, which is
+				// exactly where a secret-holding leaf keeps its material
+				// (#2080, #2108). The leaf's own position says where.
 				const rule = "a computed leaf must be one whole-value `${...}` expression, with no literal text around it"
-				if len(quoted) == 0 {
+				if len(flowfile.Fences(v)) == 0 {
 					p.report(r, "%s holds `${` outside one whole-value fence; %s", where, rule)
 				} else {
-					p.report(r, "%s holds the expression %s surrounded by other text; %s",
-						where, strings.Join(quoted, " and "), rule)
+					p.report(r, "%s mixes text with a `${...}` expression; %s", where, rule)
 				}
 			}
 		}
@@ -667,8 +705,10 @@ func fencedVarValue(value any) (string, bool) {
 	return flowfile.SplitFence(text)
 }
 
-// A varDeclaration is one computed var: the fence as the file wrote it, the
-// expression parsed once, and the siblings it reads.
+// A varDeclaration is one computed var: where it is, the expression parsed
+// once, and the siblings it reads. Diagnostics about it name the var and its
+// position and never quote the expression: that is text the author wrote, and
+// a var that stands in for a secret is where an author puts one (#2108).
 type varDeclaration struct {
 	// path is the position below `vars`, used both as the graph node's stable
 	// name and to replace exactly this leaf after evaluation.
@@ -678,13 +718,6 @@ type varDeclaration struct {
 	// provenance.
 	spot site
 
-	// fence is the value as written, `${...}` and all. Every diagnostic about
-	// this var quotes *this* and never the value the expression produced or
-	// read: a computed var can hold a secret's material (see [withheldFrom]),
-	// and a refusal that echoed it would be a second output channel around the
-	// redaction set.
-	fence string
-
 	// ast is the expression inside the fence, parsed in the library-less
 	// environment it will evaluate in. Nil when the parse or a root check
 	// refused it, which is how [File.evaluateVars] knows not to evaluate.
@@ -692,6 +725,11 @@ type varDeclaration struct {
 
 	// deps are the sibling vars the expression reads, sorted and deduplicated.
 	deps []string
+
+	// hasLiteral is whether the expression wrote a string or bytes literal,
+	// which an evaluation error quoting or composing from it must not print
+	// (#2108).
+	hasLiteral bool
 }
 
 type varPathPart struct {
@@ -815,18 +853,24 @@ func setVarNode(vars map[string]any, path varPath, value any) {
 	}
 }
 
-func dependenciesFor(reads []varPath, nodes map[string]varNode, remaining *int) ([]string, bool) {
+func dependenciesFor(reads []varPath, nodes map[string]varNode, budget *depBudget) ([]string, bool) {
 	deps := map[string]bool{}
 	for _, read := range reads {
+		// Charged up front for the whole walk: a read that matches nothing
+		// costs exactly as much as one that matches everything (#1353).
+		if budget.scans < len(nodes) {
+			return nil, false
+		}
+		budget.scans -= len(nodes)
 		for id, node := range nodes {
 			// Reading a fixed container depends on all of its leaves. Selecting
 			// from a whole-value computed node depends on that node.
 			if (pathHasPrefix(node.path, read) || pathHasPrefix(read, node.path)) && !deps[id] {
-				if *remaining == 0 {
+				if budget.edges == 0 {
 					return nil, false
 				}
 				deps[id] = true
-				*remaining--
+				budget.edges--
 			}
 		}
 	}
@@ -1064,6 +1108,7 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 			// expression reads already holds its value, and a var can read
 			// nothing else.
 			activation := map[string]any{v1.VarsRoot: f.Vars}
+			nodesLeft := cmp.Or(f.nodeLimit, maxVarMaterializedNodes)
 
 			for _, name := range order {
 				d := declared[name]
@@ -1079,13 +1124,22 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 					continue
 				}
 
-				value, err := evaluateVar(base, d, activation)
+				value, nodes, err := evaluateVar(base, d, activation, nodesLeft)
+				if errors.Is(err, errVarNodesExceeded) {
+					p.report(site{at: block}, "computed vars produce more than %d values between them; each `${vars.name}` read of a container copies it, so read a leaf of it, or read it from fewer vars", cmp.Or(f.nodeLimit, maxVarMaterializedNodes))
+
+					break
+				}
 				if err != nil {
-					p.report(d.spot, "vars.%s: evaluating %s: %s",
-						name, d.fence, scrubbedVarError(err, taint, d.deps))
+					p.report(d.spot, "vars.%s: evaluating its expression failed: %s",
+						name, scrubbedVarError(err, taint, d.deps, d.hasLiteral))
 
 					continue
 				}
+				// Charged for the copy the evaluation just made, before it is
+				// stored: past the budget the file is refused whole, and no
+				// later link gets to copy again (#1317).
+				nodesLeft -= nodes
 				if len(d.path) > 1 {
 					switch value.(type) {
 					case map[string]any, []any:
@@ -1122,15 +1176,9 @@ func (f *File) evaluateVars(p *problems, restated []string) {
 	// runs next — so every one of them is cleared through what this file
 	// withholds, in both spellings (#2080). Installed once, here, rather than
 	// raced by an earlier partial set: nothing has been substituted before
-	// this line, and [checkVarLeaves] no longer quotes the literal text around
-	// a leaf's fences. What is still quoted above this line is the expression
-	// as written, by the established rule: each fence [checkVarLeaves] finds,
-	// [varDeclaration.fence] in an evaluation error, and cel-go's source
-	// snippet in a parse error. That text is the author's, and it can hold
-	// literal material of its own — a string literal inside a fence, or
-	// everything between the braces of `${a} literal ${b}`, which
-	// [flowfile.SplitFence] accepts as one expression — so nothing here
-	// guarantees that no var text precedes this line (#2108).
+	// this line, and no var diagnostic above it quotes the author's expression
+	// text ([checkVarLeaves], [parseFailure], the evaluation report): a literal
+	// inside a fence is as secret as one outside it (#2108).
 	p.withholdText(f.varsWithheld.text)
 }
 
@@ -1176,7 +1224,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 	}
 
 	declared := map[string]*varDeclaration{}
-	remainingEdges := maxVarDependencyEdges
+	budget := newDepBudget(f.scanLimit)
 	for _, id := range slices.Sorted(maps.Keys(nodes)) {
 		node := nodes[id]
 		text, fenced := fencedVarValue(node.value)
@@ -1184,7 +1232,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			continue
 		}
 		spot := node.spot
-		d := &varDeclaration{path: node.path, spot: spot, fence: node.value.(string)}
+		d := &varDeclaration{path: node.path, spot: spot}
 		declared[id] = d
 
 		if strings.TrimSpace(text) == "" {
@@ -1194,7 +1242,7 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		}
 		parsed, issues := base.Parse(text)
 		if issues != nil && issues.Err() != nil {
-			p.report(spot, "vars.%s: %s", id, issues.Err())
+			p.report(spot, "vars.%s: %s", id, parseFailure(issues))
 			// No AST to read edges from, so they are read from the text —
 			// see [textualVarDeps] for why an over-approximation is the safe
 			// direction and a missing edge is not.
@@ -1203,9 +1251,9 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 				reads = append(reads, varPath{{key: name}})
 			}
 			var withinBound bool
-			d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
+			d.deps, withinBound = dependenciesFor(reads, nodes, budget)
 			if !withinBound {
-				p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges; a computed var reading a container depends on each of its leaves, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges)
+				p.report(site{at: at(v1.VarsRoot)}, "computed vars exceed the dependency budget (%d edges, %d scan steps); a computed var reading a container depends on each of its leaves, and every read scans every var leaf, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges, maxVarDependencyScans)
 				return nil
 			}
 
@@ -1222,9 +1270,9 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 		// walking an incomplete graph, and an independent var's evaluator
 		// error printed the plaintext.
 		var withinBound bool
-		d.deps, withinBound = dependenciesFor(reads, nodes, &remainingEdges)
+		d.deps, withinBound = dependenciesFor(reads, nodes, budget)
 		if !withinBound {
-			p.report(site{at: at(v1.VarsRoot)}, "computed vars have more than %d dependency edges; a computed var reading a container depends on each of its leaves, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges)
+			p.report(site{at: at(v1.VarsRoot)}, "computed vars exceed the dependency budget (%d edges, %d scan steps); a computed var reading a container depends on each of its leaves, and every read scans every var leaf, so shrink the containers computed vars read, or read them from fewer vars", maxVarDependencyEdges, maxVarDependencyScans)
 			return nil
 		}
 		if !ok {
@@ -1240,8 +1288,25 @@ func (f *File) declareVars(p *problems) map[string]*varDeclaration {
 			continue
 		}
 		d.ast = parsed
+		d.hasLiteral = hasStringLiteral(parsed)
 	}
 	return declared
+}
+
+// parseFailure is what one parse failure may say: where it is, never what cel-go
+// quotes. Its message carries the source line and a caret, and its token
+// complaints carry fragments of the text, which is text the author wrote and
+// can hold a literal secret before the file's redaction set exists (#2108).
+// Columns count within the expression, inside the fence.
+func parseFailure(issues *cel.Issues) string {
+	errs := issues.Errors()
+	if len(errs) == 0 {
+		return "the expression is not valid CEL"
+	}
+	loc := errs[0].Location
+
+	return fmt.Sprintf("the expression is not valid CEL (syntax error at line %d, column %d of the expression)",
+		loc.Line(), loc.Column()+1)
 }
 
 // checkVarExpression walks one parsed var expression, reporting every root a
@@ -1461,20 +1526,78 @@ func checkVarExpression(p *problems, spot site, name string, root celast.Expr, b
 // [cel.RefValueToValue] then [literalToGo] — rather than a second conversion
 // beside it, so a map a var builds and a map a run produces reach a comparison
 // as the same Go value.
-func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (any, error) {
+func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any, nodes int) (any, int, error) {
 	// Background rather than a caller's context, because this loader has none
 	// to thread: the bound that matters here is cost, not time (CLAUDE.md), and
 	// [maxVarCost] is enforced whatever the context says.
 	out, err := varEvaluator().Eval(context.Background(), base, d.ast, activation)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
+	}
+	// Counted on the CEL value, before it is converted: the conversion below is
+	// the copy [maxVarMaterializedNodes] exists to bound, and a CEL cost of
+	// one per reference does not price how large a referenced container is, so
+	// one expression naming a table many times can build far more than the
+	// budget before any count of the finished value sees it.
+	n, within := boundedNodes(out, nodes)
+	if !within {
+		return nil, n, errVarNodesExceeded
 	}
 	literal, err := cel.RefValueToValue(out)
 	if err != nil {
-		return nil, err
+		return nil, n, err
+	}
+	value, err := literalToGo(literal)
+
+	return value, n, err
+}
+
+// errVarNodesExceeded reports that one var's value alone is past the values
+// the file has left. It carries no text of its own: [File.evaluateVars] words
+// the refusal, naming the limit.
+var errVarNodesExceeded = errors.New("computed var exceeds the materialization budget")
+
+// boundedNodes counts the values in a CEL value, scalars and containers alike,
+// and stops as soon as the count passes limit, so the work is proportional to
+// the limit and not to the value. The bool is false past it.
+//
+// Containers count as well as leaves because the conversion allocates both: a
+// table of one-entry maps nested thirty levels deep costs thirty maps per
+// scalar, and a leaf-only count admits millions of them (Copilot, #2456).
+func boundedNodes(v ref.Val, limit int) (int, bool) {
+	n := 0
+	ok := walkNodes(v, &n, limit, 0)
+
+	return n, ok
+}
+
+func walkNodes(v ref.Val, n *int, limit, depth int) bool {
+	*n++
+	if *n > limit {
+		return false
+	}
+	// Deeper than any value a var may hold is refused rather than left
+	// uncounted: stopping the walk here would let a subtree the conversion
+	// still copies go unseen by the budget.
+	if depth > v1.MaxStructureDepth {
+		return false
+	}
+	switch c := v.(type) {
+	case traits.Lister:
+		for it := c.Iterator(); it.HasNext() == types.True; {
+			if !walkNodes(it.Next(), n, limit, depth+1) {
+				return false
+			}
+		}
+	case traits.Mapper:
+		for it := c.Iterator(); it.HasNext() == types.True; {
+			if !walkNodes(c.Get(it.Next()), n, limit, depth+1) {
+				return false
+			}
+		}
 	}
 
-	return literalToGo(literal)
+	return true
 }
 
 // scrubbedVarError is what one evaluation failure may say.
@@ -1498,10 +1621,9 @@ func evaluateVar(base *cel.Env, d *varDeclaration, activation map[string]any) (a
 // Naming the var is the useful half, as it is there: an author learns which
 // dependency to break, and a name is not a value.
 //
-// Every diagnostic here quotes the *expression* rather than the value, which
-// is the same rule stated on [varDeclaration.fence]; this is the one place a
-// value could reach a message by another road, and this is that road closed.
-func scrubbedVarError(err error, taint varTaint, deps []string) string {
+// No diagnostic here quotes the expression or the value; this is the one place
+// a value could reach a message by another road, and this is that road closed.
+func scrubbedVarError(err error, taint varTaint, deps []string, literal bool) string {
 	// deps are sorted by [checkVarExpression], so the var named here is the
 	// same one on every run over the same file.
 	for _, dep := range deps {
@@ -1510,7 +1632,34 @@ func scrubbedVarError(err error, taint varTaint, deps []string) string {
 		}
 	}
 
+	// A CEL error quotes its source line, and the error's operand can be
+	// composed from the expression's string literals (`'sk-' + 'live'`), so
+	// clearing the literals one by one cannot bound it. An expression that
+	// wrote any string or bytes literal therefore has its detail withheld
+	// whole; one that wrote none has nothing of the author's to quote, and
+	// keeps the detail that makes the error useful (#2108).
+	if literal {
+		return "[withheld: this expression writes a string literal, which a CEL error can quote or compose]"
+	}
+
 	return err.Error()
+}
+
+// hasStringLiteral reports whether an expression wrote a string or bytes
+// literal, however short.
+func hasStringLiteral(ast *cel.Ast) bool {
+	found := false
+	celast.PreOrderVisit(ast.NativeRep().Expr(), celast.NewExprVisitor(func(e celast.Expr) {
+		if e.Kind() != celast.LiteralKind {
+			return
+		}
+		switch e.AsLiteral().Value().(type) {
+		case string, []byte:
+			found = true
+		}
+	}))
+
+	return found
 }
 
 // varOrder returns the computed vars in an order where every var's

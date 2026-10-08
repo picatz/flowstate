@@ -4,46 +4,168 @@ package slack.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/slack/gen/slack/v1;slackv1";
 
+import "buf/validate/validate.proto";
+import "flowstate/chat/v1/chat.proto";
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
+import "slack/v1/blocks.proto";
 
-// PostInputs describes the deliberately small outbound Slack surface. It sends
-// accessible text through chat.postMessage; Block Kit, attachments, lookup,
-// reactions, updates, and inbound interaction handling are outside this plugin.
+// The Slack tasks post and update messages. A message body is one of three
+// shapes, and only one:
+//
+//   - text: a plain sentence, shown literally.
+//   - card: a vendor-neutral preset (approval, status, log, notice) that the
+//     plugin lays out as Block Kit.
+//   - blocks: native Block Kit, for layouts a preset does not cover.
+//
+// `text` may also accompany a card or blocks, where it is the notification and
+// accessibility fallback; without it the plugin derives one.
+
+// Metadata is structured data Slack stores with a message, readable by the app
+// through the Events API but not shown to people.
+message Metadata {
+  // event_type names the kind of data, 1 to 64 characters.
+  string event_type = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
+
+  // event_payload is the data: at most 16 keys, 1 KiB of keys and values
+  // together.
+  map<string, string> event_payload = 2 [(buf.validate.field).map.max_pairs = 16];
+}
+
+// PostInputs describes one new message.
 message PostInputs {
-  // Token is a Slack bot or user token carrying chat:write. The task requires
+  // token is a Slack bot token (xoxb-) carrying chat:write. The task requires
   // this entire input to be a secret reference, which the host resolves before
   // execution. A literal token is refused before it can enter durable history;
   // the resolved credential is capped at 4 KiB before becoming an HTTP header.
-  flowstate.v1.Value token = 1;
+  flowstate.v1.Value token = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
-  // Channel is a Slack conversation ID. Names are deliberately refused: IDs do
-  // not change when a channel is renamed and make the destination unambiguous.
-  string channel = 2;
+  // channel is a Slack conversation ID such as C0123ABCD. Names are refused: IDs
+  // do not change when a channel is renamed and make the destination
+  // unambiguous.
+  string channel = 2 [(buf.validate.field).string.pattern = "^[CDG][A-Z0-9]{1,254}$"];
 
-  // Text is the complete accessible message and is limited to 4,000 Unicode
-  // characters, Slack's documented recommendation before truncation begins.
-  string text = 3;
-
-  // MessageKey is a UUID chosen once for this logical notification and reused
+  // idempotency_key is a UUID chosen once for this logical message and reused
   // unchanged if an operator deliberately retries it. It is sent as Slack's
-  // client_msg_id. Slack documents duplicate-related errors for that field but
-  // does not promise a complete deduplication contract, so an ambiguous write
-  // still returns OutcomeUnknown rather than being retried automatically.
-  string message_key = 4;
+  // client_msg_id, which Slack uses to refuse a duplicate but does not promise
+  // to deduplicate completely, so an ambiguous write still reports an unknown
+  // outcome rather than being retried automatically. A message to_user cannot
+  // carry one: Slack's ephemeral method has no such field.
+  string idempotency_key = 3 [(buf.validate.field).string.pattern = "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"];
 
-  // ThreadTs optionally posts beneath an existing parent message. It is the
-  // only composition feature included: approval requests and their outcome can
-  // remain together without exposing Slack's broader message API.
-  string thread_ts = 5;
+  // text is the whole message when it stands alone, or the notification
+  // fallback beside a card or blocks. It is plain: markup in it is shown
+  // literally, never as a mention or link. At most 4000 characters.
+  string text = 4 [(buf.validate.field).string.max_len = 4000];
+
+  // card is a preset layout. Exclusive with blocks.
+  flowstate.chat.v1.Card card = 5;
+
+  // blocks is native Block Kit, at most 50. Exclusive with card.
+  repeated Block blocks = 6 [(buf.validate.field).repeated.max_items = 50];
+
+  // thread_ts posts the message as a reply beneath the message with this
+  // timestamp, such as 1503435956.000247.
+  string thread_ts = 7 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.pattern = "^[0-9]{1,16}\\.[0-9]{6}$"
+  ];
+
+  // reply_broadcast also shows a threaded reply in the channel. It needs
+  // thread_ts and cannot be combined with to_user.
+  bool reply_broadcast = 8;
+
+  // to_user makes the message ephemeral: visible only to this user, sent with
+  // chat.postEphemeral. It cannot be combined with reply_broadcast or metadata,
+  // and an ephemeral message cannot be updated.
+  string to_user = 9 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.pattern = "^[UW][A-Z0-9]{1,20}$"
+  ];
+
+  // metadata is structured data stored with the message.
+  Metadata metadata = 10;
 }
 
 // PostOutputs identifies the message Slack acknowledged.
 message PostOutputs {
-  // Channel is the conversation ID Slack reports the message was posted to.
+  // channel is the conversation ID the message was posted to.
   string channel = 1;
 
-  // Ts is the message timestamp Slack assigned, which identifies the message
-  // within its channel and is the value a later thread_ts names to reply
-  // beneath it.
+  // ts is the timestamp Slack assigned, which identifies the message within its
+  // channel: the value a later slack.update names, and a thread_ts replies
+  // beneath. Empty for an ephemeral message; see message_ts.
   string ts = 2;
+
+  // message_ts is the timestamp Slack reports for an ephemeral message. It
+  // cannot be used to update the message or start a thread.
+  string message_ts = 3;
+}
+
+// UpdateInputs describes a replacement of the body of a message this app posted.
+message UpdateInputs {
+  // token is a Slack bot token (xoxb-) carrying chat:write, as for slack.post.
+  flowstate.v1.Value token = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
+
+  // channel is the conversation ID the message is in.
+  string channel = 2 [(buf.validate.field).string.pattern = "^[CDG][A-Z0-9]{1,254}$"];
+
+  // ts is the timestamp of the message to replace, such as 1503435956.000247.
+  string ts = 3 [(buf.validate.field).string.pattern = "^[0-9]{1,16}\\.[0-9]{6}$"];
+
+  // text is the whole new message when it stands alone, or the notification
+  // fallback beside a card or blocks, exactly as for slack.post. An update that
+  // sends only text also clears the blocks the message had.
+  string text = 4 [(buf.validate.field).string.max_len = 4000];
+
+  // card is a preset layout. Exclusive with blocks.
+  flowstate.chat.v1.Card card = 5;
+
+  // blocks is native Block Kit, at most 50. Exclusive with card.
+  repeated Block blocks = 6 [(buf.validate.field).repeated.max_items = 50];
+
+  // metadata replaces the structured data stored with the message.
+  Metadata metadata = 7;
+}
+
+// UpdateOutputs identifies the message Slack acknowledged.
+message UpdateOutputs {
+  // channel is the conversation ID of the updated message.
+  string channel = 1;
+
+  // ts is the timestamp of the updated message, unchanged.
+  string ts = 2;
+}
+
+// RespondInputs describes an answer to an interaction through the response_url
+// Slack sent with it. The URL is the credential, scoped by Slack to the one
+// conversation the interaction happened in and valid for 30 minutes and five
+// uses, so this task takes no token. It must be the response_url of a delivery
+// the trigger verified, for example ${event.body.response_url}.
+message RespondInputs {
+  // response_url is the https://hooks.slack.com/actions/... or /commands/...
+  // address from the interaction. Any other address is refused before a request.
+  string response_url = 1 [(buf.validate.field).string = {min_len: 1, max_len: 512}];
+
+  // how says what the answer does: "replace" (the default) swaps the message
+  // the clicked control was on, "delete" removes it, "ephemeral" shows a new
+  // message only to the person who clicked, and "in_channel" posts a new
+  // message everyone can see.
+  string how = 2 [(buf.validate.field).string = {in: ["", "replace", "delete", "ephemeral", "in_channel"]}];
+
+  // text is the message, or its notification fallback beside a card or blocks,
+  // exactly as for slack.post. Not used by "delete".
+  string text = 3 [(buf.validate.field).string.max_len = 4000];
+
+  // card is a preset layout. Exclusive with blocks.
+  flowstate.chat.v1.Card card = 4;
+
+  // blocks is native Block Kit, at most 50. Exclusive with card.
+  repeated Block blocks = 5 [(buf.validate.field).repeated.max_items = 50];
+}
+
+// RespondOutputs reports what the answer did.
+message RespondOutputs {
+  // how is the action taken: replace, delete, ephemeral or in_channel.
+  string how = 1;
 }

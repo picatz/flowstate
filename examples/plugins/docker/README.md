@@ -24,7 +24,7 @@ $ go -C plugins/docker build -o ../../plugins/flowstate-plugin-docker .
 $ flow worker --allow-unversioned-interpreter --plugin-dir ./plugins \
     --plugin-env docker=FLOWSTATE_DOCKER_GRANTS=$PWD/examples/plugins/docker/grants.yaml &
 $ flow server --plugin-dir ./plugins --auth-policy /path/to/auth-policy.yaml \
-    --rpc-resource https://flowstate.example.com/rpc --identity-claim team &
+    --rpc-resource https://flowstate.example.com/rpc &
 $ flow run examples/plugins/docker/workflow.yaml \
     --input suite=smoke \
     --input expected_approver=release-manager@example.com \
@@ -37,8 +37,8 @@ an `--auth-policy` trusting a real issuer, with the `--rpc-resource` its tokens
 are minted for, rather than `--insecure-no-auth`, because the approval below is
 a signal only an attested release manager other than the starter may send, and
 without authentication every caller is the same anonymous one.
-It keeps the `team` claim (`--identity-claim team`), because the signal's rule
-reads it and a server persists only the claims it names. Every client command
+Its issuer entry carries the `team` claim (`carry_claims: [{claim: team, type: string}]`), because the signal's rule
+reads it and a run records only the claims an entry carries. Every client command
 below authenticates with `--token-file` (or `--credential-source`): an
 authenticated server refuses an anonymous caller.
 

@@ -113,7 +113,7 @@ func addServerFlags(cmd *cobra.Command) {
 	cmd.Flags().String("token-file", os.Getenv("FLOWSTATE_TOKEN_FILE"),
 		"file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); "+
 			"re-read per request, so a rotating token keeps working. "+
-			"Without it, FLOWSTATE_TOKEN is used, and neither means anonymous")
+			"Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous")
 
 	// Names a credentialsource.Source explicitly. "github-actions", "gitlab"
 	// and "terraform-cloud" are what turn a CI job's or a Terraform run's
@@ -124,7 +124,7 @@ func addServerFlags(cmd *cobra.Command) {
 	cmd.Flags().String("credential-source", os.Getenv("FLOWSTATE_CREDENTIAL_SOURCE"),
 		"acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN "+
 			"(overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, "+
-			"terraform-cloud, file, env. An unknown or unusable source is an error, never anonymous")
+			"terraform-cloud, file, env, login. An unknown or unusable source is an error, never anonymous")
 
 	cmd.Flags().String("audience", os.Getenv("FLOWSTATE_AUDIENCE"),
 		"the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); "+

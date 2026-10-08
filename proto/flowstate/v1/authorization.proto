@@ -71,7 +71,7 @@ enum AuthorizationAction {
   // Starting work: Run and SignalWithStart, which starts a run.
   AUTHORIZATION_ACTION_WORKLOAD_RUN = 1;
 
-  // Reading a run: Get, GetTimeline and List.
+  // Reading a run: Get, GetTimeline, GetCheckpoint and List.
   AUTHORIZATION_ACTION_WORKLOAD_READ = 2;
 
   // Signaling a run that is already going.
@@ -151,6 +151,15 @@ enum AuthorizationAction {
   // GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the
   // values. It is never implied: a caller holds it only when its policy entry lists it.
   AUTHORIZATION_ACTION_WORKLOAD_REVEAL_SENSITIVE = 22;
+
+  // Asking who the server believes the caller is: Whoami. It reveals nothing
+  // but the caller's own principal, so every caller holds it without a policy
+  // entry listing it: authz.DecidePrincipal grants it to a verified caller
+  // whose entry names no actions, to the anonymous caller, and to a deployment
+  // with no authentication. It exists in the vocabulary so the RPC still has
+  // exactly one action to be audited under, and a policy entry that lists it
+  // is redundant, not wrong. An embedder's Decider can still refuse it.
+  AUTHORIZATION_ACTION_IDENTITY_READ = 23;
 }
 
 // AuthorizationActionBinding says which operations one action covers.

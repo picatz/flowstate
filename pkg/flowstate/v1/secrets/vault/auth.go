@@ -139,12 +139,35 @@ func (p *Provider) forget(generation uint64) {
 // same rejected credential a second time and report the same error a round trip
 // later.
 func (p *Provider) canReauthenticate() bool {
-	return p.role != ""
+	return p.role != "" || p.tokenFile != ""
+}
+
+// readTokenFile reads the client token [WithTokenFile] names. The error names the
+// path, which is configuration, and never the contents.
+func (p *Provider) readTokenFile() (string, error) {
+	contents, err := readBoundedRegular(p.tokenFile, maxJWTBytes)
+	if err != nil {
+		return "", fmt.Errorf("%w: reading the Vault token file at %q: %w", secrets.ErrUnavailable, p.tokenFile, err)
+	}
+
+	token := strings.TrimSpace(string(contents))
+	if token == "" {
+		return "", fmt.Errorf("%w: the Vault token file at %q is empty", secrets.ErrUnavailable, p.tokenFile)
+	}
+
+	return token, nil
 }
 
 // login exchanges the pod's service account token for a Vault client token, and
 // reports the lease duration it came with.
 func (p *Provider) login(ctx context.Context) (string, time.Duration, error) {
+	if p.tokenFile != "" {
+		// The "login" is reading the file again. It carries no lease, so the
+		// token is kept until Vault rejects it, which is what sends us here.
+		token, err := p.readTokenFile()
+		return token, 0, err
+	}
+
 	if !p.canReauthenticate() {
 		// Only reachable when a static token was refused, since a static token is
 		// seeded into the cache at construction and never expires from here.

@@ -116,6 +116,13 @@ var (
 	// not describe a workload well enough to mint an assertion for it.
 	ErrInvalidIdentity = errors.New("auth: invalid workload identity")
 
+	// ErrDelegatedCaller is returned when an assertion or a brokered credential
+	// is requested for an identity that arrived through an RFC 8693 "act"
+	// chain. Assertions carry no "act" claim yet, so minting one would present
+	// the delegator as acting alone and launder the chain; the request is
+	// refused instead. The message names no actor and no token value.
+	ErrDelegatedCaller = errors.New("auth: a delegated caller cannot mint or broker credentials yet")
+
 	// ErrUndeclaredClaim is returned when a mint is asked to carry a claim the
 	// issuer does not declare. The claim set an assertion may carry is a closed
 	// set, and a name absent from it is refused rather than signed: see
@@ -125,6 +132,17 @@ var (
 	// ErrNoSigningKey is returned when an [Issuer] has no key able to sign, which
 	// is the fail-closed outcome of a rotation that left none active.
 	ErrNoSigningKey = errors.New("auth: no active signing key")
+
+	// ErrUnknownTenant is returned when a tenant issuer is asked for a tenant the
+	// federation policy does not list. A tenant with no issuer has no key and
+	// no URL, so the answer is a refusal and never the deployment's own issuer.
+	ErrUnknownTenant = errors.New("auth: tenant has no issuer")
+
+	// ErrTenantMismatch is returned when a tenant-scoped issuer is asked to mint
+	// for a workload that belongs to another tenant. The issuer's URL and key
+	// are one tenant's, so signing for a different one would put that tenant's
+	// name under an issuer its relying parties never trusted for it.
+	ErrTenantMismatch = errors.New("auth: workload belongs to another tenant")
 
 	// ErrAssumeDenied is returned when the assumption policy refuses to let a
 	// workload obtain a credential for a target. See [AssumeDeniedError].
@@ -165,6 +183,13 @@ var (
 	// a shared namespace because its own could not be determined is how a tenant
 	// boundary becomes decorative.
 	ErrNoNamespace = errors.New("auth: cannot determine the caller's namespace")
+
+	// ErrGroupsOverage is returned when a token's group list cannot be read in
+	// full: the IdP signalled an overage (Entra's `_claim_names`/`hasgroups`) or
+	// the list is over the bounds on a carried group list. The caller is refused
+	// rather than admitted with a prefix of its groups, because a rule over
+	// groups decides on membership, and a partial one can grant or fail to deny.
+	ErrGroupsOverage = errors.New("auth: token group list is incomplete or over bound")
 
 	// ErrSecretDenied is returned when no rule permits a workload to read a
 	// secret. See [SecretDeniedError].
@@ -542,6 +567,9 @@ func publicReason(err error) string {
 		return "token is missing a required claim"
 	case errors.Is(err, ErrInvalidAudience):
 		return "token audience is not accepted"
+	case errors.Is(err, ErrGroupsOverage):
+		// The entry and claim are named in the server-side error, not here.
+		return "token group membership is incomplete or over the supported bound"
 	case errors.Is(err, ErrDelegatedToken):
 		// Placed before the claim cases below because a delegation refusal is
 		// not "your issuer forgot something": the claim is present and this

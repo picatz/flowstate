@@ -162,7 +162,7 @@ message Workflow {
   // this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason
   // stated there — a spec is a thing an outside party writes.
   //
-  // `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the
+  // `max_len` here rather than `Principal.claims`'s `max_bytes`, and the
   // difference is not an oversight. That field is written in bytes because a
   // second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts
   // bytes — refuses the same sizes at mint, and one limit written down twice in
@@ -1772,6 +1772,11 @@ message Node {
   // reason `undo` is field 10: departing from written order is not a kind of
   // work, it is a property of a step doing some other kind.
   bool async = 15;
+
+  // Source is where this step is written, set by the compiler front end that read
+  // a file and cleared from every digest. Advisory: absent on a hand-built
+  // specification and on a step whose id the file declares more than once.
+  SourceLocation source = 17;
 }
 
 // Compensation is what undoes one step.

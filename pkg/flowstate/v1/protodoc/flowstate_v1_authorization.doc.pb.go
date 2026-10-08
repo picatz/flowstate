@@ -98,7 +98,7 @@ func init() {
 		},
 		{
 			Name:    "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_READ",
-			Leading: " Reading a run: Get, GetTimeline and List.\n",
+			Leading: " Reading a run: Get, GetTimeline, GetCheckpoint and List.\n",
 		},
 		{
 			Name:    "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_SIGNAL",
@@ -186,6 +186,16 @@ func init() {
 				" clear, through GetRequest.reveal_sensitive or\n" +
 				" GetTimelineRequest.reveal_sensitive. Without it those RPCs withhold the\n" +
 				" values. It is never implied: a caller holds it only when its policy entry lists it.\n",
+		},
+		{
+			Name: "flowstate.v1.AUTHORIZATION_ACTION_IDENTITY_READ",
+			Leading: " Asking who the server believes the caller is: Whoami. It reveals nothing\n" +
+				" but the caller's own principal, so every caller holds it without a policy\n" +
+				" entry listing it: authz.DecidePrincipal grants it to a verified caller\n" +
+				" whose entry names no actions, to the anonymous caller, and to a deployment\n" +
+				" with no authentication. It exists in the vocabulary so the RPC still has\n" +
+				" exactly one action to be audited under, and a policy entry that lists it\n" +
+				" is redundant, not wrong. An embedder's Decider can still refuse it.\n",
 		},
 		{
 			Name: "flowstate.v1.authorization_action",

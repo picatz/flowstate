@@ -10,41 +10,78 @@ import (
 func init() {
 	protodocimpl.RegisterFile("slack/v1/slack.proto", []protodocimpl.Comment{
 		{
-			Name: "slack.v1.PostInputs",
-			Leading: " PostInputs describes the deliberately small outbound Slack surface. It sends\n" +
-				" accessible text through chat.postMessage; Block Kit, attachments, lookup,\n" +
-				" reactions, updates, and inbound interaction handling are outside this plugin.\n",
+			Name: "slack.v1.Metadata",
+			Leading: " Metadata is structured data Slack stores with a message, readable by the app\n" +
+				" through the Events API but not shown to people.\n",
+		},
+		{
+			Name:    "slack.v1.Metadata.event_type",
+			Leading: " event_type names the kind of data, 1 to 64 characters.\n",
+		},
+		{
+			Name: "slack.v1.Metadata.event_payload",
+			Leading: " event_payload is the data: at most 16 keys, 1 KiB of keys and values\n" +
+				" together.\n",
+		},
+		{
+			Name:    "slack.v1.PostInputs",
+			Leading: " PostInputs describes one new message.\n",
 		},
 		{
 			Name: "slack.v1.PostInputs.token",
-			Leading: " Token is a Slack bot or user token carrying chat:write. The task requires\n" +
+			Leading: " token is a Slack bot token (xoxb-) carrying chat:write. The task requires\n" +
 				" this entire input to be a secret reference, which the host resolves before\n" +
 				" execution. A literal token is refused before it can enter durable history;\n" +
 				" the resolved credential is capped at 4 KiB before becoming an HTTP header.\n",
 		},
 		{
 			Name: "slack.v1.PostInputs.channel",
-			Leading: " Channel is a Slack conversation ID. Names are deliberately refused: IDs do\n" +
-				" not change when a channel is renamed and make the destination unambiguous.\n",
+			Leading: " channel is a Slack conversation ID such as C0123ABCD. Names are refused: IDs\n" +
+				" do not change when a channel is renamed and make the destination\n" +
+				" unambiguous.\n",
+		},
+		{
+			Name: "slack.v1.PostInputs.idempotency_key",
+			Leading: " idempotency_key is a UUID chosen once for this logical message and reused\n" +
+				" unchanged if an operator deliberately retries it. It is sent as Slack's\n" +
+				" client_msg_id, which Slack uses to refuse a duplicate but does not promise\n" +
+				" to deduplicate completely, so an ambiguous write still reports an unknown\n" +
+				" outcome rather than being retried automatically. A message to_user cannot\n" +
+				" carry one: Slack's ephemeral method has no such field.\n",
 		},
 		{
 			Name: "slack.v1.PostInputs.text",
-			Leading: " Text is the complete accessible message and is limited to 4,000 Unicode\n" +
-				" characters, Slack's documented recommendation before truncation begins.\n",
+			Leading: " text is the whole message when it stands alone, or the notification\n" +
+				" fallback beside a card or blocks. It is plain: markup in it is shown\n" +
+				" literally, never as a mention or link. At most 4000 characters.\n",
 		},
 		{
-			Name: "slack.v1.PostInputs.message_key",
-			Leading: " MessageKey is a UUID chosen once for this logical notification and reused\n" +
-				" unchanged if an operator deliberately retries it. It is sent as Slack's\n" +
-				" client_msg_id. Slack documents duplicate-related errors for that field but\n" +
-				" does not promise a complete deduplication contract, so an ambiguous write\n" +
-				" still returns OutcomeUnknown rather than being retried automatically.\n",
+			Name:    "slack.v1.PostInputs.card",
+			Leading: " card is a preset layout. Exclusive with blocks.\n",
+		},
+		{
+			Name:    "slack.v1.PostInputs.blocks",
+			Leading: " blocks is native Block Kit, at most 50. Exclusive with card.\n",
 		},
 		{
 			Name: "slack.v1.PostInputs.thread_ts",
-			Leading: " ThreadTs optionally posts beneath an existing parent message. It is the\n" +
-				" only composition feature included: approval requests and their outcome can\n" +
-				" remain together without exposing Slack's broader message API.\n",
+			Leading: " thread_ts posts the message as a reply beneath the message with this\n" +
+				" timestamp, such as 1503435956.000247.\n",
+		},
+		{
+			Name: "slack.v1.PostInputs.reply_broadcast",
+			Leading: " reply_broadcast also shows a threaded reply in the channel. It needs\n" +
+				" thread_ts and cannot be combined with to_user.\n",
+		},
+		{
+			Name: "slack.v1.PostInputs.to_user",
+			Leading: " to_user makes the message ephemeral: visible only to this user, sent with\n" +
+				" chat.postEphemeral. It cannot be combined with reply_broadcast or metadata,\n" +
+				" and an ephemeral message cannot be updated.\n",
+		},
+		{
+			Name:    "slack.v1.PostInputs.metadata",
+			Leading: " metadata is structured data stored with the message.\n",
 		},
 		{
 			Name:    "slack.v1.PostOutputs",
@@ -52,13 +89,105 @@ func init() {
 		},
 		{
 			Name:    "slack.v1.PostOutputs.channel",
-			Leading: " Channel is the conversation ID Slack reports the message was posted to.\n",
+			Leading: " channel is the conversation ID the message was posted to.\n",
 		},
 		{
 			Name: "slack.v1.PostOutputs.ts",
-			Leading: " Ts is the message timestamp Slack assigned, which identifies the message\n" +
-				" within its channel and is the value a later thread_ts names to reply\n" +
-				" beneath it.\n",
+			Leading: " ts is the timestamp Slack assigned, which identifies the message within its\n" +
+				" channel: the value a later slack.update names, and a thread_ts replies\n" +
+				" beneath. Empty for an ephemeral message; see message_ts.\n",
+		},
+		{
+			Name: "slack.v1.PostOutputs.message_ts",
+			Leading: " message_ts is the timestamp Slack reports for an ephemeral message. It\n" +
+				" cannot be used to update the message or start a thread.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs",
+			Leading: " UpdateInputs describes a replacement of the body of a message this app posted.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs.token",
+			Leading: " token is a Slack bot token (xoxb-) carrying chat:write, as for slack.post.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs.channel",
+			Leading: " channel is the conversation ID the message is in.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs.ts",
+			Leading: " ts is the timestamp of the message to replace, such as 1503435956.000247.\n",
+		},
+		{
+			Name: "slack.v1.UpdateInputs.text",
+			Leading: " text is the whole new message when it stands alone, or the notification\n" +
+				" fallback beside a card or blocks, exactly as for slack.post. An update that\n" +
+				" sends only text also clears the blocks the message had.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs.card",
+			Leading: " card is a preset layout. Exclusive with blocks.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs.blocks",
+			Leading: " blocks is native Block Kit, at most 50. Exclusive with card.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateInputs.metadata",
+			Leading: " metadata replaces the structured data stored with the message.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateOutputs",
+			Leading: " UpdateOutputs identifies the message Slack acknowledged.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateOutputs.channel",
+			Leading: " channel is the conversation ID of the updated message.\n",
+		},
+		{
+			Name:    "slack.v1.UpdateOutputs.ts",
+			Leading: " ts is the timestamp of the updated message, unchanged.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs",
+			Leading: " RespondInputs describes an answer to an interaction through the response_url\n" +
+				" Slack sent with it. The URL is the credential, scoped by Slack to the one\n" +
+				" conversation the interaction happened in and valid for 30 minutes and five\n" +
+				" uses, so this task takes no token. It must be the response_url of a delivery\n" +
+				" the trigger verified, for example ${event.body.response_url}.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs.response_url",
+			Leading: " response_url is the https://hooks.slack.com/actions/... or /commands/...\n" +
+				" address from the interaction. Any other address is refused before a request.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs.how",
+			Leading: " how says what the answer does: \"replace\" (the default) swaps the message\n" +
+				" the clicked control was on, \"delete\" removes it, \"ephemeral\" shows a new\n" +
+				" message only to the person who clicked, and \"in_channel\" posts a new\n" +
+				" message everyone can see.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs.text",
+			Leading: " text is the message, or its notification fallback beside a card or blocks,\n" +
+				" exactly as for slack.post. Not used by \"delete\".\n",
+		},
+		{
+			Name:    "slack.v1.RespondInputs.card",
+			Leading: " card is a preset layout. Exclusive with blocks.\n",
+		},
+		{
+			Name:    "slack.v1.RespondInputs.blocks",
+			Leading: " blocks is native Block Kit, at most 50. Exclusive with card.\n",
+		},
+		{
+			Name:    "slack.v1.RespondOutputs",
+			Leading: " RespondOutputs reports what the answer did.\n",
+		},
+		{
+			Name:    "slack.v1.RespondOutputs.how",
+			Leading: " how is the action taken: replace, delete, ephemeral or in_channel.\n",
 		},
 	})
 }

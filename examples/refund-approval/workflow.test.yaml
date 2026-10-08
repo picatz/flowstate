@@ -1,0 +1,41 @@
+edition: v2026.4
+defaults:
+  inputs:
+    order_id: o-1000
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: an approval pays back every line
+    workflow: ./workflow.yaml
+    signals:
+      - name: refund-approved
+        payload:
+          approved: true
+    expect:
+      ran: [total, ask, approval, approved, payout]
+      outputs:
+        approved: true
+        total_cents: 5700
+
+  - name: a rejection pays back nothing
+    workflow: ./workflow.yaml
+    signals:
+      - name: refund-approved
+        payload:
+          approved: false
+    expect:
+      ran: [total, ask, approval, approved]
+      others: skipped
+      outputs:
+        approved: false
+        total_cents: 5700
+
+  - name: nobody answering within the hour counts as a rejection
+    workflow: ./workflow.yaml
+    expect:
+      ran: [total, ask, approval, approved]
+      others: skipped
+      outputs:
+        approved: false
+        total_cents: 5700

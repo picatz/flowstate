@@ -94,6 +94,7 @@
 //			auth.RequireClaim("ref", "refs/heads/main"),
 //		},
 //		Role:        "deployer",
+//		Actions:     auth.ActionScopes{"workload.run", "workload.read"},
 //		MaxTokenAge: 10 * time.Minute,
 //	}
 //
@@ -107,7 +108,8 @@
 //		Require: []auth.ClaimRule{
 //			auth.RequireClaim("sub", "system:serviceaccount:flowstate:runner"),
 //		},
-//		Role: "runner",
+//		Role:    "runner",
+//		Actions: auth.ActionScopes{"workload.run", "workload.read"},
 //	}
 //
 // That last one is inside the cluster, and outbound identity HTTP is bounded by
@@ -231,6 +233,14 @@
 // what `flow`'s repeatable --identity-key builds, and [Issuer.Rotate] is its
 // in-process counterpart for a deployment that never restarts.
 //
+// A deployment with several tenants gives each its own issuer rather than one
+// key every tenant's worker shares. [FederationPolicy.Tenants] lists them, each
+// is an [Issuer] at [FederationPolicy.TenantIssuerURL] built with [WithTenant],
+// so its "iss", its key set and the one key its worker holds are that tenant's
+// alone, and it refuses to mint for any other namespace ([ErrTenantMismatch]).
+// The server holds [TenantIssuers], publish-only, and serves each tenant's
+// documents under /tenants/<namespace>/; a relying party pins the tenant's URL.
+//
 // The subject names the workload hierarchically, so a relying party can authorize
 // at whatever level it wants with a prefix match:
 //
@@ -254,7 +264,7 @@
 // custom claims and can only condition a trust policy on "sub" and "aud" — a
 // run-mode marker carried only as a claim would be unenforceable there. The
 // mode is set by which constructor built the [WorkloadIdentity]
-// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal] or [IdentityFrom]),
+// ([NewLocalWorkloadIdentity] versus [IdentityFromPrincipal]),
 // never by a flag, since the field recording it is unexported.
 //
 // A local run's [ClaimNamespace] claim and the workload attributes an
@@ -278,7 +288,7 @@
 // decides whether the workload may reach a target, mints an assertion for exactly
 // that target, exchanges it, and caches the result until shortly before it expires:
 //
-//	identity := auth.IdentityFrom(state.GetIdentity())
+//	identity := flowstatev1.AuthIdentity(state.GetIdentity())
 //	ref := auth.StepRef{Workflow: workflowName, Run: runID, Step: stepID}
 //
 //	credential, err := broker.Credential(ctx, identity, ref, "aws-prod")
@@ -314,6 +324,29 @@
 // names as the assertion's claims: workload.subject, workload.namespace,
 // workload.deployment, workload.workflow, workload.run, workload.step, and the
 // caller as identity.subject, identity.issuer, and identity.claims.
+//
+// # Claims and groups
+//
+// A rule reads only the claims the admitting entry carries. [MapClaims] is the one
+// mapping from a verified token's claims to a [Principal]'s; an embedder
+// replaces it for OIDC entries with [WithClaimMapper] (a kind: mtls entry
+// carries only the certificate subject), and what it returns is held to the
+// same bounds:
+//
+//	issuers:
+//	  - name: keycloak
+//	    issuer: https://idp.example.com/realms/acme
+//	    audiences: [flowstate]
+//	    carry_claims:
+//	      - {claim: team, type: string}
+//	      - {claim: acme.cost_center, as: cost_center, type: string}
+//	    groups_claim: realm_access.roles
+//	    group_map: {flowstate-sre: sre}
+//
+// A claim that is absent, of another type than declared, or over the bounds is
+// left out, so a rule reading it errors and refuses. A group list is carried as
+// the list claim "groups", and is refused whole with [ErrGroupsOverage] when the
+// IdP signals an overage or the list is over [MaxGroups] or [MaxGroupBytes].
 //
 // # Tenancy
 //

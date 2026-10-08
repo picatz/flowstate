@@ -4,7 +4,8 @@ package anthropic.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/anthropic/gen/anthropic/v1;anthropicv1";
 
-import "flowstate/v1/decision.proto";
+import "flowstate/decision/v1/decision.proto";
+import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
 
 // DecideInputs is this plugin's one task: put a named set of typed questions
@@ -12,7 +13,7 @@ import "flowstate/v1/value.proto";
 // question.
 //
 // The questions and answers are the provider-neutral shapes of
-// flowstate/v1/decision.proto, so a Flowfile that routes on an answer reads the
+// flowstate/decision/v1/decision.proto, so a Flowfile that routes on an answer reads the
 // same under any provider plugin. Everything specific to Anthropic - the model,
 // the output budget, whether to ask for a self-reported confidence - is a field
 // here and never crosses into the neutral schema.
@@ -38,7 +39,7 @@ message DecideInputs {
   // literal is refused before it can enter durable history. The resolved value
   // is capped at 4 KiB, sent only as the x-api-key header, and never appears
   // in an error.
-  flowstate.v1.Value api_key = 1;
+  flowstate.v1.Value api_key = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
 
   // Model is the Anthropic model identifier the request names, required and
   // never defaulted here. It is passed through unchanged, so an alias or a
@@ -52,13 +53,13 @@ message DecideInputs {
   // set rather than trusted.
   string evidence = 3;
 
-  // QuestionSet is a flowstate.v1.QuestionSet written as a mapping: a
+  // QuestionSet is written in a Flowfile as a mapping: a
   // `questions` list whose entries each have a `name`, optional
   // `instructions`, and exactly one of `predicate: {}`, `choice: {options:
   // [...]}` or `score: {levels: [...]}`. It is validated against the schema's
   // rules before any request is made. Names are also limited to 64 characters
   // here, the longest property name the Messages API accepts in a tool schema.
-  flowstate.v1.Value question_set = 4;
+  flowstate.decision.v1.QuestionSet question_set = 4;
 
   // ReportConfidence asks the model to include a confidence between 0 and 1
   // with each answer. What comes back is the model's claim about itself and is
@@ -73,10 +74,10 @@ message DecideInputs {
 
 // DecideOutputs carries one answer per question, in the question set's order.
 message DecideOutputs {
-  // Answers has exactly one validated flowstate.v1.Answer for each question,
+  // Answers has exactly one validated flowstate.decision.v1.Answer for each question,
   // matched by name. A reply that is missing one, adds one, or carries a value
   // the question did not offer fails the task rather than returning a partial
   // result. Read a choice as `steps.<id>.answers[0].choice`; an absent
   // confidence reads as 0, so test `calibration` before trusting it.
-  repeated flowstate.v1.Answer answers = 1;
+  repeated flowstate.decision.v1.Answer answers = 1;
 }

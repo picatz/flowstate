@@ -83,11 +83,7 @@ func TestTaskPolicyIdentityNamespaceDenial(t *testing.T) {
 
 		env.ExecuteWorkflow(engine.Run, &v1.RunState{
 			Workflow: workflow(),
-			Identity: &v1.WorkloadIdentity{
-				Subject:   "someone@example.com",
-				Issuer:    "flowstate:test",
-				Namespace: namespace,
-			},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com", Issuer: "flowstate:test", Namespace: namespace}},
 		})
 		require.True(t, env.IsWorkflowCompleted())
 

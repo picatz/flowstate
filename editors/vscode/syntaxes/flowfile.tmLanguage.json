@@ -1,0 +1,84 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Flowfile",
+  "scopeName": "source.flowfile",
+  "patterns": [
+    {
+      "include": "source.yaml"
+    }
+  ],
+  "injections": {
+    "L:source.flowfile - comment - meta.embedded.expression.flowfile": {
+      "patterns": [
+        {
+          "include": "#fence"
+        },
+        {
+          "include": "#bare-cel"
+        }
+      ]
+    },
+    "L:source.flowfile - comment - string - meta.embedded.expression.flowfile": {
+      "patterns": [
+        {
+          "include": "#trailing-comment"
+        }
+      ]
+    }
+  },
+  "repository": {
+    "fence": {
+      "name": "meta.embedded.expression.flowfile",
+      "begin": "\\$\\{",
+      "beginCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.begin.flowfile"
+        }
+      },
+      "end": "\\}",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.section.embedded.end.flowfile"
+        }
+      },
+      "contentName": "source.cel",
+      "patterns": [
+        {
+          "include": "source.cel"
+        }
+      ]
+    },
+    "bare-cel": {
+      "comment": "A bare-CEL value: the scalar after `must:` is an expression with no fence (docs/LANGUAGE.md). Single-line only; a quoted value ends at its closing quote.",
+      "begin": "^(\\s*(?:-\\s+)?)(must)(\\s*:)\\s*(['\"]?)(?=\\S)",
+      "beginCaptures": {
+        "2": {
+          "name": "entity.name.tag.yaml"
+        },
+        "3": {
+          "name": "punctuation.separator.key-value.mapping.yaml"
+        },
+        "4": {
+          "name": "punctuation.definition.string.begin.yaml"
+        }
+      },
+      "end": "(?<!\\\\)\\4\\s*(?=#|$)|(?=\\s+#)|(?=$)",
+      "endCaptures": {
+        "0": {
+          "name": "punctuation.definition.string.end.yaml"
+        }
+      },
+      "contentName": "meta.embedded.expression.flowfile source.cel",
+      "patterns": [
+        {
+          "include": "source.cel"
+        }
+      ]
+    },
+    "trailing-comment": {
+      "comment": "The rule after `must:` replaces YAML's own scalar rule for the rest of the line, so the comment that may follow it is named here.",
+      "name": "comment.line.number-sign.yaml",
+      "match": "(?<=\\s)#.*$"
+    }
+  }
+}

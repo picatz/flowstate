@@ -33,6 +33,12 @@ func trustedIssuer(t *testing.T, entries ...auth.TrustedIssuer) *authtest.Issuer
 			Issuer:    issuer.URL(),
 			JWKSURL:   issuer.JWKSURL(),
 			Audiences: []string{"flowstate"},
+			// Only claims an entry carries reach a workflow: the operator, not the
+			// token, decides which ones a policy decision may read.
+			CarryClaims: []auth.CarryClaim{
+				{Claim: "repository", Type: auth.ClaimTypeString},
+				{Claim: "ref", Type: auth.ClaimTypeString},
+			},
 		}}
 	}
 	for i := range entries {
@@ -103,6 +109,31 @@ func verify(t *testing.T, in *josev1.VerifyInputs) (*josev1.VerifyOutputs, error
 
 // literal renders a token the way a Flowfile does when it is not a secret.
 func literal(token string) *flowstatev1.Value { return flowstatev1.NewValue(token) }
+
+// TestADelegatedTokenIsRefused pins that a token whose act chain the entry
+// admits is still refused: the outputs cannot represent the chain, and
+// returning the subject alone would present the delegator as acting alone.
+func TestADelegatedTokenIsRefused(t *testing.T) {
+	issuer := trustedIssuer(t, auth.TrustedIssuer{
+		Actions:   []string{"workload.read"},
+		Name:      "agents-idp",
+		Audiences: []string{"flowstate"},
+		Delegation: &auth.Delegation{Actors: []auth.DelegationActor{
+			{Issuer: "https://agents.example", Subject: "triage-bot", Actions: []string{"workload.read"}},
+		}},
+	})
+	token := mint(t, issuer, map[string]any{
+		"act": map[string]any{"iss": "https://agents.example", "sub": "triage-bot"},
+	})
+
+	_, err := verify(t, &josev1.VerifyInputs{Token: literal(token)})
+	if err == nil {
+		t.Fatal("a delegated token verified; its chain cannot be represented in the outputs")
+	}
+	if strings.Contains(err.Error(), "triage-bot") || strings.Contains(err.Error(), token) {
+		t.Errorf("the refusal echoes the chain or the token: %v", err)
+	}
+}
 
 // TestAVerifiedTokenBecomesClaimsAWorkflowCanActOn is the ordinary path, and
 // what it returns is the point: not "valid", but who, from where, and what the

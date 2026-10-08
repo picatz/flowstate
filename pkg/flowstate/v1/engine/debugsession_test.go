@@ -52,12 +52,7 @@ func typedAsk(subject string, ask *v1.DebugAsk) *v1.SignalDelivery {
 	return &v1.SignalDelivery{
 		Payload: payload,
 		Sender: &v1.SignalSender{
-			Identity: &v1.WorkloadIdentity{
-				Issuer:    "https://issuer.example.com",
-				Subject:   subject,
-				Namespace: "team-a",
-				Claims:    map[string]string{"role": "sre"},
-			},
+			Identity:   &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: subject, Namespace: "team-a", Claims: v1.StringClaimValues(map[string]string{"role": "sre"})}},
 			AcceptedAt: timestamppb.Now(),
 		},
 	}

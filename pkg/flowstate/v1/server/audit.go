@@ -92,7 +92,7 @@ func (s *FlowstateServer) authorizeAction(ctx context.Context, rpc string, kind 
 		return connect.NewError(connect.CodeInternal, err)
 	}
 
-	refusal := authz.Decide(ctx, action, authz.Implied).Refusal()
+	refusal := s.decide(ctx, action, authz.Implied).Refusal()
 	if refusal == nil {
 		return nil
 	}

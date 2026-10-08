@@ -143,7 +143,7 @@ func TestScanBlockIndicators(t *testing.T) {
 	for name, doc := range map[string]string{
 		"at the cap":        strings.Repeat("- ", MaxBlockTokens) + "x\n",
 		"a plain dash":      "a: -1\nb: a-b\nc: x:y\nd: ?\n",
-		"an ordinary entry": "identities:\n  - name: a\n    claims: {k: v}\n",
+		"an ordinary entry": "identities:\n  - name: a\n    principal: {claims: {k: v}}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

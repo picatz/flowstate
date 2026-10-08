@@ -1,0 +1,127 @@
+[
+  {
+    "type": "actions",
+    "elements": [
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Roll back"
+        },
+        "action_id": "rollback",
+        "value": "run-1",
+        "style": "danger",
+        "confirm": {
+          "title": {
+            "type": "plain_text",
+            "text": "Sure?"
+          },
+          "text": {
+            "type": "plain_text",
+            "text": "Really."
+          },
+          "confirm": {
+            "type": "plain_text",
+            "text": "Do it"
+          },
+          "deny": {
+            "type": "plain_text",
+            "text": "Back"
+          }
+        },
+        "accessibility_label": "Roll back the deploy"
+      },
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Docs"
+        },
+        "action_id": "docs",
+        "url": "https://example.com/docs"
+      },
+      {
+        "type": "static_select",
+        "action_id": "env",
+        "placeholder": {
+          "type": "plain_text",
+          "text": "Environment"
+        },
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "Staging"
+            },
+            "value": "staging"
+          },
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "Production"
+            },
+            "value": "prod",
+            "description": {
+              "type": "plain_text",
+              "text": "careful"
+            }
+          }
+        ],
+        "initial_option": {
+          "text": {
+            "type": "plain_text",
+            "text": "Staging"
+          },
+          "value": "staging"
+        },
+        "confirm": {
+          "title": {
+            "type": "plain_text",
+            "text": "Sure?"
+          },
+          "text": {
+            "type": "plain_text",
+            "text": "Really."
+          },
+          "confirm": {
+            "type": "plain_text",
+            "text": "Do it"
+          },
+          "deny": {
+            "type": "plain_text",
+            "text": "Back"
+          }
+        }
+      },
+      {
+        "type": "overflow",
+        "action_id": "more",
+        "options": [
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "Snooze"
+            },
+            "value": "snooze"
+          },
+          {
+            "text": {
+              "type": "plain_text",
+              "text": "Mute"
+            },
+            "value": "mute"
+          }
+        ]
+      },
+      {
+        "type": "datepicker",
+        "action_id": "when",
+        "placeholder": {
+          "type": "plain_text",
+          "text": "Pick a day"
+        },
+        "initial_date": "2026-10-07"
+      }
+    ]
+  }
+]

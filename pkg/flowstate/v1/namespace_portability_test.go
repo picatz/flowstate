@@ -10,6 +10,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // TestIdentityNamespaceIsPortableAcrossPolicySurfaces is #568's regression test.
@@ -113,11 +114,7 @@ func taskSurfaceDenies(t *testing.T, rule string) bool {
 	}.Policy()
 	require.NoError(t, err)
 
-	identity := &v1.WorkloadIdentity{
-		Subject: "repo:picatz/flowstate:ref:refs/heads/main",
-		Issuer:  "https://token.actions.githubusercontent.com",
-		// Namespace deliberately unset.
-	}
+	identity := &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "repo:picatz/flowstate:ref:refs/heads/main", Issuer: "https://token.actions.githubusercontent.com"}}
 
 	err = policy.Check(context.Background(), "log", identity)
 	return err != nil
@@ -133,7 +130,7 @@ func netSurfaceDenies(t *testing.T, rule string) bool {
 	)
 	require.NoError(t, err)
 
-	ctx := netpolicy.ContextWithIdentity(context.Background(), netpolicy.Identity{
+	ctx := netpolicy.ContextWithIdentity(context.Background(), principal.Caller{
 		Subject: "repo:picatz/flowstate:ref:refs/heads/main",
 		Issuer:  "https://token.actions.githubusercontent.com",
 		// Namespace deliberately unset.

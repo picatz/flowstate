@@ -6,11 +6,11 @@ which signal and when. `flow test` runs those cases in milliseconds, with no
 server, no Temporal, and no network, so you can run it on every edit.
 
 ```console
-$ flow test examples/release-approval/
-PASS  examples/release-approval/workflow.test.yaml: an approval rolls out every planned target
-PASS  examples/release-approval/workflow.test.yaml: a rejection rolls out nothing
-PASS  examples/release-approval/workflow.test.yaml: nobody answering within the hour counts as a rejection
-examples/release-approval/workflow.test.yaml  6/6 steps reached
+$ flow test examples/refund-approval/
+PASS  examples/refund-approval/workflow.test.yaml: an approval pays back every line
+PASS  examples/refund-approval/workflow.test.yaml: a rejection pays back nothing
+PASS  examples/refund-approval/workflow.test.yaml: nobody answering within the hour counts as a rejection
+examples/refund-approval/workflow.test.yaml  6/6 steps reached
 
 1 file · 3 cases · 3 passed · 0.0s
 ```
@@ -91,49 +91,49 @@ flowchart TB
 
 ## Anatomy of a test file
 
-<!-- mirrors: examples/release-approval/workflow.test.yaml -->
+<!-- mirrors: examples/refund-approval/workflow.test.yaml -->
 ```yaml
 edition: v2026.4
 defaults:
   inputs:
-    version: 1.4.0
+    order_id: o-1000
   stubs:
     - task: log
       returns: {}
 tests:
-  - name: an approval rolls out every planned target
+  - name: an approval pays back every line
     workflow: ./workflow.yaml
     signals:
-      - name: release-approved
+      - name: refund-approved
         payload:
           approved: true
     expect:
-      ran: [plan, ask, approval, approved, rollout]
+      ran: [total, ask, approval, approved, payout]
       outputs:
         approved: true
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 
-  - name: a rejection rolls out nothing
+  - name: a rejection pays back nothing
     workflow: ./workflow.yaml
     signals:
-      - name: release-approved
+      - name: refund-approved
         payload:
           approved: false
     expect:
-      ran: [plan, ask, approval, approved]
+      ran: [total, ask, approval, approved]
       others: skipped
       outputs:
         approved: false
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 
   - name: nobody answering within the hour counts as a rejection
     workflow: ./workflow.yaml
     expect:
-      ran: [plan, ask, approval, approved]
+      ran: [total, ask, approval, approved]
       others: skipped
       outputs:
         approved: false
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 ```
 
 The top-level keys:
@@ -521,6 +521,15 @@ any task faults, and the shrinker treats them alike. Duplicated and reordered
 deliveries are not faults: a second `signals:` entry with the same
 `delivery_id:` or a different `at:` already says them.
 
+`--swarm` (with `--seeds` or `--seed`) runs each seed with a random subset of
+the case's drawn `faults:` on instead of all of them, and at least one always on.
+Every kind of fault on at once lets each one's effect hide the others', so a
+failure that needs one kind alone, or two without a third, never occurs; a
+subset lets it. A pinned (`on:`) fault is a script and stays on. A finding under
+`--swarm` prints `--swarm` in its replay line, since the seed alone draws against
+every fault and is a different run; the printed pinned `faults:` list replays
+without either.
+
 A dropped delivery to a gate with no `timeout:` leaves a run nothing can wake.
 The harness reports that as a failure the moment it is true: `stuck: the run
 waits for signal "go" and nothing pending can deliver it`, naming any signal a
@@ -753,7 +762,9 @@ that the requester cannot approve their own run. They do not reach
 stub answers the request that would have been checked), task-shape policy, or
 secret-access policy. A green case therefore says what the workflow does for a
 given identity; it says nothing about whether a deployment would let that
-identity do it.
+identity do it. The deployment's egress, task-shape and exec policies are
+tested against a declared `principal` (kind, list claims, actions and actors
+included) by [`flow policy test`](#a-deployments-policy-without-a-worker-flow-policy-test).
 
 The `flow test` command takes no deployment policy flags, so no task-shape
 policy applies and every dispatch is allowed. A suite run through the
@@ -819,16 +830,18 @@ refusal rather than an assertion that checks nothing:
 ```yaml
 identities:
   - name: sre-lead
-    subject: sre-lead@example.com
-    issuer: https://issuer.example.com
-    claims: {team: release-managers}
-    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    principal:
+      subject: sre-lead@example.com
+      issuer: https://issuer.example.com
+      claims: {team: release-managers}
+    starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}
     expect: admitted
   - name: self-approval            # the requester may not approve their own run
-    subject: dev@example.com
-    issuer: https://issuer.example.com
-    claims: {team: release-managers}
-    starter: {subject: dev@example.com, issuer: https://issuer.example.com}
+    principal:
+      subject: dev@example.com
+      issuer: https://issuer.example.com
+      claims: {team: release-managers}
+    starter: {principal: {subject: dev@example.com, issuer: https://issuer.example.com}}
     expect: refused
   - name: anonymous
     starter: {}                    # started by nobody authenticated
@@ -840,7 +853,10 @@ identities:
 gates it names. The file is defined by `proto/flowstate/v1/policy_check.proto`. A row's `inputs:` replace, by name,
 the `--input` arguments given for every row, and a row with no `starter:` or
 `expect:` takes `--starter-*` and `--expect`. A subject without an issuer, or the
-reverse, is refused by the rule a test file's `sender:` is held to. A matrix is
+reverse, is refused by the rule a test file's `sender:` is held to. A row's
+`principal:` is the same `Principal` message a run records, so `kind:` is
+`human`, `workload` or `agent`; the check reads strings only, and refuses a
+claim that is not a string, `actions` and `issuer_entry` rather than ignore them. A matrix is
 bounded at 256 identities and 256 KiB, and holds one YAML document, with no
 anchors, aliases or merge keys. Nesting is bounded by counting bytes, not by
 reading YAML: the file may hold at most 4096 `[` and `{` characters, wherever
@@ -856,6 +872,68 @@ the caller and the inputs alone, as the server decides it. Like a case's
 `sender:`, an identity here is an assertion, not one anybody attested, and the
 check says nothing about whether a deployment would let that identity through its
 authenticator.
+
+### A deployment's policy, without a worker: `flow policy test`
+
+`flow signals check` is about a workflow's own gates. The policies an operator
+hands a worker (`--egress-policy`, `--task-policy`, `--exec-policy`) are the
+deployment's, and `flow policy test <policy-file> <cases-file>` puts cases to
+one of them, loaded as the worker loads it, with nothing started and no server
+contacted. Each case is decided by the function the engine enforces that policy
+with (`netpolicy.Policy.CheckURL` and `CheckAddr`, `TaskPolicy.Check`,
+`execpolicy.Policy.Check`), so a pass says what the worker would do.
+
+```yaml
+surface: egress            # egress, task or exec; one per file
+cases:
+  - name: team-a reaches its partner API
+    principal: {namespace: team-a}
+    request: {url: "https://partner-a.example.com/v1"}
+    expect: allow
+  - name: team-b is refused team-a's partner API   # the case that matters
+    principal: {namespace: team-b}
+    request: {url: "https://partner-a.example.com/v1"}
+    expect: deny
+    rule: allow rules
+```
+
+`principal` is who the request is made as: the same `Principal` a run records,
+which every surface's rules read as `identity.<field>`. It carries `subject` and
+`issuer` (together, never one alone), `namespace`, `kind` (`human`, `workload`
+or `agent`), `claims` of any shape (a `groups` list included), `actions` and
+`actors`. A case carries only what it names, so a rule on a `kind`, a claim or
+an action the case did not declare does not match it, and a declared identity
+never gains authority it does not carry. `issuer_entry` is refused: it names a
+trust policy entry, which a case has none of. Absent is no attested caller,
+which a rule that scopes by tenant declines to match. The `request` depends on the
+surface: `url`, `method` (default GET) and `ip` for egress, `task` for task
+shape, `argv`, `dir` and `env` for exec. `expect` is `allow` or `deny` and is
+required. `rule:` on a denial asserts which rule made it: a deny rule's source
+text exactly as the policy writes it, or, for a denial no deny rule made, the
+reason (`allow rules` when no allow rule matched, `rule error`, `scheme`, `port`
+or `address` for egress, `executable`, `argv`, `dir` or `env` for exec). A policy
+that denies for a different reason fails the case. Every denial, expected or
+not, is printed with the rule or reason behind it, which answers "which rule
+denied this?" without bisecting the file.
+
+The file is strict YAML (a misspelled key is a refusal, not an assertion that
+checks nothing), defined by `proto/flowstate/v1/policy_suite.proto`, and bounded
+at 512 cases and 256 KiB, with one document and no anchors, aliases or merge keys.
+`-o json` writes the report as a document. The exit status is 1 when any case
+does not get the outcome it expects. A rule that cannot be evaluated denies, as it
+does on a worker, so a `deny` case passes on it unless it names `rule: rule
+error`. A suite with no `expect: deny` case is reported with a warning, because it
+cannot catch a policy that allows too much.
+
+What it is not: egress is decided before DNS, so the scheme, port, request rules
+and the address checks for an IP-literal host or a case's `ip:` are asked (an `ip:` that
+disagrees with an IP-literal host is refused, as is a policy that sets
+`proxy_from_environment`, which would resolve the host), and
+rules over the connection's `ip` and the control-plane reservation, which need a
+dial, are not, and an egress rule over `credentials` is judged with it false, because a case cannot yet say its request carries a credential. An `exec` case is resolved against the machine the suite runs on.
+Secret-access and role-assumption policy (`--auth-policy`) are not covered: their
+decision needs the server's trust state. See
+[`examples/policy-test`](../examples/policy-test).
 
 ## Triggers
 

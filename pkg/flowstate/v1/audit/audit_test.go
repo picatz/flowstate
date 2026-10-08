@@ -142,7 +142,7 @@ func TestADenialRecordsTheCodeAndNotTheRefusalsWords(t *testing.T) {
 
 	require.NoError(t, recorder.Deny(t.Context(), audit.Subject{
 		RPC:          "Signal",
-		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
 		ResourceKey:  "orders-42",
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_TENANT_MISMATCH))
@@ -312,7 +312,7 @@ func TestMCPRecordUsesItsOwnOperationFieldAndBoundedProvenance(t *testing.T) {
 	long := strings.Repeat("é", audit.MaxProvenanceBytes)
 	require.NoError(t, recorder.Deny(t.Context(), audit.Subject{
 		MCPTool:    "flowstate_test",
-		Identity:   &v1.WorkloadIdentity{Subject: "agent", Claims: map[string]string{"secret": "claim-value"}},
+		Identity:   &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "agent", Claims: v1.StringClaimValues(map[string]string{"secret": "claim-value"})}},
 		IssuerName: long,
 		Role:       long,
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED))
@@ -321,7 +321,7 @@ func TestMCPRecordUsesItsOwnOperationFieldAndBoundedProvenance(t *testing.T) {
 	require.Equal(t, "flowstate_test", record.GetMcpTool())
 	require.Empty(t, record.GetRpc())
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_TEST, record.GetAction())
-	require.Empty(t, record.GetIdentity().GetClaims())
+	require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims())
 	require.LessOrEqual(t, len(record.GetIssuerName()), audit.MaxProvenanceBytes)
 	require.LessOrEqual(t, len(record.GetRole()), audit.MaxProvenanceBytes)
 	require.True(t, isValidUTF8(record.GetIssuerName()))
@@ -583,12 +583,8 @@ func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) 
 	require.NoError(t, err)
 
 	require.NoError(t, recorder.EnforcementAllow(t.Context(), v1.EnforcementSubject{
-		Point: v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
-		Identity: &v1.WorkloadIdentity{
-			Subject:   "deploy-bot",
-			Namespace: "acme",
-			Claims:    map[string]string{"team": "payments"},
-		},
+		Point:        v1.AuditEnforcementPoint_AUDIT_ENFORCEMENT_POINT_TASK_DISPATCH,
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme", Claims: v1.StringClaimValues(map[string]string{"team": "payments"})}},
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
 		ResourceKey:  strings.Repeat("é", audit.MaxResourceKeyBytes),
 		Rule:         strings.Repeat("é", audit.MaxRuleBytes),
@@ -600,8 +596,8 @@ func TestAnEnforcementRecordIsTheSameRecordUnderTheSameDiscipline(t *testing.T) 
 	record := sink.records[0]
 	require.Equal(t, v1.AuditDecision_AUDIT_DECISION_ALLOW, record.GetDecision())
 	require.Equal(t, at, record.GetDecidedAt().AsTime())
-	require.Empty(t, record.GetIdentity().GetClaims())
-	require.Equal(t, "deploy-bot", record.GetIdentity().GetSubject())
+	require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims())
+	require.Equal(t, "deploy-bot", record.GetIdentity().GetPrincipal().GetSubject())
 
 	require.LessOrEqual(t, len(record.GetResourceKey()), audit.MaxResourceKeyBytes)
 	require.True(t, isValidUTF8(record.GetResourceKey()), "the resource bound cut a rune in half")
@@ -729,7 +725,7 @@ func TestTheWriterSinkWritesOneParsableRecordPerLine(t *testing.T) {
 
 	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{
 		RPC:          "Get",
-		Identity:     &v1.WorkloadIdentity{Subject: "alice", Namespace: "acme"},
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "alice", Namespace: "acme"}},
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN,
 		ResourceKey:  "orders-1",
 	}))
@@ -839,7 +835,7 @@ func TestTheOTelSinkCarriesTheEnforcementFields(t *testing.T) {
 		ResourceKind: v1.AuditResourceKind_AUDIT_RESOURCE_KIND_TASK,
 		ResourceKey:  "http",
 		Rule:         `task == "http"`,
-		Identity:     &v1.WorkloadIdentity{Subject: "deploy-bot", Namespace: "acme"},
+		Identity:     &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "deploy-bot", Namespace: "acme"}},
 		Attempt:      2,
 		DispatchID:   "activity-12",
 	}, v1.AuditDenyCode_AUDIT_DENY_CODE_DENY_RULE))
@@ -894,7 +890,7 @@ func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.
 	ctx := audit.ContextWithCorrelationID(t.Context(), "9b2c1c2e-0a5e-4a44-9b3e-1f0f5f2f0a1c")
 	require.NoError(t, recorder.InternalError(ctx, audit.Subject{
 		RPC:      "Get",
-		Identity: &v1.WorkloadIdentity{Subject: "agent-1", Namespace: "acme"},
+		Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "agent-1", Namespace: "acme"}},
 	}))
 	require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get"}))
 
@@ -920,6 +916,75 @@ func TestAnInternalErrorRecordCarriesTheCorrelationIDAtErrorSeverity(t *testing.
 	overlong := audit.ContextWithCorrelationID(t.Context(), strings.Repeat("x", audit.MaxCorrelationIDBytes+1))
 	require.NoError(t, recorder.InternalError(overlong, audit.Subject{RPC: "Get"}))
 	require.Len(t, exportedAttributes(exporter.exported[2])["flowstate.audit.correlation_id"], audit.MaxCorrelationIDBytes)
+}
+
+// TestARecordShowsWhoWasActingForTheSubject is the audit half of delegation: a
+// record for a delegated caller reads "sub, acting via A", on the stderr line
+// as protojson and as an attribute on the OTel sink, in both cases with the
+// chain and nothing else the actor could carry; and a caller acting alone
+// carries no chain at all, so the attribute's presence is the delegation.
+func TestARecordShowsWhoWasActingForTheSubject(t *testing.T) {
+	t.Parallel()
+
+	delegated := &v1.WorkloadIdentity{Principal: &v1.Principal{
+		Subject: "alice", Issuer: "https://idp.example", Namespace: "acme",
+		Claims: v1.StringClaimValues(map[string]string{"secret": "claim-value"}),
+		Actors: []*v1.Actor{
+			{Issuer: "https://agents.example", Subject: "triage-bot"},
+			{Issuer: "https://platform.example", Subject: "orchestrator"},
+		},
+	}}
+
+	t.Run("the record and its line", func(t *testing.T) {
+		t.Parallel()
+
+		var out bytes.Buffer
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithWriter(&out))
+		require.NoError(t, err)
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: delegated}))
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: &v1.WorkloadIdentity{
+			Principal: &v1.Principal{Subject: "alice", Issuer: "https://idp.example"},
+		}}))
+
+		lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+		require.Len(t, lines, 2)
+
+		var record v1.AuditRecord
+		require.NoError(t, protojson.Unmarshal([]byte(lines[0]), &record))
+		require.NoError(t, v1.Validate(&record))
+		require.Equal(t, "alice", record.GetIdentity().GetPrincipal().GetSubject())
+		require.Len(t, record.GetIdentity().GetPrincipal().GetActors(), 2)
+		require.Equal(t, "triage-bot", record.GetIdentity().GetPrincipal().GetActors()[0].GetSubject(), "current actor first")
+		require.Equal(t, "https://platform.example", record.GetIdentity().GetPrincipal().GetActors()[1].GetIssuer())
+		require.Empty(t, record.GetIdentity().GetPrincipal().GetClaims(), "claims stay out of the trail")
+		require.NotContains(t, lines[0], "claim-value")
+
+		var alone v1.AuditRecord
+		require.NoError(t, protojson.Unmarshal([]byte(lines[1]), &alone))
+		require.Empty(t, alone.GetIdentity().GetPrincipal().GetActors())
+		require.NotContains(t, lines[1], "actors")
+	})
+
+	t.Run("the OTel attribute", func(t *testing.T) {
+		t.Parallel()
+
+		exporter := &stubExporter{}
+		provider := sdklog.NewLoggerProvider(sdklog.WithProcessor(audit.NewSyncProcessor(exporter)))
+		t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
+		recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(audit.NewLogEmitter(provider)), audit.Required())
+		require.NoError(t, err)
+
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: delegated}))
+		require.NoError(t, recorder.Allow(t.Context(), audit.Subject{RPC: "Get", Identity: &v1.WorkloadIdentity{
+			Principal: &v1.Principal{Subject: "alice", Issuer: "https://idp.example"},
+		}}))
+		require.Len(t, exporter.exported, 2)
+
+		attrs := exportedAttributes(exporter.exported[0])
+		require.Equal(t, "alice", attrs["flowstate.audit.identity.subject"], "the subject stays the subject")
+		require.Equal(t, "[https://agents.example#triage-bot https://platform.example#orchestrator]", attrs["flowstate.audit.identity.actors"])
+		require.NotContains(t, exportedAttributes(exporter.exported[1]), "flowstate.audit.identity.actors")
+	})
 }
 
 // exportedAttributes flattens one exported record's attributes, the way the

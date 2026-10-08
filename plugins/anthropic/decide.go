@@ -18,6 +18,7 @@ import (
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
+	decisionv1 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
@@ -139,7 +140,7 @@ func keyFromValue(v *flowstatev1.Value) (string, error) {
 	}
 }
 
-func validateInputs(in *anthropicv1.DecideInputs) (*flowstatev1.QuestionSet, error) {
+func validateInputs(in *anthropicv1.DecideInputs) (*decisionv1.QuestionSet, error) {
 	if len(in.GetModel()) > maxModelBytes || !modelPattern.MatchString(in.GetModel()) {
 		return nil, sdk.InvalidInput("model must be a model identifier of at most %d bytes", maxModelBytes)
 	}
@@ -152,18 +153,18 @@ func validateInputs(in *anthropicv1.DecideInputs) (*flowstatev1.QuestionSet, err
 	if in.GetMaxTokens() < 0 || in.GetMaxTokens() > maxMaxTokens {
 		return nil, sdk.InvalidInput("max_tokens must be between 0 and %d", maxMaxTokens)
 	}
-	return parseQuestionSet(in.GetQuestionSet())
+	return checkQuestionSet(in.GetQuestionSet())
 }
 
 // decide sends the request and turns the reply into validated answers.
-func decide(ctx context.Context, client *http.Client, endpoint, key string, in *anthropicv1.DecideInputs, set *flowstatev1.QuestionSet) ([]*flowstatev1.Answer, error) {
+func decide(ctx context.Context, client *http.Client, endpoint, key string, in *anthropicv1.DecideInputs, set *decisionv1.QuestionSet) ([]*decisionv1.Answer, error) {
 	body, err := json.Marshal(messagesRequest{
 		Model:     in.GetModel(),
 		MaxTokens: cmp.Or(in.GetMaxTokens(), defaultMaxTokens),
 		System:    systemPrompt,
 		Messages: []message{{
 			Role:    "user",
-			Content: "<evidence>\n" + in.GetEvidence() + "\n</evidence>",
+			Content: "<evidence>\n" + escapeEvidence(in.GetEvidence()) + "\n</evidence>",
 		}},
 		Tools:      []object{toolDefinition(set, in.GetReportConfidence())},
 		ToolChoice: object{{"type", "tool"}, {"name", toolName}},
@@ -325,7 +326,9 @@ func token(value string) string {
 func bounded(value string) string {
 	value = strings.TrimSpace(value)
 	if len(value) > maxErrorBytes {
-		return value[:maxErrorBytes] + "…"
+		// A cut can land inside a multi-byte rune; dropping the broken tail keeps
+		// the text valid UTF-8 at the plugin's error boundary.
+		return strings.ToValidUTF8(value[:maxErrorBytes], "") + "…"
 	}
 	return value
 }

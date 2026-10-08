@@ -19,6 +19,7 @@ import (
 	"github.com/google/cel-go/ext"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // `signals: <name>: allow: ${...}`, `debug: allow: ${...}` and
@@ -46,8 +47,8 @@ import (
 //
 // # The scope is closed
 //
-//	sender.identity.{principal,subject,issuer,namespace,kind,claims}
-//	run.identity.{principal,subject,issuer,namespace,kind,claims}   (the starter)
+//	sender.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}
+//	run.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}   (the starter)
 //	inputs                                                      (the run's arguments)
 //
 // Nothing else: no steps, vars, secrets or clock. An unknown root or field is a
@@ -97,23 +98,19 @@ const SignalPolicyExprTimeout = time.Second
 // evaluated over a partial copy of its inputs would be a different predicate.
 const MaxSignalPolicyScopeBytes = 64 << 10
 
-// signalPolicyIdentity is the identity shape a predicate reads, for both
-// `sender.identity` and `run.identity`: the fields of [IdentityShape] a
-// predicate may compare, as a native CEL type so a misspelled one is refused
-// at compile time.
-type signalPolicyIdentity struct {
-	Principal string            `cel:"principal"`
-	Kind      string            `cel:"kind"`
-	Subject   string            `cel:"subject"`
-	Issuer    string            `cel:"issuer"`
-	Namespace string            `cel:"namespace"`
-	Claims    map[string]string `cel:"claims"`
-}
-
-// signalPolicyActor wraps an identity as the one field `sender` and `run` each
+// signalPolicyActor wraps a [principal.Caller] as the one field `sender` and
+// `run` each
 // expose.
 type signalPolicyActor struct {
-	Identity *signalPolicyIdentity `cel:"identity"`
+	Identity principal.Caller `cel:"identity"`
+}
+
+// refusedSignalPolicyActor is [signalPolicyActor] with its one field typed `any`,
+// so it can hold [principal.Caller.Bind]'s stand-in for a caller whose claims
+// were refused. cel-go reads the declared `identity` field by its index, so the
+// stand-in is what `sender.identity` evaluates to.
+type refusedSignalPolicyActor struct {
+	Identity any `cel:"identity"`
 }
 
 // ext.NativeTypes names a type by the last element of its package *path*
@@ -129,16 +126,15 @@ var manualPolicyEnv = sync.OnceValues(func() (*cel.Env, error) { return allowPol
 
 func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 	opts := []cel.EnvOption{
-		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeFor[signalPolicyActor](), reflect.TypeFor[signalPolicyIdentity]()),
+		ext.NativeTypes(append(principal.NativeTypeArgs(), reflect.TypeFor[signalPolicyActor]())...),
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),
-		// The same literal check every other checker inherits from the shared
-		// profile (see buildEnv): a `matches('[')` is refused where it is
-		// written instead of denying every delivery at run time. It replaces
-		// the coverage the retired computed `subject:` position had.
-		cel.ASTValidators(cel.ValidateRegexLiterals()),
+		// The literal check every other checker carries (see buildEnv): a
+		// `matches('[')` is refused where it is written instead of denying every
+		// delivery at run time. It replaces the coverage the retired computed
+		// `subject:` position had.
+		celrule.Literals(),
 	}
 	if withRun {
 		opts = append(opts, cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)))
@@ -166,7 +162,7 @@ type SignalPolicyReads struct {
 	// Run: `run.identity`, the starter, including its claims.
 	Run bool
 	// Claims: `sender.identity.claims`, which carries only the claims the
-	// server was started to project (`--identity-claim`).
+	// admitting auth policy entry carries (`carry_claims`, `groups_claim`).
 	Claims bool
 }
 
@@ -259,10 +255,10 @@ func compileAllowPredicate(src string, manual bool) (SignalPolicyPredicate, erro
 	}}, nil
 }
 
-const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}`, " +
+const signalPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}`, " +
 	"`run.identity` (the starter, same fields) and `inputs`"
 
-const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims}` " +
+const manualPolicyScopeDescription = "`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions,actors,delegated}` " +
 	"(the caller) and `inputs` (the arguments submitted with this start); there is no `run` yet"
 
 // CheckManualAllowExpr reports why src is not an acceptable `manual: allow`
@@ -427,7 +423,7 @@ func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 		switch {
 		case global(e, InputsRoot):
 			reads.inputs = true
-			if name, ok := signalPolicyInputKey(e); ok {
+			if name, ok := signalPolicyMapKey(e); ok {
 				reads.inputNames[name] = struct{}{}
 			} else {
 				reads.opaqueInputs = true
@@ -458,11 +454,12 @@ func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 	return out
 }
 
-// signalPolicyInputKey reports the one input name an `inputs` identifier is
+// signalPolicyMapKey reports the one key a map-valued node (the `inputs` identifier,
+// or a `claims` select, see [IdentityClaimReads]) is
 // used to read, from its parent: a field select, an index by a string literal,
 // or the right side of `"k" in inputs`. Anything else (a computed key, a call
 // taking the map, a comprehension over it, an optional select) names no key.
-func signalPolicyInputKey(ident celast.NavigableExpr) (string, bool) {
+func signalPolicyMapKey(ident celast.NavigableExpr) (string, bool) {
 	parent, ok := ident.Parent()
 	if !ok {
 		return "", false
@@ -543,21 +540,19 @@ func signalPolicyActivation(identity, starter *WorkloadIdentity, hasStarter bool
 	return vars
 }
 
-func newSignalPolicyActor(identity *WorkloadIdentity) *signalPolicyActor {
-	// The same rendering `run.identity` and a wait's `sender.identity` read,
-	// so principal means one thing everywhere ([IdentityShape]).
-	shape := IdentityShape(identity)
-	claims := make(map[string]string, len(identity.GetClaims()))
-	maps.Copy(claims, identity.GetClaims())
+func newSignalPolicyActor(identity *WorkloadIdentity) any {
+	// The same principal.Caller every policy surface binds as `identity`, so a
+	// kind, a list claim or a nested claim reads the same here as in an egress
+	// or task rule ([CallerOf]).
+	caller := CallerOf(identity).Normalized()
+	if caller.Claims.Refused() != nil {
+		// A field of the typed actor can only hold the claims carrier, which
+		// does not refuse `!=` or a left-hand `{} ==`; the bound caller does
+		// ([principal.Caller.Bind]).
+		return &refusedSignalPolicyActor{Identity: caller.Bind()}
+	}
 
-	return &signalPolicyActor{Identity: &signalPolicyIdentity{
-		Principal: shape["principal"].(string),
-		Kind:      shape["kind"].(string),
-		Subject:   shape["subject"].(string),
-		Issuer:    shape["issuer"].(string),
-		Namespace: shape["namespace"].(string),
-		Claims:    claims,
-	}}
+	return &signalPolicyActor{Identity: caller}
 }
 
 func signalPolicyInputsValue(inputs map[string]*Value) ref.Val {
@@ -622,21 +617,21 @@ func allowPredicateAllowsWithin(ctx context.Context, timeout time.Duration, labe
 // senderClaimsHint explains a refusal of a predicate that reads
 // `sender.identity.claims`: which claim names the sender identity carried, so an
 // empty projection reads differently from a wrong value. Names only, never
-// values. The sender identity holds only the claims the server projects, which
+// values. The sender identity holds only the claims its issuer entry carries, which
 // is the coupling an operator otherwise cannot see.
 func senderClaimsHint(readsClaims bool, sender *WorkloadIdentity) string {
 	if !readsClaims {
 		return ""
 	}
 
-	names := slices.Sorted(maps.Keys(sender.GetClaims()))
+	names := slices.Sorted(maps.Keys(sender.GetPrincipal().GetClaims()))
 	carried := "no claims"
 	if len(names) > 0 {
 		carried = "only the claims " + strings.Join(names, ", ")
 	}
 
 	return fmt.Sprintf("; the predicate reads sender.identity.claims, and the sender identity carried %s "+
-		"(a server projects a token's claim into it only when started with `--identity-claim <name>`)", carried)
+		"(a server carries a token's claim into it only when the admitting issuer entry lists it under `carry_claims` or `groups_claim` in the auth policy)", carried)
 }
 
 // manualAllowExprAllows decides a `manual: allow: ${...}` start: the caller and

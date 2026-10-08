@@ -1,0 +1,11 @@
+[
+  {
+    "type": "section",
+    "block_id": "fs_body",
+    "text": {
+      "type": "mrkdwn",
+      "text": ":information_source: *INFO*  cache warmed",
+      "verbatim": true
+    }
+  }
+]

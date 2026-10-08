@@ -5,8 +5,10 @@ evidence because the change looks small.
 
 1. Fetch `origin/main`, inspect the actual base/head diff, run the narrowest
    falsifying tests and the diff-scoped gate, and report any unavailable leg.
-2. Push a focused branch and open a pull request **without auto-merge**. Never
-   use `gh pr merge --auto` or enable GitHub auto-merge.
+2. Run `go run ./tools/mergecheck` before every push to the branch; a push
+   without its `clean against origin/main` line is unverified. Push a focused
+   branch and open a pull request **without auto-merge**. Never use
+   `gh pr merge --auto` or enable GitHub auto-merge.
 3. Finish all edits before requesting review. Record the intended final
    40-character head and obtain one provider-neutral AI review covering both
    code and security on it: a fresh-context review that carries this

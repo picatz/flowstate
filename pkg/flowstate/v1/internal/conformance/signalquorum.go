@@ -85,7 +85,7 @@ type SignalQuorumCase struct {
 
 // quorumSender builds an attested sender the way both harnesses can deliver.
 func quorumSender(subject string) *v1.SignalSender {
-	return &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: subject, Issuer: "https://idp.example"}}
+	return &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: subject, Issuer: "https://idp.example"}}}
 }
 
 // approval and rejection are the two payloads the browser gate page sends.

@@ -129,6 +129,11 @@ type Budget struct {
 	// Seed0 is the first seed; the search walks upward from it.
 	Seed0 uint64
 
+	// Swarm makes each seed run with a random subset of a case's `faults:` on
+	// rather than all of them. See [v1.SeededScheduler.SwarmMask]. A replay of
+	// a seed found under it needs it too.
+	Swarm bool
+
 	// Pinned, when set, replaces the whole search with the single seed named —
 	// what [SeedEnv] sets, and what a replay is.
 	Pinned *uint64
@@ -401,6 +406,9 @@ func Explore(ctx context.Context, budget Budget, run RunFunc) *Report {
 		}
 
 		scheduler := v1.NewSeededScheduler(seed)
+		if budget.Swarm {
+			scheduler.EnableSwarm()
+		}
 		observation, result := observe(ctx, scheduler, run)
 		report.Observations = append(report.Observations, observation)
 

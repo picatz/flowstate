@@ -476,7 +476,7 @@ type AuditRecord struct {
 	//
 	// Recorded alongside the action rather than derived from it because the
 	// mapping runs the other way: one action covers several RPCs (workload.read
-	// is Get, GetTimeline and List), so the action cannot say which operation
+	// is Get, GetTimeline, GetCheckpoint and List), so the action cannot say which operation
 	// was asked for. The bound is AuthorizationActionBinding.rpcs's own, so a
 	// reader comparing a record against the bindings is comparing like with
 	// like.

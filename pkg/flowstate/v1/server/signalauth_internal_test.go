@@ -57,12 +57,7 @@ func memoWithNoSignalPolicy() *workflowservice.DescribeWorkflowExecutionResponse
 
 func sender(issuer, subject, namespace string, claims map[string]string) *v1types.SignalSender {
 	return &v1types.SignalSender{
-		Identity: &v1types.WorkloadIdentity{
-			Issuer:    issuer,
-			Subject:   subject,
-			Namespace: namespace,
-			Claims:    claims,
-		},
+		Identity: &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: issuer, Subject: subject, Namespace: namespace, Claims: v1types.StringClaimValues(claims)}},
 	}
 }
 
@@ -353,7 +348,7 @@ func memoWithSignalPolicyAndStarter(t *testing.T, policies map[string]*v1types.S
 	// to read and every sender is refused, which would make the negative test
 	// below pass for a reason that is not its own.
 	issuer, subject, _ := strings.Cut(starter, "#")
-	scope, err := signalPolicyScopeMemoEntry(policies, nil, &v1types.WorkloadIdentity{Issuer: issuer, Subject: subject})
+	scope, err := signalPolicyScopeMemoEntry(policies, nil, &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: issuer, Subject: subject}})
 	require.NoError(t, err)
 	for key, value := range scope {
 		scopePayload, err := converter.GetDefaultDataConverter().ToPayload(value)
@@ -472,7 +467,7 @@ func TestSignalPolicyMemoEntryRecordsThePredicateAsWritten(t *testing.T) {
 // form [v1.QualifiedSubject] produces everywhere else, so [FlowstateServer.memoStarter] and
 // a policy's predicate compares read identically shaped strings.
 func TestStarterMemoEntryRecordsTheQualifiedIdentity(t *testing.T) {
-	identity := &v1types.WorkloadIdentity{Issuer: "https://issuer.example.com", Subject: "requester@example.com"}
+	identity := &v1types.WorkloadIdentity{Principal: &v1types.Principal{Issuer: "https://issuer.example.com", Subject: "requester@example.com"}}
 
 	entry := starterMemoEntry(identity)
 	require.Equal(t,

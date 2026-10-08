@@ -52,6 +52,9 @@ const (
 	// WorkflowServiceGetTimelineProcedure is the fully-qualified name of the WorkflowService's
 	// GetTimeline RPC.
 	WorkflowServiceGetTimelineProcedure = "/flowstate.v1.WorkflowService/GetTimeline"
+	// WorkflowServiceGetCheckpointProcedure is the fully-qualified name of the WorkflowService's
+	// GetCheckpoint RPC.
+	WorkflowServiceGetCheckpointProcedure = "/flowstate.v1.WorkflowService/GetCheckpoint"
 	// WorkflowServiceCancelProcedure is the fully-qualified name of the WorkflowService's Cancel RPC.
 	WorkflowServiceCancelProcedure = "/flowstate.v1.WorkflowService/Cancel"
 	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
@@ -104,6 +107,8 @@ const (
 	// WorkflowServiceTriggerScheduleProcedure is the fully-qualified name of the WorkflowService's
 	// TriggerSchedule RPC.
 	WorkflowServiceTriggerScheduleProcedure = "/flowstate.v1.WorkflowService/TriggerSchedule"
+	// WorkflowServiceWhoamiProcedure is the fully-qualified name of the WorkflowService's Whoami RPC.
+	WorkflowServiceWhoamiProcedure = "/flowstate.v1.WorkflowService/Whoami"
 )
 
 // WorkflowServiceClient is a client for the flowstate.v1.WorkflowService service.
@@ -232,6 +237,18 @@ type WorkflowServiceClient interface {
 	// `first_run_id` and follow `next_run_id`, or walk back with
 	// `previous_run_id`.
 	GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error)
+	// GetCheckpoint reports whether a run segment started from a point a new run
+	// could be started from, and where that point stands.
+	//
+	// Every segment's start input is the run's complete carried state, so the
+	// answer is read from history and changes nothing. It describes the point
+	// without returning the state, which holds the run's inputs and outputs in
+	// full; see [CheckpointInfo]. A segment whose position is inside a call, a
+	// loop or concurrent work is reported unavailable with the reason, because
+	// only a position between top-level steps is a legal starting state.
+	//
+	// `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
+	GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -370,6 +387,17 @@ type WorkflowServiceClient interface {
 	// It answers with no run id. The cluster takes the action after answering, so
 	// what the firing started is read back with [DescribeSchedule].
 	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
+	// Whoami answers with the caller's own [Principal]: the issuer, subject,
+	// namespace, kind, admitting policy entry, carried claims and actions the
+	// server established from the credential on this request. It is what
+	// `flow auth whoami` prints.
+	//
+	// Any caller may ask, whatever its policy entry's `actions:` list holds,
+	// because the answer is only what the caller already is. A caller that was
+	// not authenticated, which only an explicitly insecure development server
+	// admits, is answered with `authenticated` false and an anonymous
+	// principal, not with an error. The answer never contains the credential.
+	Whoami(context.Context, *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error)
 }
 
 // NewWorkflowServiceClient constructs a client for the flowstate.v1.WorkflowService service. By
@@ -429,6 +457,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			httpClient,
 			baseURL+WorkflowServiceGetTimelineProcedure,
 			connect.WithSchema(workflowServiceMethods.ByName("GetTimeline")),
+			connect.WithClientOptions(opts...),
+		),
+		getCheckpoint: connect.NewClient[v1.GetCheckpointRequest, v1.GetCheckpointResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetCheckpointProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetCheckpoint")),
 			connect.WithClientOptions(opts...),
 		),
 		cancel: connect.NewClient[v1.CancelRequest, v1.CancelResponse](
@@ -539,6 +573,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("TriggerSchedule")),
 			connect.WithClientOptions(opts...),
 		),
+		whoami: connect.NewClient[v1.WhoamiRequest, v1.WhoamiResponse](
+			httpClient,
+			baseURL+WorkflowServiceWhoamiProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("Whoami")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -552,6 +592,7 @@ type workflowServiceClient struct {
 	signalWithStart     *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
 	list                *connect.Client[v1.ListRequest, v1.ListResponse]
 	getTimeline         *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
+	getCheckpoint       *connect.Client[v1.GetCheckpointRequest, v1.GetCheckpointResponse]
 	cancel              *connect.Client[v1.CancelRequest, v1.CancelResponse]
 	terminate           *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	debugAttach         *connect.Client[v1.DebugAttachRequest, v1.DebugAttachResponse]
@@ -570,6 +611,7 @@ type workflowServiceClient struct {
 	pauseSchedule       *connect.Client[v1.PauseScheduleRequest, v1.PauseScheduleResponse]
 	resumeSchedule      *connect.Client[v1.ResumeScheduleRequest, v1.ResumeScheduleResponse]
 	triggerSchedule     *connect.Client[v1.TriggerScheduleRequest, v1.TriggerScheduleResponse]
+	whoami              *connect.Client[v1.WhoamiRequest, v1.WhoamiResponse]
 }
 
 // Run calls flowstate.v1.WorkflowService.Run.
@@ -610,6 +652,11 @@ func (c *workflowServiceClient) List(ctx context.Context, req *connect.Request[v
 // GetTimeline calls flowstate.v1.WorkflowService.GetTimeline.
 func (c *workflowServiceClient) GetTimeline(ctx context.Context, req *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
 	return c.getTimeline.CallUnary(ctx, req)
+}
+
+// GetCheckpoint calls flowstate.v1.WorkflowService.GetCheckpoint.
+func (c *workflowServiceClient) GetCheckpoint(ctx context.Context, req *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error) {
+	return c.getCheckpoint.CallUnary(ctx, req)
 }
 
 // Cancel calls flowstate.v1.WorkflowService.Cancel.
@@ -700,6 +747,11 @@ func (c *workflowServiceClient) ResumeSchedule(ctx context.Context, req *connect
 // TriggerSchedule calls flowstate.v1.WorkflowService.TriggerSchedule.
 func (c *workflowServiceClient) TriggerSchedule(ctx context.Context, req *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
 	return c.triggerSchedule.CallUnary(ctx, req)
+}
+
+// Whoami calls flowstate.v1.WorkflowService.Whoami.
+func (c *workflowServiceClient) Whoami(ctx context.Context, req *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error) {
+	return c.whoami.CallUnary(ctx, req)
 }
 
 // WorkflowServiceHandler is an implementation of the flowstate.v1.WorkflowService service.
@@ -828,6 +880,18 @@ type WorkflowServiceHandler interface {
 	// `first_run_id` and follow `next_run_id`, or walk back with
 	// `previous_run_id`.
 	GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error)
+	// GetCheckpoint reports whether a run segment started from a point a new run
+	// could be started from, and where that point stands.
+	//
+	// Every segment's start input is the run's complete carried state, so the
+	// answer is read from history and changes nothing. It describes the point
+	// without returning the state, which holds the run's inputs and outputs in
+	// full; see [CheckpointInfo]. A segment whose position is inside a call, a
+	// loop or concurrent work is reported unavailable with the reason, because
+	// only a position between top-level steps is a legal starting state.
+	//
+	// `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
+	GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -966,6 +1030,17 @@ type WorkflowServiceHandler interface {
 	// It answers with no run id. The cluster takes the action after answering, so
 	// what the firing started is read back with [DescribeSchedule].
 	TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error)
+	// Whoami answers with the caller's own [Principal]: the issuer, subject,
+	// namespace, kind, admitting policy entry, carried claims and actions the
+	// server established from the credential on this request. It is what
+	// `flow auth whoami` prints.
+	//
+	// Any caller may ask, whatever its policy entry's `actions:` list holds,
+	// because the answer is only what the caller already is. A caller that was
+	// not authenticated, which only an explicitly insecure development server
+	// admits, is answered with `authenticated` false and an anonymous
+	// principal, not with an error. The answer never contains the credential.
+	Whoami(context.Context, *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error)
 }
 
 // NewWorkflowServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -1021,6 +1096,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		WorkflowServiceGetTimelineProcedure,
 		svc.GetTimeline,
 		connect.WithSchema(workflowServiceMethods.ByName("GetTimeline")),
+		connect.WithHandlerOptions(opts...),
+	)
+	workflowServiceGetCheckpointHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetCheckpointProcedure,
+		svc.GetCheckpoint,
+		connect.WithSchema(workflowServiceMethods.ByName("GetCheckpoint")),
 		connect.WithHandlerOptions(opts...),
 	)
 	workflowServiceCancelHandler := connect.NewUnaryHandler(
@@ -1131,6 +1212,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("TriggerSchedule")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceWhoamiHandler := connect.NewUnaryHandler(
+		WorkflowServiceWhoamiProcedure,
+		svc.Whoami,
+		connect.WithSchema(workflowServiceMethods.ByName("Whoami")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/flowstate.v1.WorkflowService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case WorkflowServiceRunProcedure:
@@ -1149,6 +1236,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceListHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetTimelineProcedure:
 			workflowServiceGetTimelineHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetCheckpointProcedure:
+			workflowServiceGetCheckpointHandler.ServeHTTP(w, r)
 		case WorkflowServiceCancelProcedure:
 			workflowServiceCancelHandler.ServeHTTP(w, r)
 		case WorkflowServiceTerminateProcedure:
@@ -1185,6 +1274,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceResumeScheduleHandler.ServeHTTP(w, r)
 		case WorkflowServiceTriggerScheduleProcedure:
 			workflowServiceTriggerScheduleHandler.ServeHTTP(w, r)
+		case WorkflowServiceWhoamiProcedure:
+			workflowServiceWhoamiHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -1224,6 +1315,10 @@ func (UnimplementedWorkflowServiceHandler) List(context.Context, *connect.Reques
 
 func (UnimplementedWorkflowServiceHandler) GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetTimeline is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetCheckpoint is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {
@@ -1296,4 +1391,8 @@ func (UnimplementedWorkflowServiceHandler) ResumeSchedule(context.Context, *conn
 
 func (UnimplementedWorkflowServiceHandler) TriggerSchedule(context.Context, *connect.Request[v1.TriggerScheduleRequest]) (*connect.Response[v1.TriggerScheduleResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.TriggerSchedule is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) Whoami(context.Context, *connect.Request[v1.WhoamiRequest]) (*connect.Response[v1.WhoamiResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.Whoami is not implemented"))
 }

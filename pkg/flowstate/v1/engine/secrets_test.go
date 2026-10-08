@@ -50,9 +50,7 @@ func TestSecretActivityCarriesIdentityAndStepToPolicy(t *testing.T) {
 			"credential": {Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "test-secret", Name: "token"}}},
 		}}},
 	}}}
-	state := &v1.RunState{Workflow: workflow, Identity: &v1.WorkloadIdentity{
-		Subject: "caller", Issuer: "https://issuer.example", Namespace: "acme",
-	}}
+	state := &v1.RunState{Workflow: workflow, Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "caller", Issuer: "https://issuer.example", Namespace: "acme"}}}
 
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

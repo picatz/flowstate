@@ -48,6 +48,7 @@ doing. [The repository README](../README.md) is the one-page overview.
 | [Secrets and credentials](SECRETS.md) | Configure secret providers and access policy, and mint short-lived credentials instead of storing long-lived ones. |
 | [Workload identity federation](WORKLOAD_IDENTITY_FEDERATION.md) | Understand the metadata documents Flowstate publishes as an issuer, and what each cloud's relying party requires. |
 | [MCP over HTTP](MCP_AUTHORIZATION.md) | Authorize agents that reach `flow mcp serve` over HTTP. |
+| [Authorization decision points](AUTHORIZATION.md) | Every place Flowstate decides whether something may happen, who owns it, and what it does with nothing configured. |
 | [Authorization freshness](AUTHORIZATION_FRESHNESS.md) | The design for ordering policy changes across a fleet. Mostly not yet implemented; the page says which parts exist. |
 | [Command reference](reference/cli.md) | *Generated.* Every command and flag. |
 | [Environment variables](reference/envvars.md) | *Generated.* Every environment variable the binary reads. |
@@ -64,7 +65,7 @@ trust boundary, what enforces it, and the known gaps; and the
 | [The control-plane API](API.md) | Call the ConnectRPC API from curl, Go, or another language, and see which surfaces are stable. |
 | [Embedding](EMBEDDING.md) | Compile and run workflows inside a Go program with `pkg/flowstate/embed`, and register Go functions as tasks. |
 | [Writing a plugin](PLUGINS.md) | Add tasks or secret providers as a separate executable, from an empty directory to a task a worker runs. |
-| [First-party plugins](../plugins/) | See what each in-tree plugin provides and bounds: Anthropic, Docker, Git, GitHub, JOSE, OCI, OIDC, SCIM, Slack, SQL, SSH, VCS, Webhook, and Codex. |
+| [First-party plugins](../plugins/) | See what each in-tree plugin provides and bounds: Anthropic, Docker, Git, GitHub, JOSE, OCI, OIDC, OpenAI, SCIM, Slack, SQL, SSH, VCS, Webhook, and Codex. |
 
 ## Design and direction
 

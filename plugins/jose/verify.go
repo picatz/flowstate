@@ -54,6 +54,14 @@ func joseVerify(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *fl
 		return nil, classifyVerification(err)
 	}
 
+	// VerifyOutputs has nowhere to put an act chain, so a delegated token would
+	// come out as its subject acting alone. Refused, never trimmed. Neither the
+	// actors nor the token are echoed.
+	if principal.Delegated() {
+		return nil, sdk.PermissionDenied(
+			"the token was verified and is delegated; this task cannot represent an actor chain")
+	}
+
 	// The narrowing checks, after the signature: a token this policy would
 	// refuse is refused whatever an input says, and these can only make the
 	// answer stricter.
@@ -135,7 +143,8 @@ func classifyVerification(err error) error {
 	return sdk.PermissionDenied("the token was not verified: %v", err)
 }
 
-// boundedClaims renders the verified claim set for a step's outputs.
+// boundedClaims renders the carried claim set (what the matching trust entry
+// carries) for a step's outputs.
 //
 // Sorted, so what reaches durable history does not depend on map iteration.
 //

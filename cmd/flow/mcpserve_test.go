@@ -829,7 +829,7 @@ func TestMCPServeLeaksNoTokenMaterial(t *testing.T) {
 	record := fixture.audit.Records()[0]
 	require.Equal(t, flowmcp.ToolName("Validate"), record.GetMcpTool())
 	require.Equal(t, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_VALIDATE, record.GetAction())
-	require.Equal(t, "agent", record.GetIdentity().GetSubject())
+	require.Equal(t, "agent", record.GetIdentity().GetPrincipal().GetSubject())
 	require.Equal(t, "agent-idp", record.GetIssuerName())
 	auditRendering := renderEveryShape(record)
 	require.NotContains(t, auditRendering, token, "the token reached the audit record")

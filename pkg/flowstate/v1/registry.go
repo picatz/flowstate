@@ -157,7 +157,10 @@ type TaskDef struct {
 	// reference through — a Flowfile writes `${secret('vault:prod/api#token')}`,
 	// and a name here is what tells the host it may resolve that reference into
 	// this input before the request crosses into the plugin process, rather
-	// than refusing it. See TaskManifest.secret_inputs in plugin/v1 for the wire
+	// than refusing it. It is equally where `${credential('target')}` is legal:
+	// the worker mints a bearer token for the step and delivers it as the string
+	// a stored secret would have been. A task with no input descriptor declares
+	// none, so a credential reference is refused for it. See TaskManifest.secret_inputs in plugin/v1 for the wire
 	// form and the full reasoning; only [Plugin.taskDef] populates this today.
 	//
 	// Deliberately not the same list as [TaskDef.AuthorityInputs] or
@@ -365,6 +368,13 @@ func TaskNeedsAuthority(task *Task) bool {
 	// mentions one stays on the activity name replay compatibility depends on.
 	for _, value := range task.GetInputs() {
 		if ValueHoldsSecretRef(value) {
+			return true
+		}
+		// A credential reference needs the authority to mint one, which is
+		// the same question one rung over: the worker that runs this task is
+		// the only party that may exchange for it, so the task must reach the
+		// activity that carries the worker's runtime.
+		if ValueHoldsCredentialRef(value) {
 			return true
 		}
 	}

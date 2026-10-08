@@ -135,6 +135,41 @@ pairs are `RS256`/`RSA` (2048 bits or larger), `ES256`/`EC` (P-256) and
 from a rotation until its retention expires, so an operator must pick the
 intersection their consumer accepts.
 
+The server that publishes this key set holds no signing key: its
+`--identity-key` takes the PKIX public key PEM (`flow keys public --pem`) of each
+key workers sign with, and refuses a private key. Assertions are signed in the
+worker that runs the step, with the matching PKCS#8 private key, under the same
+key id (the file's base name). The server's key set therefore has no "active"
+key of its own; it lists exactly the public keys it was given.
+
+## One issuer per tenant
+
+Every tenant listed in the trust policy's `federation.tenants` is its own issuer,
+and everything above is true of each one separately. For tenant `acme` under
+`federation.issuer: https://flowstate.example.com`:
+
+| | |
+| --- | --- |
+| issuer, and the `iss` of every assertion for `acme` | `https://flowstate.example.com/tenants/acme` |
+| discovery | `https://flowstate.example.com/tenants/acme/.well-known/openid-configuration` |
+| key set (`jwks_uri`) | `https://flowstate.example.com/tenants/acme/.well-known/jwks.json` |
+| workload issuer metadata | `https://flowstate.example.com/tenants/acme/.well-known/workload-identity-configuration` |
+
+The discovery document's `issuer` equals the URL it is served from and the `iss`
+of the assertions, which is what an AWS IAM OIDC provider checks byte for byte.
+The key set holds the keys of `acme`'s worker only. So an IAM provider, a Google
+pool provider or an Azure federated credential configured with `acme`'s URL
+accepts `acme`'s assertions and refuses `globex`'s: a different `iss`, and a
+signature no key in this key set made. The `sub` (`flowstate:acme/DEPLOYMENT/...`)
+and the `namespace` claim name the tenant as well, so a role trust policy can pin
+all of `iss`, `sub` and `aud`.
+
+The deployment's own issuer URL, without a `/tenants/` suffix, is the default
+tenant's: the assertions of runs that carry no namespace. A namespace the policy
+does not list has no issuer; asking for its documents is a 404, and minting for it
+is refused. See [per-tenant issuers](DEPLOYMENT.md#per-tenant-issuers) for the
+deployment.
+
 ## Consumer compatibility
 
 These statements describe the Flowstate side exactly. Cloud products change
@@ -144,8 +179,8 @@ audience limits before rollout.
 | Consumer | Compatibility |
 | --- | --- |
 | **AWS IAM / STS web identity** | Configure an IAM OIDC provider with the Flowstate issuer URL; IAM fetches `/.well-known/openid-configuration` and requires `id_token_signing_alg_values_supported`. Set the assertion audience to the provider's client ID and restrict `sub` and `aud` in the role trust policy. AWS consumes the assertion through `AssumeRoleWithWebIdentity`. Prefer RS256 for the conservative profile. |
-| **Google Cloud Workload Identity Federation** | Configure an OIDC workload pool provider with the Flowstate issuer, or with the provider's uploaded-JWKS option where discovery is not wanted. Set the audience to an allowed audience and map top-level claims explicitly (`google.subject=assertion.sub`, plus attributes). Prefer RS256. |
-| **Microsoft Entra / Azure** | A federated identity credential can accept a Flowstate assertion where the product resolves this issuer/JWKS shape and accepts the signing algorithm. Configure exact issuer, subject and audience; Entra's token endpoint is the downstream exchanger, not a Flowstate endpoint. Use RS256. Where the Azure surface requires complete OP metadata, place a conforming broker in between rather than falsifying Flowstate metadata. |
+| **Google Cloud Workload Identity Federation** | Configure an OIDC workload pool provider with the Flowstate issuer, or with the provider's uploaded-JWKS option where discovery is not wanted. Set the audience to an allowed audience and map top-level claims explicitly (`google.subject=assertion.sub`, plus attributes; `subject_level` shortens `sub` where the length limit on `google.subject` is a concern). Prefer RS256. |
+| **Microsoft Entra / Azure** | A federated identity credential can accept a Flowstate assertion where the product resolves this issuer/JWKS shape and accepts the signing algorithm. Configure exact issuer, subject and audience, and give the target `subject_level: workflow` or `deployment` so the subject is one string the credential can hold rather than one per step; Entra's token endpoint is the downstream exchanger, not a Flowstate endpoint. Use RS256. Where the Azure surface requires complete OP metadata, place a conforming broker in between rather than falsifying Flowstate metadata. |
 | **Kubernetes** | Kubernetes is normally the *upstream* issuer here: Flowstate verifies projected service-account tokens through the cluster's discovery and JWKS. Flowstate assertions are not service-account tokens and cannot be mounted as such. An API server configured for external JWT authentication may accept them under that authenticator's issuer, audience, algorithm, claim-mapping and discovery rules; that does not make Flowstate a service-account issuer. |
 | **Vault / OpenBao** | The JWT auth method is compatible with `jwks_url` (the most exact mode) plus supported algorithms, bound audience, bound subject and bound claims. `oidc_discovery_url` is also compatible — it reads the OpenID Provider Metadata above, including `id_token_signing_alg_values_supported`. The *OIDC* auth method expects interactive OIDC and is not compatible. |
 | **SPIFFE / SPIRE** | Not a JWT-SVID issuer. Flowstate subjects are workload paths, not SPIFFE IDs, and its discovery path and key bundle are not the SPIFFE JWT-SVID contract. A SPIFFE-aware broker can verify a Flowstate assertion and mint a JWT-SVID, or Flowstate can trust an upstream SPIFFE identity, but direct substitution is unsupported. |

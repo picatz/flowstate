@@ -1,0 +1,141 @@
+# A click on the card answers the card.
+#
+# `approval.yaml` posts a card and waits for a signal an authenticated person
+# sends. This is the other half of the loop: the buttons on the card are
+# Slack's own, so a click arrives as a signed delivery at the receiver, answers
+# the run's gate, and the run answers the click by replacing the card through
+# the `response_url` Slack sent with it.
+#
+# The delivery proves Slack sent it (`verify: slack`), not who clicked: it is
+# attested as the trigger, so the `signals:` rule below names the trigger.
+# Which person clicked is the identity work tracked in the human-approval
+# decision record, and until it lands the card is a notification and the
+# decision is only as trustworthy as the channel it was posted in.
+#
+# The click's response_url rides in the signal payload, so it is in the run's
+# history. It is a short-lived capability (30 minutes, five uses, one
+# conversation), not a credential for the workspace; see the plugin README.
+#
+# Slack shows the clicker anything but a bodyless 200 as a failure, so the
+# receiver answers a delivery it started or joined with exactly that, and the
+# visible answer is the `slack.respond` step below. `respond_within:` is refused
+# under `verify: slack` for the same reason.
+edition: v2026.4
+name: slack-click-approval
+description: Posts an approval card, waits for a verified Slack click to answer its gate, then replaces the card through the click's response_url.
+plugins:
+  slack: v0.2.0
+inputs:
+  channel:
+    type: string
+    required: true
+    description: stable Slack conversation ID, not a channel name
+    example: C123APPROVAL
+  request_message_key:
+    type: string
+    required: true
+    description: UUID chosen once for this approval card
+    example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+  change:
+    type: string
+    required: true
+    description: bounded human-readable change being approved
+    example: deploy api v1.4.2 to production
+    must: size(this) > 0 && size(this) <= 1000
+  request_id:
+    type: string
+    required: true
+    description: the entity key this run was started under; the buttons carry it so a click finds the run
+    example: deploy-4471
+triggers:
+  - webhook: slack-click
+    verify:
+      slack: ${secret('env:SLACK_SIGNING_SECRET')}
+    # Slack's trigger_id names one interaction; a redelivery joins the run
+    # that already took it instead of answering the gate twice.
+    idempotency_key: ${event.body.trigger_id}
+    signal:
+      name: clicked
+      correlate: ${event.body.actions[0].value}
+      with:
+        decision: ${event.body.actions[0].action_id}
+        response_url: ${event.body.response_url}
+signals:
+  clicked:
+    allow: ${sender.identity.principal == "flowstate://webhook#slack-click-approval/slack-click"}
+steps:
+  # The change as markup, built once: {change} is escaped, so a value that looks
+  # like <!channel> is shown, never acted on.
+  - id: change_markup
+    value:
+      markup:
+        template: "*{change}*"
+        args:
+          change: ${inputs.change}
+  - id: notify
+    slack.post:
+      card:
+        approval:
+          title:
+            plain: Approval required
+          summary: ${steps.change_markup.value}
+          approve:
+            label:
+              plain: Approve
+            callback:
+              action: approve
+              value: ${inputs.request_id}
+          reject:
+            label:
+              plain: Reject
+            callback:
+              action: reject
+              value: ${inputs.request_id}
+      channel: ${inputs.channel}
+      idempotency_key: ${inputs.request_message_key}
+      text: '${"Approval required: " + inputs.change}'
+      token: ${secret('env:SLACK_BOT_TOKEN')}
+  - id: gate
+    wait_for_signal:
+      name: clicked
+      prompt: ${"Approve %s?".format([inputs.change])}
+      timeout: 24h
+      outputs:
+        approved: ${payload.?decision.orValue("") == "approve"}
+        response_url: ${payload.?response_url.orValue("")}
+        timed_out: ${timed_out}
+  - id: decided_title
+    value: '${steps.gate.approved ? "Approval granted" : "Approval refused"}'
+  - id: outcome_title
+    value: '${steps.gate.timed_out ? "Approval timed out" : steps.decided_title.value}'
+  # A click carries a response_url; a timeout does not, and the card is edited
+  # with the bot token instead.
+  - id: answer_click
+    if: ${steps.gate.response_url != ""}
+    slack.respond:
+      card:
+        status:
+          state: '${steps.gate.approved ? "ok" : "failed"}'
+          title:
+            plain: ${steps.outcome_title.value}
+          detail: ${steps.change_markup.value}
+      response_url: ${steps.gate.response_url}
+      text: '${steps.outcome_title.value + ": " + inputs.change}'
+  - id: answer_timeout
+    if: ${steps.gate.response_url == ""}
+    slack.update:
+      card:
+        status:
+          state: warn
+          title:
+            plain: ${steps.outcome_title.value}
+          detail: ${steps.change_markup.value}
+      channel: ${steps.notify.channel}
+      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.notify.ts}
+outputs:
+  approved:
+    value: ${steps.gate.approved && !steps.gate.timed_out}
+    description: true only when a verified click chose Approve

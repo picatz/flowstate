@@ -30,7 +30,7 @@ func testIdentity() auth.WorkloadIdentity {
 		Issuer:     "https://token.actions.githubusercontent.com",
 		Namespace:  "acme",
 		Deployment: "prod",
-		Claims:     map[string]string{"repository": "picatz/flowstate"},
+		Claims:     map[string]any{"repository": "picatz/flowstate"},
 	}
 }
 
@@ -223,7 +223,7 @@ func TestIssuerMintRejects(t *testing.T) {
 			name: "a carried claim shadowing the subject",
 			identity: auth.WorkloadIdentity{
 				Subject: "someone", Issuer: "https://idp.example.com",
-				Claims: map[string]string{"sub": "flowstate:acme/prod/other/step"},
+				Claims: map[string]any{"sub": "flowstate:acme/prod/other/step"},
 			},
 			ref:      testStepRef(),
 			audience: "sts.amazonaws.com",
@@ -233,7 +233,7 @@ func TestIssuerMintRejects(t *testing.T) {
 			name: "a carried claim shadowing the delegation",
 			identity: auth.WorkloadIdentity{
 				Subject: "someone", Issuer: "https://idp.example.com",
-				Claims: map[string]string{auth.ClaimOnBehalfOf: "someone-else"},
+				Claims: map[string]any{auth.ClaimOnBehalfOf: "someone-else"},
 			},
 			ref:      testStepRef(),
 			audience: "sts.amazonaws.com",
@@ -280,6 +280,16 @@ func TestIssuerRoundTrip(t *testing.T) {
 				Name:      "flowstate-self",
 				Issuer:    server.URL,
 				Audiences: []string{audience},
+				CarryClaims: []auth.CarryClaim{
+					{Claim: auth.ClaimNamespace, As: "peer_namespace", Type: auth.ClaimTypeString},
+					{Claim: auth.ClaimDeployment, As: "peer_deployment", Type: auth.ClaimTypeString},
+					{Claim: auth.ClaimWorkflow, As: "peer_workflow", Type: auth.ClaimTypeString},
+					{Claim: auth.ClaimStep, As: "peer_step", Type: auth.ClaimTypeString},
+					{Claim: auth.ClaimRun, As: "peer_run", Type: auth.ClaimTypeString},
+					{Claim: auth.ClaimOnBehalfOf, As: "peer_on_behalf_of", Type: auth.ClaimTypeString},
+					{Claim: auth.ClaimOnBehalfOfIssuer, As: "peer_on_behalf_of_issuer", Type: auth.ClaimTypeString},
+					{Claim: "repository", Type: auth.ClaimTypeString},
+				},
 			}},
 		},
 		auth.WithClock(clock.Now),
@@ -296,13 +306,13 @@ func TestIssuerRoundTrip(t *testing.T) {
 	// subject says which workload is calling, and on_behalf_of says who caused it
 	// to run.
 	for claim, want := range map[string]string{
-		auth.ClaimNamespace:        "acme",
-		auth.ClaimDeployment:       "prod",
-		auth.ClaimWorkflow:         "deploy-service",
-		auth.ClaimStep:             "push-image",
-		auth.ClaimRun:              "run-1",
-		auth.ClaimOnBehalfOf:       "repo:picatz/flowstate:ref:refs/heads/main",
-		auth.ClaimOnBehalfOfIssuer: "https://token.actions.githubusercontent.com",
+		"peer_namespace":           "acme",
+		"peer_deployment":          "prod",
+		"peer_workflow":            "deploy-service",
+		"peer_step":                "push-image",
+		"peer_run":                 "run-1",
+		"peer_on_behalf_of":        "repo:picatz/flowstate:ref:refs/heads/main",
+		"peer_on_behalf_of_issuer": "https://token.actions.githubusercontent.com",
 		"repository":               "picatz/flowstate",
 	} {
 		got, ok := principal.StringClaim(claim)

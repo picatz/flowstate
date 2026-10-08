@@ -98,6 +98,7 @@ var nodeFieldExclusions = map[string]string{
 	"id":          "every node has one; an identifier is not a capability",
 	"description": "prose attached to a step, not a behavior",
 	"policy":      "a container; its own fields (timeout, retry) are the constructs, required via StepPolicy",
+	"source":      "advisory position stamped by the loader from the file, never written by an author",
 }
 
 // policyFieldExclusions are the [v1.StepPolicy] fields to skip. None: both
@@ -253,6 +254,7 @@ var messagesOutsideTheCharter = map[protoreflect.FullName]string{
 	"flowstate.v1.ResolvedTaskCapabilities":  "written by the control plane at admission, never by an author",
 	"flowstate.v1.CapabilityParameter":       "a compiler-owned normalized declaration with no author-facing spelling in this prototype",
 	"flowstate.v1.ResolvedCapabilityBinding": "written by the control plane at admission, never by an author",
+	"flowstate.v1.SourceLocation":            "an advisory position the loader stamps on a step and a failure names; never written by an author",
 	"flowstate.v1.PluginRequirement":         "a `plugins:` block is only expressible under examples/plugins/, which this corpus excludes because those files name tasks a stock `flow` cannot resolve",
 
 	// Encoding rather than language: the Value wrapper's own internals.
@@ -266,6 +268,8 @@ var messagesOutsideTheCharter = map[protoreflect.FullName]string{
 	// A secret is written as a secret() call inside an expression, so what an
 	// example demonstrates is the call, not this message's fields.
 	"flowstate.v1.SecretRef": "the author-facing spelling is the secret() call inside an expression, not this message",
+
+	"flowstate.v1.CredentialRef": "the author-facing spelling is the credential() call inside an expression, not this message",
 
 	// A parallel branch holds only a body, and the block itself is already
 	// required through the kind oneof.

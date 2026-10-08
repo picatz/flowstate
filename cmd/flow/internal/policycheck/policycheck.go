@@ -53,6 +53,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // Stanza names which part of a Flowfile a [Gate] belongs to.
@@ -324,7 +325,7 @@ func Evaluate(ctx context.Context, wf *v1.Workflow, gates []Gate, subject Subjec
 				decision.Note = "no `triggers.manual` block, so any caller the server authenticates may start it"
 			}
 
-			refusal = v1.CheckManualStart(ctx, wf, sender, v1.Principal(sender.GetIssuer(), sender.GetSubject()), subject.Reason, bound)
+			refusal = v1.CheckManualStart(ctx, wf, sender, principal.Qualified(sender.GetPrincipal().GetIssuer(), sender.GetPrincipal().GetSubject()), subject.Reason, bound)
 
 		default:
 			return nil, fmt.Errorf("unknown gate %q", gate)

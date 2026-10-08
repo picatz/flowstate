@@ -11,6 +11,7 @@ import (
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // ScopeName is the instrumentation scope every audit record carries.
@@ -63,6 +64,7 @@ const (
 	attrDeployment = "flowstate.audit.identity.deployment"
 	attrIssuerName = "flowstate.audit.identity.issuer_name"
 	attrRole       = "flowstate.audit.identity.role"
+	attrActors     = "flowstate.audit.identity.actors"
 )
 
 // NewLogEmitter sends records through an audit-owned LoggerProvider.
@@ -187,11 +189,21 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 
 	if identity := record.GetIdentity(); identity != nil {
 		attrs = append(attrs,
-			attribute.String(attrSubject, identity.GetSubject()),
-			attribute.String(attrIssuer, identity.GetIssuer()),
-			attribute.String(attrNamespace, identity.GetNamespace()),
+			attribute.String(attrSubject, identity.GetPrincipal().GetSubject()),
+			attribute.String(attrIssuer, identity.GetPrincipal().GetIssuer()),
+			attribute.String(attrNamespace, identity.GetPrincipal().GetNamespace()),
 			attribute.String(attrDeployment, identity.GetDeployment()),
 		)
+		// "sub, acting via A": the chain beside the subject it acts for, as
+		// `issuer#subject` strings, current actor first. Absent when nobody is
+		// acting for the caller, so the attribute's presence is the delegation.
+		if actors := identity.GetPrincipal().GetActors(); len(actors) > 0 {
+			via := make([]string, len(actors))
+			for i, actor := range actors {
+				via[i] = principal.Qualified(actor.GetIssuer(), actor.GetSubject())
+			}
+			attrs = append(attrs, attribute.StringSlice(attrActors, via))
+		}
 	}
 
 	out.AddAttributes(attrs...)

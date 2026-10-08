@@ -31,6 +31,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_run` | via a server | `flowstate.v1.RunRequest` | `flowstate.v1.RunResponse` |
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
 | `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
+| `flowstate_get_checkpoint` | via a server | `flowstate.v1.GetCheckpointRequest` | `flowstate.v1.GetCheckpointResponse` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
 | `flowstate_get_gate` | via a server | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
 | `flowstate_list_gates` | via a server | `flowstate.v1.ListGatesRequest` | `flowstate.v1.ListGatesResponse` |
@@ -51,6 +52,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_pause_schedule` | via a server | `flowstate.v1.PauseScheduleRequest` | `flowstate.v1.PauseScheduleResponse` |
 | `flowstate_resume_schedule` | via a server | `flowstate.v1.ResumeScheduleRequest` | `flowstate.v1.ResumeScheduleResponse` |
 | `flowstate_trigger_schedule` | via a server | `flowstate.v1.TriggerScheduleRequest` | `flowstate.v1.TriggerScheduleResponse` |
+| `flowstate_whoami` | via a server | `flowstate.v1.WhoamiRequest` | `flowstate.v1.WhoamiResponse` |
 | `flowstate_run_local` | locally | — | — |
 | `flowstate_test` | locally | — | — |
 | `flowstate_debug` | locally | — | — |
@@ -112,6 +114,14 @@ GetTimeline reports what a run did, event by event, read back from its own durab
 `Get` answers what a run is now; this answers what happened, which is what to read for a run that has already failed: which step, on which attempt, with what error, and what it was waiting for before that. It starts, signals and changes nothing. Authorized like every other verb addressing a run.
 
 `max_entries` defaults to 500 and is at most 5000. When `truncated` is set, call again with `run_id` set to the answer's `run_id` and `after_event_id` set to the last entry's `event_id`; repeat until `truncated` is false. A workload that continued as new has one timeline per segment: start at `first_run_id` and follow `next_run_id`, or walk back with `previous_run_id`.
+
+## `flowstate_get_checkpoint`
+
+GetCheckpoint reports whether a run segment started from a point a new run could be started from, and where that point stands.
+
+Every segment's start input is the run's complete carried state, so the answer is read from history and changes nothing. It describes the point without returning the state, which holds the run's inputs and outputs in full; see `CheckpointInfo`. A segment whose position is inside a call, a loop or concurrent work is reported unavailable with the reason, because only a position between top-level steps is a legal starting state.
+
+`run_id` names the segment, as in `GetTimeline`; empty reads the latest.
 
 ## `flowstate_signal`
 
@@ -252,6 +262,12 @@ TriggerSchedule fires a schedule now, without waiting for its cadence.
 It uses the schedule's stored arguments, tenant and queue, so it tests the schedule rather than only the workflow. It fires even a paused schedule: create paused, trigger once to see what happens, then resume.
 
 It answers with no run id. The cluster takes the action after answering, so what the firing started is read back with `DescribeSchedule`.
+
+## `flowstate_whoami`
+
+Whoami answers with the caller's own `Principal`: the issuer, subject, namespace, kind, admitting policy entry, carried claims and actions the server established from the credential on this request. It is what `flow auth whoami` prints.
+
+Any caller may ask, whatever its policy entry's `actions:` list holds, because the answer is only what the caller already is. A caller that was not authenticated, which only an explicitly insecure development server admits, is answered with `authenticated` false and an anonymous principal, not with an error. The answer never contains the credential.
 
 ## `flowstate_run_local`
 

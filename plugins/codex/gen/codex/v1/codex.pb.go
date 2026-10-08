@@ -453,14 +453,14 @@ var File_codex_v1_codex_proto protoreflect.FileDescriptor
 
 const file_codex_v1_codex_proto_rawDesc = "" +
 	"\n" +
-	"\x14codex/v1/codex.proto\x12\bcodex.v1\x1a\x18flowstate/v1/value.proto\"\xed\x02\n" +
+	"\x14codex/v1/codex.proto\x12\bcodex.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xf5\x02\n" +
 	"\n" +
 	"ExecInputs\x12\x16\n" +
 	"\x06prompt\x18\x01 \x01(\tR\x06prompt\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x128\n" +
 	"\fsandbox_mode\x18\x03 \x01(\x0e2\x15.codex.v1.SandboxModeR\vsandboxMode\x12'\n" +
-	"\x0fworking_context\x18\x04 \x01(\tR\x0eworkingContext\x12,\n" +
-	"\aapi_key\x18\x05 \x01(\v2\x13.flowstate.v1.ValueR\x06apiKey\x12(\n" +
+	"\x0fworking_context\x18\x04 \x01(\tR\x0eworkingContext\x124\n" +
+	"\aapi_key\x18\x05 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x01R\x06apiKey\x12(\n" +
 	"\x10max_output_bytes\x18\x06 \x01(\x05R\x0emaxOutputBytes\x12\x1d\n" +
 	"\n" +
 	"max_events\x18\a \x01(\x05R\tmaxEvents\x12#\n" +

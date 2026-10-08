@@ -13,9 +13,9 @@ func TestSignalsCheckMatrixByGateRowStillTakesTheDefaultExpectation(t *testing.T
 
 	row := func(name string) string {
 		return "identities:\n  - name: " + name + "\n" +
-			"    subject: sre-lead@example.com\n    issuer: " + gateIssuer + "\n" +
-			"    claims: {team: release-managers}\n" +
-			"    starter: {subject: dev@example.com, issuer: " + gateIssuer + "}\n" +
+			"    principal:\n      subject: sre-lead@example.com\n      issuer: " + gateIssuer + "\n" +
+			"      claims: {team: release-managers}\n" +
+			"    starter: {principal: {subject: dev@example.com, issuer: " + gateIssuer + "}}\n" +
 			"    expect_by_gate: {debug: refused}\n"
 	}
 

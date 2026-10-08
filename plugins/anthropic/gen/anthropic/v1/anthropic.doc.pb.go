@@ -16,7 +16,7 @@ func init() {
 				" question.\n" +
 				"\n" +
 				" The questions and answers are the provider-neutral shapes of\n" +
-				" flowstate/v1/decision.proto, so a Flowfile that routes on an answer reads the\n" +
+				" flowstate/decision/v1/decision.proto, so a Flowfile that routes on an answer reads the\n" +
 				" same under any provider plugin. Everything specific to Anthropic - the model,\n" +
 				" the output budget, whether to ask for a self-reported confidence - is a field\n" +
 				" here and never crosses into the neutral schema.\n" +
@@ -61,7 +61,7 @@ func init() {
 		},
 		{
 			Name: "anthropic.v1.DecideInputs.question_set",
-			Leading: " QuestionSet is a flowstate.v1.QuestionSet written as a mapping: a\n" +
+			Leading: " QuestionSet is written in a Flowfile as a mapping: a\n" +
 				" `questions` list whose entries each have a `name`, optional\n" +
 				" `instructions`, and exactly one of `predicate: {}`, `choice: {options:\n" +
 				" [...]}` or `score: {levels: [...]}`. It is validated against the schema's\n" +
@@ -86,7 +86,7 @@ func init() {
 		},
 		{
 			Name: "anthropic.v1.DecideOutputs.answers",
-			Leading: " Answers has exactly one validated flowstate.v1.Answer for each question,\n" +
+			Leading: " Answers has exactly one validated flowstate.decision.v1.Answer for each question,\n" +
 				" matched by name. A reply that is missing one, adds one, or carries a value\n" +
 				" the question did not offer fails the task rather than returning a partial\n" +
 				" result. Read a choice as `steps.<id>.answers[0].choice`; an absent\n" +

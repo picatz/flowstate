@@ -10,6 +10,7 @@ import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -150,6 +151,246 @@ func (PrincipalKind) EnumDescriptor() ([]byte, []int) {
 	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
 }
 
+// Principal is an authenticated party: who they are, which tenant they belong
+// to, what sort of party they are, and what the operator chose to carry from
+// the credential that admitted them.
+//
+// It is the one wire shape of "the caller". A run's [WorkloadIdentity] holds one,
+// a policy-check row names one, and every operator-written policy surface (egress,
+// exec, task shape, secret access, credential assumption, signal predicates)
+// reads the same rendering of it as `identity`: `identity.issuer`,
+// `identity.subject`, `identity.namespace`, `identity.kind`, `identity.principal`
+// (the `issuer#subject` join), `identity.claims` and `identity.actions`.
+//
+// It holds identity, never credentials: it is persisted in workflow history,
+// which is durable and broadly readable, so nothing secret may appear here.
+type Principal struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Issuer is the identity provider that vouched for the subject.
+	Issuer string `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	// Subject identifies the caller within the issuer, as established by
+	// authenticating their request. Empty when the run was started without
+	// authentication, which is only possible in development.
+	Subject string `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	// Namespace is the tenant, and it is the boundary every authorization decision
+	// about a run turns on: the caller's namespace is compared against the one
+	// recorded on the run, and a mismatch is answered "no such run".
+	//
+	// It comes from the trust policy entry that admitted the caller, never from
+	// the request, and when the policy names none the deployment's own namespace
+	// is recorded here, so a run has exactly one tenant to compare.
+	Namespace string `protobuf:"bytes,3,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	// Kind is what sort of party the subject is, as the operator's trust policy
+	// assigned it when it admitted the caller. UNSPECIFIED when the policy
+	// assigned none. A receiver that does not know a value treats it as
+	// UNSPECIFIED, so an unknown kind is never read as a more trusted one.
+	Kind PrincipalKind `protobuf:"varint,4,opt,name=kind,proto3,enum=flowstate.v1.PrincipalKind" json:"kind,omitempty"`
+	// IssuerEntry is the name of the trust policy entry that admitted the caller,
+	// so an audit record names the rule that granted access and not only the
+	// issuer that signed the token.
+	IssuerEntry string `protobuf:"bytes,5,opt,name=issuer_entry,json=issuerEntry,proto3" json:"issuer_entry,omitempty"`
+	// Claims carries the non-secret claims from the caller's token that authorization
+	// decisions may key on, such as a repository, a team, or a `groups` list. Only
+	// claims an operator has named in the admitting entry are copied here, so this
+	// does not become a dumping ground for whole tokens. A value may be any JSON
+	// shape, so a rule reads `identity.claims.groups` as a list and
+	// `identity.claims.slack.user` as a nested object, and guards an absent claim
+	// with `"k" in identity.claims`; reading one the caller lacks is an error, and
+	// an errored rule denies.
+	//
+	// The bounds say the same thing the sentence above says, in a form the machine
+	// enforces. 32 pairs is ten times the largest set anything in this repository
+	// carries; the key length is the signal-policy comparison's own 128, since both
+	// name claims out of the same tokens. They are the schema half of
+	// `auth.MaxCarriedClaims` and its neighbours, which refuse the same sizes at
+	// mint: a claim set is a wire format that gets signed and cached by relying
+	// parties, so an oversized one has to be refused rather than truncated — a
+	// truncated claim set is a token that says something other than what was
+	// authorized.
+	//
+	// `max_bytes` and not `max_len`, deliberately. protovalidate's `max_len` is
+	// `this.size()`, which counts Unicode *code points*; `max_bytes` is
+	// `bytes(this).size()`, which is what Go's `len` on a string counts and what
+	// the Go bound therefore enforces. Under `max_len` a value of 700 two-byte runes
+	// passes the schema at 700 and is refused at the mint at 1400 bytes — one limit
+	// written down twice in two units. Same number, same unit, both layers.
+	//
+	// A string value is bounded at 1024 bytes, more than a match pattern's 256
+	// because a carried value is data (the longest real one measured here is a
+	// 63-byte GitHub Actions `job_workflow_ref`).
+	//
+	// What the schema cannot say is the shape of a value that is itself a list or
+	// an object: protovalidate has no recursion. The reader bounds that where the
+	// work is spent. `auth.WorkloadIdentity.WithWireClaims` walks no deeper than 4
+	// levels nor past 512 values in one claim, and a claim over either is left out
+	// and remembered as refused, so a rule reading it errors (which denies) and
+	// every credential mint for the identity fails. The mint then holds a list or
+	// object claim to 4096 bytes, by the same function that measured it.
+	Claims map[string]*structpb.Value `protobuf:"bytes,6,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	// Actions are the canonical action scopes the admitting entry granted, such as
+	// `run.start`; a rule reads them as `identity.actions`. Empty means none were
+	// carried, which a rule reads as no action matched, not as every action.
+	Actions []string `protobuf:"bytes,7,rep,name=actions,proto3" json:"actions,omitempty"`
+	// Actors is the RFC 8693 `act` chain the caller's token carried: who is acting
+	// on behalf of `subject`, current actor first, at most two deep. Empty means
+	// the caller acts for themselves. A rule reads it as `identity.actors`, and
+	// `identity.delegated` is true exactly when it is not empty.
+	//
+	// Actors are data about who is acting, never a source of authority. Only the
+	// admitting trust policy entry's `delegation:` stanza lets a token carry one,
+	// and the stanza can only narrow the subject's actions; `kind`, `actions` and
+	// `issuer_entry` above still come from the entry alone. The issuer that signed
+	// the token vouches for the chain and nobody else does, so a rule that wants
+	// to trust an actor names its exact `issuer` and `subject`.
+	Actors        []*Actor `protobuf:"bytes,8,rep,name=actors,proto3" json:"actors,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Principal) Reset() {
+	*x = Principal{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Principal) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Principal) ProtoMessage() {}
+
+func (x *Principal) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Principal.ProtoReflect.Descriptor instead.
+func (*Principal) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *Principal) GetIssuer() string {
+	if x != nil {
+		return x.Issuer
+	}
+	return ""
+}
+
+func (x *Principal) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
+func (x *Principal) GetNamespace() string {
+	if x != nil {
+		return x.Namespace
+	}
+	return ""
+}
+
+func (x *Principal) GetKind() PrincipalKind {
+	if x != nil {
+		return x.Kind
+	}
+	return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
+}
+
+func (x *Principal) GetIssuerEntry() string {
+	if x != nil {
+		return x.IssuerEntry
+	}
+	return ""
+}
+
+func (x *Principal) GetClaims() map[string]*structpb.Value {
+	if x != nil {
+		return x.Claims
+	}
+	return nil
+}
+
+func (x *Principal) GetActions() []string {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
+func (x *Principal) GetActors() []*Actor {
+	if x != nil {
+		return x.Actors
+	}
+	return nil
+}
+
+// Actor is one party named in a caller's RFC 8693 `act` claim: someone acting
+// on behalf of the `Principal.subject`. It names the party and nothing else; an
+// actor has no claims, no kind and no actions, so a chain cannot carry
+// authority the admitting trust policy entry did not grant.
+type Actor struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Issuer is the actor's `iss` as the token's own issuer stated it.
+	Issuer string `protobuf:"bytes,1,opt,name=issuer,proto3" json:"issuer,omitempty"`
+	// Subject is the actor's `sub` as the token's own issuer stated it.
+	Subject       string `protobuf:"bytes,2,opt,name=subject,proto3" json:"subject,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Actor) Reset() {
+	*x = Actor{}
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Actor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Actor) ProtoMessage() {}
+
+func (x *Actor) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_identity_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Actor.ProtoReflect.Descriptor instead.
+func (*Actor) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Actor) GetIssuer() string {
+	if x != nil {
+		return x.Issuer
+	}
+	return ""
+}
+
+func (x *Actor) GetSubject() string {
+	if x != nil {
+		return x.Subject
+	}
+	return ""
+}
+
 // WorkloadIdentity describes who a run acts as.
 //
 // A running workload has two identities at once, and both matter. It is a
@@ -166,65 +407,23 @@ func (PrincipalKind) EnumDescriptor() ([]byte, []int) {
 // nothing secret may appear here.
 type WorkloadIdentity struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Subject identifies the caller that requested the run, as established by
-	// authenticating their request. Empty when the run was started without
+	// Principal is the caller that requested the run, as established by
+	// authenticating their request. Unset when the run was started without
 	// authentication, which is only possible in development.
-	Subject string `protobuf:"bytes,1,opt,name=subject,proto3" json:"subject,omitempty"`
-	// Issuer is the identity provider that vouched for the subject.
-	Issuer string `protobuf:"bytes,2,opt,name=issuer,proto3" json:"issuer,omitempty"`
-	// Claims carries additional non-secret claims from the caller's token that
-	// authorization decisions may key on, such as a repository, environment, or
-	// team. Only claims an operator has configured as relevant are copied here,
-	// so this does not become a dumping ground for whole tokens.
-	//
-	// The bounds say the same thing the sentence above says, in a form the
-	// machine enforces. They are the schema half of `auth.MaxCarriedClaims` and
-	// its neighbours, which refuse the same sizes at mint: a claim set is a wire
-	// format that gets signed and cached by relying parties, so an oversized one
-	// has to be refused rather than truncated — a truncated claim set is a token
-	// that says something other than what was authorized.
-	//
-	// 32 pairs is ten times the largest set anything in this repository carries
-	// and twice the sixteen claims a signal policy once compared; the key length
-	// is that comparison's own 128, since both name claims out of the same
-	// tokens. Values get 1024 rather than 256 because a carried value is data and
-	// not a match pattern — the longest real one measured here is a 63-byte GitHub
-	// Actions `job_workflow_ref`.
-	//
-	// `max_bytes` and not `max_len`, deliberately, and this is the whole reason
-	// the unit is named in these field names. protovalidate's `max_len` is
-	// `this.size()`, which counts Unicode *code points*; `max_bytes` is
-	// `bytes(this).size()`, which is what Go's `len` on a string counts and what
-	// `auth.validateCarriedClaims` therefore enforces. Under `max_len` a value of
-	// 700 two-byte runes passes the schema at 700 and is refused at the mint at
-	// 1400 bytes — one limit written down twice in two units, so the schema and
-	// the mint disagree about which identities are valid, and the identity that
-	// falls in the gap validates and then cannot obtain a credential. Same
-	// number, same unit, both layers.
-	Claims map[string]string `protobuf:"bytes,3,rep,name=claims,proto3" json:"claims,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
-	// Namespace is the tenant, and it is the boundary every authorization decision
-	// about a run turns on: the caller's namespace is compared against the one
-	// recorded on the run, and a mismatch is answered "no such run".
-	//
-	// Worth stating outright, because this field used to be described alongside
-	// `deployment` as identifying "which Flowstate installation is running the
-	// workload". That is what `deployment` is for. Reading the two as a pair
-	// suggests both are labels for telling environments apart, and one of them
-	// decides who may act on what.
-	Namespace string `protobuf:"bytes,4,opt,name=namespace,proto3" json:"namespace,omitempty"`
+	Principal *Principal `protobuf:"bytes,8,opt,name=principal,proto3" json:"principal,omitempty"`
 	// Deployment identifies which Flowstate installation is running the workload,
 	// so an assertion from a staging deployment is distinguishable from a
 	// production one.
 	//
-	// Not the tenant, and not what run access turns on: that is `namespace`
-	// above. But not decorative either: an outbound authorization policy sees it as
-	// `workload.deployment` and may key on it, which is how a rule like
-	// `target == "internal" && workload.deployment == "prod"` keeps a staging
-	// installation from assuming a production role.
+	// Not the tenant, and not what run access turns on: that is
+	// `principal.namespace`. But not decorative either: an outbound authorization
+	// policy sees it as `workload.deployment` and may key on it, which is how a
+	// rule like `target == "internal" && workload.deployment == "prod"` keeps a
+	// staging installation from assuming a production role.
 	//
-	// So the two are load-bearing for different decisions. `namespace` decides who
-	// may act on a run; `deployment` is one of the attributes a policy may use to
-	// decide what a run may reach.
+	// So the two are load-bearing for different decisions. `principal.namespace`
+	// decides who may act on a run; `deployment` is one of the attributes a policy
+	// may use to decide what a run may reach.
 	Deployment string `protobuf:"bytes,5,opt,name=deployment,proto3" json:"deployment,omitempty"`
 	// Mode is operational context, not a credential or an identity claim. When
 	// this identity is sent to a plugin, the host that launched and is directly
@@ -241,18 +440,14 @@ type WorkloadIdentity struct {
 	// plugin transport must authenticate the host and preserve that authority,
 	// or replace this value with UNSPECIFIED rather than relay a caller-supplied
 	// one.
-	Mode WorkloadIdentityMode `protobuf:"varint,6,opt,name=mode,proto3,enum=flowstate.v1.WorkloadIdentityMode" json:"mode,omitempty"`
-	// PrincipalKind is what sort of party the subject is, as the operator's trust
-	// policy assigned it when it admitted the caller. UNSPECIFIED when the policy
-	// assigned none. Identity, not a credential, so it is safe in durable history.
-	PrincipalKind PrincipalKind `protobuf:"varint,7,opt,name=principal_kind,json=principalKind,proto3,enum=flowstate.v1.PrincipalKind" json:"principal_kind,omitempty"`
+	Mode          WorkloadIdentityMode `protobuf:"varint,6,opt,name=mode,proto3,enum=flowstate.v1.WorkloadIdentityMode" json:"mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkloadIdentity) Reset() {
 	*x = WorkloadIdentity{}
-	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -264,7 +459,7 @@ func (x *WorkloadIdentity) String() string {
 func (*WorkloadIdentity) ProtoMessage() {}
 
 func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_identity_proto_msgTypes[0]
+	mi := &file_flowstate_v1_identity_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -277,35 +472,14 @@ func (x *WorkloadIdentity) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkloadIdentity.ProtoReflect.Descriptor instead.
 func (*WorkloadIdentity) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_v1_identity_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *WorkloadIdentity) GetSubject() string {
+func (x *WorkloadIdentity) GetPrincipal() *Principal {
 	if x != nil {
-		return x.Subject
-	}
-	return ""
-}
-
-func (x *WorkloadIdentity) GetIssuer() string {
-	if x != nil {
-		return x.Issuer
-	}
-	return ""
-}
-
-func (x *WorkloadIdentity) GetClaims() map[string]string {
-	if x != nil {
-		return x.Claims
+		return x.Principal
 	}
 	return nil
-}
-
-func (x *WorkloadIdentity) GetNamespace() string {
-	if x != nil {
-		return x.Namespace
-	}
-	return ""
 }
 
 func (x *WorkloadIdentity) GetDeployment() string {
@@ -322,31 +496,35 @@ func (x *WorkloadIdentity) GetMode() WorkloadIdentityMode {
 	return WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_UNSPECIFIED
 }
 
-func (x *WorkloadIdentity) GetPrincipalKind() PrincipalKind {
-	if x != nil {
-		return x.PrincipalKind
-	}
-	return PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED
-}
-
 var File_flowstate_v1_identity_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_identity_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x97\x03\n" +
-	"\x10WorkloadIdentity\x12\x18\n" +
-	"\asubject\x18\x01 \x01(\tR\asubject\x12\x16\n" +
-	"\x06issuer\x18\x02 \x01(\tR\x06issuer\x12\\\n" +
-	"\x06claims\x18\x03 \x03(\v2*.flowstate.v1.WorkloadIdentity.ClaimsEntryB\x18\xbaH\x15\x9a\x01\x12\x10 \"\ar\x05 \x01(\x80\x01*\x05r\x03(\x80\bR\x06claims\x12\x1c\n" +
-	"\tnamespace\x18\x04 \x01(\tR\tnamespace\x12\x1e\n" +
+	"\x1bflowstate/v1/identity.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cgoogle/protobuf/struct.proto\"\x84\x05\n" +
+	"\tPrincipal\x12 \n" +
+	"\x06issuer\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\x06issuer\x12\"\n" +
+	"\asubject\x18\x02 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\asubject\x12&\n" +
+	"\tnamespace\x18\x03 \x01(\tB\b\xbaH\x05r\x03(\x80\bR\tnamespace\x12/\n" +
+	"\x04kind\x18\x04 \x01(\x0e2\x1b.flowstate.v1.PrincipalKindR\x04kind\x12+\n" +
+	"\fissuer_entry\x18\x05 \x01(\tB\b\xbaH\x05r\x03(\x80\x01R\vissuerEntry\x12\xf1\x01\n" +
+	"\x06claims\x18\x06 \x03(\v2#.flowstate.v1.Principal.ClaimsEntryB\xb3\x01\xbaH\xaf\x01\xba\x01\x9d\x01\n" +
+	"#principal.claims.string_value_bytes\x12/a string claim value must be at most 1024 bytes\x1aEthis.all(k, type(this[k]) != string || bytes(this[k]).size() <= 1024)\x9a\x01\v\x10 \"\ar\x05 \x01(\x80\x01R\x06claims\x12-\n" +
+	"\aactions\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05 \x01(\x80\x01R\aactions\x125\n" +
+	"\x06actors\x18\b \x03(\v2\x13.flowstate.v1.ActorB\b\xbaH\x05\x92\x01\x02\x10\x02R\x06actors\x1aQ\n" +
+	"\vClaimsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.google.protobuf.ValueR\x05value:\x028\x01\"Q\n" +
+	"\x05Actor\x12\"\n" +
+	"\x06issuer\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\bR\x06issuer\x12$\n" +
+	"\asubject\x18\x02 \x01(\tB\n" +
+	"\xbaH\ar\x05 \x01(\x80\bR\asubject\"\xf3\x01\n" +
+	"\x10WorkloadIdentity\x125\n" +
+	"\tprincipal\x18\b \x01(\v2\x17.flowstate.v1.PrincipalR\tprincipal\x12\x1e\n" +
 	"\n" +
 	"deployment\x18\x05 \x01(\tR\n" +
 	"deployment\x126\n" +
-	"\x04mode\x18\x06 \x01(\x0e2\".flowstate.v1.WorkloadIdentityModeR\x04mode\x12B\n" +
-	"\x0eprincipal_kind\x18\a \x01(\x0e2\x1b.flowstate.v1.PrincipalKindR\rprincipalKind\x1a9\n" +
-	"\vClaimsEntry\x12\x10\n" +
-	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01*\x8b\x01\n" +
+	"\x04mode\x18\x06 \x01(\x0e2\".flowstate.v1.WorkloadIdentityModeR\x04modeJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03J\x04\b\x03\x10\x04J\x04\b\x04\x10\x05J\x04\b\a\x10\bR\asubjectR\x06issuerR\x06claimsR\tnamespaceR\x0eprincipal_kind*\x8b\x01\n" +
 	"\x14WorkloadIdentityMode\x12&\n" +
 	"\"WORKLOAD_IDENTITY_MODE_UNSPECIFIED\x10\x00\x12%\n" +
 	"!WORKLOAD_IDENTITY_MODE_PRODUCTION\x10\x01\x12$\n" +
@@ -371,22 +549,28 @@ func file_flowstate_v1_identity_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_identity_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_flowstate_v1_identity_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_flowstate_v1_identity_proto_goTypes = []any{
 	(WorkloadIdentityMode)(0), // 0: flowstate.v1.WorkloadIdentityMode
 	(PrincipalKind)(0),        // 1: flowstate.v1.PrincipalKind
-	(*WorkloadIdentity)(nil),  // 2: flowstate.v1.WorkloadIdentity
-	nil,                       // 3: flowstate.v1.WorkloadIdentity.ClaimsEntry
+	(*Principal)(nil),         // 2: flowstate.v1.Principal
+	(*Actor)(nil),             // 3: flowstate.v1.Actor
+	(*WorkloadIdentity)(nil),  // 4: flowstate.v1.WorkloadIdentity
+	nil,                       // 5: flowstate.v1.Principal.ClaimsEntry
+	(*structpb.Value)(nil),    // 6: google.protobuf.Value
 }
 var file_flowstate_v1_identity_proto_depIdxs = []int32{
-	3, // 0: flowstate.v1.WorkloadIdentity.claims:type_name -> flowstate.v1.WorkloadIdentity.ClaimsEntry
-	0, // 1: flowstate.v1.WorkloadIdentity.mode:type_name -> flowstate.v1.WorkloadIdentityMode
-	1, // 2: flowstate.v1.WorkloadIdentity.principal_kind:type_name -> flowstate.v1.PrincipalKind
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	1, // 0: flowstate.v1.Principal.kind:type_name -> flowstate.v1.PrincipalKind
+	5, // 1: flowstate.v1.Principal.claims:type_name -> flowstate.v1.Principal.ClaimsEntry
+	3, // 2: flowstate.v1.Principal.actors:type_name -> flowstate.v1.Actor
+	2, // 3: flowstate.v1.WorkloadIdentity.principal:type_name -> flowstate.v1.Principal
+	0, // 4: flowstate.v1.WorkloadIdentity.mode:type_name -> flowstate.v1.WorkloadIdentityMode
+	6, // 5: flowstate.v1.Principal.ClaimsEntry.value:type_name -> google.protobuf.Value
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_identity_proto_init() }
@@ -400,7 +584,7 @@ func file_flowstate_v1_identity_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_identity_proto_rawDesc), len(file_flowstate_v1_identity_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

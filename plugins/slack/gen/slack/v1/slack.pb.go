@@ -7,6 +7,8 @@
 package slackv1
 
 import (
+	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	v11 "github.com/picatz/flowstate/pkg/flowstate/chat/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -22,39 +24,109 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// PostInputs describes the deliberately small outbound Slack surface. It sends
-// accessible text through chat.postMessage; Block Kit, attachments, lookup,
-// reactions, updates, and inbound interaction handling are outside this plugin.
+// Metadata is structured data Slack stores with a message, readable by the app
+// through the Events API but not shown to people.
+type Metadata struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// event_type names the kind of data, 1 to 64 characters.
+	EventType string `protobuf:"bytes,1,opt,name=event_type,json=eventType,proto3" json:"event_type,omitempty"`
+	// event_payload is the data: at most 16 keys, 1 KiB of keys and values
+	// together.
+	EventPayload  map[string]string `protobuf:"bytes,2,rep,name=event_payload,json=eventPayload,proto3" json:"event_payload,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Metadata) Reset() {
+	*x = Metadata{}
+	mi := &file_slack_v1_slack_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Metadata) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Metadata) ProtoMessage() {}
+
+func (x *Metadata) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Metadata.ProtoReflect.Descriptor instead.
+func (*Metadata) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *Metadata) GetEventType() string {
+	if x != nil {
+		return x.EventType
+	}
+	return ""
+}
+
+func (x *Metadata) GetEventPayload() map[string]string {
+	if x != nil {
+		return x.EventPayload
+	}
+	return nil
+}
+
+// PostInputs describes one new message.
 type PostInputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Token is a Slack bot or user token carrying chat:write. The task requires
+	// token is a Slack bot token (xoxb-) carrying chat:write. The task requires
 	// this entire input to be a secret reference, which the host resolves before
 	// execution. A literal token is refused before it can enter durable history;
 	// the resolved credential is capped at 4 KiB before becoming an HTTP header.
 	Token *v1.Value `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
-	// Channel is a Slack conversation ID. Names are deliberately refused: IDs do
-	// not change when a channel is renamed and make the destination unambiguous.
+	// channel is a Slack conversation ID such as C0123ABCD. Names are refused: IDs
+	// do not change when a channel is renamed and make the destination
+	// unambiguous.
 	Channel string `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
-	// Text is the complete accessible message and is limited to 4,000 Unicode
-	// characters, Slack's documented recommendation before truncation begins.
-	Text string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	// MessageKey is a UUID chosen once for this logical notification and reused
+	// idempotency_key is a UUID chosen once for this logical message and reused
 	// unchanged if an operator deliberately retries it. It is sent as Slack's
-	// client_msg_id. Slack documents duplicate-related errors for that field but
-	// does not promise a complete deduplication contract, so an ambiguous write
-	// still returns OutcomeUnknown rather than being retried automatically.
-	MessageKey string `protobuf:"bytes,4,opt,name=message_key,json=messageKey,proto3" json:"message_key,omitempty"`
-	// ThreadTs optionally posts beneath an existing parent message. It is the
-	// only composition feature included: approval requests and their outcome can
-	// remain together without exposing Slack's broader message API.
-	ThreadTs      string `protobuf:"bytes,5,opt,name=thread_ts,json=threadTs,proto3" json:"thread_ts,omitempty"`
+	// client_msg_id, which Slack uses to refuse a duplicate but does not promise
+	// to deduplicate completely, so an ambiguous write still reports an unknown
+	// outcome rather than being retried automatically. A message to_user cannot
+	// carry one: Slack's ephemeral method has no such field.
+	IdempotencyKey string `protobuf:"bytes,3,opt,name=idempotency_key,json=idempotencyKey,proto3" json:"idempotency_key,omitempty"`
+	// text is the whole message when it stands alone, or the notification
+	// fallback beside a card or blocks. It is plain: markup in it is shown
+	// literally, never as a mention or link. At most 4000 characters.
+	Text string `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
+	// card is a preset layout. Exclusive with blocks.
+	Card *v11.Card `protobuf:"bytes,5,opt,name=card,proto3" json:"card,omitempty"`
+	// blocks is native Block Kit, at most 50. Exclusive with card.
+	Blocks []*Block `protobuf:"bytes,6,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	// thread_ts posts the message as a reply beneath the message with this
+	// timestamp, such as 1503435956.000247.
+	ThreadTs string `protobuf:"bytes,7,opt,name=thread_ts,json=threadTs,proto3" json:"thread_ts,omitempty"`
+	// reply_broadcast also shows a threaded reply in the channel. It needs
+	// thread_ts and cannot be combined with to_user.
+	ReplyBroadcast bool `protobuf:"varint,8,opt,name=reply_broadcast,json=replyBroadcast,proto3" json:"reply_broadcast,omitempty"`
+	// to_user makes the message ephemeral: visible only to this user, sent with
+	// chat.postEphemeral. It cannot be combined with reply_broadcast or metadata,
+	// and an ephemeral message cannot be updated.
+	ToUser string `protobuf:"bytes,9,opt,name=to_user,json=toUser,proto3" json:"to_user,omitempty"`
+	// metadata is structured data stored with the message.
+	Metadata      *Metadata `protobuf:"bytes,10,opt,name=metadata,proto3" json:"metadata,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PostInputs) Reset() {
 	*x = PostInputs{}
-	mi := &file_slack_v1_slack_proto_msgTypes[0]
+	mi := &file_slack_v1_slack_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -66,7 +138,7 @@ func (x *PostInputs) String() string {
 func (*PostInputs) ProtoMessage() {}
 
 func (x *PostInputs) ProtoReflect() protoreflect.Message {
-	mi := &file_slack_v1_slack_proto_msgTypes[0]
+	mi := &file_slack_v1_slack_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -79,7 +151,7 @@ func (x *PostInputs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostInputs.ProtoReflect.Descriptor instead.
 func (*PostInputs) Descriptor() ([]byte, []int) {
-	return file_slack_v1_slack_proto_rawDescGZIP(), []int{0}
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *PostInputs) GetToken() *v1.Value {
@@ -96,6 +168,13 @@ func (x *PostInputs) GetChannel() string {
 	return ""
 }
 
+func (x *PostInputs) GetIdempotencyKey() string {
+	if x != nil {
+		return x.IdempotencyKey
+	}
+	return ""
+}
+
 func (x *PostInputs) GetText() string {
 	if x != nil {
 		return x.Text
@@ -103,11 +182,18 @@ func (x *PostInputs) GetText() string {
 	return ""
 }
 
-func (x *PostInputs) GetMessageKey() string {
+func (x *PostInputs) GetCard() *v11.Card {
 	if x != nil {
-		return x.MessageKey
+		return x.Card
 	}
-	return ""
+	return nil
+}
+
+func (x *PostInputs) GetBlocks() []*Block {
+	if x != nil {
+		return x.Blocks
+	}
+	return nil
 }
 
 func (x *PostInputs) GetThreadTs() string {
@@ -117,22 +203,46 @@ func (x *PostInputs) GetThreadTs() string {
 	return ""
 }
 
+func (x *PostInputs) GetReplyBroadcast() bool {
+	if x != nil {
+		return x.ReplyBroadcast
+	}
+	return false
+}
+
+func (x *PostInputs) GetToUser() string {
+	if x != nil {
+		return x.ToUser
+	}
+	return ""
+}
+
+func (x *PostInputs) GetMetadata() *Metadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
 // PostOutputs identifies the message Slack acknowledged.
 type PostOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Channel is the conversation ID Slack reports the message was posted to.
+	// channel is the conversation ID the message was posted to.
 	Channel string `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
-	// Ts is the message timestamp Slack assigned, which identifies the message
-	// within its channel and is the value a later thread_ts names to reply
-	// beneath it.
-	Ts            string `protobuf:"bytes,2,opt,name=ts,proto3" json:"ts,omitempty"`
+	// ts is the timestamp Slack assigned, which identifies the message within its
+	// channel: the value a later slack.update names, and a thread_ts replies
+	// beneath. Empty for an ephemeral message; see message_ts.
+	Ts string `protobuf:"bytes,2,opt,name=ts,proto3" json:"ts,omitempty"`
+	// message_ts is the timestamp Slack reports for an ephemeral message. It
+	// cannot be used to update the message or start a thread.
+	MessageTs     string `protobuf:"bytes,3,opt,name=message_ts,json=messageTs,proto3" json:"message_ts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PostOutputs) Reset() {
 	*x = PostOutputs{}
-	mi := &file_slack_v1_slack_proto_msgTypes[1]
+	mi := &file_slack_v1_slack_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -144,7 +254,7 @@ func (x *PostOutputs) String() string {
 func (*PostOutputs) ProtoMessage() {}
 
 func (x *PostOutputs) ProtoReflect() protoreflect.Message {
-	mi := &file_slack_v1_slack_proto_msgTypes[1]
+	mi := &file_slack_v1_slack_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -157,7 +267,7 @@ func (x *PostOutputs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostOutputs.ProtoReflect.Descriptor instead.
 func (*PostOutputs) Descriptor() ([]byte, []int) {
-	return file_slack_v1_slack_proto_rawDescGZIP(), []int{1}
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *PostOutputs) GetChannel() string {
@@ -174,22 +284,358 @@ func (x *PostOutputs) GetTs() string {
 	return ""
 }
 
+func (x *PostOutputs) GetMessageTs() string {
+	if x != nil {
+		return x.MessageTs
+	}
+	return ""
+}
+
+// UpdateInputs describes a replacement of the body of a message this app posted.
+type UpdateInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// token is a Slack bot token (xoxb-) carrying chat:write, as for slack.post.
+	Token *v1.Value `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
+	// channel is the conversation ID the message is in.
+	Channel string `protobuf:"bytes,2,opt,name=channel,proto3" json:"channel,omitempty"`
+	// ts is the timestamp of the message to replace, such as 1503435956.000247.
+	Ts string `protobuf:"bytes,3,opt,name=ts,proto3" json:"ts,omitempty"`
+	// text is the whole new message when it stands alone, or the notification
+	// fallback beside a card or blocks, exactly as for slack.post. An update that
+	// sends only text also clears the blocks the message had.
+	Text string `protobuf:"bytes,4,opt,name=text,proto3" json:"text,omitempty"`
+	// card is a preset layout. Exclusive with blocks.
+	Card *v11.Card `protobuf:"bytes,5,opt,name=card,proto3" json:"card,omitempty"`
+	// blocks is native Block Kit, at most 50. Exclusive with card.
+	Blocks []*Block `protobuf:"bytes,6,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	// metadata replaces the structured data stored with the message.
+	Metadata      *Metadata `protobuf:"bytes,7,opt,name=metadata,proto3" json:"metadata,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateInputs) Reset() {
+	*x = UpdateInputs{}
+	mi := &file_slack_v1_slack_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateInputs) ProtoMessage() {}
+
+func (x *UpdateInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateInputs.ProtoReflect.Descriptor instead.
+func (*UpdateInputs) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *UpdateInputs) GetToken() *v1.Value {
+	if x != nil {
+		return x.Token
+	}
+	return nil
+}
+
+func (x *UpdateInputs) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *UpdateInputs) GetTs() string {
+	if x != nil {
+		return x.Ts
+	}
+	return ""
+}
+
+func (x *UpdateInputs) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *UpdateInputs) GetCard() *v11.Card {
+	if x != nil {
+		return x.Card
+	}
+	return nil
+}
+
+func (x *UpdateInputs) GetBlocks() []*Block {
+	if x != nil {
+		return x.Blocks
+	}
+	return nil
+}
+
+func (x *UpdateInputs) GetMetadata() *Metadata {
+	if x != nil {
+		return x.Metadata
+	}
+	return nil
+}
+
+// UpdateOutputs identifies the message Slack acknowledged.
+type UpdateOutputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// channel is the conversation ID of the updated message.
+	Channel string `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	// ts is the timestamp of the updated message, unchanged.
+	Ts            string `protobuf:"bytes,2,opt,name=ts,proto3" json:"ts,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UpdateOutputs) Reset() {
+	*x = UpdateOutputs{}
+	mi := &file_slack_v1_slack_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UpdateOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UpdateOutputs) ProtoMessage() {}
+
+func (x *UpdateOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UpdateOutputs.ProtoReflect.Descriptor instead.
+func (*UpdateOutputs) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *UpdateOutputs) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *UpdateOutputs) GetTs() string {
+	if x != nil {
+		return x.Ts
+	}
+	return ""
+}
+
+// RespondInputs describes an answer to an interaction through the response_url
+// Slack sent with it. The URL is the credential, scoped by Slack to the one
+// conversation the interaction happened in and valid for 30 minutes and five
+// uses, so this task takes no token. It must be the response_url of a delivery
+// the trigger verified, for example ${event.body.response_url}.
+type RespondInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// response_url is the https://hooks.slack.com/actions/... or /commands/...
+	// address from the interaction. Any other address is refused before a request.
+	ResponseUrl string `protobuf:"bytes,1,opt,name=response_url,json=responseUrl,proto3" json:"response_url,omitempty"`
+	// how says what the answer does: "replace" (the default) swaps the message
+	// the clicked control was on, "delete" removes it, "ephemeral" shows a new
+	// message only to the person who clicked, and "in_channel" posts a new
+	// message everyone can see.
+	How string `protobuf:"bytes,2,opt,name=how,proto3" json:"how,omitempty"`
+	// text is the message, or its notification fallback beside a card or blocks,
+	// exactly as for slack.post. Not used by "delete".
+	Text string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	// card is a preset layout. Exclusive with blocks.
+	Card *v11.Card `protobuf:"bytes,4,opt,name=card,proto3" json:"card,omitempty"`
+	// blocks is native Block Kit, at most 50. Exclusive with card.
+	Blocks        []*Block `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RespondInputs) Reset() {
+	*x = RespondInputs{}
+	mi := &file_slack_v1_slack_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondInputs) ProtoMessage() {}
+
+func (x *RespondInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondInputs.ProtoReflect.Descriptor instead.
+func (*RespondInputs) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RespondInputs) GetResponseUrl() string {
+	if x != nil {
+		return x.ResponseUrl
+	}
+	return ""
+}
+
+func (x *RespondInputs) GetHow() string {
+	if x != nil {
+		return x.How
+	}
+	return ""
+}
+
+func (x *RespondInputs) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *RespondInputs) GetCard() *v11.Card {
+	if x != nil {
+		return x.Card
+	}
+	return nil
+}
+
+func (x *RespondInputs) GetBlocks() []*Block {
+	if x != nil {
+		return x.Blocks
+	}
+	return nil
+}
+
+// RespondOutputs reports what the answer did.
+type RespondOutputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// how is the action taken: replace, delete, ephemeral or in_channel.
+	How           string `protobuf:"bytes,1,opt,name=how,proto3" json:"how,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RespondOutputs) Reset() {
+	*x = RespondOutputs{}
+	mi := &file_slack_v1_slack_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondOutputs) ProtoMessage() {}
+
+func (x *RespondOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondOutputs.ProtoReflect.Descriptor instead.
+func (*RespondOutputs) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RespondOutputs) GetHow() string {
+	if x != nil {
+		return x.How
+	}
+	return ""
+}
+
 var File_slack_v1_slack_proto protoreflect.FileDescriptor
 
 const file_slack_v1_slack_proto_rawDesc = "" +
 	"\n" +
-	"\x14slack/v1/slack.proto\x12\bslack.v1\x1a\x18flowstate/v1/value.proto\"\xa3\x01\n" +
+	"\x14slack/v1/slack.proto\x12\bslack.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1cflowstate/chat/v1/chat.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\x1a\x15slack/v1/blocks.proto\"\xca\x01\n" +
+	"\bMetadata\x12(\n" +
 	"\n" +
-	"PostInputs\x12)\n" +
-	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x18\n" +
-	"\achannel\x18\x02 \x01(\tR\achannel\x12\x12\n" +
-	"\x04text\x18\x03 \x01(\tR\x04text\x12\x1f\n" +
-	"\vmessage_key\x18\x04 \x01(\tR\n" +
-	"messageKey\x12\x1b\n" +
-	"\tthread_ts\x18\x05 \x01(\tR\bthreadTs\"7\n" +
+	"event_type\x18\x01 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\teventType\x12S\n" +
+	"\revent_payload\x18\x02 \x03(\v2$.slack.v1.Metadata.EventPayloadEntryB\b\xbaH\x05\x9a\x01\x02\x10\x10R\feventPayload\x1a?\n" +
+	"\x11EventPayloadEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x04\n" +
+	"\n" +
+	"PostInputs\x121\n" +
+	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x127\n" +
+	"\achannel\x18\x02 \x01(\tB\x1d\xbaH\x1ar\x182\x16^[CDG][A-Z0-9]{1,254}$R\achannel\x12y\n" +
+	"\x0fidempotency_key\x18\x03 \x01(\tBP\xbaHMrK2I^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$R\x0eidempotencyKey\x12\x1c\n" +
+	"\x04text\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\xa0\x1fR\x04text\x12+\n" +
+	"\x04card\x18\x05 \x01(\v2\x17.flowstate.chat.v1.CardR\x04card\x121\n" +
+	"\x06blocks\x18\x06 \x03(\v2\x0f.slack.v1.BlockB\b\xbaH\x05\x92\x01\x02\x102R\x06blocks\x12>\n" +
+	"\tthread_ts\x18\a \x01(\tB!\xbaH\x1e\xd8\x01\x01r\x192\x17^[0-9]{1,16}\\.[0-9]{6}$R\bthreadTs\x12'\n" +
+	"\x0freply_broadcast\x18\b \x01(\bR\x0ereplyBroadcast\x127\n" +
+	"\ato_user\x18\t \x01(\tB\x1e\xbaH\x1b\xd8\x01\x01r\x162\x14^[UW][A-Z0-9]{1,20}$R\x06toUser\x12.\n" +
+	"\bmetadata\x18\n" +
+	" \x01(\v2\x12.slack.v1.MetadataR\bmetadata\"V\n" +
 	"\vPostOutputs\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x0e\n" +
-	"\x02ts\x18\x02 \x01(\tR\x02tsB\x9b\x01\n" +
+	"\x02ts\x18\x02 \x01(\tR\x02ts\x12\x1d\n" +
+	"\n" +
+	"message_ts\x18\x03 \x01(\tR\tmessageTs\"\xd8\x02\n" +
+	"\fUpdateInputs\x121\n" +
+	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x127\n" +
+	"\achannel\x18\x02 \x01(\tB\x1d\xbaH\x1ar\x182\x16^[CDG][A-Z0-9]{1,254}$R\achannel\x12.\n" +
+	"\x02ts\x18\x03 \x01(\tB\x1e\xbaH\x1br\x192\x17^[0-9]{1,16}\\.[0-9]{6}$R\x02ts\x12\x1c\n" +
+	"\x04text\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\xa0\x1fR\x04text\x12+\n" +
+	"\x04card\x18\x05 \x01(\v2\x17.flowstate.chat.v1.CardR\x04card\x121\n" +
+	"\x06blocks\x18\x06 \x03(\v2\x0f.slack.v1.BlockB\b\xbaH\x05\x92\x01\x02\x102R\x06blocks\x12.\n" +
+	"\bmetadata\x18\a \x01(\v2\x12.slack.v1.MetadataR\bmetadata\"9\n" +
+	"\rUpdateOutputs\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x0e\n" +
+	"\x02ts\x18\x02 \x01(\tR\x02ts\"\xff\x01\n" +
+	"\rRespondInputs\x12-\n" +
+	"\fresponse_url\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\x80\x04R\vresponseUrl\x12A\n" +
+	"\x03how\x18\x02 \x01(\tB/\xbaH,r*R\x00R\areplaceR\x06deleteR\tephemeralR\n" +
+	"in_channelR\x03how\x12\x1c\n" +
+	"\x04text\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\xa0\x1fR\x04text\x12+\n" +
+	"\x04card\x18\x04 \x01(\v2\x17.flowstate.chat.v1.CardR\x04card\x121\n" +
+	"\x06blocks\x18\x05 \x03(\v2\x0f.slack.v1.BlockB\b\xbaH\x05\x92\x01\x02\x102R\x06blocks\"\"\n" +
+	"\x0eRespondOutputs\x12\x10\n" +
+	"\x03how\x18\x01 \x01(\tR\x03howB\x9b\x01\n" +
 	"\fcom.slack.v1B\n" +
 	"SlackProtoP\x01Z>github.com/picatz/flowstate/plugins/slack/gen/slack/v1;slackv1\xa2\x02\x03SXX\xaa\x02\bSlack.V1\xca\x02\bSlack\\V1\xe2\x02\x14Slack\\V1\\GPBMetadata\xea\x02\tSlack::V1b\x06proto3"
 
@@ -205,19 +651,37 @@ func file_slack_v1_slack_proto_rawDescGZIP() []byte {
 	return file_slack_v1_slack_proto_rawDescData
 }
 
-var file_slack_v1_slack_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_slack_v1_slack_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_slack_v1_slack_proto_goTypes = []any{
-	(*PostInputs)(nil),  // 0: slack.v1.PostInputs
-	(*PostOutputs)(nil), // 1: slack.v1.PostOutputs
-	(*v1.Value)(nil),    // 2: flowstate.v1.Value
+	(*Metadata)(nil),       // 0: slack.v1.Metadata
+	(*PostInputs)(nil),     // 1: slack.v1.PostInputs
+	(*PostOutputs)(nil),    // 2: slack.v1.PostOutputs
+	(*UpdateInputs)(nil),   // 3: slack.v1.UpdateInputs
+	(*UpdateOutputs)(nil),  // 4: slack.v1.UpdateOutputs
+	(*RespondInputs)(nil),  // 5: slack.v1.RespondInputs
+	(*RespondOutputs)(nil), // 6: slack.v1.RespondOutputs
+	nil,                    // 7: slack.v1.Metadata.EventPayloadEntry
+	(*v1.Value)(nil),       // 8: flowstate.v1.Value
+	(*v11.Card)(nil),       // 9: flowstate.chat.v1.Card
+	(*Block)(nil),          // 10: slack.v1.Block
 }
 var file_slack_v1_slack_proto_depIdxs = []int32{
-	2, // 0: slack.v1.PostInputs.token:type_name -> flowstate.v1.Value
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	7,  // 0: slack.v1.Metadata.event_payload:type_name -> slack.v1.Metadata.EventPayloadEntry
+	8,  // 1: slack.v1.PostInputs.token:type_name -> flowstate.v1.Value
+	9,  // 2: slack.v1.PostInputs.card:type_name -> flowstate.chat.v1.Card
+	10, // 3: slack.v1.PostInputs.blocks:type_name -> slack.v1.Block
+	0,  // 4: slack.v1.PostInputs.metadata:type_name -> slack.v1.Metadata
+	8,  // 5: slack.v1.UpdateInputs.token:type_name -> flowstate.v1.Value
+	9,  // 6: slack.v1.UpdateInputs.card:type_name -> flowstate.chat.v1.Card
+	10, // 7: slack.v1.UpdateInputs.blocks:type_name -> slack.v1.Block
+	0,  // 8: slack.v1.UpdateInputs.metadata:type_name -> slack.v1.Metadata
+	9,  // 9: slack.v1.RespondInputs.card:type_name -> flowstate.chat.v1.Card
+	10, // 10: slack.v1.RespondInputs.blocks:type_name -> slack.v1.Block
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_slack_v1_slack_proto_init() }
@@ -225,13 +689,14 @@ func file_slack_v1_slack_proto_init() {
 	if File_slack_v1_slack_proto != nil {
 		return
 	}
+	file_slack_v1_blocks_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_slack_v1_slack_proto_rawDesc), len(file_slack_v1_slack_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -1,4 +1,4 @@
-.PHONY: check check-untracked-generated gate test test-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -109,7 +109,7 @@ check:
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
 	$(BUF) generate
-	$(BUF) generate $(EXAMPLE_PLUGIN)/proto --template $(EXAMPLE_PLUGIN)/buf.gen.yaml -o $(EXAMPLE_PLUGIN) --clean
+	$(BUF) generate --config '{"version":"v2","modules":[{"path":"proto"},{"path":"$(EXAMPLE_PLUGIN)/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' --template $(EXAMPLE_PLUGIN)/buf.gen.yaml --clean --path $(EXAMPLE_PLUGIN)/proto/example -o $(EXAMPLE_PLUGIN)
 	$(MAKE) plugin-proto
 	git diff --exit-code
 	$(MAKE) check-untracked-generated
@@ -278,7 +278,7 @@ test:
 # relative to the module.
 test-plugins: SHELL := /bin/bash
 test-plugins: .SHELLFLAGS := -o pipefail -c
-test-plugins:
+test-plugins: check-tidy-plugins
 	$(require-gofmt)
 	@testsum="$$(mktemp -d "$${TMPDIR:-/tmp}/flowstate-testsum.XXXXXX")/testsum"; \
 	trap 'rm -rf "$$(dirname "$$testsum")"' EXIT HUP INT TERM; \
@@ -358,6 +358,17 @@ tidy-plugins:
 		[ -f "$$module/go.mod" ] || continue; \
 		echo "==> $$module"; \
 		( cd "$$module" && go mod tidy ) || exit 1; \
+	done
+
+# The read-only half of tidy-plugins: `go mod tidy -diff` exits non-zero when a
+# plugin module's go.mod or go.sum disagrees with what tidy would write. A root
+# dependency bump moves shared versions, and build and test pass either way, so
+# only this check notices a stale pin (#2253).
+check-tidy-plugins:
+	@for module in plugins/*/; do \
+		[ -f "$$module/go.mod" ] || continue; \
+		( cd "$$module" && go mod tidy -diff ) || \
+			{ echo "==> $$module is out of step with go mod tidy; run \`make tidy-plugins\`"; exit 1; }; \
 	done
 
 # The packages whose correctness is an *ordering* claim, run under a schedule

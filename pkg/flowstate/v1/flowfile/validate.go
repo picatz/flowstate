@@ -2130,6 +2130,18 @@ func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 	return wf, ds, err
 }
 
+// ParseAndValidateFileAt is [ParseAndValidateFile] that also answers where the
+// file's steps are written, from the same read, for a caller that reports a
+// run-time failure against the file it came from.
+func ParseAndValidateFileAt(path string) (*v1.Workflow, *Positions, Diagnostics, error) {
+	data, err := readBoundedSource(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return ParseAndValidateSourceAt(data, path)
+}
+
 // ParseAndValidateSourceAt is [ParseAndValidateFile] for bytes already read,
 // resolving a `call:` step relative to path's directory, and answering the
 // positions of the same compilation too. A caller that needs both the program
@@ -2652,7 +2664,7 @@ var toleratedOutputs = []string{toleratedErrorOutput, toleratedFailureOutput}
 // [runRootValue]'s own doc says why (`deployment` is left off). This names what an
 // expression actually reaches, which is the only set a diagnostic here can be
 // honest about.
-var runIdentityFields = []string{"subject", "issuer", "namespace", "claims", "principal", "kind"}
+var runIdentityFields = []string{"subject", "issuer", "namespace", "claims", "principal", "kind", "actions", "actors", "delegated"}
 
 // runFields are the fields [runRootValue] renders directly under `run`.
 //

@@ -174,7 +174,7 @@ func TestWithLocalSignalsDelivers(t *testing.T) {
 	// no authenticated caller behind a `--signal` flag for anything else to
 	// attest, and it must never look like a production, server-attested one.
 	require.True(t, sender.GetLocal(), "a local signal was not marked local")
-	require.Empty(t, sender.GetIdentity().GetSubject(),
+	require.Empty(t, sender.GetIdentity().GetPrincipal().GetSubject(),
 		"a local signal carries an identity, which nothing authenticated to produce")
 }
 
@@ -569,7 +569,7 @@ func TestLocalKindFlagsRehearseAKind(t *testing.T) {
 	require.True(t, ok)
 	_, sender, err := waiter.WaitForSignal(t.Context(), "deploy-approved")
 	require.NoError(t, err)
-	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_HUMAN, sender.GetIdentity().GetPrincipalKind())
+	require.Equal(t, v1.PrincipalKind_PRINCIPAL_KIND_HUMAN, sender.GetIdentity().GetPrincipal().GetKind())
 
 	for _, flag := range []string{"as-kind", "signal-as-kind"} {
 		bad := localSignalsTestCommand(t)

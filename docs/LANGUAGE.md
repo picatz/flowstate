@@ -1349,7 +1349,7 @@ it. `manual:` can only narrow that:
   `allow: ${sender.identity.claims.team == "ops"}`, or
   `allow: ${sender.identity.principal in ["https://issuer.example.com#oncall@example.com"]}`
   for named callers, each written `"<issuer>#<subject>"`. It reads
-  `sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified
+  `sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}` (the verified
   caller) and `inputs` (the arguments submitted with this start), and nothing
   else; there is no run yet, so reading `run` is a compile error. Only a clean
   `true` allows, and a caller with no authenticated principal is refused. A
@@ -1456,15 +1456,26 @@ signals:
 
 Each entry is a signal name the workflow waits for, and `allow:` is one `${...}`
 predicate that says which senders may deliver it. It reads
-`sender.identity.{principal,subject,issuer,namespace,kind,claims}` (the verified sender;
+`sender.identity.{principal,subject,issuer,namespace,kind,claims,actions}` (the verified sender;
 `principal` is `"<issuer>#<subject>"`, and empty when either half is missing),
 `run.identity` (the starter, with the same fields) and `inputs`, and nothing else:
 
 - `sender.identity.principal == "<issuer>#<subject>"` names one sender exactly. The
   right-hand side may be an expression over `inputs`, evaluated on every delivery.
-- `sender.identity.claims.team == "release-managers"` matches a claim the server was
-  configured to record (`flow server --identity-claim team`). A missing claim is an
-  error, which refuses the sender.
+- `sender.identity.claims.team == "release-managers"` matches a claim the issuer
+  entry that admitted the sender carries (`carry_claims: [{claim: team, type: string}]`
+  in the auth policy). A missing claim is an error, which refuses the sender.
+- A claim keeps its JSON shape: `"sre" in sender.identity.claims.groups` reads a list and
+  `sender.identity.claims.slack_user == "U1"` a scalar read from a nested path (`carry_claims: [{claim: slack.user, as: slack_user, type: string}]`). Guard an absent one with
+  `has(sender.identity.claims.groups)`; reading one the sender lacks is an error, which
+  refuses. `sender.identity.actions` is the list of scopes the sender was granted.
+- `sender.identity.actors` is who is acting on behalf of the sender (an RFC 8693 `act`
+  chain, current actor first, at most two, each with an `issuer` and a `subject`) and
+  `sender.identity.delegated` is true when it is not empty. Guard a read with it:
+  `!sender.identity.delegated || sender.identity.actors[0].subject == "triage-bot"`, or
+  refuse agents outright with `!sender.identity.delegated`. They are data the admitting
+  issuer vouched for, never authority, and are empty unless the trust policy entry that
+  admitted the sender has a `delegation:` stanza ([Accepting delegated tokens](DEPLOYMENT.md#accepting-delegated-tokens-the-act-chain)).
 - `sender.identity.namespace == "payments"` is the sender's tenant.
 - `sender.identity.kind == "human"` requires a person, as the trust policy entry that admitted the sender says (`principal_kind:`); it is `""` when that entry says nothing, which is not a workload. Rehearse it with `--signal-as-kind` (and `--as-kind` for the starter) on `flow run local`, `flow signals check` (`--starter-kind`), or `kind:` in a test file.
 - `sender.identity.principal != run.identity.principal` requires that the sender is not
@@ -1524,8 +1535,8 @@ configured in the one trust policy, not in a Flowfile. Pass the same policy
 
 | Direction | The deployment configures | A Flowfile sees |
 | --- | --- | --- |
-| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, and a tenant fixed or read from `namespace_claim`. An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
-| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
+| **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, a tenant fixed or read from `namespace_claim`, and the claims and groups policy may read (`carry_claims`, `groups_claim`, `group_map`). An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
+| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`, each with an optional `subject_level` of `step`, `workflow` or `deployment`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`, and `${credential('target')}` on a plugin task's declared secret input. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
 
 Three rules hold in both directions:
 
@@ -1534,7 +1545,8 @@ Three rules hold in both directions:
 - **Policy fails closed.** A missing claim, an expression error, an unreachable
   issuer, or a rule that cannot be evaluated refuses.
 - **Credentials and tokens never enter a run's history.** A step names a
-  `credential:` or `${secret(...)}`; the worker resolves it where it is used.
+  `credential:`, `${credential(...)}` or `${secret(...)}`; the worker resolves
+  it where it is used.
 
 A webhook delivery signed with `hmac_sha256` or `stripe` holds no Flowstate
 credential, so its `sender.identity` names the trigger that admitted it,
@@ -1569,6 +1581,30 @@ entry of its `headers:`. It is refused in `vars:`, in anything the workflow
 evaluates itself, and in text. [Secrets and credentials](SECRETS.md) covers
 where references are allowed and how a deployment resolves them.
 
+### Federated credentials
+
+```yaml
+- id: ask
+  anthropic.decide:
+    api_key: ${credential('anthropic')}
+```
+
+`${credential('target')}` names a federation target in the deployment's trust
+policy (`federation: targets:`) where `${secret(...)}` would name a stored
+secret. A plugin task takes one in an input its manifest lists in `secret_inputs`,
+and receives the credential's bearer token as it would a stored secret. The worker running the step exchanges its own workload identity for a
+short-lived credential at the moment the task needs one, so no key is stored
+anywhere. It is a reference like a secret and held to the same rules, and
+fewer places: it has to be the whole value of a task input, never an entry
+nested in a list or a mapping. It is refused in `vars:`, in a call's `with:`, in
+anything the workflow evaluates itself, and combined with text. The target is
+written out, not computed. A task that does not accept a credential in an input
+refuses one there, when the workflow is validated and again when the step runs, and
+a target the deployment does not federate is refused when the workflow is validated
+or submitted, not when the step runs. Which part of the workload's position the
+relying party sees in the assertion is the target's `subject_level`, the
+deployment's choice, not the Flowfile's ([Subject level](SECRETS.md#subject-level)).
+
 ### Sensitive values
 
 `sensitive: true` on an input or output withholds it from displays: `flow get`,
@@ -1590,12 +1626,12 @@ version:
 
 ```yaml
 plugins:
-  slack: v0.1.0
+  slack: v0.2.0
 steps:
   - id: announce
     slack.post:
       channel: C0123456789
-      message_key: ${inputs.announcement_id}
+      idempotency_key: ${inputs.announcement_id}
       text: release is out
       token: ${secret('env:SLACK_BOT_TOKEN')}
 ```

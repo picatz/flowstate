@@ -510,6 +510,14 @@ func CheckInputValueIn(table TypeTable, name string, declaration *InputDeclarati
 			"input %q is a secret reference, which a caller may not choose: name the secret "+
 				"in the workflow, where the deployment's policy decides whether it may be read",
 			name)
+	case *Value_CredentialRef:
+		// A caller naming a credential target would be choosing which federated
+		// identity the run assumes, which is the workflow's request and the
+		// deployment's federation policy's decision, never a submitter's.
+		return fmt.Errorf(
+			"input %q is a credential reference, which a caller may not choose: name the target "+
+				"in the workflow, where the deployment's federation policy decides whether it may be assumed",
+			name)
 	case nil:
 		return fmt.Errorf("input %q has no value; give it one or leave it out", name)
 	default:

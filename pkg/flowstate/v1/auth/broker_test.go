@@ -11,9 +11,42 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestDelegatedCallerCannotMintOrBroker pins that an identity carrying an act
+// chain is refused by every path that signs an assertion for it, because the
+// assertion has no act claim and would launder the chain.
+func TestDelegatedCallerCannotMintOrBroker(t *testing.T) {
+	clock := authtest.NewClock(referenceTime)
+	issuer, _ := newIssuer(t, clock)
+
+	exchanger := newRecordingExchanger("aws-sts", "sts.amazonaws.com", clock.Now)
+	broker, err := auth.NewBroker(issuer,
+		auth.WithTarget("aws-prod", exchanger),
+		auth.WithAssumeAllowRules("true"),
+		auth.WithBrokerClock(clock.Now),
+	)
+	require.NoError(t, err)
+
+	delegated := testIdentity()
+	delegated.Actors = []principal.Actor{{Issuer: "https://agents.example.com", Subject: "secret-bot"}}
+
+	_, err = issuer.Mint(t.Context(), delegated, testStepRef(), "sts.amazonaws.com")
+	require.ErrorIs(t, err, auth.ErrDelegatedCaller)
+	require.NotContains(t, err.Error(), "secret-bot")
+
+	_, err = broker.Credential(t.Context(), delegated, testStepRef(), "aws-prod")
+	require.ErrorIs(t, err, auth.ErrDelegatedCaller)
+	require.NotContains(t, err.Error(), "secret-bot")
+	require.Empty(t, exchanger.assertions(), "nothing may be minted for a delegated caller")
+
+	// The same identity without the chain is unaffected.
+	_, err = broker.Credential(t.Context(), testIdentity(), testStepRef(), "aws-prod")
+	require.NoError(t, err)
+}
 
 // recordingExchanger is a relying party that never fails, and records every
 // assertion it was presented, so a test can assert what the broker minted without
@@ -420,7 +453,7 @@ func TestBrokerCacheIsolation(t *testing.T) {
 		}(),
 		"another carried claim": func() auth.WorkloadIdentity {
 			other := base
-			other.Claims = map[string]string{"repository": "attacker/fork"}
+			other.Claims = map[string]any{"repository": "attacker/fork"}
 			return other
 		}(),
 	}

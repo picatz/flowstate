@@ -381,6 +381,12 @@ func init() {
 				" the search first, or nothing was shrunk.\n",
 		},
 		{
+			Name: "flowstate.v1.ScheduleDivergenceReport.swarm",
+			Leading: " Swarm reports that the seed ran under `--swarm`, with only some of the\n" +
+				" case's `faults:` on. A replay of [seed] needs `--swarm` too, or it draws\n" +
+				" against every fault and is a different run.\n",
+		},
+		{
 			Name: "flowstate.v1.FuzzReport",
 			Leading: " FuzzReport is what running a file's cases over generated inputs found: the\n" +
 				" type-driven dimension `--fuzz` adds beside the authored cases and the seeded\n" +

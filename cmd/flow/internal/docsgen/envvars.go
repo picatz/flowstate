@@ -72,8 +72,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_ADDRESS",
 			value:   g.src.DefaultAddress,
-			purpose: "Address the API server listens on, and that the client commands connect to.",
-			read:    "cmd/flow/client.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go",
+			purpose: "Address the API server listens on, and that the client commands connect to. On `flow login`, the server the stored login is bound to.",
+			read:    "cmd/flow/client.go, cmd/flow/login.go, cmd/flow/main.go, cmd/flow/mcp.go, cmd/flow/serverdev.go",
 		},
 		{
 			name:    "FLOWSTATE_ALLOW_LOOPBACK_EGRESS",
@@ -84,8 +84,8 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_AUDIENCE",
 			value:   "unset",
-			purpose: "Default for `--audience`: the relying party a credential is addressed to. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
-			read:    "cmd/flow/client.go",
+			purpose: "Default for `--audience`: the relying party a credential is addressed to; on `flow login` the audience requested for the access token. Required by `--credential-source=github-actions`, which mints a token for it. Checked against the token's own `aud` claim by `gitlab` and `terraform-cloud`, whose platforms bound the audience at job or workspace configuration and cannot be asked for another; a mismatch is refused with the setting to change. Ignored by `file` and `env`.",
+			read:    "cmd/flow/client.go, cmd/flow/login.go",
 		},
 		{
 			name:    "FLOWSTATE_AUTH_POLICY",
@@ -106,6 +106,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			read:    "cmd/flow/main.go",
 		},
 		{
+			name:    "FLOWSTATE_CLIENT_ID",
+			value:   "unset",
+			purpose: "Default for `--client-id` on `flow login` and `flow logout`: the OAuth client registered for the CLI at the identity provider. Also selects which stored login a command presents when several are stored.",
+			read:    "cmd/flow/login.go",
+		},
+		{
 			name:    "FLOWSTATE_CODEC_RESOURCE",
 			value:   "unset",
 			purpose: "Default for `--codec-resource` on `flow codec serve`: the canonical resource URI required in every bearer token's `aud` claim there, so a token minted for another Flowstate surface cannot be spent to decode history. Required whenever `--auth-policy` trusts a `kind: oidc` issuer; distinct from the RPC and MCP resources.",
@@ -114,7 +120,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_CREDENTIAL_SOURCE",
 			value:   "unset",
-			purpose: "Default for `--credential-source`: acquire a credential from a named source (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
+			purpose: "Default for `--credential-source`: acquire a credential from a named source (`github-actions`, `gitlab`, `terraform-cloud`, `file`, `env`, `login`) instead of the `--token-file`/`FLOWSTATE_TOKEN` default. An unknown or unusable source is an error, never anonymous.",
 			read:    "cmd/flow/client.go",
 		},
 		{
@@ -210,8 +216,20 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_IDENTITY_KEY",
 			value:   "unset",
-			purpose: "Default for `--identity-key`: the PKCS#8 PEM key Flowstate signs its own short-lived assertions with, required when the trust policy configures federation. It names one key, since a rotation names the keys in order and a list in an environment variable would need a separator; `--identity-key` on the command line replaces this default rather than adding to it.",
+			purpose: "Default for `--identity-key`, required when the trust policy configures federation. For `flow worker` it is the PKCS#8 PEM private key Flowstate signs its own short-lived assertions with; for `flow server` it is the PKIX public key PEM to publish, and a private key is refused. It names one key, since a rotation names the keys in order and a list in an environment variable would need a separator; `--identity-key` on the command line replaces this default rather than adding to it.",
 			read:    "cmd/flow/main.go",
+		},
+		{
+			name:    "FLOWSTATE_IDENTITY_KEY_DIR",
+			value:   "unset",
+			purpose: "Default for `flow server --identity-key-dir`: a directory of per-tenant public keys, `DIR/TENANT/KEY.pem`, each a PKIX public key PEM, for every tenant the trust policy lists under `federation.tenants`. The server publishes each tenant's keys at that tenant's own issuer, `<issuer>/tenants/TENANT`, and holds no private key. It refuses to start when a listed tenant has no keys or the directory names a tenant the policy does not list.",
+			read:    "cmd/flow/tenantkeys.go",
+		},
+		{
+			name:    "FLOWSTATE_IDENTITY_SIGNER",
+			value:   "unset",
+			purpose: "Default for `--identity-signer`: a `vault-transit://HOST[:PORT]/KEY` URL naming a Vault or OpenBao Transit key to sign with, in place of `--identity-key`, so the private key never reaches the server or worker. A worker signs through Transit and publishes the key's previous versions; `flow server` only reads the public versions. A `{tenant}` in the key name stands for a tenant's namespace, so one URL names each tenant's own key: a worker fills it with its `--tenant`, and the server once per tenant the policy lists. The Vault token is never part of the URL: it comes from the URL's `token_file`, `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`, `$FLOWSTATE_SECRET_VAULT_TOKEN`, or Kubernetes auth (`kubernetes_role`).",
+			read:    "cmd/flow/identitysigner.go",
 		},
 		{
 			name:    "FLOWSTATE_INSECURE_PLAINTEXT_TOKEN",
@@ -224,6 +242,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `--internal-listen` on `flow server` and `flow worker`: a private socket of that process's own, carrying health and pprof. Unset (the default) means no internal listener at all; set it to a loopback address such as `127.0.0.1:9090` to turn it on. Refused unless it is loopback: it serves pprof, whose profiles carry the process's memory (resolved secret values among them), and it has no authentication or TLS configuration of its own.",
 			read:    "cmd/flow/internallistener.go",
+		},
+		{
+			name:    "FLOWSTATE_ISSUER",
+			value:   "unset",
+			purpose: "Default for `--issuer` on `flow login` and `flow logout`: the OIDC issuer URL of the identity provider to sign in to. Also selects which stored login a command presents when several are stored.",
+			read:    "cmd/flow/login.go",
 		},
 		{
 			name:    "FLOWSTATE_MAX_STEPS_PER_RUN",
@@ -302,6 +326,12 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			value:   "unset",
 			purpose: "Default for `--rpc-resource` on `flow server`: the canonical Connect RPC resource URI required in every bearer token's `aud` claim. Required whenever `--auth-policy` trusts a `kind: oidc` issuer, unless the migration-only `--allow-issuer-wide-audiences` flag explicitly restores the older issuer-wide behavior; a policy of nothing but `kind: mtls` entries mints no token to bind and needs neither flag. Distinct from the remote MCP protected resource and from any future HTTP surface.",
 			read:    "cmd/flow/rpcresource.go",
+		},
+		{
+			name:    "FLOWSTATE_SCOPE",
+			value:   "unset",
+			purpose: "Default for `--scope` on `flow login`: the space-delimited OAuth scope requested. Without it, `openid offline_access`.",
+			read:    "cmd/flow/login.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_COMMAND",
@@ -391,13 +421,13 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 			name:    "FLOWSTATE_SECRET_VAULT_TOKEN",
 			value:   "unset",
 			purpose: "A static Vault client token, read directly when `--secret-vault-token-file` (and `$FLOWSTATE_SECRET_VAULT_TOKEN_FILE`) is unset. For a development vault or a test; a long-running worker should prefer the file form or Kubernetes auth, since this one cannot be rotated without a restart.",
-			read:    "cmd/flow/secrets.go",
+			read:    "cmd/flow/secrets.go, cmd/flow/identitysigner.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_VAULT_TOKEN_FILE",
 			value:   "unset",
-			purpose: "Default for `--secret-vault-token-file`: a file holding a static Vault client token, re-read on every login so a rotated token is picked up without a restart.",
-			read:    "cmd/flow/secrets.go",
+			purpose: "Default for `--secret-vault-token-file`: a file holding a Vault client token, such as a Vault Agent sink, re-read (once, with one retry) when Vault rejects the token in hand so a rotated token is picked up without a restart. Also used by `--identity-signer`.",
+			read:    "cmd/flow/secrets.go, cmd/flow/identitysigner.go",
 		},
 		{
 			name:    "FLOWSTATE_SECRET_<NAME>",
@@ -505,7 +535,7 @@ func (g *Generator) documentedEnvironmentVariables() []environmentVariable {
 		{
 			name:    "FLOWSTATE_TOKEN",
 			value:   "unset",
-			purpose: "Bearer token the client authenticates with, used when no token file is set.",
+			purpose: "Bearer token the client authenticates with, used when no token file is set. Outranks the login stored by `flow login`.",
 			read:    "cmd/flow/credentials.go",
 		},
 		{

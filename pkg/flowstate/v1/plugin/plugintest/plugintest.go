@@ -204,7 +204,7 @@ func (s *Session) Call(ctx context.Context, name string, inputs map[string]any) 
 	}
 
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, s.runtime)
-	identity := &flowstatev1.WorkloadIdentity{Subject: s.subject, Issuer: issuer, Namespace: s.ns}
+	identity := &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: s.subject, Issuer: issuer, Namespace: s.ns}}
 	ctx = plugin.NewContextWithIdentity(ctx, identity)
 	out, err := def.Fn(ctx, flowstatev1.NewNamedValues(inputs), &flowstatev1.Scope{Identity: identity})
 	if err != nil {
@@ -242,7 +242,7 @@ func (s *Session) Resolve(ctx context.Context, ref, namespace string) (string, e
 	}
 	// The host derives the request's identity from the context, so the session's
 	// is installed there; it still drops one whose namespace is not the request's.
-	ctx = plugin.NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{Subject: s.subject, Issuer: issuer, Namespace: s.ns})
+	ctx = plugin.NewContextWithIdentity(ctx, &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: s.subject, Issuer: issuer, Namespace: s.ns}})
 	for _, provider := range s.host.SecretProviders() {
 		if provider.Scheme() != parsed.GetScheme() {
 			continue

@@ -1,0 +1,98 @@
+edition: v2026.4
+defaults:
+  inputs:
+    channel: C123APPROVAL
+    request_message_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+    change: deploy api v1.4.2 to production
+    request_id: deploy-4471
+  stubs:
+    - step: notify
+      returns:
+        channel: C123APPROVAL
+        ts: "1503435956.000247"
+    - step: answer_click
+      returns:
+        how: replace
+    - step: answer_timeout
+      returns:
+        channel: C123APPROVAL
+        ts: "1503435956.000247"
+  sender:
+    issuer: flowstate://webhook
+    subject: slack-click-approval/slack-click
+tests:
+  - name: an approve click answers the gate and replaces the card
+    workflow: ./click.yaml
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    signals:
+      - name: clicked
+        delivery_id: T1.interaction-1
+        payload:
+          decision: approve
+          response_url: https://hooks.slack.com/actions/T0001/123/abcdef
+    expect:
+      ran: [notify, gate, outcome_title, answer_click]
+      skipped: [answer_timeout]
+      outputs:
+        approved: true
+
+  - name: a reject click is a refusal, answered the same way
+    workflow: ./click.yaml
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    signals:
+      - name: clicked
+        delivery_id: T1.interaction-2
+        payload:
+          decision: reject
+          response_url: https://hooks.slack.com/actions/T0001/123/abcdef
+    expect:
+      ran: [notify, gate, outcome_title, answer_click]
+      outputs:
+        approved: false
+
+  - name: a click delivered twice answers the gate once
+    workflow: ./click.yaml
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    signals:
+      - name: clicked
+        delivery_id: T1.interaction-3
+        payload:
+          decision: approve
+          response_url: https://hooks.slack.com/actions/T0001/123/abcdef
+      - name: clicked
+        delivery_id: T1.interaction-3
+        payload:
+          decision: reject
+          response_url: https://hooks.slack.com/actions/T0001/123/abcdef
+    expect:
+      outputs:
+        approved: true
+
+  - name: a sender that is not the verified trigger is refused
+    workflow: ./click.yaml
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    signals:
+      - name: clicked
+        sender:
+          issuer: https://issuer.example.com
+          subject: someone@example.com
+        payload:
+          decision: approve
+          response_url: https://hooks.slack.com/actions/T0001/123/abcdef
+    expect:
+      outputs:
+        approved: false
+
+  - name: nobody clicking times the card out
+    workflow: ./click.yaml
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    expect:
+      ran: [notify, gate, outcome_title, answer_timeout]
+      skipped: [answer_click]
+      outputs:
+        approved: false

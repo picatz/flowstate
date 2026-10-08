@@ -38,7 +38,7 @@ func (r *WebhookReceiver) awaitRun(ctx context.Context, route *webhookRoute, acc
 	// no outputs, no failure, and the run's address to read it with.
 	running := v1.WebhookResponse(accepted, v1.WebhookRun{Status: v1.WebhookRunRunning}, route.workflow)
 
-	namespace := r.principalIdentity(ctx, route).GetNamespace()
+	namespace := r.principalIdentity(ctx, route).GetPrincipal().GetNamespace()
 	client, err := r.server.clientFor(namespace)
 	if err != nil {
 		r.log.WarnContext(ctx, "a waiting delivery could not reach the run's namespace; answering it as running",

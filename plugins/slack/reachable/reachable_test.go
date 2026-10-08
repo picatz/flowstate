@@ -5,6 +5,7 @@ package reachable
 import (
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,8 +74,29 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	}
 
 	p, ok := host.Lookup("slack")
-	if !ok || len(p.Manifest().GetTasks()) != 1 || p.Manifest().GetTasks()[0].GetName() != "post" {
-		t.Fatalf("catalog manifest did not expose exactly slack.post: %#v", p)
+	var tasks []string
+	for _, task := range p.Manifest().GetTasks() {
+		tasks = append(tasks, task.GetName())
+	}
+	if !ok || !slices.Equal(tasks, []string{"post", "update", "respond"}) {
+		t.Fatalf("catalog manifest exposes tasks %v, want exactly slack.post, slack.update and slack.respond", tasks)
+	}
+
+	// A block list written wholly as literals is checked structurally by the host
+	// from the plugin's own descriptor: a misspelt member is named at the line
+	// that wrote it, before any run. (An input that mixes in an expression is
+	// checked by the plugin when the step runs, before any request.)
+	const literalBlocks = "edition: v2026.4\nname: literal-blocks\nplugins:\n  slack: v0.2.0\nsteps:\n" +
+		"  - id: a\n    slack.post:\n      channel: C0123456789\n" +
+		"      idempotency_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a\n" +
+		"      blocks:\n        - sectoin: {text: {plain: hi}}\n" +
+		"      token: ${secret('env:SLACK_BOT_TOKEN')}\n"
+	diags, err = flowfile.ValidateSource([]byte(literalBlocks))
+	if err != nil {
+		t.Fatalf("validating misspelt block member: %v", err)
+	}
+	if text := diagnosticText(diags); !strings.Contains(text, `no field "sectoin"`) {
+		t.Fatalf("misspelt block member diagnostics = %q, want the unknown member named", text)
 	}
 }
 

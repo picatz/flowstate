@@ -8,6 +8,7 @@ import (
 
 	"connectrpc.com/connect"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/sdk/client"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/authz"
@@ -151,7 +152,7 @@ func (s *FlowstateServer) revealAuthorized(ctx context.Context, rpc, field, work
 		return false, connect.NewError(connect.CodeInternal, err)
 	}
 
-	allowed := authz.Decide(ctx, action, authz.Explicit).Allowed
+	allowed := s.decide(ctx, action, authz.Explicit).Allowed
 
 	subject := s.auditSubject(ctx, rpc, v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID)
 	subject.RequestField = field
@@ -261,7 +262,7 @@ func declarationCost(d sensitiveDeclarations) int {
 }
 
 func (s *FlowstateServer) sensitiveDeclarationsOf(ctx context.Context, workflowID, runID string) sensitiveDeclarations {
-	namespace := s.identityFor(ctx).GetNamespace()
+	namespace := s.identityFor(ctx).GetPrincipal().GetNamespace()
 	key := namespace + "\x00" + workflowID + "\x00" + runID
 	if d, ok := s.declarations.get(key); ok {
 		return d
@@ -307,6 +308,14 @@ func (s *FlowstateServer) startedRunState(ctx context.Context, namespace, workfl
 	if err != nil {
 		return nil, err
 	}
+
+	return s.startedRunStateVia(ctx, temporal, workflowID, runID)
+}
+
+// startedRunStateVia is [FlowstateServer.startedRunState] through a client the
+// caller already holds, for one that must read the history through the client
+// its authorization check used.
+func (s *FlowstateServer) startedRunStateVia(ctx context.Context, temporal client.Client, workflowID, runID string) (*v1.RunState, error) {
 	iter := temporal.GetWorkflowHistory(ctx, workflowID, runID, false, enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 	if iter == nil || !iter.HasNext() {
 		return nil, errors.New("the run has no history")

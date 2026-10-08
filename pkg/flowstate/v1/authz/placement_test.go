@@ -18,6 +18,11 @@ import (
 // seventh copy would be a new place for that meaning to drift. Reading
 // an Actions list to answer the question belongs in this package, and in the
 // auth package that builds the list, and nowhere else.
+//
+// Two files only carry the list and decide nothing with it: the principal
+// package renders a caller's actions into the CEL `identity.actions` a policy
+// rule reads, and run_identity.go copies them between the wire identity and
+// the Go one. Neither answers "does this caller hold this action".
 func TestNoActionCheckOutsideAuthz(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 
@@ -31,7 +36,8 @@ func TestNoActionCheckOutsideAuthz(t *testing.T) {
 
 			slash := filepath.ToSlash(path)
 			if strings.Contains(slash, "/pkg/flowstate/v1/authz/") || strings.Contains(slash, "/pkg/flowstate/v1/auth/") ||
-				strings.HasSuffix(slash, ".pb.go") {
+				strings.HasSuffix(slash, ".pb.go") ||
+				strings.Contains(slash, "/pkg/flowstate/v1/principal/") || strings.HasSuffix(slash, "/pkg/flowstate/v1/run_identity.go") {
 				return nil
 			}
 

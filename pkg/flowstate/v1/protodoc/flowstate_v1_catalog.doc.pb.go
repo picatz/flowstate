@@ -212,6 +212,10 @@ func init() {
 				" about trust: naming an input here is the plugin asking to receive a value\n" +
 				" the workflow author never wrote in the clear.\n" +
 				"\n" +
+				" The same list is where a credential reference, `${credential('target')}`,\n" +
+				" is legal: the worker mints a bearer token for the step and the plugin\n" +
+				" receives it as the string a stored secret would have been.\n" +
+				"\n" +
 				" A membership set, not a sequence — sorted and deduplicated by whichever\n" +
 				" server produces this message, regardless of what order a plugin manifest\n" +
 				" declared it in. What matters to every reader is which names are present;\n" +

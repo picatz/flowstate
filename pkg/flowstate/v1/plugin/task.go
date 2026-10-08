@@ -16,6 +16,7 @@ import (
 	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 )
 
@@ -56,6 +57,10 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 
 	if err := checkManifestInputNames(inputs, manifest, name, p); err != nil {
 		return flowstatev1.TaskDef{}, err
+	}
+
+	if err := checkDescriptorSecretClaims(inputs, manifest.GetSecretInputs(), manifest.GetRequiredSecretInputs()); err != nil {
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
 	}
 
 	return flowstatev1.TaskDef{
@@ -133,6 +138,54 @@ func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pl
 	return check(manifest.GetRequiredSecretInputs(), "required_secret_inputs")
 }
 
+// checkDescriptorSecretClaims refuses a task whose manifest lists and whose
+// input descriptor disagree about which inputs accept a secret reference.
+//
+// The descriptor is the source of truth for the claims (the `flowstate.v1.input`
+// option on a field); the manifest lists are carried until the protocol drops
+// them, and a disagreement either way is a plugin the host cannot trust to mean
+// what it says. A nested claim is refused outright: no plugin task input accepts
+// a reference inside a list or a mapping (see [resolvePluginSecretInputs]).
+func checkDescriptorSecretClaims(inputs protoreflect.MessageDescriptor, secretInputs, requiredSecretInputs []string) error {
+	whole, required, nested, err := flowstatev1.SecretInputClaims(inputs)
+	if err != nil {
+		return fmt.Errorf("inputs: %w", err)
+	}
+	if len(nested) > 0 {
+		return fmt.Errorf("input %q declares SECRET_NESTED, which no plugin task input accepts",
+			textbound.Truncate(nested[0], 64))
+	}
+
+	for _, c := range []struct {
+		label    string
+		manifest []string
+		derived  []string
+	}{
+		{"secret_inputs", secretInputs, whole},
+		{"required_secret_inputs", requiredSecretInputs, required},
+	} {
+		declared := slices.Sorted(slices.Values(c.manifest))
+		declared = slices.Compact(declared)
+		if slices.Equal(declared, c.derived) {
+			continue
+		}
+		for _, name := range declared {
+			if !slices.Contains(c.derived, name) {
+				return fmt.Errorf("%s names %q but its input descriptor does not declare it with the flowstate.v1.input option",
+					c.label, textbound.Truncate(name, 64))
+			}
+		}
+		for _, name := range c.derived {
+			if !slices.Contains(declared, name) {
+				return fmt.Errorf("input %q is declared secret in its descriptor but %s does not name it",
+					textbound.Truncate(name, 64), c.label)
+			}
+		}
+	}
+
+	return nil
+}
+
 // taskFunc returns the function that executes a task by asking the plugin to.
 func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor protoreflect.MessageDescriptor) flowstatev1.TaskFunc {
 	// Two names for one task, each used where it is true. The wire carries the
@@ -198,7 +251,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor prot
 				Inputs: resolvedInputs,
 			},
 			Identity:  identity,
-			Namespace: identity.GetNamespace(),
+			Namespace: identity.GetPrincipal().GetNamespace(),
 		}
 
 		// The scope travels only when the manifest said the task evaluates its
@@ -403,6 +456,10 @@ func reportWirePhase(ctx context.Context, phase pluginv1.TaskPhase) {
 //   - a reference in an input this task did declare is resolved, under the
 //     caller's authenticated identity and namespace, through whatever the host
 //     is holding TaskRuntime for;
+//   - a credential reference, ${credential('target')}, in a declared input is
+//     minted by the broker under the assumption policy and handed over as the
+//     value it names, through the same scrubber and by the same rule: one
+//     declaration, "secret_inputs", says an input takes either;
 //   - a reference in an input this task did not declare is refused, since an
 //     undeclared field is not one a Flowfile author routed a secret to on
 //     purpose, and resolving it anyway would let a plugin fish for whatever a
@@ -446,12 +503,40 @@ func resolvePluginSecretInputs(
 	var resolvedSecrets []secrets.Secret
 	for name, v := range inputs {
 		ref, isWholeRef := v.GetKind().(*flowstatev1.Value_SecretRef)
+		credential, isWholeCredential := v.GetKind().(*flowstatev1.Value_CredentialRef)
 
 		switch {
-		case slices.Contains(required, name) && !isWholeRef:
+		case slices.Contains(required, name) && !isWholeRef && !isWholeCredential:
 			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
-				"input %q must be a whole secret reference such as ${secret('env:NAME')}, never a literal; "+
+				"input %q must be a whole secret reference such as ${secret('env:NAME')} or credential reference such as ${credential('target')}, never a literal; "+
 					"literal secret or connection material is stored in workflow history", name))
+
+		case isWholeCredential && slices.Contains(declared, name):
+			// The same seam [flowstatev1.ResolveSecret] is for a stored secret,
+			// one rung over: the broker decides under the assumption policy,
+			// per step, and what comes back is registered with the scrubber and
+			// handed over as a string exactly as a resolved secret is. Nothing
+			// here is a second resolver; the credential is a value of a
+			// secret input.
+			secret, err := flowstatev1.ResolveCredential(ctx, credential.CredentialRef.GetTarget())
+			if err != nil {
+				kind := flowstatev1.ErrorKindPolicyDenied
+				if auth.Retryable(err) || flowstatev1.AuditRecorderUnavailable(err) {
+					kind = flowstatev1.ErrorKindUpstream
+				}
+				return nil, nil, flowstatev1.NewTaskError(taskName, kind, fmt.Errorf(
+					"resolving input %q (credential %q): %w", name, credential.CredentialRef.GetTarget(), err))
+			}
+			scrubber.Add(secret)
+			resolvedSecrets = append(resolvedSecrets, secret)
+			resolved[name] = &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: &expr.Value{
+				Kind: &expr.Value_StringValue{StringValue: secret.Reveal()},
+			}}}
+
+		case isWholeCredential:
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q is a credential reference, which this task did not declare as accepting one%s",
+				name, acceptedPluginSecretInputsHelp(declared)))
 
 		case isWholeRef && slices.Contains(declared, name):
 			secret, err := flowstatev1.ResolveSecret(ctx, ref.SecretRef)
@@ -482,6 +567,11 @@ func resolvePluginSecretInputs(
 		case flowstatev1.ValueHoldsSecretRef(v):
 			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
 				"input %q holds a secret reference nested inside a list or a mapping, "+
+					"which no plugin task input accepts", name))
+
+		case flowstatev1.ValueHoldsCredentialRef(v):
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
+				"input %q holds a credential reference nested inside a list or a mapping, "+
 					"which no plugin task input accepts", name))
 
 		default:
@@ -530,6 +620,11 @@ func scrubPluginOutputs(scrubber *secrets.Scrubber, outputs *flowstatev1.Node_Ou
 		if flowstatev1.ValueHoldsSecretRef(v) {
 			return fmt.Errorf(
 				"output %q holds a secret reference, which a task output must never be: "+
+					"step outputs are written to workflow history", name)
+		}
+		if flowstatev1.ValueHoldsCredentialRef(v) {
+			return fmt.Errorf(
+				"output %q holds a credential reference, which a task output must never be: "+
 					"step outputs are written to workflow history", name)
 		}
 		if v == nil {

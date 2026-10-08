@@ -7,6 +7,7 @@
 package anthropicv1
 
 import (
+	v11 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
@@ -27,7 +28,7 @@ const (
 // question.
 //
 // The questions and answers are the provider-neutral shapes of
-// flowstate/v1/decision.proto, so a Flowfile that routes on an answer reads the
+// flowstate/decision/v1/decision.proto, so a Flowfile that routes on an answer reads the
 // same under any provider plugin. Everything specific to Anthropic - the model,
 // the output budget, whether to ask for a self-reported confidence - is a field
 // here and never crosses into the neutral schema.
@@ -65,13 +66,13 @@ type DecideInputs struct {
 	// what it reads, which is why an answer is validated against the question
 	// set rather than trusted.
 	Evidence string `protobuf:"bytes,3,opt,name=evidence,proto3" json:"evidence,omitempty"`
-	// QuestionSet is a flowstate.v1.QuestionSet written as a mapping: a
+	// QuestionSet is written in a Flowfile as a mapping: a
 	// `questions` list whose entries each have a `name`, optional
 	// `instructions`, and exactly one of `predicate: {}`, `choice: {options:
 	// [...]}` or `score: {levels: [...]}`. It is validated against the schema's
 	// rules before any request is made. Names are also limited to 64 characters
 	// here, the longest property name the Messages API accepts in a tool schema.
-	QuestionSet *v1.Value `protobuf:"bytes,4,opt,name=question_set,json=questionSet,proto3" json:"question_set,omitempty"`
+	QuestionSet *v11.QuestionSet `protobuf:"bytes,4,opt,name=question_set,json=questionSet,proto3" json:"question_set,omitempty"`
 	// ReportConfidence asks the model to include a confidence between 0 and 1
 	// with each answer. What comes back is the model's claim about itself and is
 	// labelled CALIBRATION_SELF_REPORTED; it is not a measured probability. When
@@ -135,7 +136,7 @@ func (x *DecideInputs) GetEvidence() string {
 	return ""
 }
 
-func (x *DecideInputs) GetQuestionSet() *v1.Value {
+func (x *DecideInputs) GetQuestionSet() *v11.QuestionSet {
 	if x != nil {
 		return x.QuestionSet
 	}
@@ -159,12 +160,12 @@ func (x *DecideInputs) GetMaxTokens() int32 {
 // DecideOutputs carries one answer per question, in the question set's order.
 type DecideOutputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Answers has exactly one validated flowstate.v1.Answer for each question,
+	// Answers has exactly one validated flowstate.decision.v1.Answer for each question,
 	// matched by name. A reply that is missing one, adds one, or carries a value
 	// the question did not offer fails the task rather than returning a partial
 	// result. Read a choice as `steps.<id>.answers[0].choice`; an absent
 	// confidence reads as 0, so test `calibration` before trusting it.
-	Answers       []*v1.Answer `protobuf:"bytes,1,rep,name=answers,proto3" json:"answers,omitempty"`
+	Answers       []*v11.Answer `protobuf:"bytes,1,rep,name=answers,proto3" json:"answers,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -199,7 +200,7 @@ func (*DecideOutputs) Descriptor() ([]byte, []int) {
 	return file_anthropic_v1_anthropic_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *DecideOutputs) GetAnswers() []*v1.Answer {
+func (x *DecideOutputs) GetAnswers() []*v11.Answer {
 	if x != nil {
 		return x.Answers
 	}
@@ -210,17 +211,17 @@ var File_anthropic_v1_anthropic_proto protoreflect.FileDescriptor
 
 const file_anthropic_v1_anthropic_proto_rawDesc = "" +
 	"\n" +
-	"\x1canthropic/v1/anthropic.proto\x12\fanthropic.v1\x1a\x1bflowstate/v1/decision.proto\x1a\x18flowstate/v1/value.proto\"\xf2\x01\n" +
-	"\fDecideInputs\x12,\n" +
-	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueR\x06apiKey\x12\x14\n" +
+	"\x1canthropic/v1/anthropic.proto\x12\fanthropic.v1\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\x89\x02\n" +
+	"\fDecideInputs\x124\n" +
+	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x06apiKey\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1a\n" +
-	"\bevidence\x18\x03 \x01(\tR\bevidence\x126\n" +
-	"\fquestion_set\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vquestionSet\x12+\n" +
+	"\bevidence\x18\x03 \x01(\tR\bevidence\x12E\n" +
+	"\fquestion_set\x18\x04 \x01(\v2\".flowstate.decision.v1.QuestionSetR\vquestionSet\x12+\n" +
 	"\x11report_confidence\x18\x05 \x01(\bR\x10reportConfidence\x12\x1d\n" +
 	"\n" +
-	"max_tokens\x18\x06 \x01(\x05R\tmaxTokens\"?\n" +
-	"\rDecideOutputs\x12.\n" +
-	"\aanswers\x18\x01 \x03(\v2\x14.flowstate.v1.AnswerR\aanswersB\xbf\x01\n" +
+	"max_tokens\x18\x06 \x01(\x05R\tmaxTokens\"H\n" +
+	"\rDecideOutputs\x127\n" +
+	"\aanswers\x18\x01 \x03(\v2\x1d.flowstate.decision.v1.AnswerR\aanswersB\xbf\x01\n" +
 	"\x10com.anthropic.v1B\x0eAnthropicProtoP\x01ZJgithub.com/picatz/flowstate/plugins/anthropic/gen/anthropic/v1;anthropicv1\xa2\x02\x03AXX\xaa\x02\fAnthropic.V1\xca\x02\fAnthropic\\V1\xe2\x02\x18Anthropic\\V1\\GPBMetadata\xea\x02\rAnthropic::V1b\x06proto3"
 
 var (
@@ -237,15 +238,16 @@ func file_anthropic_v1_anthropic_proto_rawDescGZIP() []byte {
 
 var file_anthropic_v1_anthropic_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_anthropic_v1_anthropic_proto_goTypes = []any{
-	(*DecideInputs)(nil),  // 0: anthropic.v1.DecideInputs
-	(*DecideOutputs)(nil), // 1: anthropic.v1.DecideOutputs
-	(*v1.Value)(nil),      // 2: flowstate.v1.Value
-	(*v1.Answer)(nil),     // 3: flowstate.v1.Answer
+	(*DecideInputs)(nil),    // 0: anthropic.v1.DecideInputs
+	(*DecideOutputs)(nil),   // 1: anthropic.v1.DecideOutputs
+	(*v1.Value)(nil),        // 2: flowstate.v1.Value
+	(*v11.QuestionSet)(nil), // 3: flowstate.decision.v1.QuestionSet
+	(*v11.Answer)(nil),      // 4: flowstate.decision.v1.Answer
 }
 var file_anthropic_v1_anthropic_proto_depIdxs = []int32{
 	2, // 0: anthropic.v1.DecideInputs.api_key:type_name -> flowstate.v1.Value
-	2, // 1: anthropic.v1.DecideInputs.question_set:type_name -> flowstate.v1.Value
-	3, // 2: anthropic.v1.DecideOutputs.answers:type_name -> flowstate.v1.Answer
+	3, // 1: anthropic.v1.DecideInputs.question_set:type_name -> flowstate.decision.v1.QuestionSet
+	4, // 2: anthropic.v1.DecideOutputs.answers:type_name -> flowstate.decision.v1.Answer
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name

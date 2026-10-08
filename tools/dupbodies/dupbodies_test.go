@@ -29,6 +29,12 @@ import (
 //     modules, neither can import the other's copy. This is #1333's shared
 //     plugin substrate stated as a body: when a plugintoolkit exists, this
 //     entry is one of the things that retires with it.
+//   - plugins/anthropic beside plugins/openai — the two decision plugins put the
+//     same vendor-neutral questions to different vendors and share a test
+//     harness, the Go-side name check, and the sent-or-not transport
+//     test; they are separate modules, so neither can
+//     import the other's copy, and a fix lands in both. Retires with
+//     #1333's plugin toolkit.
 //   - plugins/*/readme_test.go — each plugin module's README example walker
 //     and repo-root finder, written per module for the same reason.
 //   - tokenFromValue, parseSince — the same across git, github and vcs,
@@ -76,20 +82,23 @@ var duplicateBodies = map[string]bool{
 	"pkg/flowstate/v1/protodoc/presence_test.go:TestPluginProtocolProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestRunAndReportsProseIsPresent.func3 = pkg/flowstate/v1/protodoc/presence_test.go:TestTaskProtocolProseIsPresent.func3": true,
 	"pkg/flowstate/v1/secrets/secrets.go:validScheme = pkg/flowstate/v1/secrets/vault/vault.go:validScheme":                                                                                                                                                  true,
 	"pkg/flowstate/v1/server/list_scan_test.go:TestAFilterOnNameCannotEscapeTenancy.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryMatchingRun.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRun.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRunAmongOtherTenants.func1 = pkg/flowstate/v1/server/list_scan_test.go:TestListPagingReachesEveryRunMatchingByName.func1 = pkg/flowstate/v1/server/list_selection_internal_test.go:pagingNamespace.func1": true,
-	"pkg/flowstate/v1/wait_local.go:waitForSignalLocally.func3 = pkg/flowstate/v1/wait_local.go:waitForSignalsLocally.func3":                                            true,
-	"plugins/codex/readme_test.go:extractExampleBlocks = plugins/github/readme_test.go:extractExampleBlocks = plugins/sql/readme_test.go:extractExampleBlocks":          true,
-	"plugins/codex/readme_test.go:repoRootFromCodexPlugin = plugins/github/readme_test.go:repoRootFromGithubPlugin = plugins/sql/readme_test.go:repoRootFromSQLPlugin":  true,
-	"plugins/git/clone.go:installEgressPolicy = plugins/vcs/clone.go:installEgressPolicy":                                                                               true,
-	"plugins/git/cursor.go:multiRootCommitIter.ForEach = plugins/git/cursor.go:pathFilteringCommitIter.ForEach = plugins/git/log_test.go:oneCommitIter.ForEach":         true,
-	"plugins/git/packbound_test.go:TestCloneBoundedDoesNotBoundASingleEnormousObject = plugins/vcs/packbound_test.go:TestCloneBoundedDoesNotBoundASingleEnormousObject": true,
-	"plugins/git/packbound_test.go:TestPackBoundedStorerAllowsObjectsUnderTheBound = plugins/vcs/packbound_test.go:TestPackBoundedStorerAllowsObjectsUnderTheBound":     true,
-	"plugins/git/packbound_test.go:TestPackBoundedStorerBoundIsReached = plugins/vcs/packbound_test.go:TestPackBoundedStorerBoundIsReached":                             true,
-	"plugins/git/secrets.go:envSegment = plugins/vcs/secrets.go:envSegment":                                                                                             true,
-	"plugins/git/secrets.go:resolveSecret = plugins/vcs/secrets.go:resolveSecret":                                                                                       true,
-	"plugins/git/secrets.go:tokenFromValue = plugins/github/client.go:tokenFromValue = plugins/vcs/secrets.go:tokenFromValue":                                           true,
-	"plugins/git/validate.go:clampMaxCommits = plugins/vcs/validate.go:clampMaxCommits":                                                                                 true,
-	"plugins/git/validate.go:parseSince = plugins/github/validate.go:parseSince":                                                                                        true,
-	"plugins/github/validate.go:validateIssueDirection = plugins/github/validate.go:validatePullRequestDirection":                                                       true,
+	"pkg/flowstate/v1/wait_local.go:waitForSignalLocally.func3 = pkg/flowstate/v1/wait_local.go:waitForSignalsLocally.func3":                                                                     true,
+	"plugins/anthropic/decide_test.go:TestTransportFailuresAreClassifiedByWhetherTheRequestWasSent = plugins/openai/decide_test.go:TestTransportFailuresAreClassifiedByWhetherTheRequestWasSent": true,
+	"plugins/anthropic/decide_test.go:serve = plugins/openai/decide_test.go:serve":                                                                                                               true,
+	"plugins/anthropic/schema.go:violations = plugins/openai/schema.go:violations":                                                                                                               true,
+	"plugins/codex/readme_test.go:extractExampleBlocks = plugins/github/readme_test.go:extractExampleBlocks = plugins/sql/readme_test.go:extractExampleBlocks":                                   true,
+	"plugins/codex/readme_test.go:repoRootFromCodexPlugin = plugins/github/readme_test.go:repoRootFromGithubPlugin = plugins/sql/readme_test.go:repoRootFromSQLPlugin":                           true,
+	"plugins/git/clone.go:installEgressPolicy = plugins/vcs/clone.go:installEgressPolicy":                                                                                                        true,
+	"plugins/git/cursor.go:multiRootCommitIter.ForEach = plugins/git/cursor.go:pathFilteringCommitIter.ForEach = plugins/git/log_test.go:oneCommitIter.ForEach":                                  true,
+	"plugins/git/packbound_test.go:TestCloneBoundedDoesNotBoundASingleEnormousObject = plugins/vcs/packbound_test.go:TestCloneBoundedDoesNotBoundASingleEnormousObject":                          true,
+	"plugins/git/packbound_test.go:TestPackBoundedStorerAllowsObjectsUnderTheBound = plugins/vcs/packbound_test.go:TestPackBoundedStorerAllowsObjectsUnderTheBound":                              true,
+	"plugins/git/packbound_test.go:TestPackBoundedStorerBoundIsReached = plugins/vcs/packbound_test.go:TestPackBoundedStorerBoundIsReached":                                                      true,
+	"plugins/git/secrets.go:envSegment = plugins/vcs/secrets.go:envSegment":                                                                                                                      true,
+	"plugins/git/secrets.go:resolveSecret = plugins/vcs/secrets.go:resolveSecret":                                                                                                                true,
+	"plugins/git/secrets.go:tokenFromValue = plugins/github/client.go:tokenFromValue = plugins/vcs/secrets.go:tokenFromValue":                                                                    true,
+	"plugins/git/validate.go:clampMaxCommits = plugins/vcs/validate.go:clampMaxCommits":                                                                                                          true,
+	"plugins/git/validate.go:parseSince = plugins/github/validate.go:parseSince":                                                                                                                 true,
+	"plugins/github/validate.go:validateIssueDirection = plugins/github/validate.go:validatePullRequestDirection":                                                                                true,
 }
 
 // TestTheRepositoryDuplicateBodiesOnlyGoDown holds the table in both

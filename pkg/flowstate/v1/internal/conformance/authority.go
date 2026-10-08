@@ -74,6 +74,15 @@ type Federation struct {
 	// Token is the bearer material the fixture exchanger hands back.
 	Token string
 
+	// EchoSubject makes the fixture exchanger hand back the subject of the
+	// assertion it was given as the bearer material, in place of Token: the
+	// observation a case about [auth.SubjectLevel] needs, since the level is
+	// something only the relying party sees.
+	EchoSubject bool
+
+	// SubjectLevel is the target's subject_level; unset keeps the default.
+	SubjectLevel auth.SubjectLevel
+
 	// ExchangeCalls, when non-nil, counts how many times the fixture
 	// exchanger actually minted a credential — the JIT counterpart to
 	// [Authority.ProviderCalls], for a case naming the same ordering
@@ -88,6 +97,10 @@ type Federation struct {
 	NoAllow bool
 	// Deny are assumption deny rules the broker is built with.
 	Deny []string
+	// Allow are assumption allow rules the broker is built with. Left empty,
+	// the broker allows every request unless NoAllow says otherwise; a case
+	// about what an assumption rule can read about the caller names its rule.
+	Allow []string
 }
 
 // HasSecrets reports whether this Authority configures a fixture secret store
@@ -151,10 +164,16 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 		tb.Fatalf("building fixture issuer: %v", err)
 	}
 	options := []auth.BrokerOption{
-		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, calls: a.Federation.ExchangeCalls}),
+		auth.WithTarget(a.Federation.Target, fixtureExchanger{token: a.Federation.Token, echoSubject: a.Federation.EchoSubject, calls: a.Federation.ExchangeCalls}),
 		auth.WithAssumeDenyRules(a.Federation.Deny...),
 	}
-	if !a.Federation.NoAllow {
+	if a.Federation.SubjectLevel != "" {
+		options = append(options, auth.WithTargetSubjectLevel(a.Federation.Target, a.Federation.SubjectLevel))
+	}
+	switch {
+	case len(a.Federation.Allow) > 0:
+		options = append(options, auth.WithAssumeAllowRules(a.Federation.Allow...))
+	case !a.Federation.NoAllow:
 		options = append(options, auth.WithAssumeAllowRules("true"))
 	}
 	broker, err := auth.NewBroker(issuer, options...)
@@ -168,19 +187,13 @@ func (a Authority) Broker(tb testing.TB) *auth.Broker {
 // [v1.RunState.Identity] carries, for the durable driver to install at worker
 // registration.
 //
-// Claims is copied too, not just the four scalar fields: a case whose policy
+// Claims, kind and actions are copied too, not just the scalar fields: a case whose policy
 // keys on identity.claims["repository"] would otherwise see them on the local
 // driver, which installs auth.WorkloadIdentity directly, and lose them on the
 // durable driver, which only ever sees what crossed this conversion — a
 // driver disagreement the harness itself would have caused rather than caught.
 func (a Authority) ProtoIdentity() *v1.WorkloadIdentity {
-	return &v1.WorkloadIdentity{
-		Subject:    a.Identity.Subject,
-		Issuer:     a.Identity.Issuer,
-		Claims:     a.Identity.Claims,
-		Namespace:  a.Identity.Namespace,
-		Deployment: a.Identity.Deployment,
-	}
+	return &v1.WorkloadIdentity{Principal: v1.ProtoPrincipal(a.Identity), Deployment: a.Identity.Deployment}
 }
 
 // fixtureSecretProvider always resolves to value, whatever name was asked
@@ -205,8 +218,9 @@ func (p fixtureSecretProvider) Resolve(_ context.Context, req secrets.Request) (
 // it is registered under, mirroring the shape a real STS exchange takes
 // without making one.
 type fixtureExchanger struct {
-	token string
-	calls *atomic.Int32
+	token       string
+	echoSubject bool
+	calls       *atomic.Int32
 }
 
 func (e fixtureExchanger) Name() string { return "fixture-sts" }
@@ -215,12 +229,16 @@ func (e fixtureExchanger) Requirement() auth.Requirement {
 	return auth.Requirement{Audience: "https://resource.example"}
 }
 
-func (e fixtureExchanger) Exchange(context.Context, auth.Assertion) (auth.Credential, error) {
+func (e fixtureExchanger) Exchange(_ context.Context, assertion auth.Assertion) (auth.Credential, error) {
 	if e.calls != nil {
 		e.calls.Add(1)
 	}
+	token := e.token
+	if e.echoSubject {
+		token = assertion.Subject
+	}
 	return auth.NewCredential(auth.CredentialBearer, time.Now().Add(time.Hour),
-		map[string]string{"access_token": e.token})
+		map[string]string{"access_token": token})
 }
 
 // AuthorityCase is a [Case] that exercises secret resolution or JIT credential
@@ -319,7 +337,7 @@ func AuthorityDenialCases() []AuthorityCase {
 		Subject: "svc-reader", Issuer: "https://issuer.example", Namespace: "acme-tenant",
 	}
 
-	return []AuthorityCase{
+	return append([]AuthorityCase{
 		{
 			Name: "a bearer reference fails closed with no runtime configured",
 			Workflow: &v1.Workflow{
@@ -474,7 +492,7 @@ func AuthorityDenialCases() []AuthorityCase {
 				ProviderCalls: new(atomic.Int32),
 			},
 		},
-	}
+	}, PrincipalCarrierDenialCases()...)
 }
 
 // AuthorityContainmentCases exercise a secret and a JIT credential that
@@ -530,7 +548,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 		}},
 	}}
 
-	return []AuthorityCase{
+	return append([]AuthorityCase{
 		{
 			Name: "a resolved bearer secret is contained end to end",
 			Workflow: &v1.Workflow{
@@ -611,7 +629,7 @@ func AuthorityContainmentCases(baseURL string) []AuthorityCase {
 			},
 			ContainmentValue: jitMaterial,
 		},
-	}
+	}, PrincipalCarrierCases(baseURL)...)
 }
 
 // AssertNoLeak fails tb if material appears in any observable rendering of
@@ -660,5 +678,22 @@ func AssertNoLeak(tb testing.TB, out *v1.Workflow_StepOutputs, material string) 
 			tb.Errorf("the revealed value appears under %s, so a log line or an error "+
 				"built that way would carry it into somewhere durable", name)
 		}
+	}
+}
+
+// RequireNoExchange fails t when the case's fixture exchanger minted a
+// credential. A case that names [Federation.ExchangeCalls] claims the request
+// was refused before the broker was reached, which a run that still ends in a
+// denial cannot show by itself. It is shared so both driver callers assert it
+// the same way, from one body.
+func RequireNoExchange(t *testing.T, c AuthorityCase) {
+	t.Helper()
+
+	if c.Authority.Federation == nil || c.Authority.Federation.ExchangeCalls == nil {
+		return
+	}
+
+	if calls := c.Authority.Federation.ExchangeCalls.Load(); calls != 0 {
+		t.Fatalf("the fixture broker exchanged a credential %d time(s) that the assumption policy should have denied first", calls)
 	}
 }

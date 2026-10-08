@@ -57,12 +57,47 @@ message SecretRef {
   ];
 }
 
+// CredentialRef names a federated credential without containing it.
+//
+// It is [SecretRef]'s sibling for a credential Flowstate mints rather than
+// stores: the target is the name of an outbound federation target in the
+// deployment's trust policy (`federation.targets[].name`), and the worker
+// running the task exchanges its own workload identity for a short-lived
+// credential at the moment the task needs it. The specification therefore
+// carries a name and nothing else, for the same reason a SecretRef carries
+// no value: workflow history is durable and broadly readable.
+//
+// It is a separate message rather than a SecretRef with a credential scheme
+// because the two are decided by different policies: a secret is authorized by
+// the secret access rules, a credential by the federation assumption rules, and
+// one spelling for both would let a rule for one silently govern the other.
+//
+// This message must never gain a field holding a minted credential.
+message CredentialRef {
+  // Target is the federation target's name, as the trust policy spells it.
+  //
+  // Whether a target is configured is a fact about the deployment, not the
+  // Flowfile, so the schema constrains only its length, and code rejects a
+  // control character, which could forge lines in a log that records the
+  // name. The server refuses an unknown target at validate and submit time
+  // rather than at run time.
+  string target = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+    }
+  ];
+}
+
 // Value is one value in a workflow: a task input, a step output, a variable or
 // a run argument.
 //
 // Exactly one kind is set. A `literal` is a concrete CEL value; an `expr` is a
 // parsed CEL expression evaluated when the value is needed; a `secret_ref`
-// names a secret resolved only by the worker that uses it; a `structure` is a
+// names a secret resolved only by the worker that uses it; a `credential_ref`
+// names a federation target whose credential only that worker mints; a `structure` is a
 // list or map of Values, the only shape that can hold a secret reference below
 // the top level; and an `error` records a value that could not be produced.
 // Values a caller submits, such as `RunRequest.inputs`, must be literals.
@@ -176,5 +211,92 @@ message Value {
     // A list or a mapping whose entries are values, which is the only shape
     // that can hold a [SecretRef] somewhere other than at the top.
     Structure structure = 5;
+
+    // A reference to a federated credential, minted only where the value is
+    // needed.
+    //
+    // Inert in exactly the way [secret_ref] is, and held to the same
+    // containment: the compiler produces it, the control plane transports it,
+    // workflow-side evaluation refuses to read it, and only the worker
+    // executing the task exchanges for the credential. It is the whole value of
+    // a task input and is never nested in a [Structure].
+    CredentialRef credential_ref = 6;
   }
+}
+
+// ExpressionFailure is what a failed expression knew about itself, as fields a
+// program can read without parsing the failure's words. It accompanies a failure
+// of kind `Expression` whose cause was an operation with no overload for its
+// operands, or a selection of a key that is not there; any other expression
+// failure carries none.
+//
+// It quotes the failing expression's own source text (`subexpression`,
+// `selected`), which is the author's and can hold literals, so it is treated
+// exactly like the failure's message: a response whose message is redacted or
+// withheld for a declared sensitive value carries no `expression` at all. Only
+// `candidates` is restricted to the author's declared step and output names, and
+// no field carries a runtime value, only type names.
+message ExpressionFailure {
+  // Operator is the operator or function that failed, such as `+` or
+  // `size`. Empty when the failure was a selection.
+  string operator = 1 [(buf.validate.field).string.max_bytes = 256];
+
+  // OperandTypes names the type of each operand the operator saw, in order,
+  // such as `int` and `string`. A `?` stands for an operand that could not be
+  // evaluated again to find out.
+  repeated string operand_types = 2 [(buf.validate.field).repeated.max_items = 16];
+
+  // Subexpression is the failing part of the expression, as source text cut to
+  // a bounded length.
+  string subexpression = 3 [(buf.validate.field).string.max_bytes = 512];
+
+  // Selected is the key a failed selection asked for. Empty for an operator.
+  string selected = 4 [(buf.validate.field).string.max_bytes = 256];
+
+  // Candidates are the names that do exist where `selected` was asked for, when
+  // that is a step or a step's output: the author's own names, bounded and
+  // sorted. Empty when there is nothing to offer.
+  repeated string candidates = 5 [(buf.validate.field).repeated.max_items = 16];
+
+  // Offset is where the failing operation sits in the expression's own text, as
+  // a character offset from its start, so a consumer can point at it when
+  // `subexpression` repeats elsewhere in the expression. Unset when the
+  // expression carries no position for the node.
+  optional int32 offset = 6 [(buf.validate.field).int32.gte = 0];
+
+  // Caret is the character index within `subexpression` of the operator or the
+  // selected name, so `subexpression` with a `^` under that column shows the
+  // failure the way a compiler does. Unset when the subexpression was cut or its
+  // text does not place the operator exactly, because a caret under the wrong
+  // character is worse than none.
+  optional int32 caret = 7 [(buf.validate.field).int32.gte = 0];
+
+  // Step is the id of the step whose expression failed, the innermost one when
+  // steps nest, so a consumer that holds the Flowfile can find the line the
+  // sentence is about. Empty when the failure was raised outside any step.
+  string step = 8 [(buf.validate.field).string.max_bytes = 256];
+
+  // Location is where that step is written, when the specification carried it
+  // (`Node.source`). Unset for a hand-built specification, for a step of a
+  // called workflow, and for an id declared in more than one place.
+  SourceLocation location = 9;
+}
+
+// SourceLocation is where a step is written in the file it was compiled from.
+//
+// Advisory: it is carried so a failure can point back at the file without the
+// reader holding it, and it is never part of the program. It is cleared from
+// every digest ([CanonicalWorkflow], [WorkflowIRDigest]) and counts against the
+// specification's size like any other field. Lines and columns are 1-based and
+// count characters, as `Diagnostic.line` and `Diagnostic.column` do.
+message SourceLocation {
+  // File is the path as the submitter named it, or its base name when that was
+  // absolute, so a home directory does not travel into durable history.
+  string file = 1 [(buf.validate.field).string.max_bytes = 256];
+
+  // Line is the 1-based line.
+  int32 line = 2 [(buf.validate.field).int32.gte = 1];
+
+  // Column is the 1-based column, or zero when only the line is known.
+  int32 column = 3 [(buf.validate.field).int32.gte = 0];
 }

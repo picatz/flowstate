@@ -101,6 +101,10 @@ func registerGreetTask() *embed.Tasks {
 			if name == "" {
 				name = "world"
 			}
+			if len(name) > 64 {
+				// A failure the caller caused: classified, and not retried.
+				return nil, embed.InvalidInput(fmt.Errorf("name is %d bytes, the limit is 64", len(name)))
+			}
 			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(map[string]any{
 				"message": "hello, " + name + "!",
 			})}, nil

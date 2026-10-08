@@ -21,7 +21,7 @@ func TestSignalPolicyPredicateReadsTheKindAPolicyAssigned(t *testing.T) {
 	t.Parallel()
 
 	policy := predicatePolicy(`sender.identity.kind == "human" && sender.identity.principal != run.identity.principal`)
-	starter := &v1.WorkloadIdentity{Issuer: "https://i", Subject: "starter", PrincipalKind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}
+	starter := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://i", Subject: "starter", Kind: v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD}}
 
 	for kind, wantAllowed := range map[v1.PrincipalKind]bool{
 		v1.PrincipalKind_PRINCIPAL_KIND_HUMAN:       true,
@@ -29,7 +29,7 @@ func TestSignalPolicyPredicateReadsTheKindAPolicyAssigned(t *testing.T) {
 		v1.PrincipalKind_PRINCIPAL_KIND_WORKLOAD:    false,
 		v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED: false,
 	} {
-		sender := &v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice", PrincipalKind: kind}
+		sender := &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://i", Subject: "alice", Kind: kind}}
 		err := v1.SignalPolicyCheck(context.Background(), policy, sender, starter, true, nil)
 		if wantAllowed {
 			require.NoError(t, err, kind.String())
@@ -41,7 +41,7 @@ func TestSignalPolicyPredicateReadsTheKindAPolicyAssigned(t *testing.T) {
 	// The starter's own kind is readable too.
 	require.NoError(t, v1.SignalPolicyCheck(context.Background(),
 		predicatePolicy(`run.identity.kind == "workload" && sender.identity.principal != ""`),
-		&v1.WorkloadIdentity{Issuer: "https://i", Subject: "alice"}, starter, true, nil))
+		&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://i", Subject: "alice"}}, starter, true, nil))
 }
 
 func TestSignalPolicyPredicateIsTypeCheckedAgainstTheClosedScope(t *testing.T) {
@@ -129,14 +129,14 @@ func TestSignalPolicyRefusalNeverQuotesAnInputOrAClaim(t *testing.T) {
 
 	byInput := predicatePolicy(`int(inputs.n) == 1 && sender.identity.claims["x"] == "y"`)
 	err := v1.SignalPolicyCheck(t.Context(), byInput,
-		&v1.WorkloadIdentity{Claims: map[string]string{"x": "y"}}, nil, false,
+		&v1.WorkloadIdentity{Principal: &v1.Principal{Claims: v1.StringClaimValues(map[string]string{"x": "y"})}}, nil, false,
 		map[string]*v1.Value{"n": v1.NewLiteral(secret)})
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret, "an input's value reached the refusal")
 
 	byClaim := predicatePolicy(`int(sender.identity.claims["n"]) == 1`)
 	err = v1.SignalPolicyCheck(t.Context(), byClaim,
-		&v1.WorkloadIdentity{Claims: map[string]string{"n": secret}}, nil, false, nil)
+		&v1.WorkloadIdentity{Principal: &v1.Principal{Claims: v1.StringClaimValues(map[string]string{"n": secret})}}, nil, false, nil)
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), secret, "a claim's value reached the refusal")
 
@@ -156,7 +156,7 @@ func TestSignalPolicyPredicateDeniesWhenTheContextIsCancelled(t *testing.T) {
 
 	err := v1.SignalPolicyCheck(cancelled,
 		predicatePolicy(`sender.identity.principal == "a#b"`),
-		&v1.WorkloadIdentity{Issuer: "a", Subject: "b"}, nil, false, nil)
+		&v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "a", Subject: "b"}}, nil, false, nil)
 	// Whether the interpreter notices before a trivial predicate finishes is
 	// not the contract; that it never errors into an allow is.
 	if err != nil {
@@ -167,7 +167,7 @@ func TestSignalPolicyPredicateDeniesWhenTheContextIsCancelled(t *testing.T) {
 func TestSignalPolicyCheckRefusesAPolicyWithNoPredicate(t *testing.T) {
 	t.Parallel()
 
-	sender := &v1.WorkloadIdentity{Namespace: "n"}
+	sender := &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "n"}}
 
 	require.Error(t, v1.SignalPolicyCheck(t.Context(), &v1.SignalPolicy{}, sender, nil, false, nil),
 		"a policy with no predicate was read as open")
@@ -177,7 +177,7 @@ func TestSignalPolicyCheckRefusesAPolicyWithNoPredicate(t *testing.T) {
 	only := predicatePolicy(`sender.identity.namespace == "n"`)
 	require.NoError(t, v1.CheckPolicyShape(`signals["x"]`, only))
 	require.NoError(t, v1.SignalPolicyCheck(t.Context(), only, sender, nil, false, nil))
-	require.Error(t, v1.SignalPolicyCheck(t.Context(), only, &v1.WorkloadIdentity{Namespace: "m"}, nil, false, nil))
+	require.Error(t, v1.SignalPolicyCheck(t.Context(), only, &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: "m"}}, nil, false, nil))
 }
 
 func TestSignalPolicyShapeRefusesAnUnusablePredicateWithTheStanzaNamed(t *testing.T) {
@@ -271,4 +271,17 @@ func TestCheckWorkflowPolicyInputsRefusesASensitiveInput(t *testing.T) {
 	err = v1.CheckWorkflowPolicyInputs(workflow(`inputs.approver == "a"`+narrow, `has(inputs.token)`+narrow))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `debug.allow reads the input "token"`)
+}
+
+func TestPolicyScopeDiagnosticNamesTheDelegationFields(t *testing.T) {
+	t.Parallel()
+
+	for name, check := range map[string]func(string) error{
+		"signal": v1.CheckSignalPolicyExpr,
+		"manual": v1.CheckManualAllowExpr,
+	} {
+		err := check(`sender.identity.bogus == "x"`)
+		require.Error(t, err, name)
+		assert.Contains(t, err.Error(), "claims,actions,actors,delegated}", name)
+	}
 }

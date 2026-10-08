@@ -40,24 +40,34 @@ const MaxRuleEvaluations = 4096
 // Work is bounded by the value ([maxListElements] elements, [MaxStructureDepth]
 // levels) and by [MaxRuleEvaluations].
 func CheckRecordRules(table TypeTable, profile, kind, name string, sensitive bool, t *Type, value *Value) error {
+	_, err := CheckRecordRulesWithCost(context.Background(), table, profile, kind, name, sensitive, t, value)
+
+	return err
+}
+
+// CheckRecordRulesWithCost is [CheckRecordRules] under ctx, plus the CEL cost
+// its rules spent in total, for a caller that charges a workflow's
+// deterministic work (see [CheckOutputConstraintWithCost]). The cost comes back
+// with an error too: a refused rule still did the work it was priced for.
+func CheckRecordRulesWithCost(ctx context.Context, table TypeTable, profile, kind, name string, sensitive bool, t *Type, value *Value) (uint64, error) {
 	lit := value.GetLiteral()
 	if lit == nil || len(table) == 0 || len(messageNames(t, nil, 0)) == 0 {
-		return nil
+		return 0, nil
 	}
 
 	// The element bound a rule's comprehension is costed against, applied here
 	// because an output without a `must:` of its own never reaches the check that
 	// applies it.
 	if err := checkConstraintValueBound(kind, name, lit); err != nil {
-		return err
+		return 0, err
 	}
 
-	w := &ruleWalk{table: table, profile: profile, sensitive: sensitive, asts: map[ruleKey]*cel.Ast{}}
+	w := &ruleWalk{ctx: ctx, table: table, profile: profile, sensitive: sensitive, asts: map[ruleKey]*cel.Ast{}}
 	if err := w.value(t, lit, "", 0); err != nil {
-		return fmt.Errorf("%s %q: %w", kind, name, err)
+		return w.cost, fmt.Errorf("%s %q: %w", kind, name, err)
 	}
 
-	return nil
+	return w.cost, nil
 }
 
 type ruleKey struct {
@@ -66,6 +76,7 @@ type ruleKey struct {
 }
 
 type ruleWalk struct {
+	ctx       context.Context
 	table     TypeTable
 	profile   string
 	sensitive bool
@@ -167,7 +178,7 @@ func (w *ruleWalk) rule(must string, t InputDeclaration_Type, value *expr.Value,
 		w.asts[key] = ast
 	}
 
-	satisfied, cost, err := evalMustWithCost(context.Background(), w.profile, t, ast, value)
+	satisfied, cost, err := evalMustWithCost(w.ctx, w.profile, t, ast, value)
 	if w.cost += cost; w.cost > DefaultCostLimit {
 		return fmt.Errorf("the `must:` rules of this value spend more than %d cost units together, which is the budget one expression is held to; a rule that is not evaluated does not hold, so it is refused", DefaultCostLimit)
 	}

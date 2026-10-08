@@ -52,7 +52,7 @@ inventory below remains the source of truth for every directory.
 | Journey | Start with | Role |
 | --- | --- | --- |
 | Hello and the authoring loop | [hello-world](hello-world), then [hello-world-multi-step](hello-world-multi-step) | first-run tutorial |
-| A first real workflow, local then durable | [release-approval](release-approval), with the [getting-started tutorial](../docs/GETTING_STARTED.md) | first-run tutorial |
+| A first real workflow, local then durable | [refund-approval](refund-approval), with the [getting-started tutorial](../docs/GETTING_STARTED.md) | first-run tutorial |
 | Typed inputs, outputs, and CEL | [parameterized-deploy](parameterized-deploy), [computed-outputs](computed-outputs), [expressions](expressions) | focused feature demonstration |
 | Refusing a value rather than carrying it | [enum-input](enum-input), [alert-title-bound](alert-title-bound), [utilization-guard](utilization-guard) | focused feature demonstration |
 | Branching and optional values | [webhook-routing](webhook-routing), [optional-dispatch](optional-dispatch) | focused feature demonstration |
@@ -71,6 +71,7 @@ inventory below remains the source of truth for every directory.
 | CLI, MCP, and DAP debugging, local and durable | [debugging](debugging), [loop-accumulate](loop-accumulate), [debugger guide](../docs/DEBUGGING.md) | testing/debugging/editor/agent journey |
 | LSP and editor setup | [editor setup](../docs/EDITORS.md), [VS Code client](../editors/vscode/README.md) | testing/debugging/editor/agent journey |
 | Task, egress, and identity policy | [task-shape-policy](task-shape-policy), [signal-rule-identity](signal-rule-identity), [http-secret](http-secret) | policy/governance |
+| Testing a deployment policy against cases | [policy-test](policy-test) | policy/governance |
 | Running a program under an operator's allowlist | [exec-checks](exec-checks) | policy/governance |
 | Holding a credential a step needs | [http-secret](http-secret), then [vault-secret](vault-secret), [http-federated](http-federated) | policy/governance |
 | One run at a time, and one tenant's fleet | [exclusive-cluster-drain](exclusive-cluster-drain), [operations/tenant-routing](operations/tenant-routing/) | policy/governance |
@@ -109,7 +110,7 @@ says otherwise.
 | Example | Shows | Network |
 | --- | --- | --- |
 | [hello-world](hello-world) | The smallest possible workflow: one `log:` step | no |
-| [release-approval](release-approval) | The [getting-started tutorial](../docs/GETTING_STARTED.md)'s workflow: typed inputs, a `value:` step, a `wait_for_signal:` approval with a timeout, a gated `for_each`, and declared `outputs:`, with tests for approval, rejection, and silence | no |
+| [refund-approval](refund-approval) | The [getting-started tutorial](../docs/GETTING_STARTED.md)'s workflow: typed inputs, a `value:` step, a `wait_for_signal:` approval with a timeout, a gated `for_each`, and declared `outputs:`, with tests for approval, rejection, and silence | no |
 | [hello-world-multi-step](hello-world-multi-step) | Several steps in order, each reading a value named once at the top | no |
 | [logging](logging) | `log:` — a message for a person to read, with `level:` and `fields:`, and no outputs | no |
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
@@ -166,6 +167,7 @@ says otherwise.
 | [http-federated](http-federated) | Exchanging the workload identity for a short-lived API credential inside the task | yes |
 | [federation-flow-to-flow](federation-flow-to-flow) | The `assertion` target — presenting the minted assertion itself to a relying party that verifies OIDC, here another Flowstate deployment, with no exchange and no shared secret | yes |
 | [exec-checks](exec-checks) | The built-in `exec:` task, denied until an operator's `--exec-policy` names the programs, directories and environment — `argv` as a list, a nonzero exit as output, and a policy file whose rules are exact argv shapes. Read its README; `flow test` stubs it, nothing here starts a process | no |
+| [policy-test](policy-test) | `flow policy test` putting cases to the egress and task-shape policies already in this tree, refusals first, with the rule that denied each one named. Read its README; it runs no workflow | no |
 | [task-shape-policy](task-shape-policy) | A deployment-side `--task-policy` refusing a step whose own `if:` and `signals:` have already been stripped out — the author-proof complement to `approval-gate`'s in-file gate | no |
 | [simple-http-multi-step](simple-http-multi-step) | Using a response status code in a later step | yes |
 | [edition-and-descriptions](edition-and-descriptions) | `description:` as a property of the step, and the required `edition:` naming the grammar the file is written in | no |
@@ -202,6 +204,7 @@ says otherwise.
 | [plugins/git](plugins/git/) | `git.ls_remote` (read) and `git.commit_push` (a mutation, in a separate parameterized file so it cannot run by accident) — one activity, compare-and-swapped against `base_ref`, never forced — needs a built plugin, a worker, and for the write file a credential, so read its README | yes |
 | [plugins/sql](plugins/sql/) | `sql.query` (bounded, typed rows a later step filters with CEL, parameters bound and never spliced into query text, `max_rows:` required with no default) and `sql.exec` (a transfer's four statements as one transaction inside one activity, idempotent on retry, in a separate file) — needs a built plugin, a worker, and a real database, so read its README | yes |
 | [plugins/anthropic](plugins/anthropic/) | `anthropic.decide` — typed questions put to a Claude model, with the answer routed by an `if:` that pages only on a self-reported confidence above a threshold the file states, and sends an answer with no confidence to a person; replayed offline by `flow test` — needs a built plugin, a worker and an API key, so read its README | yes |
+| [plugins/openai](plugins/openai/) | `openai.decide` — typed questions put to an OpenAI model through the Decisions API, with the answer routed by an `if:` that pages only when the model-derived probability of "urgent" clears a threshold the file states, and sends an answer with no probability to a person; replayed offline by `flow test` — needs a built plugin, a worker and an API key, so read its README | yes |
 | [plugins/slack](plugins/slack/) | `slack.post` — one bounded outbound notification for practical approval flows, followed by an authenticated Flowstate signal and an outcome in the same Slack thread; production only, with whole-secret credentials and operator-owned egress policy — needs a built plugin and a worker, so read its README | yes |
 | [plugins/codex](plugins/codex/) | `codex.exec` — one bounded agentic turn over the OpenAI Codex CLI, sandboxed `SANDBOX_MODE_READ_ONLY` and written out rather than left to the default, so the file names its own sandbox — needs a built plugin, a worker, and the `codex` CLI, so read its README | yes |
 | [plugins/oci](plugins/oci/) | `oci.resolve`, `oci.referrers` and `oci.blob` — a supply-chain gate: a tag pinned to the digest a registry serves now, and whether an attestation is attached to those exact bytes, before a human approves the digest rather than the tag; and a statement read by its layer digest and refused unless it hashes to it — needs a built plugin and a worker, so read its README | yes |

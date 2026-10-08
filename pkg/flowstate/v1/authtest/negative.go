@@ -27,17 +27,19 @@ import "maps"
 // (pkg/flowstate/v1/auth/issuer.go), recording who a workload Flowstate is
 // vouching for acts on behalf of. "act" and "may_act" are claims an external
 // identity provider mints into a token Flowstate only verifies, recording who
-// the token's own subject acts on behalf of. Flowstate does not read either
-// today — a trust policy has nowhere to map them, and #567's D2 amendment
-// leaves that mapping for S8 — which is exactly why a resource server that
-// has not built that mapping must refuse a token carrying one rather than
-// silently admitting it as the bare, undelegated subject: refusing preserves
-// what the token itself claims, where admission would let the request
-// proceed under a story the audit trail no longer tells.
+// the token's own subject acts on behalf of. Flowstate reads "act" only where
+// the admitting trust policy entry has a delegation stanza (auth.Delegation)
+// and refuses it everywhere else, and it never reads "may_act", which every
+// entry refuses. That is exactly why a resource server that has not built that
+// reading must refuse a token carrying one rather than silently admitting it
+// as the bare, undelegated subject: refusing preserves what the token itself
+// claims, where admission would let the request proceed under a story the audit
+// trail no longer tells.
 //
-// Flowstate's own refusal now lives in pkg/flowstate/v1/auth/delegation.go and
-// is performed by auth.OIDCVerifier, so a token minted by either option below
-// is refused by every Flowstate bearer surface rather than by one of them.
+// Flowstate's own decision lives in pkg/flowstate/v1/auth/delegation.go and is
+// made by auth.OIDCVerifier, so a token minted by either option below is
+// refused by every Flowstate bearer surface whose entry does not accept it,
+// rather than by one of them.
 // That does not narrow what these options are for: they mint the token, and
 // the party refusing it may be this repository's verifier, a surface holding a
 // different Verifier, or somebody else's resource server entirely.

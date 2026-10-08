@@ -97,7 +97,7 @@ type taskActivities struct{ configured TaskRuntimeConfig }
 func (a taskActivities) context(ctx context.Context, identity *v1.WorkloadIdentity, workflowName, runID, stepID string) context.Context {
 	ctx = v1.ContextWithTaskRuntime(ctx, v1.TaskRuntime{
 		Store: a.configured.store, Policy: a.configured.policy, Broker: a.configured.broker,
-		Identity: auth.IdentityFrom(identity),
+		Identity: v1.AuthIdentity(identity),
 		Step:     auth.StepRef{Workflow: workflowName, Run: runID, Step: stepID},
 	})
 

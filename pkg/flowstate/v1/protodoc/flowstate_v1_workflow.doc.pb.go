@@ -62,7 +62,7 @@ func init() {
 				" this schema carries (`RunRequest.inputs`, `ScheduleSpec`'s), for the reason\n" +
 				" stated there — a spec is a thing an outside party writes.\n" +
 				"\n" +
-				" `max_len` here rather than `WorkloadIdentity.claims`'s `max_bytes`, and the\n" +
+				" `max_len` here rather than `Principal.claims`'s `max_bytes`, and the\n" +
 				" difference is not an oversight. That field is written in bytes because a\n" +
 				" second enforcer — `auth.validateCarriedClaims`, in Go, where `len` counts\n" +
 				" bytes — refuses the same sizes at mint, and one limit written down twice in\n" +
@@ -1476,6 +1476,12 @@ func init() {
 				" Field 15 and a bare bool rather than an arm of the `kind` oneof, for the\n" +
 				" reason `undo` is field 10: departing from written order is not a kind of\n" +
 				" work, it is a property of a step doing some other kind.\n",
+		},
+		{
+			Name: "flowstate.v1.Node.source",
+			Leading: " Source is where this step is written, set by the compiler front end that read\n" +
+				" a file and cleared from every digest. Advisory: absent on a hand-built\n" +
+				" specification and on a step whose id the file declares more than once.\n",
 		},
 		{
 			Name:    "flowstate.v1.Node.kind",

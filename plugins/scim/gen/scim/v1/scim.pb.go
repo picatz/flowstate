@@ -549,10 +549,10 @@ var File_scim_v1_scim_proto protoreflect.FileDescriptor
 
 const file_scim_v1_scim_proto_rawDesc = "" +
 	"\n" +
-	"\x12scim/v1/scim.proto\x12\ascim.v1\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x82\x01\n" +
+	"\x12scim/v1/scim.proto\x12\ascim.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\x1a$google/api/expr/v1alpha1/value.proto\"\x8a\x01\n" +
 	"\rUserGetInputs\x12\x19\n" +
-	"\bbase_url\x18\x01 \x01(\tR\abaseUrl\x12)\n" +
-	"\x05token\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x0e\n" +
+	"\bbase_url\x18\x01 \x01(\tR\abaseUrl\x121\n" +
+	"\x05token\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x0e\n" +
 	"\x02id\x18\x03 \x01(\tR\x02id\x12\x1b\n" +
 	"\tuser_name\x18\x04 \x01(\tR\buserName\"\xad\x02\n" +
 	"\x0eUserGetOutputs\x12\x0e\n" +
@@ -565,10 +565,10 @@ const file_scim_v1_scim_proto_rawDesc = "" +
 	"externalId\x12\x18\n" +
 	"\aversion\x18\a \x01(\tR\aversion\x12\x16\n" +
 	"\x06groups\x18\b \x03(\tR\x06groups\x12;\n" +
-	"\bresource\x18\t \x01(\v2\x1f.google.api.expr.v1alpha1.ValueR\bresource\"\xa5\x01\n" +
+	"\bresource\x18\t \x01(\v2\x1f.google.api.expr.v1alpha1.ValueR\bresource\"\xad\x01\n" +
 	"\x0eUserListInputs\x12\x19\n" +
-	"\bbase_url\x18\x01 \x01(\tR\abaseUrl\x12)\n" +
-	"\x05token\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x16\n" +
+	"\bbase_url\x18\x01 \x01(\tR\abaseUrl\x121\n" +
+	"\x05token\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x16\n" +
 	"\x06filter\x18\x03 \x01(\tR\x06filter\x12\x14\n" +
 	"\x05count\x18\x04 \x01(\x05R\x05count\x12\x1f\n" +
 	"\vstart_index\x18\x05 \x01(\x05R\n" +
@@ -576,10 +576,10 @@ const file_scim_v1_scim_proto_rawDesc = "" +
 	"\x0fUserListOutputs\x125\n" +
 	"\x05users\x18\x01 \x03(\v2\x1f.google.api.expr.v1alpha1.ValueR\x05users\x12#\n" +
 	"\rtotal_results\x18\x02 \x01(\x03R\ftotalResults\x12(\n" +
-	"\x10next_start_index\x18\x03 \x01(\x05R\x0enextStartIndex\"\x97\x01\n" +
+	"\x10next_start_index\x18\x03 \x01(\x05R\x0enextStartIndex\"\x9f\x01\n" +
 	"\x14UserDeactivateInputs\x12\x19\n" +
-	"\bbase_url\x18\x01 \x01(\tR\abaseUrl\x12)\n" +
-	"\x05token\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05token\x12\x0e\n" +
+	"\bbase_url\x18\x01 \x01(\tR\abaseUrl\x121\n" +
+	"\x05token\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x0e\n" +
 	"\x02id\x18\x03 \x01(\tR\x02id\x12)\n" +
 	"\x10expected_version\x18\x04 \x01(\tR\x0fexpectedVersion\"\x84\x01\n" +
 	"\x15UserDeactivateOutputs\x12\x0e\n" +

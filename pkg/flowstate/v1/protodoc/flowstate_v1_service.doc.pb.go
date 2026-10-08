@@ -238,6 +238,12 @@ func init() {
 				" the argument to fix without parsing `message`.\n",
 		},
 		{
+			Name: "flowstate.v1.RunResponse.Error.expression",
+			Leading: " Expression says which operation failed and what it saw, when `kind` is\n" +
+				" `Expression` and the cause was an operator with no overload for its\n" +
+				" operands or a selection of a missing key. Unset for every other failure.\n",
+		},
+		{
 			Name:    "flowstate.v1.RunResponse.Status",
 			Leading: " Status is where a run is in its lifecycle.\n",
 		},
@@ -953,6 +959,27 @@ func init() {
 				" since changed.\n",
 		},
 		{
+			Name:    "flowstate.v1.WhoamiRequest",
+			Leading: " WhoamiRequest asks who the server believes the caller is. It has no fields.\n",
+		},
+		{
+			Name:    "flowstate.v1.WhoamiResponse",
+			Leading: " WhoamiResponse is the caller as the server sees it.\n",
+		},
+		{
+			Name: "flowstate.v1.WhoamiResponse.principal",
+			Leading: " Principal is the caller's identity as established for this request. For\n" +
+				" an unauthenticated caller it names the anonymous issuer or is empty,\n" +
+				" never another party's identity.\n",
+		},
+		{
+			Name: "flowstate.v1.WhoamiResponse.authenticated",
+			Leading: " Authenticated is false when the server established no identity for the\n" +
+				" caller: an insecure development server that admits anonymous callers, or a\n" +
+				" deployment with no authentication. It is true only for a verified caller,\n" +
+				" so a reader need not recognize the anonymous issuer's spelling.\n",
+		},
+		{
 			Name:    "flowstate.v1.ValidateRequest",
 			Leading: " ValidateRequest is one or more files to check.\n",
 		},
@@ -1010,6 +1037,39 @@ func init() {
 			Name: "flowstate.v1.GetTimelineRequest.reveal_sensitive",
 			Leading: " RevealSensitive is GetRequest.reveal_sensitive for the timeline's failure\n" +
 				" text, under the same action.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetCheckpointRequest",
+			Leading: " GetCheckpointRequest addresses one run segment.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointRequest.workflow_id",
+			Leading: " WorkflowId is the workload to read, as Run's `workflow_id` reports it. 1 to\n" +
+				" 256 bytes. The caller may read only runs in its own tenant.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointRequest.run_id",
+			Leading: " RunId names one segment of the workload, as a UUID. Empty reads the\n" +
+				" latest segment.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointResponse",
+			Leading: " GetCheckpointResponse is the checkpoint a segment started from, or why there\n" +
+				" is none.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetCheckpointResponse.checkpoint",
+			Leading: " Checkpoint is set when the segment's start is a legal starting state.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointResponse.unavailable_reason",
+			Leading: " UnavailableReason is set when it is not: the position is inside a call,\n" +
+				" a loop or concurrent work, the carried state is invalid or too large to\n" +
+				" resume, or it could not be read.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetCheckpointResponse.result",
+			Leading: " Result is the checkpoint, or why there is none. Exactly one is set.\n",
 		},
 		{
 			Name:    "flowstate.v1.GetTimelineResponse",
@@ -1370,6 +1430,20 @@ func init() {
 				" `previous_run_id`.\n",
 		},
 		{
+			Name: "flowstate.v1.WorkflowService.GetCheckpoint",
+			Leading: " GetCheckpoint reports whether a run segment started from a point a new run\n" +
+				" could be started from, and where that point stands.\n" +
+				"\n" +
+				" Every segment's start input is the run's complete carried state, so the\n" +
+				" answer is read from history and changes nothing. It describes the point\n" +
+				" without returning the state, which holds the run's inputs and outputs in\n" +
+				" full; see [CheckpointInfo]. A segment whose position is inside a call, a\n" +
+				" loop or concurrent work is reported unavailable with the reason, because\n" +
+				" only a position between top-level steps is a legal starting state.\n" +
+				"\n" +
+				" `run_id` names the segment, as in [GetTimeline]; empty reads the latest.\n",
+		},
+		{
 			Name: "flowstate.v1.WorkflowService.Cancel",
 			Leading: " Cancel asks a run to stop and lets it clean up on the way out.\n" +
 				"\n" +
@@ -1542,6 +1616,19 @@ func init() {
 				"\n" +
 				" It answers with no run id. The cluster takes the action after answering, so\n" +
 				" what the firing started is read back with [DescribeSchedule].\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.Whoami",
+			Leading: " Whoami answers with the caller's own [Principal]: the issuer, subject,\n" +
+				" namespace, kind, admitting policy entry, carried claims and actions the\n" +
+				" server established from the credential on this request. It is what\n" +
+				" `flow auth whoami` prints.\n" +
+				"\n" +
+				" Any caller may ask, whatever its policy entry's `actions:` list holds,\n" +
+				" because the answer is only what the caller already is. A caller that was\n" +
+				" not authenticated, which only an explicitly insecure development server\n" +
+				" admits, is answered with `authenticated` false and an anonymous\n" +
+				" principal, not with an error. The answer never contains the credential.\n",
 		},
 	})
 }

@@ -1,7 +1,7 @@
 # Get started
 
-This tutorial builds a workflow that asks a person to approve a release and
-then rolls the release out to each service. You will write it, check it, test
+This tutorial builds a workflow that asks a person to approve a refund and
+then pays back each line of the order. You will write it, check it, test
 it, step through it in the debugger, and run it on your machine. Then you will
 run it durably, stop every process while it waits for the approval, start them
 again, and approve it from another terminal.
@@ -47,53 +47,53 @@ this page writes `flow`.
 
 ## 2. Write the workflow
 
-Make a directory called `release-approval` and save this as
-`release-approval/workflow.yaml`. The same file is in the repository at
-[`examples/release-approval/`](../examples/release-approval/).
+Make a directory called `refund-approval` and save this as
+`refund-approval/workflow.yaml`. The same file is in the repository at
+[`examples/refund-approval/`](../examples/refund-approval/).
 
-<!-- mirrors: examples/release-approval/workflow.yaml -->
+<!-- mirrors: examples/refund-approval/workflow.yaml -->
 ```yaml
 edition: v2026.4
-name: release-approval
-description: Asks a person to approve a release, then rolls it out to each service.
+name: refund-approval
+description: Asks a person to approve a refund, then pays back each line of the order.
 inputs:
-  version:
+  order_id:
     type: string
     required: true
-    description: the version being released
-  services:
-    type: list(string)
+    description: the order being refunded
+  lines:
+    type: list(int)
     default:
-      - api
-      - worker
-    description: the services this release updates
+      - 1500
+      - 4200
+    description: the cents to give back on each line of the order
 steps:
-  - id: plan
-    value: ${inputs.services.map(s, s + "@" + inputs.version)}
+  - id: total
+    value: ${inputs.lines.sum()}
   - id: ask
     log:
-      message: ${"release " + inputs.version + " is waiting for approval"}
+      message: ${"refund of " + string(steps.total.value) + " cents on " + string(inputs.order_id) + " is waiting for approval"}
   - id: approval
     wait_for_signal:
-      name: release-approved
-      prompt: ${"Approve release " + inputs.version + "?"}
+      name: refund-approved
+      prompt: ${"Approve refunding " + string(steps.total.value) + " cents on " + string(inputs.order_id) + "?"}
       timeout: 1h
   - id: approved
     value: ${steps.approval.payload.?approved.orValue(false)}
-  - id: rollout
+  - id: payout
     if: ${steps.approved.value}
     for_each:
-      items: ${steps.plan.value}
-      as: target
+      items: ${inputs.lines}
+      as: line
       steps:
-        - id: deploy
+        - id: refund
           log:
-            message: ${"deploying " + target}
+            message: ${"refunding " + string(line) + " cents"}
 outputs:
   approved:
     value: ${steps.approved.value}
-  targets:
-    value: ${steps.plan.value}
+  total_cents:
+    value: ${steps.total.value}
 ```
 
 Here is what each part does.
@@ -102,31 +102,31 @@ Here is what each part does.
 in. It is required. When the grammar changes, `flow fix` rewrites a file from
 one edition to the next.
 
-**`inputs:`** declares the run's typed arguments. `version` must be supplied;
-`services` has a default. A caller who sends the wrong type, or forgets
-`version`, is refused before anything runs.
+**`inputs:`** declares the run's typed arguments. `order_id` must be supplied;
+`lines` has a default. A caller who sends the wrong type, or forgets
+`order_id`, is refused before anything runs.
 
 **`steps:`** run in the order written. Every step has an `id` and does exactly
 one thing, named by its key:
 
 | Step | Kind | What it does |
 | --- | --- | --- |
-| `plan` | `value:` | Computes a value (here, a list) and records it as the step's output. |
+| `total` | `value:` | Computes a value (here, a sum) and records it as the step's output. |
 | `ask` | `log:` | Runs the built-in `log` task. A task is where work happens. |
-| `approval` | `wait_for_signal:` | Waits, for up to an hour, for a signal named `release-approved`. |
+| `approval` | `wait_for_signal:` | Waits, for up to an hour, for a signal named `refund-approved`. |
 | `approved` | `value:` | Reads the decision out of the signal's payload. |
-| `rollout` | `for_each:` | Runs its own `steps:` once per planned target, but only when its `if:` holds. |
+| `payout` | `for_each:` | Runs its own `steps:` once per line, but only when its `if:` holds. |
 
 **`${...}`** is an expression in [CEL](https://cel.dev/), the Common Expression
 Language. Expressions compute values; they cannot perform I/O or read the clock,
 so they behave the same way every time a run is replayed. An expression reads
 data through a few roots:
 
-- `inputs.version` is an argument the run was started with.
-- `steps.plan.value` is an output of an earlier step. Referring to a step is
-  also how order and data flow are expressed: `rollout` reads `plan`, so `plan`
+- `inputs.order_id` is an argument the run was started with.
+- `steps.total.value` is an output of an earlier step. Referring to a step is
+  also how order and data flow are expressed: `ask` reads `total`, so `total`
   must have finished first.
-- `target` is the name `for_each` bound with `as:`, and exists only inside the
+- `line` is the name `for_each` bound with `as:`, and exists only inside the
   loop body.
 - `steps.approval.payload` is the JSON object the approver sent. `.?approved`
   reads a field that might be absent, and `.orValue(false)` supplies a default,
@@ -143,8 +143,8 @@ data through a few roots:
 ## 3. Validate and compile
 
 ```console
-$ flow validate release-approval/workflow.yaml
-release-approval/workflow.yaml: ok
+$ flow validate refund-approval/workflow.yaml
+refund-approval/workflow.yaml: ok
 ```
 
 `flow validate` checks the file without running anything: the grammar, every
@@ -156,18 +156,18 @@ point at it.
 `flow compile` shows what the file becomes:
 
 ```console
-$ flow compile release-approval/workflow.yaml | jq -r '.steps[].id'
-plan
+$ flow compile refund-approval/workflow.yaml | jq -r '.steps[].id'
+total
 ask
 approval
 approved
-rollout
+payout
 ```
 
 The output is a `flowstate.v1.Workflow` message, written as JSON, with each
 expression already parsed. The YAML is how you write a workflow; this compiled
 specification is what actually runs, on your machine or on a server. Without
-`jq`, look at the whole document with `flow compile release-approval/workflow.yaml`.
+`jq`, look at the whole document with `flow compile refund-approval/workflow.yaml`.
 
 ## 4. Rehearse it locally
 
@@ -177,20 +177,20 @@ signal up front with `--signal`, and it is delivered when the run reaches the
 gate.
 
 ```console
-$ flow run local release-approval/workflow.yaml \
-    --input version=1.4.0 \
-    --signal 'release-approved={"approved": true}'
+$ flow run local refund-approval/workflow.yaml \
+    --input order_id=o-1000 \
+    --signal 'refund-approved={"approved": true}'
 running locally
-INFO release 1.4.0 is waiting for approval
-INFO deploying api@1.4.0
-INFO deploying worker@1.4.0
-COMPLETED workflow release-approval
+INFO refund of 5700 cents on o-1000 is waiting for approval
+INFO refunding 1500 cents
+INFO refunding 4200 cents
+COMPLETED workflow refund-approval
 outputs
   approved true
-  targets ["api@1.4.0", "worker@1.4.0"]
+  total_cents 5700
 ```
 
-Try `--signal 'release-approved={"approved": false}'` and the `rollout` step is
+Try `--signal 'refund-approved={"approved": false}'` and the `payout` step is
 skipped. Leave `--signal` out and the run tells you it will block until the
 gate's hour runs out, and how to answer it; press Ctrl-C to stop it.
 
@@ -208,59 +208,59 @@ one JSON document instead, which is what a script reads:
 
 Real runs are slow to set up and hard to repeat. A test file runs the workflow
 against stubbed tasks and scripted signals, on a virtual clock, with no network.
-Save this as `release-approval/workflow.test.yaml`:
+Save this as `refund-approval/workflow.test.yaml`:
 
-<!-- mirrors: examples/release-approval/workflow.test.yaml -->
+<!-- mirrors: examples/refund-approval/workflow.test.yaml -->
 ```yaml
 edition: v2026.4
 defaults:
   inputs:
-    version: 1.4.0
+    order_id: o-1000
   stubs:
     - task: log
       returns: {}
 tests:
-  - name: an approval rolls out every planned target
+  - name: an approval pays back every line
     workflow: ./workflow.yaml
     signals:
-      - name: release-approved
+      - name: refund-approved
         payload:
           approved: true
     expect:
-      ran: [plan, ask, approval, approved, rollout]
+      ran: [total, ask, approval, approved, payout]
       outputs:
         approved: true
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 
-  - name: a rejection rolls out nothing
+  - name: a rejection pays back nothing
     workflow: ./workflow.yaml
     signals:
-      - name: release-approved
+      - name: refund-approved
         payload:
           approved: false
     expect:
-      ran: [plan, ask, approval, approved]
+      ran: [total, ask, approval, approved]
       others: skipped
       outputs:
         approved: false
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 
   - name: nobody answering within the hour counts as a rejection
     workflow: ./workflow.yaml
     expect:
-      ran: [plan, ask, approval, approved]
+      ran: [total, ask, approval, approved]
       others: skipped
       outputs:
         approved: false
-        targets: [api@1.4.0, worker@1.4.0]
+        total_cents: 5700
 ```
 
 ```console
-$ flow test release-approval/
-PASS  release-approval/workflow.test.yaml: an approval rolls out every planned target
-PASS  release-approval/workflow.test.yaml: a rejection rolls out nothing
-PASS  release-approval/workflow.test.yaml: nobody answering within the hour counts as a rejection
-release-approval/workflow.test.yaml  6/6 steps reached
+$ flow test refund-approval/
+PASS  refund-approval/workflow.test.yaml: an approval pays back every line
+PASS  refund-approval/workflow.test.yaml: a rejection pays back nothing
+PASS  refund-approval/workflow.test.yaml: nobody answering within the hour counts as a rejection
+refund-approval/workflow.test.yaml  6/6 steps reached
 
 1 file · 3 cases · 3 passed · 0.0s
 ```
@@ -277,7 +277,7 @@ What the file says:
   `others: skipped` says every other step must have been skipped, so a step
   added later cannot slip past the test unnoticed. `outputs:` must name every
   output the workflow declares.
-- **`6/6 steps reached`** is coverage across all cases, including the `deploy`
+- **`6/6 steps reached`** is coverage across all cases, including the `refund`
   step inside the loop.
 
 Break the workflow on purpose to see a failure: change `orValue(false)` to
@@ -292,46 +292,46 @@ by holding the run at a step so you can ask questions about it. Start it on one
 case:
 
 ```console
-$ flow test --debug --run 'approval rolls out' release-approval/
+$ flow test --debug --run 'approval pays' refund-approval/
 ```
 
 At the `debug>` prompt, set a breakpoint inside the loop, continue to it, and
 look around:
 
 ```text
-debug> break deploy
-breakpoint at deploy
+debug> break refund
+breakpoint at refund
 debug> continue
-  plan -> value: ["api@1.4.0","worker@1.4.0"]
+  total -> value: 5700
   ask completed
-  approval -> payload: {"approved":true}, sender: {…}, timed_out: false
+  approval -> payload: {"approved":true}, sender: {"accepted_at":"","identity":{"deployment":"","issuer":"","kind":"","namespace":"","principal":"","subject":""},"local":true}, timed_out: false
   approved -> value: true
-break at rollout[0]/deploy (task "log")
-debug> inspect target
-"api@1.4.0"
+break at payout[0]/refund (task "log")
+debug> inspect line
+1500
 debug> inspect steps.approval.payload
 {"approved":true}
 debug> scope
-steps: approval, approved, ask, plan
-locals: target
-inputs: services, version
-run: identity, local, run_id, workflow_id
-trigger: delivery_id, kind, name, principal
+steps: approval, approved, ask, total
+locals: line
+inputs: lines, order_id
+run: identity, local, run_id, started_at, workflow_id
+trigger: delivery_id, kind, name, principal, scheduled_at
 debug> continue
-  deploy completed
-break at rollout[1]/deploy (task "log")
-debug> inspect target
-"worker@1.4.0"
-debug> delete deploy
-deleted breakpoint at deploy
+  refund completed
+break at payout[1]/refund (task "log")
+debug> inspect line
+4200
+debug> delete refund
+deleted breakpoint at refund
 debug> continue
-  deploy completed
-  rollout -> results: [{"deploy":{}},{"deploy":{}}]
-PASS  release-approval/workflow.test.yaml: an approval rolls out every planned target
+  refund completed
+  payout -> results: [{"refund":{}},{"refund":{}}]
+PASS  refund-approval/workflow.test.yaml: an approval pays back every line
 ```
 
 The breakpoint holds once per loop iteration, so the second stop sees the
-second target. `inspect` evaluates any expression the step itself could have
+second line. `inspect` evaluates any expression the step itself could have
 written, and `scope` lists every name in reach. Tab completes commands, step
 ids, and names.
 `help` lists the rest; [Debugging a workflow](DEBUGGING.md) covers them, and the
@@ -354,18 +354,18 @@ It prints the addresses it listens on and the development postures it takes
 for you: callers are anonymous, and the worker is unversioned. Both are safe
 only because nothing listens beyond this machine.
 
-In a second terminal, from the directory that holds `release-approval/`, start
+In a second terminal, from the directory that holds `refund-approval/`, start
 a run and keep its id:
 
 ```console
-$ ID=$(flow run --detach release-approval/workflow.yaml --input version=1.4.0 -o json | jq -r .workflowId)
+$ ID=$(flow run --detach refund-approval/workflow.yaml --input order_id=o-1000 -o json | jq -r .workflowId)
 $ flow get "$ID"
-RUNNING workflow flowstate-request-8ad9… run 01a0e4da-… (running for 5s) on approval
-  waiting at approval for signal "release-approved", lapsing in 59m55s
-  prompt: Approve release 1.4.0?
+RUNNING workflow flowstate-request-59e8… run 01a1144a-… (running for 5s) on approval
+  waiting at approval for signal "refund-approved", lapsing in 59m55s
+  prompt: Approve refunding 5700 cents on o-1000?
 ```
 
-Without `jq`, run `flow run --detach release-approval/workflow.yaml --input version=1.4.0`
+Without `jq`, run `flow run --detach refund-approval/workflow.yaml --input order_id=o-1000`
 and copy the workflow id it prints.
 
 The run is now parked at the gate. It is not holding a thread or a process
@@ -382,35 +382,26 @@ Back in the second terminal, the run is still there, still waiting:
 
 ```console
 $ flow list
-NAME              STATUS     STARTED               FINISHED  WORKFLOW_ID
-release-approval  > RUNNING  2026-09-27T21:52:04Z  -         flowstate-request-8ad9…
+NAME             STATUS     STARTED               FINISHED  WORKFLOW_ID
+refund-approval  > RUNNING  2026-10-07T02:57:25Z  -         flowstate-request-59e8…
 ```
 
 Approve it:
 
 ```console
-$ flow signal "$ID" release-approved --data '{"approved": true}'
-delivered release-approved to flowstate-request-8ad9…
+$ flow signal "$ID" refund-approved --data '{"approved": true}'
+delivered refund-approved to flowstate-request-59e8…
 $ flow watch "$ID"
-COMPLETED workflow flowstate-request-8ad9… run 01a0e4da-… after approval, approved, ask, plan, rollout
-outputs
-  approved [redacted: approved]
-  targets [redacted: targets]
-```
-
-The values show as `[redacted: …]` because `flow watch` and `flow get` are
-reading a run they did not start, and they cannot see the workflow's own
-declaration of which values are `sensitive:`, so they withhold every value
-rather than guess. Ask for them explicitly:
-
-```console
-$ flow get "$ID" --reveal-sensitive
-REVEAL revealing values declared sensitive, in the clear (--reveal-sensitive)
-COMPLETED workflow flowstate-request-8ad9… run 01a0e4da-… (took 1m2s)
+COMPLETED workflow flowstate-request-59e8… run 01a1144a-… after approval, approved, ask, payout, total
 outputs
   approved true
-  targets ["api@1.4.0", "worker@1.4.0"]
+  total_cents 5700
 ```
+
+A value the workflow declares `sensitive: true` is shown as `[redacted: <name>]`.
+Nothing in this workflow is sensitive, so every value above is shown. Revealing
+a sensitive value needs an authenticated caller the server's trust policy allows
+to; see [Deployment](DEPLOYMENT.md).
 
 `flow run` without `--detach` follows the run to the end in one command and
 prints its outputs itself, since it holds the file it submitted.

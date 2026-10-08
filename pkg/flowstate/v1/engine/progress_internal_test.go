@@ -177,10 +177,8 @@ func TestCurrentDetailsMarkdownSaysWhenARunIsHeld(t *testing.T) {
 		"an unheld run says nothing about a lease")
 
 	p.setDebugLease(&v1.DebugSession{
-		SessionId: "run-1/debug/0",
-		AttachedBy: &v1.WorkloadIdentity{
-			Issuer: "https://issuer.example.com", Subject: "sre-1@example.com",
-		},
+		SessionId:      "run-1/debug/0",
+		AttachedBy:     &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "sre-1@example.com"}},
 		LeaseExpiresAt: timestamppb.New(time.Date(2026, 8, 28, 9, 0, 0, 0, time.UTC)),
 	})
 

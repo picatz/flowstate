@@ -49,7 +49,7 @@ func TestSignalCompatDiscriminationIsSound(t *testing.T) {
 	t.Run("a non-empty current-shape delivery does not decode as the legacy shape", func(t *testing.T) {
 		delivery := &v1.SignalDelivery{
 			Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
-			Sender:  &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: "someone@example.com"}},
+			Sender:  &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com"}}},
 		}
 		payload, err := dc.ToPayload(delivery)
 		require.NoError(t, err)
@@ -67,7 +67,7 @@ func TestSignalCompatDiscriminationIsSound(t *testing.T) {
 		// enough to make the legacy decode fail — the discrimination does not
 		// depend on the payload half being present.
 		delivery := &v1.SignalDelivery{
-			Sender: &v1.SignalSender{Identity: &v1.WorkloadIdentity{Subject: "someone@example.com"}},
+			Sender: &v1.SignalSender{Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "someone@example.com"}}},
 		}
 		payload, err := dc.ToPayload(delivery)
 		require.NoError(t, err)
@@ -145,7 +145,7 @@ func TestSignalCompatConverterDecodesTheCurrentShape(t *testing.T) {
 	want := &v1.SignalDelivery{
 		Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{"approved": v1.NewLiteral(true)}},
 		Sender: &v1.SignalSender{
-			Identity: &v1.WorkloadIdentity{Subject: "real-caller@example.com", Namespace: "team-a"},
+			Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "real-caller@example.com", Namespace: "team-a"}},
 		},
 	}
 	payload, err := converter.GetDefaultDataConverter().ToPayload(want)
@@ -155,8 +155,8 @@ func TestSignalCompatConverterDecodesTheCurrentShape(t *testing.T) {
 	require.NoError(t, newCompatConverter().FromPayload(payload, &got))
 
 	require.True(t, got.GetPayload().GetNamedValues()["approved"].GetLiteral().GetBoolValue())
-	require.Equal(t, "real-caller@example.com", got.GetSender().GetIdentity().GetSubject())
-	require.Equal(t, "team-a", got.GetSender().GetIdentity().GetNamespace())
+	require.Equal(t, "real-caller@example.com", got.GetSender().GetIdentity().GetPrincipal().GetSubject())
+	require.Equal(t, "team-a", got.GetSender().GetIdentity().GetPrincipal().GetNamespace())
 }
 
 // TestSignalCompatConverterFallsThroughForEverythingElse checks that the

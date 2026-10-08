@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/cel-go/ext"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celrule"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/principal"
 )
 
 // SecretReference is a reference to a secret: the scheme that resolves it and the
@@ -18,7 +19,7 @@ import (
 // It names the accessors generated for the flowstate.v1.SecretRef protobuf
 // message, so a compiled reference satisfies it with no conversion, while this
 // package keeps its rule of never importing the generated types. See
-// [IdentitySource] for why that rule exists.
+// [WorkloadIdentity] for why that rule exists.
 type SecretReference interface {
 	GetScheme() string
 	GetName() string
@@ -248,11 +249,13 @@ func (rs secretRules) evaluate(
 func newSecretEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeFor[workload](), reflect.TypeFor[callerIdentity](), reflect.TypeFor[secret]()),
-		cel.Variable(attrIdentity, cel.ObjectType(callerTypeName)),
+			reflect.TypeFor[workload](), reflect.TypeFor[secret]()),
+		principal.EnvOptions(),
+		principal.Var(attrIdentity),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrSecret, cel.ObjectType(secretTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	)
 }
 

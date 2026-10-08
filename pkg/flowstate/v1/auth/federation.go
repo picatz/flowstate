@@ -4,7 +4,9 @@ import (
 	"crypto"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
+	"github.com/picatz/flowstate/internal/textbound"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
@@ -38,9 +40,26 @@ import (
 // [NewClientCredentialsExchanger] directly.
 type FederationPolicy struct {
 	// Issuer is the URL Flowstate publishes its identity at, and the "iss" claim
-	// of every assertion it mints. It must be reachable by the relying parties
-	// that will verify those assertions. Required.
+	// of every assertion it mints for the default tenant; a named tenant's is
+	// this plus "/tenants/<namespace>" (see Tenants). It must be reachable by the
+	// relying parties that will verify those assertions. Required.
 	Issuer string `json:"issuer" yaml:"issuer"`
+
+	// Tenants lists the tenants, Flowstate namespaces, that have an issuer of
+	// their own. Each one's issuer is Issuer plus "/tenants/<namespace>": its
+	// own discovery document, its own key set, and its own "iss" on every
+	// assertion minted for its workloads, so a relying party pins one tenant's
+	// issuer and never sees another's.
+	//
+	//	federation:
+	//	  issuer: https://flowstate.example.com
+	//	  tenants: [acme, globex]
+	//
+	// The roster is the whole set: a namespace not listed has no issuer, no key,
+	// and no URL, and a mint for it is refused rather than signed under another
+	// tenant's. Issuer itself is the issuer of the default tenant, the
+	// workloads that carry no namespace. At most [MaxFederationTenants].
+	Tenants []string `json:"tenants,omitempty" yaml:"tenants,omitempty"`
 
 	// AssertionLifetime overrides [DefaultAssertionLifetime].
 	AssertionLifetime time.Duration `json:"assertion_lifetime,omitempty" yaml:"assertion_lifetime,omitempty"`
@@ -79,7 +98,7 @@ type FederationPolicy struct {
 	// itself is not a tenant's to redefine.
 	//
 	// See [WithDeclaredClaims] for why this is an allowlist and for its
-	// relationship to the server's `--identity-claim`.
+	// relationship to an issuer entry's `carry_claims`.
 	DeclaredClaims []string `json:"declared_claims,omitempty" yaml:"declared_claims,omitempty"`
 
 	// Allow are CEL rules gating credential assumption. When any are present, a
@@ -133,6 +152,29 @@ type FederationTarget struct {
 	// Name is the operator's name for this system, matched by assumption rules and
 	// recorded in audit. Required, and unique within the policy.
 	Name string `json:"name" yaml:"name"`
+
+	// SubjectLevel is how much of the workload's position the assertion's
+	// "sub" names: "step", "workflow" or "deployment". Unset keeps the
+	// behavior a target has always had: the whole step, except for a
+	// client_credentials target that authenticates with the assertion, whose
+	// subject RFC 7523 makes the client id.
+	//
+	//	targets:
+	//	  - name: azure-prod
+	//	    subject_level: workflow
+	//	    client_credentials:
+	//	      token_url: https://login.microsoftonline.com/TENANT/oauth2/v2.0/token
+	//	      client_id: 00000000-0000-0000-0000-000000000000
+	//
+	// It exists for relying parties that match the subject exactly or bound its
+	// length: an Azure federated identity credential holds one exact subject
+	// and an application has few of them, and GCP's google.subject is length
+	// limited, so neither can take a per-step subject. A level written here is
+	// explicit, so on a client_credentials target it replaces the client id as
+	// the assertion's subject, which is what an Azure credential matches. The
+	// assumption policy is unaffected: it still gates the real step.
+	// See [SubjectLevel].
+	SubjectLevel SubjectLevel `json:"subject_level,omitempty" yaml:"subject_level,omitempty"`
 
 	// TokenExchange configures RFC 8693 OAuth 2.0 Token Exchange, the
 	// standards-based path that works with any authorization server implementing
@@ -230,6 +272,14 @@ func (p FederationPolicy) Validate() error {
 		return fmt.Errorf("%w: %w", ErrInvalidPolicy, err)
 	}
 
+	if err := validateFederationTenants(p.Tenants); err != nil {
+		return err
+	}
+
+	if err := validateFederationPaths(p); err != nil {
+		return err
+	}
+
 	// Checked here as well as in [NewIssuer], so that a declaration that can
 	// never apply is a parse error rather than something an operator learns
 	// about the first time a workload asks for a credential.
@@ -254,6 +304,16 @@ func (p FederationPolicy) Validate() error {
 			return fmt.Errorf("%w: targets[%d]: duplicate name %q", ErrInvalidPolicy, i, target.Name)
 		}
 		names[target.Name] = struct{}{}
+
+		// Unset is the default; anything written has to be one of the three
+		// levels. A misspelling that fell through to the default would leave an
+		// operator believing a per-workflow subject was configured while every
+		// step minted its own, and a federated credential pinned to the
+		// workflow would refuse them all.
+		if target.SubjectLevel != "" && !target.SubjectLevel.Valid() {
+			return fmt.Errorf("%w: targets[%d] %q: subject_level %q must be step, workflow, or deployment",
+				ErrInvalidPolicy, i, target.Name, textbound.Truncate(string(target.SubjectLevel), 32))
+		}
 
 		configured := 0
 		for _, set := range []bool{
@@ -297,6 +357,10 @@ type federationConfig struct {
 	client *http.Client
 	egress *netpolicy.Policy
 	clock  func() time.Time
+
+	// tenant is the tenant the issuer being built belongs to; empty is the
+	// default tenant.
+	tenant string
 
 	// verifyOnly are extra public keys to publish beside the signing key. They
 	// are issuer options rather than a second list of key material here,
@@ -359,6 +423,16 @@ func WithFederationEgressPolicy(policy *netpolicy.Policy) FederationOption {
 	}
 }
 
+// WithFederationTenant builds the issuer of one tenant of the policy, a name in
+// its Tenants list, or the default tenant when it is empty or omitted. A worker
+// serves one tenant and passes its own; the tenant is part of the issuer's URL
+// and of what it will mint for, so there is no way to build a tenant's issuer
+// without saying whose it is. A name the policy does not list is refused with
+// [ErrUnknownTenant].
+func WithFederationTenant(tenant string) FederationOption {
+	return func(c *federationConfig) { c.tenant = tenant }
+}
+
 // WithFederationClock sets the clock used for assertion and credential lifetimes.
 // It exists for tests.
 func WithFederationClock(clock func() time.Time) FederationOption {
@@ -397,6 +471,39 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 		opt(&cfg)
 	}
 
+	issuer, err := p.newIssuer(key, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	exchangers, err := p.exchangers(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	brokerOpts := []BrokerOption{
+		WithAssumeAllowRules(p.Allow...),
+		WithAssumeDenyRules(p.Deny...),
+	}
+	for name, exchanger := range exchangers {
+		brokerOpts = append(brokerOpts, WithTarget(name, exchanger))
+	}
+	for _, target := range p.Targets {
+		if target.SubjectLevel != "" {
+			brokerOpts = append(brokerOpts, WithTargetSubjectLevel(target.Name, target.SubjectLevel))
+		}
+	}
+	if cfg.clock != nil {
+		brokerOpts = append(brokerOpts, WithBrokerClock(cfg.clock))
+	}
+
+	return NewBroker(issuer, brokerOpts...)
+}
+
+// issuerOptions translates the policy's issuer settings, and the verify-only
+// keys cfg collected, into [IssuerOption]s. [FederationPolicy.Broker] and
+// [FederationPolicy.PublishOnlyIssuers] share it so the two build one issuer.
+func (p FederationPolicy) issuerOptions(cfg federationConfig) []IssuerOption {
 	issuerOpts := []IssuerOption{}
 	if p.AssertionLifetime > 0 {
 		issuerOpts = append(issuerOpts, WithAssertionLifetime(p.AssertionLifetime))
@@ -425,28 +532,31 @@ func (p FederationPolicy) Broker(key SigningKey, opts ...FederationOption) (*Bro
 	// property a reader has to go and check.
 	issuerOpts = append(issuerOpts, cfg.verifyOnly...)
 
-	issuer, err := NewIssuer(p.Issuer, key, issuerOpts...)
+	return issuerOpts
+}
+
+// newIssuer builds the issuer of cfg's tenant: the tenant's URL, the tenant
+// scope, and everything else the policy configures. [FederationPolicy.Broker]
+// and [FederationPolicy.PublishOnlyIssuers] share it so the worker that signs and
+// the server that publishes build one issuer, URL included.
+func (p FederationPolicy) newIssuer(key SigningKey, cfg federationConfig) (*Issuer, error) {
+	issuerURL, err := p.TenantIssuerURL(cfg.tenant)
 	if err != nil {
 		return nil, err
 	}
 
-	exchangers, err := p.exchangers(cfg)
-	if err != nil {
-		return nil, err
-	}
+	return NewIssuer(issuerURL, key, append(p.issuerOptions(cfg), WithTenant(cfg.tenant))...)
+}
 
-	brokerOpts := []BrokerOption{
-		WithAssumeAllowRules(p.Allow...),
-		WithAssumeDenyRules(p.Deny...),
+// TargetNames returns the configured target names, sorted: what
+// [Broker.Targets] reports, for a process that has no broker.
+func (p FederationPolicy) TargetNames() []string {
+	names := make([]string, 0, len(p.Targets))
+	for _, target := range p.Targets {
+		names = append(names, target.Name)
 	}
-	for name, exchanger := range exchangers {
-		brokerOpts = append(brokerOpts, WithTarget(name, exchanger))
-	}
-	if cfg.clock != nil {
-		brokerOpts = append(brokerOpts, WithBrokerClock(cfg.clock))
-	}
-
-	return NewBroker(issuer, brokerOpts...)
+	slices.Sort(names)
+	return names
 }
 
 // exchangers builds an exchanger for every configured target.

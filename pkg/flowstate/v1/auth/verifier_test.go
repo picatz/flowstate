@@ -444,7 +444,12 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 
 				groups, ok := principal.Claim("groups")
 				require.True(t, ok)
-				require.NotEmpty(t, groups)
+				require.Equal(t, []any{"platform", "sre"}, groups)
+
+				// A claim no carry_claims entry names is not on the principal,
+				// whatever the token held.
+				_, ok = principal.Claim("iss")
+				require.False(t, ok)
 
 				_, ok = principal.StringClaim("groups")
 				require.False(t, ok, "a list claim is not a string claim")
@@ -488,6 +493,11 @@ func TestOIDCVerifierAccepts(t *testing.T) {
 						Audiences: []string{"flowstate"},
 						Role:      "operator",
 						Actions:   auth.ActionScopes{"workload.read"},
+						CarryClaims: []auth.CarryClaim{
+							{Claim: "email", Type: auth.ClaimTypeString},
+							{Claim: "actions", Type: auth.ClaimTypeStringList},
+						},
+						GroupsClaim: "groups",
 					}},
 				},
 				auth.WithClock(clock.Now),

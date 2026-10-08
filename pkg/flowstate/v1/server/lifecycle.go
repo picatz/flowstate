@@ -98,7 +98,7 @@ func (s *FlowstateServer) authorizeRunDecision(ctx context.Context, workflowID, 
 			connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("no workflow id"))
 	}
 
-	caller := s.identityFor(ctx).GetNamespace()
+	caller := s.identityFor(ctx).GetPrincipal().GetNamespace()
 
 	// The caller's own namespace decides which Temporal namespace is even
 	// reachable. When a deployment maps namespaces, that alone makes addressing
@@ -656,7 +656,7 @@ func (s *FlowstateServer) starterAsIdentity(memo *common.Memo) (*v1.WorkloadIden
 	}
 
 	issuer, subject, _ := strings.Cut(starter, "#")
-	return &v1.WorkloadIdentity{Issuer: issuer, Subject: subject}, true, nil
+	return &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: issuer, Subject: subject}}, true, nil
 }
 
 // reportedStarter is who started a run, in the form [v1.GetResponse.Starter]
@@ -1042,7 +1042,7 @@ func (s *FlowstateServer) gateOf(ctx context.Context, resp *workflowservice.Desc
 	// wrong. Asked without writing a record: the denial that counts is the one
 	// Signal makes.
 	if out.MayAnswer && v1.IsDebugSignalName(name) &&
-		!holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
+		!s.holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG) {
 		out.MayAnswer = false
 	}
 
@@ -1052,7 +1052,7 @@ func (s *FlowstateServer) gateOf(ctx context.Context, resp *workflowservice.Desc
 	// the gate exists and that they may not answer it, and nothing the
 	// author wrote for approvers: this verb must not widen what that caller
 	// could read through `Get`, which they were never granted.
-	if out.MayAnswer || holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
+	if out.MayAnswer || s.holdsAction(ctx, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_READ) {
 		out.Prompt = wait.GetPrompt()
 		out.PromptTruncated = wait.GetPromptTruncated()
 		out.Starter = s.reportedStarter(resp)
@@ -1114,7 +1114,7 @@ func (s *FlowstateServer) ListGates(ctx context.Context, req *connect.Request[v1
 	// number plus the run it was counted on, because arrival numbers restart on
 	// a later run of the same workload.
 	runID := resp.GetWorkflowExecutionInfo().GetExecution().GetRunId()
-	caller := s.identityFor(ctx).GetNamespace()
+	caller := s.identityFor(ctx).GetPrincipal().GetNamespace()
 	query := listQueryDigest(workflowID+"\x00"+strconv.FormatBool(req.Msg.GetAnswerableOnly()), pageSize)
 
 	position, err := s.openPageToken(req.Msg.GetPageToken(), caller, query, time.Now())
@@ -1165,8 +1165,14 @@ func (s *FlowstateServer) ListGates(ctx context.Context, req *connect.Request[v1
 // entry's list names, and only a context with no authentication holds every
 // action. Asked, unlike authorizeAction, without
 // refusing or recording anything, for a decision about what to show.
-func holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
-	return authz.Decide(ctx, action, authz.Implied).Allowed
+func (s *FlowstateServer) holdsAction(ctx context.Context, action v1.AuthorizationAction) bool {
+	return s.decide(ctx, action, authz.Implied).Allowed
+}
+
+// decide asks the server's [authz.Decider], which is the trust policy unless an
+// embedder narrowed it with [WithDecider].
+func (s *FlowstateServer) decide(ctx context.Context, action v1.AuthorizationAction, mode authz.Mode) authz.Decision {
+	return authz.DecideWith(ctx, s.decider, action, mode)
 }
 
 // SignalWithStart delivers a signal to an entity, creating it first if none is
@@ -1201,7 +1207,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// RPC establishes it no differently.
 	identity := s.identityFor(ctx)
 
-	workflowID, err := v1.EntityWorkflowID(identity.GetNamespace(), req.Msg.GetEntityKey())
+	workflowID, err := v1.EntityWorkflowID(identity.GetPrincipal().GetNamespace(), req.Msg.GetEntityKey())
 	if err != nil {
 		// protovalidate already checked entity_key against the same grammar
 		// [v1.EntityWorkflowID] enforces; reaching this is the composed id
@@ -1250,7 +1256,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 	// an equality that can only answer true.
 	submitted := proto.Clone(req.Msg.GetWorkflow()).(*v1.Workflow)
 
-	workflow, trusted, err := s.trustedWorkflow(identity.GetNamespace(), req.Msg.GetWorkflow())
+	workflow, trusted, err := s.trustedWorkflow(identity.GetPrincipal().GetNamespace(), req.Msg.GetWorkflow())
 	if err != nil {
 		return nil, err
 	}
@@ -1433,7 +1439,7 @@ func (s *FlowstateServer) SignalWithStart(ctx context.Context, req *connect.Requ
 		// same way `flow run` starts one. Recorded here for the reason
 		// [FlowstateServer.Run] records it: the fact is known once, at the
 		// boundary, and carried rather than re-derived.
-		Trigger: v1.NewManualTriggerContext(identity.GetSubject()),
+		Trigger: v1.NewManualTriggerContext(identity.GetPrincipal().GetSubject()),
 	})
 	created := err == nil
 	actualRunID := ""

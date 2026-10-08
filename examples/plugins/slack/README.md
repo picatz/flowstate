@@ -1,15 +1,30 @@
-# Slack approval notification
+# Slack messages
 
-[`approval.yaml`](approval.yaml) completes the outbound half of a practical
-human-in-the-loop flow: `slack.post` tells a human an approval is waiting, the
-workflow waits durably for Flowstate's separately authenticated signal, and a
-second post records the outcome in the first message's thread.
+Three tested examples of the [`slack` plugin](../../../plugins/slack/README.md):
+
+- [`approval.yaml`](approval.yaml) completes the outbound half of a practical
+  human-in-the-loop flow. `slack.post` sends an **approval card** (summary,
+  fields, Approve and Reject buttons, a confirmation on Reject), the workflow
+  waits durably for Flowstate's separately authenticated signal, and
+  `slack.update` replaces the card with its outcome in place. The buttons
+  already carry the decision (`action_id`) and the run to wake (`value`) a
+  receiver will read.
+- [`status.yaml`](status.yaml) posts one **status card** when a rollout starts
+  and edits the same message as each stage finishes, with a progress bar, a
+  state, and a link. `slack.update` names its target, so a retry policy may
+  repeat it safely.
+
+- [`click.yaml`](click.yaml) closes the loop: the card's buttons are answered by
+  a `verify: slack` webhook trigger bridged to the run's gate with `signal:`, and
+  `slack.respond` replaces the card through the click's `response_url`. A
+  redelivered click joins the run instead of answering twice, and the receiver
+  answers Slack with the bodyless `200` it requires.
 
 Slack is notification, not authority. This plugin has no inbound listener and
 does not treat a button click or message as an approval; provider verification
 and bridging into signals remain the control-plane work tracked by #96.
 
-The example requires two deployment-owned controls that the Flowfile cannot
+The examples require two deployment-owned controls that the Flowfile cannot
 grant itself:
 
 - `SLACK_BOT_TOKEN` must be admitted by the configured `env:` secret backend
@@ -22,8 +37,9 @@ grant itself:
   `--egress-policy`. It authorizes only Slack's HTTPS API endpoint. A plugin
   declaration is not destination authority.
 
-`flow run local` refuses `slack.post`: rehearsal must never send a real
-notification. Validate the example without executing it by building the plugin
-and using `flow validate --plugin-dir` (or a saved `flow plugins --output json`
-catalog). `approval.test.yaml` exercises the authorized signal and both outbound
-steps deterministically with task stubs and an inert fixture credential.
+`flow run local` refuses `slack.post` and `slack.update`: rehearsal must never
+send a real notification. Validate the examples without executing them by
+building the plugin and using `flow validate --plugin-dir` (or a saved
+`flow plugins --output json` catalog). `approval.test.yaml` and
+`status.test.yaml` exercise every step deterministically with task stubs and an
+inert fixture credential.

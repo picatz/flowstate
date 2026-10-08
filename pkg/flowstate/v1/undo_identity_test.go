@@ -26,11 +26,7 @@ func TestTaskPolicyDeniesScopedCompensationByIdentityLocally(t *testing.T) {
 
 	run := func(t *testing.T, namespace string) error {
 		t.Helper()
-		ctx := v1.NewContextWithRehearsalIdentity(t.Context(), &v1.WorkloadIdentity{
-			Namespace: namespace,
-			Subject:   "rehearsal@example.com",
-			Issuer:    "flowstate:test",
-		})
+		ctx := v1.NewContextWithRehearsalIdentity(t.Context(), &v1.WorkloadIdentity{Principal: &v1.Principal{Namespace: namespace, Subject: "rehearsal@example.com", Issuer: "flowstate:test"}})
 		_, err := v1.Run(ctx, workflow)
 
 		return err

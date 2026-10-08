@@ -2,11 +2,13 @@ package auth
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/picatz/flowstate/internal/strictyaml"
 	"maps"
+	"net/http"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -621,6 +623,33 @@ type TrustedIssuer struct {
 	// (goccy/go-yaml's yaml.go doc), so the YAML tag needs no change.
 	NamespaceMap NamespaceMap `json:"namespace_map,omitzero" yaml:"namespace_map,omitempty"`
 
+	// CarryClaims names the token claims this entry copies into the caller's
+	// [Principal] claims, each with the type it must have and an optional rename.
+	// Only these reach `identity.claims` on any policy surface, on either driver:
+	// a token holds far more than authorization needs, and what is carried is
+	// recorded with each run. See [CarryClaim] and [MapClaims].
+	//
+	// An empty list carries none, so a rule reading a claim the entry does not
+	// carry never matches; `flow validate --auth-policy` says so.
+	CarryClaims []CarryClaim `json:"carry_claims,omitempty" yaml:"carry_claims,omitempty"`
+
+	// GroupsClaim is the dotted path of the token claim holding the caller's
+	// groups, such as `groups` or `realm_access.roles`. The list is carried as
+	// the list-valued claim `groups`, so `"x" in identity.claims.groups` works on
+	// every policy surface. It is bounded by [MaxGroups] and [MaxGroupBytes], and
+	// a token that signals an overage (Entra's `_claim_names`/`hasgroups`) or
+	// exceeds a bound is refused with [ErrGroupsOverage], never read in part.
+	//
+	// The name `groups` is reserved for this field: a CarryClaims entry that
+	// carries it, with or without GroupsClaim, is refused when the policy loads.
+	GroupsClaim string `json:"groups_claim,omitempty" yaml:"groups_claim,omitempty"`
+
+	// GroupMap maps an IdP's group value (a name, a GUID) to the Flowstate group
+	// a rule names. With it, only listed values are carried: the map is the
+	// allowlist of groups policy can refer to, so a rule that must deny on a
+	// group has to map it. Requires GroupsClaim.
+	GroupMap map[string]string `json:"group_map,omitempty" yaml:"group_map,omitempty"`
+
 	// JWKSURL is the issuer's JSON Web Key Set URL. Leave it empty to discover
 	// it from the issuer's /.well-known/openid-configuration document, which is
 	// the normal case; set it only for an issuer that publishes keys without a
@@ -640,6 +669,12 @@ type TrustedIssuer struct {
 	//
 	// Entries that share an Issuer must agree on this value.
 	JWKSFile string `json:"jwks_file,omitempty" yaml:"jwks_file,omitempty"`
+
+	// Delegation, when set, lets a token this entry admits carry an RFC 8693
+	// `act` chain, and names which actors may appear in it and what each may
+	// do. Without it an `act` claim is refused, never ignored. See [Delegation]
+	// for the narrowing-only rule.
+	Delegation *Delegation `json:"delegation,omitempty" yaml:"delegation,omitempty"`
 
 	// MaxTokenAge, when positive, rejects tokens whose "iat" claim is older
 	// than this, regardless of the lifetime the issuer chose. Workload tokens
@@ -800,7 +835,65 @@ func ParsePolicy(data []byte) (Policy, error) {
 		return Policy{}, err
 	}
 
+	if err := policy.validateFetchEgress(); err != nil {
+		return Policy{}, err
+	}
+
 	return policy, nil
+}
+
+// validateFetchEgress refuses an issuer or key set URL that the policy's own
+// identity egress policy would refuse to fetch, in the fetch's own words, so the
+// first token does not meet what the file could have said at load (#1694).
+//
+// It asks the policy what the transport asks, without the network: the exact
+// request discovery or the key set fetch makes (so path rules see the same
+// URL), and, when the host is an IP literal, the address verdict
+// [netpolicy.Policy.CheckAddr] gives it. A host name is not resolved here, so a
+// name that resolves to a denied address is still refused only at the fetch.
+//
+// It is [ParsePolicy]'s check rather than [Policy.Validate]'s because only a
+// file has no other say: a verifier built in Go may pass [WithEgressPolicy],
+// which replaces the section, so Validate cannot know what will do the fetch.
+func (p Policy) validateFetchEgress() error {
+	egress, err := p.EgressPolicy()
+	if err != nil {
+		return err
+	}
+
+	for i, issuer := range p.Issuers {
+		if issuer.kind() != IssuerKindOIDC || issuer.JWKSFile != "" {
+			continue
+		}
+		fetched, field := strings.TrimSuffix(issuer.Issuer, "/")+discoveryPath, "issuer"
+		if issuer.JWKSURL != "" {
+			fetched, field = issuer.JWKSURL, "jwks_url"
+		}
+		target, err := url.Parse(fetched)
+		if err != nil {
+			continue
+		}
+
+		denial := egress.CheckURL(context.Background(), http.MethodGet, target)
+		if denial == nil {
+			if addr, err := netip.ParseAddr(target.Hostname()); err == nil {
+				port, _ := strconv.ParseUint(target.Port(), 10, 16)
+				if port == 0 {
+					port = map[string]uint64{"http": 80, "https": 443}[target.Scheme]
+				}
+				denial = egress.CheckAddr(netip.AddrPortFrom(addr, uint16(port)))
+			}
+		}
+
+		var deny *netpolicy.DenyError
+		if errors.As(denial, &deny) {
+			return fmt.Errorf("%w: issuers[%d]: %s %q is refused by the identity egress policy: %v; "+
+				"configure the trust policy's egress: section to allow this fetch: %s",
+				ErrInvalidPolicy, i, field, target.Redacted(), deny, egressRemedy(deny))
+		}
+	}
+
+	return nil
 }
 
 // rejectNullNamespaceMap catches a case [NamespaceMap]'s own doc explains the
@@ -1081,23 +1174,17 @@ func (t TrustedIssuer) validate() error {
 	if t.Actions == nil {
 		return fmt.Errorf("actions is required; list the actions this entry grants, or use [] to grant none")
 	}
-	if len(t.Actions) > 64 {
-		return fmt.Errorf("actions has %d entries, over the 64 entry limit", len(t.Actions))
-	}
-	seenActions := make(map[string]struct{}, len(t.Actions))
-	for i, action := range t.Actions {
-		if action == "" || len(action) > 64 || strings.ContainsAny(action, " \t\r\n") {
-			return fmt.Errorf("actions[%d] must be a non-empty canonical scope of at most 64 bytes with no whitespace", i)
-		}
-		if _, duplicate := seenActions[action]; duplicate {
-			return fmt.Errorf("actions[%d]: duplicate action %q", i, action)
-		}
-		seenActions[action] = struct{}{}
+	if err := validateActionScopes("actions", t.Actions); err != nil {
+		return err
 	}
 
 	if !t.PrincipalKind.valid() {
 		return fmt.Errorf("principal_kind %q is not supported: use %q, %q or %q, or omit it",
 			t.PrincipalKind, PrincipalKindHuman, PrincipalKindWorkload, PrincipalKindAgent)
+	}
+
+	if err := t.validateClaimCarriage(); err != nil {
+		return err
 	}
 
 	var err error
@@ -1124,6 +1211,28 @@ func (t TrustedIssuer) validate() error {
 		// The value is not echoed: it is operator input that may be a misread
 		// credential, which the kind's own checks above only sometimes catch.
 		return fmt.Errorf("issuer contains '#', which separates the issuer from the subject in a qualified identity")
+	}
+
+	return nil
+}
+
+// validateActionScopes checks one list of canonical action scopes: at most 64,
+// each non-empty, at most 64 bytes, with no whitespace and no repeats. field
+// names the list in the refusal, so an entry's `actions` and a delegation
+// actor's `delegation.actors[i].actions` are held to the one rule.
+func validateActionScopes(field string, scopes ActionScopes) error {
+	if len(scopes) > 64 {
+		return fmt.Errorf("%s has %d entries, over the 64 entry limit", field, len(scopes))
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	for i, action := range scopes {
+		if action == "" || len(action) > 64 || strings.ContainsAny(action, " \t\r\n") {
+			return fmt.Errorf("%s[%d] must be a non-empty canonical scope of at most 64 bytes with no whitespace", field, i)
+		}
+		if _, duplicate := seen[action]; duplicate {
+			return fmt.Errorf("%s[%d]: duplicate action %q", field, i, action)
+		}
+		seen[action] = struct{}{}
 	}
 
 	return nil
@@ -1173,6 +1282,10 @@ func (t TrustedIssuer) validateOIDC() error {
 	}
 
 	if err := t.validateMultiTenantPinning(); err != nil {
+		return err
+	}
+
+	if err := t.validateDelegation(); err != nil {
 		return err
 	}
 
@@ -1230,6 +1343,9 @@ func (t TrustedIssuer) validateMTLS() error {
 	}
 	if t.MaxTokenAge != 0 {
 		return fmt.Errorf("max_token_age is not meaningful for kind: %s entries: a client certificate carries no issued-at claim to age", IssuerKindMTLS)
+	}
+	if t.Delegation != nil {
+		return fmt.Errorf("delegation is not meaningful for kind: %s entries: a client certificate carries no act claim", IssuerKindMTLS)
 	}
 
 	if err := t.validateRequire(); err != nil {
@@ -2011,6 +2127,9 @@ func (t TrustedIssuer) clone() TrustedIssuer {
 		clone.Require[i].NoneOf = slices.Clone(rule.NoneOf)
 	}
 	clone.NamespaceMap = maps.Clone(t.NamespaceMap)
+	clone.CarryClaims = slices.Clone(t.CarryClaims)
+	clone.GroupMap = maps.Clone(t.GroupMap)
+	clone.Delegation = t.Delegation.clone()
 
 	return clone
 }
@@ -2054,7 +2173,18 @@ func (t TrustedIssuer) admits(alg jwa.Algorithm, audiences []string, window life
 		}
 	}
 
-	return nil
+	// An "act" chain is part of what a token says, so whether this entry accepts
+	// it is part of whether the entry admits the token: an entry without a
+	// `delegation:` stanza does not admit a delegated token, and of two entries
+	// for one issuer the one that lists the actor is the match. The verifier has
+	// already refused a chain that does not parse, so the error here is
+	// unreachable through it and still refuses.
+	actors, err := ActorChain(claims)
+	if err != nil {
+		return err
+	}
+
+	return t.admitsActors(actors)
 }
 
 // check reports whether a verified claims set satisfies this rule.

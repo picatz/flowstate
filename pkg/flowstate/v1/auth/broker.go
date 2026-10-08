@@ -36,6 +36,7 @@ import (
 type Broker struct {
 	issuer  *Issuer
 	targets map[string]Exchanger
+	levels  map[string]SubjectLevel
 	rules   assumeRules
 	cache   *credentialCache
 	clock   func() time.Time
@@ -44,6 +45,7 @@ type Broker struct {
 // brokerConfig collects the options for [NewBroker].
 type brokerConfig struct {
 	targets    map[string]Exchanger
+	levels     map[string]SubjectLevel
 	allow      []string
 	deny       []string
 	costLimit  uint64
@@ -75,6 +77,20 @@ func WithTarget(name string, exchanger Exchanger) BrokerOption {
 		}
 		c.targets[name] = exchanger
 	}
+}
+
+// WithTargetSubjectLevel sets how much of the workload's position the assertion
+// subject minted for name carries; see [SubjectLevel]. A target with no level
+// keeps the subject it always had: the whole step, or the one its protocol
+// dictates. A level written here is the author's explicit choice and wins over a
+// protocol's default, because the relying party that cares, such as Azure matching
+// a federated credential's subject, reads the assertion's "sub" and not the
+// client id.
+//
+// [NewBroker] refuses a level that is not valid, and one for a target that is not
+// registered, rather than ignoring either.
+func WithTargetSubjectLevel(name string, level SubjectLevel) BrokerOption {
+	return func(c *brokerConfig) { c.levels[name] = level }
 }
 
 // WithAssumeAllowRules adds CEL rules that gate credential assumption. When any
@@ -131,6 +147,7 @@ func NewBroker(issuer *Issuer, opts ...BrokerOption) (*Broker, error) {
 
 	cfg := brokerConfig{
 		targets:   make(map[string]Exchanger),
+		levels:    make(map[string]SubjectLevel),
 		costLimit: DefaultAssumeRuleCostLimit,
 		margin:    DefaultRefreshMargin,
 		limit:     DefaultMaxCachedCredentials,
@@ -143,6 +160,16 @@ func NewBroker(issuer *Issuer, opts ...BrokerOption) (*Broker, error) {
 	if len(cfg.duplicates) > 0 {
 		return nil, fmt.Errorf("%w: target %q is registered more than once, or has no name or exchanger",
 			ErrInvalidPolicy, cfg.duplicates[0])
+	}
+
+	for _, name := range slices.Sorted(maps.Keys(cfg.levels)) {
+		if _, ok := cfg.targets[name]; !ok {
+			return nil, fmt.Errorf("%w: a subject level is set for target %q, which is not registered", ErrInvalidPolicy, name)
+		}
+		if level := cfg.levels[name]; !level.Valid() {
+			return nil, fmt.Errorf("%w: target %q: subject_level %q is not one of step, workflow, deployment",
+				ErrInvalidPolicy, name, textbound.Truncate(string(level), 32))
+		}
 	}
 
 	for name, exchanger := range cfg.targets {
@@ -172,6 +199,7 @@ func NewBroker(issuer *Issuer, opts ...BrokerOption) (*Broker, error) {
 	return &Broker{
 		issuer:  issuer,
 		targets: cfg.targets,
+		levels:  cfg.levels,
 		rules:   rules,
 		cache:   newCredentialCache(cfg.clock, cfg.margin, cfg.limit),
 		clock:   cfg.clock,
@@ -214,6 +242,12 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 		return Credential{}, err
 	}
 
+	// Refused before policy and cache: a cached credential is never served to,
+	// and no assertion is minted for, a caller whose chain it cannot carry.
+	if len(identity.Actors) > 0 {
+		return Credential{}, ErrDelegatedCaller
+	}
+
 	subject, err := identity.SubjectFor(ref)
 	if err != nil {
 		return Credential{}, err
@@ -238,7 +272,8 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 	// cache key rather than through a name: a boundary that holds for every
 	// pair the key distinguishes and fails silently for the pair it does not.
 	//
-	// So a delegated exchange is not cached. The cost is stated rather than
+	// So a delegated exchange is not cached; today it is refused outright with
+	// [ErrDelegatedCaller], so this holds for whatever replaces that refusal. The cost is stated rather than
 	// hidden: one exchange per request against such a target, with no reuse
 	// inside the credential's lifetime. Caching per delegator instead would
 	// need a stable, non-secret discriminator for the delegator, which means
@@ -253,8 +288,17 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 	// able to tell it from the refusal it currently looks like. The wrapper
 	// unwraps to the failure itself, so [Retryable] and every errors.Is check
 	// against the exchange sentinels answer exactly as before.
+	// What the relying party will read as "sub", decided only after the policy
+	// has permitted the request: a level cannot turn a denial into anything
+	// else, and nothing is derived for a request that was refused. The policy
+	// above saw the step whatever this answers.
+	minted, err := b.mintedSubject(requirement, identity, ref, subject, target)
+	if err != nil {
+		return Credential{}, assumptionFailed(target, err)
+	}
+
 	if delegated, ok := exchanger.(delegatingExchanger); ok && delegated.isDelegated() {
-		credential, err := b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
+		credential, err := b.exchange(ctx, exchanger, requirement, identity, ref, minted, target)
 		if err != nil {
 			return Credential{}, assumptionFailed(target, err)
 		}
@@ -263,7 +307,7 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 	}
 
 	credential, err := b.cache.get(ctx, credentialKey(target, subject, identity), func(ctx context.Context) (Credential, error) {
-		return b.exchange(ctx, exchanger, requirement, identity, ref, subject, target)
+		return b.exchange(ctx, exchanger, requirement, identity, ref, minted, target)
 	})
 	if err != nil {
 		return Credential{}, assumptionFailed(target, err)
@@ -288,16 +332,24 @@ type delegatingExchanger interface {
 	isDelegated() bool
 }
 
-// exchange mints an assertion and trades it for a credential.
-func (b *Broker) exchange(ctx context.Context, exchanger Exchanger, requirement Requirement, identity WorkloadIdentity, ref StepRef, subject, target string) (Credential, error) {
-	// A protocol that dictates its own subject gets it here. The policy above
-	// evaluated the workload's real subject either way, so an override cannot
-	// widen what a workload is allowed to do.
-	minted := subject
-	if requirement.Subject != "" {
-		minted = requirement.Subject
+// mintedSubject is the subject the assertion for target carries. The target's
+// [SubjectLevel] decides it when one was written. Otherwise a protocol that
+// dictates its own subject gets it, and everything else gets the step's. The
+// policy evaluated the workload's real step either way, so none of this widens
+// what a workload is allowed to do.
+func (b *Broker) mintedSubject(requirement Requirement, identity WorkloadIdentity, ref StepRef, subject, target string) (string, error) {
+	if level, ok := b.levels[target]; ok {
+		return identity.SubjectAt(ref, level)
 	}
+	if requirement.Subject != "" {
+		return requirement.Subject, nil
+	}
+	return subject, nil
+}
 
+// exchange mints an assertion, with the subject [Broker.mintedSubject] chose, and
+// trades it for a credential.
+func (b *Broker) exchange(ctx context.Context, exchanger Exchanger, requirement Requirement, identity WorkloadIdentity, ref StepRef, minted, target string) (Credential, error) {
 	assertion, err := b.issuer.mintFor(ctx, identity, ref, minted, requirement.Audience)
 	if err != nil {
 		return Credential{}, err
@@ -327,6 +379,32 @@ func (b *Broker) exchange(ctx context.Context, exchanger Exchanger, requirement 
 	}
 
 	return credential, nil
+}
+
+// Token resolves the credential for target and returns its bearer token, for a
+// consumer that is not an HTTP request: a plugin task whose secret input takes a
+// minted credential where it would take a stored secret.
+//
+// It is [Broker.Authorize] with a different sink and holds to the same order,
+// policy first, so a refused request mints nothing. Only a bearer credential has
+// a single string to give: an AWS session carries three values that have to sign
+// a request, so it is refused here, after the decision, rather than flattened
+// into one string a consumer could not use.
+//
+// The caller owns the returned value, so it must go straight to a scrubber-
+// registered sink and never into an output or history.
+func (b *Broker) Token(ctx context.Context, identity WorkloadIdentity, ref StepRef, target string) (string, error) {
+	credential, err := b.Credential(ctx, identity, ref, target)
+	if err != nil {
+		return "", err
+	}
+
+	token, ok := credential.Bearer()
+	if !ok {
+		return "", assumptionFailed(target, fmt.Errorf("auth: a %s credential has no single token to hand a task; it can only be applied to a request it signs", credential.Type))
+	}
+
+	return token, nil
 }
 
 // Authorize resolves the credential for target and attaches it to req.

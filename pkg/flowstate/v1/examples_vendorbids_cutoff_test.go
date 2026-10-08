@@ -52,7 +52,7 @@ func TestVendorBidsCutoffJudgesAcceptanceTime(t *testing.T) {
 			inputs["min_bids"] = v1.NewLiteral(int64(1))
 
 			sender := &v1.SignalSender{
-				Identity: &v1.WorkloadIdentity{Subject: "acme@example.com", Issuer: "https://issuer.example.com"},
+				Identity: &v1.WorkloadIdentity{Principal: &v1.Principal{Subject: "acme@example.com", Issuer: "https://issuer.example.com"}},
 				Local:    tc.local,
 			}
 			if tc.at != nil {

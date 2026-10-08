@@ -70,9 +70,9 @@
 //   - method  string, the HTTP method as written
 //   - path    string, the URL path
 //   - ip      string, the resolved address the connection is being made to
-//   - identity object, the workload identity of the run making the request, with
-//     string fields subject, issuer, and namespace and a claims map — see
-//     [Identity]. On a shared worker this is what lets a rule scope egress by
+//   - identity object, the run's attested caller: string fields subject, issuer,
+//     namespace, principal and kind, a claims map and an actions list — see
+//     [principal.Caller]. On a shared worker this is what lets a rule scope egress by
 //     tenant, the same identity secret-access and task-shape rules already read.
 //     A run that carries no attested identity — a local run, or one that predates
 //     identity — presents every field empty, which a rule requiring a tenant does
@@ -629,7 +629,7 @@ func (p *Policy) checkRequest(req *http.Request) error {
 		"port":        int64(port),
 		"method":      req.Method,
 		"path":        rulePath(req.URL),
-		"identity":    identityFromContext(req.Context()),
+		"identity":    identityFromContext(req.Context()).Bind(),
 		"credentials": credentialsFromContext(req.Context()),
 	})
 }
@@ -777,7 +777,7 @@ func (p *Policy) evalConnRules(ctx context.Context, target, scheme, host string,
 		"host":     host,
 		"port":     int64(addrPort.Port()),
 		"ip":       normalize(addrPort.Addr()).String(),
-		"identity": identityFromContext(ctx),
+		"identity": identityFromContext(ctx).Bind(),
 	})
 }
 

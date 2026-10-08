@@ -1,0 +1,17 @@
+[
+  {
+    "type": "section",
+    "text": {
+      "type": "plain_text",
+      "text": "Open the dashboard"
+    },
+    "accessory": {
+      "type": "button",
+      "text": {
+        "type": "plain_text",
+        "text": "Open"
+      },
+      "action_id": "open"
+    }
+  }
+]

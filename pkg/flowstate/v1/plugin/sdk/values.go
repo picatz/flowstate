@@ -3,7 +3,6 @@ package sdk
 import (
 	"errors"
 	"fmt"
-	"math"
 	"strings"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -28,6 +27,13 @@ import (
 //		}
 //		...
 //	}
+//
+// A field may be one of the task's own messages, a list of them, or a map of
+// them. It is filled from a map literal keyed by field name, a oneof by naming
+// the member it holds, with depth, entry and total-value bounds; see
+// [flowstatev1.SetLiteralField]. Inside a nested message an unknown key is
+// refused by name, since a misspelling there would otherwise drop what the author
+// wrote. Protobuf's well-known types are still not converted.
 //
 // An input the message has no field for is ignored rather than refused, so that
 // a workflow written against a newer version of a task does not fail against an
@@ -79,7 +85,7 @@ func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error
 // rather than what the workflow sent: the field cannot hold any value of this
 // input's kind, whatever value that is. [DecodeInputs] leaves such an error
 // unclassified so the host records a task failure, not an invalid input.
-var errTaskDeclaration = errors.New("the task's declaration, not the input, is what to change")
+var errTaskDeclaration = flowstatev1.ErrFieldUnsupported
 
 // setField assigns one input to one field.
 func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, value *flowstatev1.Value) error {
@@ -94,7 +100,7 @@ func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, valu
 
 	switch kind := value.GetKind().(type) {
 	case *flowstatev1.Value_Literal:
-		return setLiteral(msg, field, kind.Literal)
+		return flowstatev1.SetLiteralField(msg, field, kind.Literal)
 	case *flowstatev1.Value_Expr:
 		return fmt.Errorf(
 			"is an unresolved expression; the engine resolves inputs before sending them, so this one was declared in DeferredInputs and the task has to evaluate it itself (%w)",
@@ -103,203 +109,15 @@ func setField(msg protoreflect.Message, field protoreflect.FieldDescriptor, valu
 		return fmt.Errorf(
 			"is a secret reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one (%w)",
 			errTaskDeclaration)
+	case *flowstatev1.Value_CredentialRef:
+		return fmt.Errorf(
+			"is a credential reference, which this field's type cannot hold; declare the field as flowstate.v1.Value to receive one (%w)",
+			errTaskDeclaration)
 	case *flowstatev1.Value_Error_:
 		return fmt.Errorf("is an error value: %s", textbound.Truncate(kind.Error.GetMessage(), 256))
 	default:
 		return fmt.Errorf("has no value")
 	}
-}
-
-// setLiteral assigns a CEL literal to a field, converting by the field's kind.
-func setLiteral(msg protoreflect.Message, field protoreflect.FieldDescriptor, literal *expr.Value) error {
-	switch {
-	case field.IsMap():
-		// Only string keys, checked before anything is built: the key is
-		// constructed as a string below, and protobuf's reflection panics rather
-		// than erroring when a value of the wrong type is set on a map. A panic
-		// here would surface to the engine as a dropped connection, which reads
-		// as a transient failure and gets retried into the same panic.
-		if kind := field.MapKey().Kind(); kind != protoreflect.StringKind {
-			return fmt.Errorf(
-				"has %s map keys, which DecodeInputs does not convert; read this input from the map directly (%w)",
-				kind, errTaskDeclaration,
-			)
-		}
-
-		entries := literal.GetMapValue()
-		if entries == nil {
-			return fmt.Errorf("wants a map")
-		}
-
-		mapValue := msg.Mutable(field).Map()
-		for _, entry := range entries.GetEntries() {
-			key, isString := entry.GetKey().GetKind().(*expr.Value_StringValue)
-			if !isString {
-				return fmt.Errorf("has a map key that is not a string")
-			}
-
-			converted, err := scalar(field.MapValue(), entry.GetValue())
-			if err != nil {
-				return fmt.Errorf("map value for %q: %w", textbound.Truncate(key.StringValue, 64), err)
-			}
-
-			mapValue.Set(protoreflect.ValueOfString(key.StringValue).MapKey(), converted)
-		}
-		return nil
-
-	case field.IsList():
-		values := literal.GetListValue()
-		if values == nil {
-			return fmt.Errorf("wants a list")
-		}
-		list := msg.Mutable(field).List()
-		for i, element := range values.GetValues() {
-			converted, err := scalar(field, element)
-			if err != nil {
-				return fmt.Errorf("element %d: %w", i, err)
-			}
-			list.Append(converted)
-		}
-		return nil
-
-	default:
-		converted, err := scalar(field, literal)
-		if err != nil {
-			return err
-		}
-		msg.Set(field, converted)
-		return nil
-	}
-}
-
-// scalar converts one CEL literal into a value of a field's type.
-func scalar(field protoreflect.FieldDescriptor, value *expr.Value) (protoreflect.Value, error) {
-	switch field.Kind() {
-	case protoreflect.StringKind:
-		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
-			return protoreflect.ValueOfString(v.StringValue), nil
-		}
-	case protoreflect.BytesKind:
-		if v, ok := value.GetKind().(*expr.Value_BytesValue); ok {
-			return protoreflect.ValueOfBytes(v.BytesValue), nil
-		}
-		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
-			return protoreflect.ValueOfBytes([]byte(v.StringValue)), nil
-		}
-	case protoreflect.BoolKind:
-		if v, ok := value.GetKind().(*expr.Value_BoolValue); ok {
-			return protoreflect.ValueOfBool(v.BoolValue), nil
-		}
-	// The range checks below are the same reasoning [integer] applies to a
-	// fractional value: a number that does not fit is a workflow author's
-	// mistake, and wrapping it into a plausible one — 4294967296 becoming 0, or
-	// 1e300 becoming +Inf — turns a diagnosable failure into a wrong answer.
-	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
-		if n, ok := integer(value); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
-			return protoreflect.ValueOfInt32(int32(n)), nil
-		}
-	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
-		if n, ok := integer(value); ok {
-			return protoreflect.ValueOfInt64(n), nil
-		}
-	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
-		if n, ok := integer(value); ok && n >= 0 && n <= math.MaxUint32 {
-			return protoreflect.ValueOfUint32(uint32(n)), nil
-		}
-	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		if n, ok := integer(value); ok && n >= 0 {
-			return protoreflect.ValueOfUint64(uint64(n)), nil
-		}
-	case protoreflect.FloatKind:
-		if f, ok := number(value); ok && !overflowsFloat32(f) {
-			return protoreflect.ValueOfFloat32(float32(f)), nil
-		}
-	case protoreflect.DoubleKind:
-		if f, ok := number(value); ok {
-			return protoreflect.ValueOfFloat64(f), nil
-		}
-	case protoreflect.EnumKind:
-		if n, ok := integer(value); ok && n >= math.MinInt32 && n <= math.MaxInt32 {
-			return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
-		}
-		if v, ok := value.GetKind().(*expr.Value_StringValue); ok {
-			if enum := field.Enum().Values().ByName(protoreflect.Name(v.StringValue)); enum != nil {
-				return protoreflect.ValueOfEnum(enum.Number()), nil
-			}
-			return protoreflect.Value{}, fmt.Errorf("%q is not a value of %s", textbound.Truncate(v.StringValue, 64), field.Enum().FullName())
-		}
-	case protoreflect.MessageKind:
-		// A field, element, or map value whose declared type does not constrain
-		// its shape — the http task's `outputs` map and `json` input are both
-		// this. Either spelling is accepted, going in as well as coming out, so
-		// that a task can take structured input as readily as it can return
-		// structured output.
-		switch field.Message().FullName() {
-		case celValueName:
-			return protoreflect.ValueOfMessage(value.ProtoReflect()), nil
-		case flowstateValueName:
-			wrapped := &flowstatev1.Value{Kind: &flowstatev1.Value_Literal{Literal: value}}
-			return protoreflect.ValueOfMessage(wrapped.ProtoReflect()), nil
-		}
-		// Any other message type is one no input value can fill, so this is
-		// about the declaration rather than the value it was handed.
-		return protoreflect.Value{}, fmt.Errorf(
-			"is a %s, which DecodeInputs does not convert; declare it as flowstate.v1.Value or read it from the input map directly (%w)",
-			field.Message().FullName(), errTaskDeclaration,
-		)
-	default:
-		return protoreflect.Value{}, fmt.Errorf(
-			"has type %s, which DecodeInputs does not convert; read it from the input map directly (%w)",
-			field.Kind(), errTaskDeclaration,
-		)
-	}
-
-	return protoreflect.Value{}, fmt.Errorf("is not a %s", field.Kind())
-}
-
-// integer reads a literal as a signed integer, accepting the several ways CEL
-// can carry one.
-func integer(value *expr.Value) (int64, bool) {
-	switch v := value.GetKind().(type) {
-	case *expr.Value_Int64Value:
-		return v.Int64Value, true
-	case *expr.Value_Uint64Value:
-		if v.Uint64Value > 1<<63-1 {
-			return 0, false
-		}
-		return int64(v.Uint64Value), true
-	case *expr.Value_DoubleValue:
-		// Only when it is exactly an integer: silently truncating 1.5 into 1
-		// would turn a workflow author's mistake into a plausible result.
-		if n := int64(v.DoubleValue); float64(n) == v.DoubleValue {
-			return n, true
-		}
-	}
-	return 0, false
-}
-
-// overflowsFloat32 reports whether a float64 cannot be held as a float32.
-//
-// An infinity that was already infinite is fine; one produced by narrowing is
-// not, because it silently replaces a number with something that is not one.
-func overflowsFloat32(f float64) bool {
-	if math.IsInf(f, 0) || math.IsNaN(f) {
-		return false
-	}
-	return math.Abs(f) > math.MaxFloat32
-}
-
-// number reads a literal as a float.
-func number(value *expr.Value) (float64, bool) {
-	switch v := value.GetKind().(type) {
-	case *expr.Value_DoubleValue:
-		return v.DoubleValue, true
-	case *expr.Value_Int64Value:
-		return float64(v.Int64Value), true
-	case *expr.Value_Uint64Value:
-		return float64(v.Uint64Value), true
-	}
-	return 0, false
 }
 
 // EncodeOutputs turns a task's output message into the named values a step
