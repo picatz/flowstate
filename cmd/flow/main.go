@@ -3846,6 +3846,12 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	graphCmd.GroupID = "workflow"
 	rootCmd.AddCommand(graphCmd)
 
+	// Beside `graph`, which writes the same graph as text or data: this is the
+	// screen you move around in, over the same sources and flags.
+	exploreCmd := newExploreCommand()
+	exploreCmd.GroupID = "workflow"
+	rootCmd.AddCommand(exploreCmd)
+
 	// Beside `validate` and `test`, the other two commands that read a Flowfile
 	// without running it. `buf breaking` guards the proto contract; this guards
 	// the contract one level up, a workflow's declared inputs and outputs, in the
