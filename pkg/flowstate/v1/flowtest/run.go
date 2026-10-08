@@ -84,6 +84,13 @@ type RunOptions struct {
 	// case where the two drivers disagree. Nil runs the local driver alone.
 	Durable DurableRunner
 
+	// RequireRegisteredTasks refuses a task-form stub naming a task the
+	// default registry does not hold, instead of registering a placeholder
+	// that makes the name resolve. For a caller that has loaded what exists
+	// (a plugin catalog); without it a stub may name a task this build
+	// lacks, which is how a plugin task is tested with no plugin installed.
+	RequireRegisteredTasks bool
+
 	// Select filters which cases run, by name; nil runs every case. A case
 	// filtered out is not run, not reported, and counted in
 	// [RunResult.Filtered] — the number a caller's own output must surface,
@@ -286,6 +293,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	// back off the context to decide whether it also wants the account.
 	if opts.Debugger != nil {
 		ctx = v1.NewContextWithDebugger(ctx, opts.Debugger)
+	}
+
+	if opts.RequireRegisteredTasks {
+		ctx = contextRequiringRegisteredTasks(ctx)
 	}
 
 	filtered := 0
@@ -896,6 +907,16 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// other package's, such as pkg/flowstate/embed's Tasks.Install. See
 	// [v1.LockDefaultRegistry].
 	unlockRegistry := v1.LockDefaultRegistry()
+
+	// Before the swap below pre-registers every stubbed name: afterwards a
+	// misspelled plugin task is indistinguishable from a real one (#1294).
+	if registeredTasksRequired(base) {
+		if err := checkStubbedTasksRegistered(v1.DefaultRegistry(), compiled); err != nil {
+			unlockRegistry()
+			caseError("%s", err)
+			return
+		}
+	}
 
 	// Swapped in before the workflow is even parsed, not just before it runs:
 	// a stub may name a task this build does not otherwise register — a

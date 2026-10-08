@@ -52,6 +52,9 @@ func newTestCommand() *cobra.Command {
 			"no Temporal server, and a virtual clock so a workflow that sleeps for a day resolves in " +
 			"under a second.\n\n" +
 			"A named file is taken as given. A directory is walked for *.test.yaml files.\n\n" +
+			"Plugin tasks are stubbed by name with no plugin installed. Given `--plugin-catalog`, a " +
+			"saved `flow plugins -o json` document, a stub naming a task that neither this build nor " +
+			"the catalog provides fails the case instead of passing over a task nothing provides.\n\n" +
 			"Per file, `flow test` reports branch coverage: the set of the workflow's steps at least " +
 			"one case ran, and the complement no case ever reached. Coverage is reported, not failed, " +
 			"unless `--coverage-required` is set, which makes an unreached step a failure for any file " +
@@ -158,6 +161,9 @@ flow test -o jsonl examples/`,
 	// are exempt from the idle-stub warning (see flowtest's
 	// unusedStubWarnings), so a file-level catch-all never trips a suite
 	// that opted in.
+	// Registers the catalog's tasks and makes a stub naming a task neither the
+	// build nor the catalog provides a failure (#1294). Nothing is launched.
+	addPluginCatalogFlag(cmd)
 	cmd.Flags().Bool("fail-on-warning", false,
 		"fail when a case reports a warning — a stub declared and never answered through, "+
 			"a task invoked with no stub declared, or an invocation that no declared stub answered — "+
@@ -325,6 +331,15 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	}
 	coverageRequired, _ := cmd.Flags().GetBool("coverage-required")
 	failOnWarning, _ := cmd.Flags().GetBool("fail-on-warning")
+	// The catalog, when named, is registered before any case runs so that the
+	// tasks it carries exist for the compiler, and so that a stub naming one it
+	// does not carry is refused rather than made resolvable (#1294). Nothing is
+	// launched: stubbing needs the catalog's facts, never a plugin process.
+	catalog, err := loadPluginCatalog(cmd)
+	if err != nil {
+		return fmt.Errorf("the catalog on --%s is what these suites' stubs are checked against, "+
+			"and it could not be read, so nothing was run: %w", pluginCatalogFlag, err)
+	}
 	// The root's own persistent -v/--verbose, reused rather than shadowed
 	// (#929 slice 2): under `flow test` it additionally means "show every
 	// case's transcript", the `go test -v` reading, while a failing case
@@ -482,9 +497,12 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			Durable:     durableRunner,
 			Select:      selectCase,
 			CaseTimeout: timeout,
-			FailFast:    failFast,
-			HaltedBy:    halted,
-			ListOnly:    listing,
+			// Only given a catalog: without one, a plugin task is stubbable by
+			// name with no plugin installed, and that suite is legitimate.
+			RequireRegisteredTasks: catalog != nil,
+			FailFast:               failFast,
+			HaltedBy:               halted,
+			ListOnly:               listing,
 			// nil unless --debug, and a nil interface value in this field is
 			// what every other run in the world passes: the engine's boundary
 			// does one context lookup and finds nothing.
