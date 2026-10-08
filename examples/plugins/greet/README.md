@@ -80,9 +80,10 @@ server resolves that block against the plugins it launched itself, and without
 them it refuses the submission as `required plugin "example" is not installed
 on this deployment`.
 
-`flow run` asks the server it submits to which tasks it can run (`GetCatalog`), so a plugin task the
-server loaded validates on the client without the client launching anything. Against a server whose
-policy denies that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
 `flow plugins --plugin-dir ./plugins --output json`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:

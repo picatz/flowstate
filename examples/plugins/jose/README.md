@@ -28,9 +28,10 @@ and its `plugins:` block, against the plugins it launched itself.
 `--insecure-no-auth` makes this a rehearsal: every caller is anonymous, which is
 only right on a machine nobody else can reach.
 
-`flow run` asks the server it submits to which tasks it can run (`GetCatalog`), so a plugin task the
-server loaded validates on the client without the client launching anything. Against a server whose
-policy denies that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
 `flow plugins --plugin-dir ./plugins --output json`.
 
 ## The two test cases

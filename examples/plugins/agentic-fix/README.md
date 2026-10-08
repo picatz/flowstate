@@ -180,9 +180,10 @@ shared host should resolve it worker-side instead. The server takes
 it checks each task this file names, and its `plugins:` block, against the
 plugins it launched itself.
 
-`flow run` asks the server it submits to which tasks it can run (`GetCatalog`), so a plugin task the
-server loaded validates on the client without the client launching anything. Against a server whose
-policy denies that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
 `flow plugins --plugin-dir ./plugins --output json`.
 
 and answering the gate, when it is reached, is:

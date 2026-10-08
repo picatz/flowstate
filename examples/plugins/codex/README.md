@@ -52,9 +52,10 @@ is a rehearsal policy that allows every reference). `FLOWSTATE_CODEX_BIN` is
 read by the plugin, whose environment starts empty, so it is named with
 `--plugin-env`; exported in the shell, it would never reach the plugin.
 
-`flow run` asks the server it submits to which tasks it can run (`GetCatalog`), so a plugin task the
-server loaded validates on the client without the client launching anything. Against a server whose
-policy denies that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
 `flow plugins --plugin-dir ./plugins --output json`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
