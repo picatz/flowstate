@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
@@ -150,9 +151,11 @@ func runGraph(cmd *cobra.Command, args []string) error {
 	return graph.Text(surface.Out, g)
 }
 
-// withLiveRuns lays the runs on the server over g. A page that fails ends the
-// read: the graph says how many runs it saw and that it is partial, because a
-// count that silently stops is a count that reads as true.
+// withLiveRuns lays the runs on the server over g.
+//
+// A page that fails is an error and no graph is written: counts from the pages
+// before it would read as the whole system. Only the page bound yields a partial
+// graph, which says how many runs it counted.
 func withLiveRuns(cmd *cobra.Command, g *v1.Graph, filter string) (*v1.Graph, error) {
 	server := serverFlagsOf(cmd)
 	client := newWorkflowServiceClient(server)
@@ -192,7 +195,8 @@ func withLiveRuns(cmd *cobra.Command, g *v1.Graph, filter string) (*v1.Graph, er
 	out := graph.WithRuns(g, runs)
 	if more {
 		out.Partial = true
-		out.Notes = append(out.Notes, fmt.Sprintf("the first %d runs were counted; more exist and were not read", len(runs)))
+		// First, so the bound is the note a full list does not cut.
+		out.Notes = slices.Insert(out.Notes, 0, fmt.Sprintf("the first %d runs were counted; more exist and were not read", len(runs)))
 		out.Notes = out.Notes[:min(len(out.Notes), 100)]
 	}
 

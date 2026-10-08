@@ -63,6 +63,12 @@ func WithRuns(g *v1.Graph, runs []*v1.RunSummary) *v1.Graph {
 		note(plural(nameless, "run has", "runs have") + " no recorded workflow name and cannot be placed")
 	}
 
+	// Replaced, not added to: a refreshed graph reports the runs it was given,
+	// and the layer it already carried describes a moment that has passed.
+	out.Overlays = slices.DeleteFunc(out.Overlays, func(l *v1.GraphOverlay) bool {
+		return l.GetKind() == v1.GraphOverlayKind_GRAPH_OVERLAY_KIND_RUN_STATUS
+	})
+
 	have := make(map[string]struct{}, len(out.GetNodes()))
 	for _, n := range out.GetNodes() {
 		have[n.GetId()] = struct{}{}
@@ -105,6 +111,7 @@ func WithRuns(g *v1.Graph, runs []*v1.RunSummary) *v1.Graph {
 	})
 	if len(layer.Entries) > 0 {
 		out.Overlays = append(out.Overlays, layer)
+		slices.SortStableFunc(out.Overlays, func(a, b *v1.GraphOverlay) int { return cmp.Compare(a.GetKind(), b.GetKind()) })
 	}
 
 	sorted := slices.Sorted(maps.Keys(notes))

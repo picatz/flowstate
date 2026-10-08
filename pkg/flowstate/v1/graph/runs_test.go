@@ -111,3 +111,18 @@ func TestTextShowsRunStateBeneathTheWorkflow(t *testing.T) {
 
 	require.Equal(t, "deploy\n  runs  1 FAILED, 1 RUNNING\n  uses  log\n", sb.String())
 }
+
+func TestWithRunsReplacesTheLayerAGraphAlreadyCarries(t *testing.T) {
+	first := graph.WithRuns(graph.Static(&v1.Workflow{Name: "deploy"}), []*v1.RunSummary{
+		run("deploy", v1.RunResponse_STATUS_RUNNING),
+	})
+	require.Equal(t, []string{"workflow:deploy RUNNING x1"}, overlayOf(first))
+
+	again := graph.WithRuns(first, []*v1.RunSummary{run("deploy", v1.RunResponse_STATUS_COMPLETED)})
+	require.Equal(t, []string{"workflow:deploy COMPLETED x1"}, overlayOf(again), "the old counts must not survive a refresh")
+	require.Len(t, again.GetOverlays(), 1, "one layer per kind")
+
+	none := graph.WithRuns(first, nil)
+	require.Empty(t, none.GetOverlays(), "a refresh with no runs leaves no stale state")
+	require.NoError(t, v1.Validate(again))
+}
