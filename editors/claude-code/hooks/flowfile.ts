@@ -1,9 +1,19 @@
 import type { FileReport } from '../types'
 
-/** Flowfiles are `workflow.yaml`, `*.workflow.yaml` and `*.flow.yaml`; test files are not. */
-const FLOWFILE = /(^|\/)([^/]*\.)?(workflow|flow)\.ya?ml$/
+/** `flow test`'s suites and fixtures are named for a loader of their own, never validated as workflows. */
+const TEST_FILE = /(\.test\.ya?ml|(^|\/)testdefaults\.ya?ml)$/
 
-export const isFlowfile = (path: string): boolean => FLOWFILE.test(path)
+/**
+ * The names docs/EDITORS.md ("Which files are Flowfiles") gives: `Flowfile`,
+ * `Flowfile.yaml`, `workflow.yaml`, `*.flow.yaml`, and anything under a
+ * `workflows/` directory.
+ */
+const FLOWFILE = /(^|\/)(Flowfile(\.ya?ml)?|workflow\.ya?ml|[^/]*\.flow\.ya?ml)$|(^|\/)workflows\/.*\.ya?ml$/
+
+export const isFlowfile = (path: string): boolean => {
+  const unix = path.replaceAll('\\', '/')
+  return FLOWFILE.test(unix) && !TEST_FILE.test(unix)
+}
 
 /**
  * Reads `flow validate -o jsonl` output: one JSON object per file. A line that

@@ -9,6 +9,19 @@ test('recognises Flowfiles and not test files', () => {
   expect(isFlowfile('examples/hello-world/workflow.test.yaml')).toBe(false)
   expect(isFlowfile('docker-compose.yaml')).toBe(false)
   expect(isFlowfile('notworkflow.yaml')).toBe(false)
+  expect(isFlowfile('a/orders.flow.test.yaml')).toBe(false)
+  expect(isFlowfile('testdefaults.yaml')).toBe(false)
+})
+
+test('recognises every name docs/EDITORS.md lists, on either separator', () => {
+  expect(isFlowfile('Flowfile')).toBe(true)
+  expect(isFlowfile('svc/Flowfile.yaml')).toBe(true)
+  expect(isFlowfile('workflow.yml')).toBe(true)
+  expect(isFlowfile('workflows/nightly/etl.yaml')).toBe(true)
+  expect(isFlowfile('workflows/etl.test.yaml')).toBe(false)
+  expect(isFlowfile('C:\\repo\\workflows\\etl.yaml')).toBe(true)
+  expect(isFlowfile('C:\\repo\\orders.flow.yaml')).toBe(true)
+  expect(isFlowfile('k8s/deployment.yaml')).toBe(false)
 })
 
 test('parses jsonl and skips the summary lines', () => {

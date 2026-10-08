@@ -5,6 +5,8 @@ import type { FileReport } from '../types'
 import { isFlowfile, parseReports, summarize } from './flowfile'
 
 const PANE = 'flowstate'
+/** The pane and the stored state keep the most recent Flowfiles only. */
+const MAX_REPORTS = 50
 const reports = atom({ plugin: 'flowstate', key: 'reports' } as const, [])
 
 const validate = async (
@@ -49,10 +51,9 @@ export const register: Register = (on, options) => {
       }
 
       const report = await validate($, flow, e.file_path)
-      await update($, reports, list => [
-        ...list.filter(r => r.file !== report.file),
-        report,
-      ])
+      await update($, reports, list =>
+        [...list.filter(r => r.file !== report.file), report].slice(-MAX_REPORTS),
+      )
       const broken = report.diagnostics.length > 0 || report.failure !== undefined
       $.ui.status(broken ? `flowstate: ${report.diagnostics.length || '!'} problem(s)` : undefined)
 

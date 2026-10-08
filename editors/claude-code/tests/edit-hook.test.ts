@@ -60,3 +60,29 @@ test('validation can be turned off', { options: { validateOnEdit: false } }, asy
   expect(seen).toEqual([])
   expect(ran.context ?? []).toEqual([])
 })
+
+const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
+
+test('the pane lists the newest Flowfiles and stays bounded', async ($, on) => {
+  stub(on, clean)
+  for (let i = 0; i < 60; i++) {
+    await $.tool.call({ tool: 'Write', file_path: `f${i}.flow.yaml`, content: 'x' })
+  }
+  const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
+
+  expect(await ui.find({ type: 'Text', text: /f59\.flow\.yaml/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /f10\.flow\.yaml/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /f9\.flow\.yaml/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /f0\.flow\.yaml/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the pane shows a problem with its line', async ($, on) => {
+  stub(on, broken)
+  await $.tool.call({ tool: 'Write', file_path: 'a.flow.yaml', content: 'x' })
+  const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
+
+  expect(await ui.find({ type: 'Text', text: /invalid a\.flow\.yaml/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /4:5 unknown task/ })).toBeDefined()
+  await ui.unmount()
+})
