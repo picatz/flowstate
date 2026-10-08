@@ -277,6 +277,11 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// arrived as (see [NormalizeWireValue]): after the check above has proved the
 		// text parses, and before the constraints, which evaluate `must:` against
 		// what an expression sees.
+		if lit := value.GetLiteral(); lit != nil {
+			if err := CheckDefaultFillBound(table, declaration.DeclaredType(), lit); err != nil {
+				return nil, invalidInput(name, err)
+			}
+		}
 		value = NormalizeInputValue(table, declaration, value)
 
 		// #204 found the element bound was gated on a declaration carrying

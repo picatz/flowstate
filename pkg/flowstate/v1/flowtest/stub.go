@@ -905,14 +905,17 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 				}
 			}
 
+			answered := v1.NewNamedValues(returns)
 			if s.callee != nil {
-				if err := checkCallAnswer(scope.GetProfile(), s.callee, returns); err != nil {
+				filled, err := checkCallAnswer(scope.GetProfile(), s.callee, returns)
+				if err != nil {
 					return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput,
 						fmt.Errorf("stub %d for %s: %w", m.ordinal, describeStubTarget(m), err))
 				}
+				answered = filled
 			}
 
-			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
+			return &v1.Node_Outputs{NamedValues: answered}, nil
 		}
 
 		// An invocation nothing answered clears any attribution an earlier

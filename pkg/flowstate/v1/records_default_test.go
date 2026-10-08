@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -173,4 +174,47 @@ func TestADefaultDoesNotHideASuppliedValueThatIsWrong(t *testing.T) {
 	_, err := bindTicket(t, defaultedWorkflow(), map[string]any{"id": "t-5", "status": "pending"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "status")
+}
+
+// A near-empty record is a few bytes on the wire and a field per default once
+// filled, so the fill is bounded where it is spent: a map of such records is refused
+// before it is filled, and a handful is not.
+func TestAnInputThatWouldFillTooManyDefaultsIsRefusedBeforeItIsFilled(t *testing.T) {
+	t.Parallel()
+
+	wide := &v1.TypeDeclaration{Name: "Wide"}
+	for i := range v1.MaxRecordFields {
+		wide.Fields = append(wide.Fields, &v1.InputDeclaration{
+			Name: fmt.Sprintf("f%02d", i), Type: v1.InputDeclaration_TYPE_INT, Default: v1.NewLiteral(int64(i)),
+		})
+	}
+	wf := &v1.Workflow{
+		Name:          "wide",
+		Profile:       v1.CurrentProfile,
+		DeclaredTypes: []*v1.TypeDeclaration{wide},
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name: "rows", Type: v1.InputDeclaration_TYPE_STRUCT, Required: true,
+			ValueType: &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{
+				Value: recordTypeOf("Wide"),
+			}}},
+		}},
+		Steps: []*v1.Node{{Id: "a", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}},
+	}
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	rows := func(n int) map[string]*v1.Value {
+		entries := make(map[string]any, n)
+		for i := range n {
+			entries[fmt.Sprintf("r%d", i)] = map[string]any{}
+		}
+
+		return map[string]*v1.Value{"rows": v1.NewLiteralMap(entries)}
+	}
+
+	_, err := v1.BindRunInputs(wf, rows(4))
+	require.NoError(t, err)
+
+	_, err = v1.BindRunInputs(wf, rows(2000))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fields that take a default")
 }

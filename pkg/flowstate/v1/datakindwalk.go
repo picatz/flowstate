@@ -211,3 +211,63 @@ func fillFieldDefaults(declared *TypeDeclaration, lit *expr.Value) *expr.Value {
 
 	return &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: out}}}
 }
+
+// maxDefaultFills bounds how many field defaults filling one submitted value may
+// write. A record that leaves every defaulted field out is a few bytes on the wire
+// and one entry per field once filled, so the bound is on the work the fill does,
+// stated apart from the size and element bounds that are judged after it.
+const maxDefaultFills = 1 << 16
+
+// CheckDefaultFillBound refuses a value whose fill would write more than
+// [maxDefaultFills] field defaults, counting without allocating, so a submitted map
+// or list of near-empty records cannot grow a thousandfold before any bound on the
+// value is read. It counts what [NormalizeWireValue] would write, a default's own
+// nested records included, and stops counting once the bound is passed.
+func CheckDefaultFillBound(table TypeTable, t *Type, lit *expr.Value) error {
+	budget := maxDefaultFills
+	countFills(table, t, lit, 0, &budget)
+	if budget < 0 {
+		return fmt.Errorf("leaves out more than %d fields that take a default; send those fields, or fewer records", maxDefaultFills)
+	}
+
+	return nil
+}
+
+func countFills(table TypeTable, t *Type, lit *expr.Value, depth int, budget *int) {
+	if lit == nil || depth > MaxStructureDepth || *budget < 0 {
+		return
+	}
+
+	switch kind := t.GetKind().(type) {
+	case *Type_List:
+		for _, element := range lit.GetListValue().GetValues() {
+			countFills(table, kind.List, element, depth+1, budget)
+		}
+
+	case *Type_Map_:
+		for _, entry := range lit.GetMapValue().GetEntries() {
+			countFills(table, kind.Map.GetValue(), entry.GetValue(), depth+1, budget)
+		}
+
+	case *Type_Message:
+		declared := table[kind.Message]
+		m := lit.GetMapValue()
+		if declared == nil || m == nil {
+			return
+		}
+
+		for _, field := range declared.GetFields() {
+			given := slices.IndexFunc(m.GetEntries(), func(e *expr.MapValue_Entry) bool { return e.GetKey().GetStringValue() == field.GetName() })
+			if given >= 0 {
+				countFills(table, field.DeclaredType(), m.GetEntries()[given].GetValue(), depth+1, budget)
+
+				continue
+			}
+
+			if fallback := field.GetDefault().GetLiteral(); fallback != nil {
+				*budget--
+				countFills(table, field.DeclaredType(), fallback, depth+1, budget)
+			}
+		}
+	}
+}
