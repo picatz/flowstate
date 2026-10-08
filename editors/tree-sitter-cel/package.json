@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-cel",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Tree-sitter grammar for CEL as written in Flowstate Flowfiles",
+  "license": "MIT",
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.cel",
+      "file-types": ["cel"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

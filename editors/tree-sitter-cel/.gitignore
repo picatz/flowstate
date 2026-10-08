@@ -1,0 +1,6 @@
+src/
+bindings/
+build/
+node_modules/
+*.so
+Cargo.lock
