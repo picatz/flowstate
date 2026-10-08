@@ -224,6 +224,12 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		if errors.Is(err, flowdebug.ErrConsoleInterrupted) {
 			// ctrl-C ends the run exactly as `quit` does.
 			text = "quit"
+		} else if err != nil && !errors.Is(err, io.EOF) {
+			// Input that failed is not input that ended: releasing the run would
+			// resume every stop unattended on a read the person never finished.
+			// The case is ended, which fails it, and the error said.
+			f.write(fmt.Sprintf("input failed: %v\n", err))
+			text = "quit"
 		} else if err != nil {
 			// The end of input releases the run, as a session with no console
 			// does: every stop is resumed until the case ends.
