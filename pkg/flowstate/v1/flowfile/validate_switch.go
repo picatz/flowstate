@@ -63,6 +63,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	}
 
 	domain, domainKnown := switchDomain(sw.GetValue(), enclosing, wf)
+	class, classKnown := switchValueClass(sw.GetValue(), enclosing, wf)
 
 	// The case literals: computed values refused, duplicates found after
 	// flattening `case: [a, b]` lists, and — where the domain is knowable —
@@ -158,6 +159,19 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 			}
 
 			if !domainKnown {
+				// No set of values, but the discriminant's type may still be known
+				// (#1639): a case of another class takes no arm on either driver,
+				// and nothing else would say so.
+				if got := switchLiteralClass(lit); classKnown && got != class {
+					ds = append(ds, Diagnostic{
+						Step: id, Field: field, Value: text,
+						Message: fmt.Sprintf(
+							"case %s is a %s, and %s is a %s; a case of a type the value can never "+
+								"produce can never match",
+							text, got, switchValueText(sw.GetValue()), class),
+						Code: v1.DiagnosticCodeTypeMismatch,
+					})
+				}
 				continue
 			}
 
@@ -446,6 +460,71 @@ func switchDomain(value *v1.Value, enclosing refScope, wf *v1.Workflow) ([]strin
 		return nil, false
 	}
 	return domain, true
+}
+
+// switchValueClass reports the class of value a switch's discriminant always
+// holds where the file says so, so a case literal of another class, which
+// [v1.SwitchLiteralsEqual] can never match, is a diagnostic rather than a
+// silent run that takes no arm (#1639).
+//
+// Two sources, both facts the file owns: `${inputs.<name>}` where the input is
+// declared with a scalar type, and `${steps.<id>.<name>}` whose written
+// expression is a constant (a `value:` step holding `${true}`). Integers and
+// doubles are one class because the switch compares numbers by value, as
+// CEL's own equality does. Anything else is open and stays silent.
+func switchValueClass(value *v1.Value, enclosing refScope, wf *v1.Workflow) (string, bool) {
+	parsed := value.GetExpr()
+	if parsed == nil {
+		return "", false
+	}
+	e := parsed.GetExpr()
+
+	if sel := e.GetSelectExpr(); sel != nil && !sel.GetTestOnly() &&
+		sel.GetOperand().GetIdentExpr().GetName() == v1.InputsRoot {
+		for _, decl := range wf.GetDeclaredInputs() {
+			if decl.GetName() != sel.GetField() {
+				continue
+			}
+			switch decl.GetType() {
+			case v1.InputDeclaration_TYPE_STRING, v1.InputDeclaration_TYPE_ENUM:
+				return "string", true
+			case v1.InputDeclaration_TYPE_INT, v1.InputDeclaration_TYPE_FLOAT:
+				return "number", true
+			case v1.InputDeclaration_TYPE_BOOL:
+				return "bool", true
+			}
+			return "", false
+		}
+		return "", false
+	}
+
+	written, ok := resolveStepOutputExpr(e, enclosing)
+	if !ok {
+		return "", false
+	}
+	switch written.GetConstExpr().GetConstantKind().(type) {
+	case *expr.Constant_BoolValue:
+		return "bool", true
+	case *expr.Constant_StringValue:
+		return "string", true
+	case *expr.Constant_Int64Value, *expr.Constant_Uint64Value, *expr.Constant_DoubleValue:
+		return "number", true
+	}
+	return "", false
+}
+
+// switchLiteralClass is the class of a scalar case literal, named as
+// [switchValueClass] names the discriminant's.
+func switchLiteralClass(lit *expr.Value) string {
+	switch lit.GetKind().(type) {
+	case *expr.Value_BoolValue:
+		return "bool"
+	case *expr.Value_StringValue:
+		return "string"
+	case *expr.Value_BytesValue:
+		return "bytes"
+	}
+	return "number"
 }
 
 // resolveInputEnumDomain reports the declared enum values when e is

@@ -699,3 +699,56 @@ steps:
 		}
 	}
 }
+
+// TestSwitchOverATypedValueRefusesACaseOfAnotherType is #1639: a discriminant
+// whose type the file states (a typed input, a constant `value:` step) takes no
+// arm for a case of another type, and until now nothing said so.
+func TestSwitchOverATypedValueRefusesACaseOfAnotherType(t *testing.T) {
+	t.Parallel()
+
+	const body = `    switch:
+      value: %s
+      cases:
+        - case: %s
+          steps: []
+      default:
+        steps: []
+`
+	flag := `edition: v2026.4
+name: t
+inputs:
+  retries:
+    type: int
+  verbose:
+    type: bool
+  mode:
+    type: string
+steps:
+  - id: flag
+    value: ${true}
+  - id: pick
+`
+	refused := []struct{ value, caze, want string }{
+		{"${steps.flag.value}", `"yes"`, `case "yes" is a string, and `},
+		{"${inputs.retries}", `"3"`, `case "3" is a string, and `},
+		{"${inputs.verbose}", `"true"`, `case "true" is a string, and `},
+		{"${inputs.mode}", `true`, `case true is a bool, and `},
+	}
+	for _, c := range refused {
+		ds := validateSwitchSrc(t, flag+fmt.Sprintf(body, c.value, c.caze))
+		require.NotEmpty(t, ds, "%s with case %s must be refused", c.value, c.caze)
+		assert.Contains(t, diagnosticMessages(ds), c.want, "%s with case %s", c.value, c.caze)
+		assert.Equal(t, "type-mismatch", string(ds[0].Code), "%s with case %s", c.value, c.caze)
+	}
+
+	for _, c := range []struct{ value, caze string }{
+		{"${steps.flag.value}", `true`},
+		{"${inputs.retries}", `3`},
+		{"${inputs.retries}", `3.0`}, // the switch compares numbers by value
+		{"${inputs.verbose}", `false`},
+		{"${inputs.mode}", `"fast"`},
+	} {
+		ds := validateSwitchSrc(t, flag+fmt.Sprintf(body, c.value, c.caze))
+		assert.Empty(t, ds, "%s with case %s must validate: %v", c.value, c.caze, ds)
+	}
+}
