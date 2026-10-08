@@ -67,6 +67,11 @@ steps:
 	})
 }
 
+// TestRunCaseDoesNotMisreportAnotherDeadlineAsItsWallLimit runs in a [synctest]
+// bubble for the reason the sibling above does: the caller's 20ms deadline has to
+// fire while the run is parked on the wait, and against the real clock it raced
+// the parse and compile that precede it, failing under `-race -cpu=1 -count=20`
+// when they took longer than the deadline.
 func TestRunCaseDoesNotMisreportAnotherDeadlineAsItsWallLimit(t *testing.T) {
 	const source = `
 edition: v2026.4
@@ -79,20 +84,23 @@ steps:
 	load := func() (*v1.Workflow, error) {
 		return flowfile.Unmarshal([]byte(source))
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
-	defer cancel()
-	caseCtx, cancelCase := caseContextWithin(ctx, time.Second)
-	defer cancelCase()
-	failed := true
 
-	result, _, _, _, _, _ := runCase(caseCtx, &Test{
-		Name:   "caller deadline",
-		Expect: Expectation{Failed: &failed},
-	}, "", load, false, fileVars{})
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+		defer cancel()
+		caseCtx, cancelCase := caseContextWithin(ctx, time.Second)
+		defer cancelCase()
+		failed := true
 
-	require.True(t, result.GetPassed(),
-		"a deadline other than the harness backstop remains an ordinary run failure the case can expect")
-	require.Empty(t, result.GetError())
+		result, _, _, _, _, _ := runCase(caseCtx, &Test{
+			Name:   "caller deadline",
+			Expect: Expectation{Failed: &failed},
+		}, "", load, false, fileVars{})
+
+		require.True(t, result.GetPassed(),
+			"a deadline other than the harness backstop remains an ordinary run failure the case can expect")
+		require.Empty(t, result.GetError())
+	})
 }
 
 func TestCaseWallLimitIsSharedBySeededSchedules(t *testing.T) {
