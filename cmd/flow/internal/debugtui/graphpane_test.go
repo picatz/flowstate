@@ -1026,3 +1026,22 @@ func TestAProgramThatIsNotTheRunsIsNeverDrawn(t *testing.T) {
 		assert.Empty(t, fake.resumes, "until was aimed at a step of a program the run is not running")
 	})
 }
+
+// TestBreakpointMarksVisitABoundedNumberOfSites: a snapshot may report a thousand
+// breakpoints of a thousand sites each, and a redraw does not walk a million paths.
+func TestBreakpointMarksVisitABoundedNumberOfSites(t *testing.T) {
+	t.Parallel()
+
+	sites := make([]*v1.DebugSite, 2*flowdebug.MaxOverlayNodes)
+	for i := range sites {
+		sites[i] = &v1.DebugSite{Path: []string{fmt.Sprintf("s%d", i)}}
+	}
+	snapshot := &v1.DebugSnapshot{Breakpoints: []*v1.DebugBreakpointState{
+		{Id: "a", Verified: true, Definition: &v1.DebugBreakpoint{Id: "a", Step: "a"}, Sites: sites},
+		{Id: "late", Verified: true, Definition: &v1.DebugBreakpoint{Id: "late", Step: "late"}, Sites: []*v1.DebugSite{{Path: []string{"last"}}}},
+	}}
+	marks := breakpointMarks(snapshot)
+	assert.LessOrEqual(t, len(marks), flowdebug.MaxOverlayNodes)
+	assert.Contains(t, marks, "s0", "the first sites are marked")
+	assert.NotContains(t, marks, "last", "a site past the visit bound was walked")
+}

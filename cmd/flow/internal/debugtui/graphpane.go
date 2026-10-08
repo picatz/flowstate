@@ -42,8 +42,8 @@ const (
 	MaxFlowNodes = flowdebug.MaxOverlayNodes
 
 	// maxFlowCallDepth is how deep a `call:` is followed into the callee's own
-	// steps, as the step list follows it.
-	maxFlowCallDepth = 8
+	// steps: as deep as the engine runs one.
+	maxFlowCallDepth = v1.MaxCallDepth
 
 	// levelWidth is the cells one level of nesting takes: the rail or corner of
 	// the box, the fold mark, and a space.
@@ -666,6 +666,9 @@ func nodeMark(state flowdebug.NodeState, o pane.Options) (string, lipgloss.Style
 // marked.
 func breakpointMarks(snapshot *v1.DebugSnapshot) map[string]string {
 	marks := map[string]string{}
+	// visits bounds the entries looked at, not only the entries kept: a snapshot
+	// may report a thousand breakpoints of a thousand sites each.
+	visits := 0
 	set := func(key, name string) {
 		if _, ok := marks[key]; !ok && key != "" && len(marks) < flowdebug.MaxOverlayNodes {
 			marks[key] = name
@@ -679,6 +682,9 @@ func breakpointMarks(snapshot *v1.DebugSnapshot) map[string]string {
 		name := cmp.Or(definition.GetStep(), bp.GetId())
 		set(name, name)
 		for _, site := range bp.GetSites() {
+			if visits++; visits > flowdebug.MaxOverlayNodes {
+				return marks
+			}
 			set(strings.Join(site.GetPath(), "/"), name)
 		}
 	}
