@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"runtime/debug"
@@ -224,8 +225,13 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			// Closing an unsaved defaults buffer returns its dependent suites to
 			// the saved file. Re-run them now; retaining the live-buffer answer
 			// until a suite happens to change would leave stale diagnostics.
+			//
+			// The suites past the dependent bound too: opening the buffer retracted
+			// their saved-file contributions from the defaults URI, and nothing but
+			// this brings them back (#1273).
 			if doc.kind == docTestDefaults {
-				for _, source := range s.testDiagnosticSourcesFor(testDefaultsDependencyURI(doc)) {
+				target := testDefaultsDependencyURI(doc)
+				for _, source := range append(s.testDiagnosticSourcesFor(target), s.testOverflowSourcesFor(target)...) {
 					suite, ok := s.docs.get(source)
 					if !ok || suite.kind != docTestFile {
 						continue
@@ -602,11 +608,15 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		if included != nil {
 			guards = append(guards, included)
 		}
-		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		// A live defaults edit changes every open suite that includes it. Re-run
 		// those suites through the same loader with this buffer; otherwise the
 		// editor would keep diagnostics from the saved defaults until each suite
 		// happened to change too.
+		//
+		// Before the buffer's own publication, not after: that publication
+		// aggregates the tracked suites' cached contributions, which until they
+		// are re-run were computed from the saved file, and a range from the saved
+		// file does not exist in a buffer that has since been corrected (#1273).
 		if doc.kind == docTestDefaults {
 			for _, source := range s.testDiagnosticSourcesFor(testDefaultsDependencyURI(doc)) {
 				suite, ok := s.docs.get(source)
@@ -616,6 +626,7 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 				s.publishTestDiagnostics(ctx, conn, source, diagnoseTestPublications(suite, doc), suite, doc)
 			}
 		}
+		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		return
 	}
 	diagnostics := diagnose(doc)
@@ -661,6 +672,16 @@ func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.
 	for source := range s.testSuitesByDefaults[target] {
 		sources = append(sources, source)
 	}
+	slices.Sort(sources)
+	return sources
+}
+
+// testOverflowSourcesFor is [FlowfileServer.testDiagnosticSourcesFor] for the
+// suites waiting past the dependent bound.
+func (s *FlowfileServer) testOverflowSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	sources := slices.Collect(maps.Keys(s.testOverflowsByDefaults[target]))
 	slices.Sort(sources)
 	return sources
 }
@@ -872,11 +893,6 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 			ordered[0], ordered[own] = ordered[own], ordered[0]
 		}
 		for _, source := range ordered {
-			// A target contribution from an untracked suite is a saved-file
-			// fallback, not a diagnosis of the newer open defaults buffer.
-			if open, ok := s.docs.get(uri); source != uri && ok && open.kind == docTestDefaults && s.testDefaultsBySuite[source] != testDefaultsDependencyURI(open) {
-				continue
-			}
 			byURI := s.testDiagnosticsBySource[source]
 			for _, d := range byURI[uri] {
 				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,
