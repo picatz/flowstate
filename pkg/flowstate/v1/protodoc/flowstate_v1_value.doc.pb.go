@@ -226,5 +226,13 @@ func init() {
 				" `subexpression` repeats elsewhere in the expression. Unset when the\n" +
 				" expression carries no position for the node.\n",
 		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.caret",
+			Leading: " Caret is the character index within `subexpression` of the operator or the\n" +
+				" selected name, so `subexpression` with a `^` under that column shows the\n" +
+				" failure the way a compiler does. Unset when the subexpression was cut or its\n" +
+				" text does not place the operator exactly, because a caret under the wrong\n" +
+				" character is worse than none.\n",
+		},
 	})
 }

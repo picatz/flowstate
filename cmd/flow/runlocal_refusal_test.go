@@ -377,3 +377,58 @@ func TestARefusalDocumentIsTheWholeReportAndBoundsTheInputName(t *testing.T) {
 	require.Error(t, err)
 	assert.False(t, isQuietError(err), "a text refusal has no document, so its prose is the report")
 }
+
+// TestAnExpressionFailureShowsWhereItBrokeWithACaret pins the compiler-style
+// excerpt `flow run local` prints for a run-time expression failure (#1551): the
+// failing subexpression indented under the sentence, and a caret under the
+// operator, with the indentation kept exactly so the caret stays under it.
+func TestAnExpressionFailureShowsWhereItBrokeWithACaret(t *testing.T) {
+	t.Parallel()
+
+	_, stderr, err := runLocal(t, `edition: v2026.4
+name: overload
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: bad
+    value: ${steps.n.value.k + "x"}
+`)
+	require.Error(t, err)
+
+	assert.Contains(t, stderr+err.Error(), "\n    steps.n.value.k + \"x\"\n                    ^\n")
+}
+
+// TestWrapKeepsAnIndentedLineWhole pins that an indented line is not re-flowed:
+// a caret line is only right at the column it was written to.
+func TestWrapKeepsAnIndentedLineWhole(t *testing.T) {
+	t.Parallel()
+
+	text := "a sentence that is longer than ten columns\n    x + \"y\"\n        ^"
+	got := wrap(text, 10)
+
+	assert.Contains(t, got, "\n    x + \"y\"\n        ^")
+}
+
+// TestARedactedExpressionFailureDrawsNoCaret pins that a run declaring a
+// sensitive value prints no excerpt: redacting the sentence's text can move the
+// operator without moving a caret computed before it.
+func TestARedactedExpressionFailureDrawsNoCaret(t *testing.T) {
+	t.Parallel()
+
+	_, stderr, err := runLocal(t, `edition: v2026.4
+name: redacted-caret
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: bad
+    value: ${steps.n.value.k + "x"}
+`, "--input", "token=sk-live-0123456789abcdef")
+	require.Error(t, err)
+
+	assert.NotContains(t, stderr+err.Error(), "^")
+}
