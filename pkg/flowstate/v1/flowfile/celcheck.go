@@ -178,7 +178,8 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		return ds
 	}
 
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(site)))
+	leaves := table.leavesFor(parsed, table.before(site))
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 	if err != nil {
 		// Building the environment failed, which is a defect in this build rather
 		// than something the file did. Reporting it against the author's line would
@@ -187,7 +188,7 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		return nil
 	}
 
-	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	checked, issues := env.Check(cel.ParsedExprToAst(typeReads(parsed, leaves)))
 	if issues != nil && issues.Err() != nil {
 		var ds Diagnostics
 		for _, message := range celCheckMessages(issues.Err().Error()) {

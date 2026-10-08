@@ -16,8 +16,9 @@ change that would have the extension judge a Flowfile belongs in
 
 1. **Language client.** Activates on the `flowfile` language, launches
    `flow lsp` over stdio, and wires it to VS Code's language-client surface.
-   Diagnostics, hover, completion, go-to-definition, document symbols,
-   formatting and the fix-all action all arrive from the server — see
+   Diagnostics, hover, completion, go-to-definition, references and rename for
+   step ids, document symbols, formatting and the fix-all action all arrive from
+   the server — see
    `docs/EDITORS.md` for what each one covers. If the configured binary is
    missing or the server fails to start, the extension shows an error message
    naming the problem and offers to open the setting, rather than silently

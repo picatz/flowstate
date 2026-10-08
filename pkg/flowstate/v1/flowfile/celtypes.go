@@ -358,12 +358,13 @@ func (t *typeTable) inferValue(value *v1.Value, before int) *cel.Type {
 // False when the expression does not check, which [checkExpressionTypes] reports
 // in its own sentence.
 func checkedType(t *typeTable, parsed *expr.ParsedExpr, before int) (*cel.Type, bool) {
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), t.leavesFor(parsed, before))
+	leaves := t.leavesFor(parsed, before)
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 	if err != nil {
 		return nil, false
 	}
 
-	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	checked, issues := env.Check(cel.ParsedExprToAst(typeReads(parsed, leaves)))
 	if issues != nil && issues.Err() != nil {
 		return nil, false
 	}

@@ -280,6 +280,68 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return locations, nil
 
+	case "textDocument/references":
+		var params lsp.ReferenceParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return []lsp.Location{}, nil
+		}
+		locations := referencesAt(doc, params.Position, params.Context.IncludeDeclaration)
+		if locations == nil {
+			locations = []lsp.Location{}
+		}
+		return locations, nil
+
+	case "textDocument/documentHighlight":
+		var params lsp.TextDocumentPositionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return []lsp.DocumentHighlight{}, nil
+		}
+		highlights := highlightsAt(doc, params.Position)
+		if highlights == nil {
+			highlights = []lsp.DocumentHighlight{}
+		}
+		return highlights, nil
+
+	case "textDocument/prepareRename":
+		var params lsp.TextDocumentPositionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return nil, nil
+		}
+		rng, placeholder, ok := prepareRenameAt(doc, params.Position)
+		if !ok {
+			return nil, nil
+		}
+		return prepareRenameResult{Range: rng, Placeholder: placeholder}, nil
+
+	case "textDocument/rename":
+		var params lsp.RenameParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return nil, nil
+		}
+		edit, err := renameAt(doc, params.Position, params.NewName)
+		if err != nil {
+			// A refusal the editor shows as the reason; -32803 is the
+			// protocol's RequestFailed.
+			return nil, &jsonrpc2.Error{Code: requestFailed, Message: err.Error()}
+		}
+		return edit, nil
+
 	case "textDocument/documentSymbol":
 		var params lsp.DocumentSymbolParams
 		if err := decode(req, &params); err != nil {
@@ -394,7 +456,28 @@ type serverCapabilities struct {
 
 	// SemanticTokensProvider is absent from go-lsp, which predates the feature.
 	SemanticTokensProvider *semanticTokensProvider `json:"semanticTokensProvider,omitempty"`
+
+	// RenameProvider is the options form for the reason CodeActionProvider is:
+	// go-lsp models it as a bool, which cannot say that prepareRename is served.
+	RenameProvider *renameOptions `json:"renameProvider,omitempty"`
 }
+
+// renameOptions says rename is served with a prepare step, so an editor asks
+// whether the cursor is on a renamable id before it shows a prompt.
+type renameOptions struct {
+	PrepareProvider bool `json:"prepareProvider"`
+}
+
+// prepareRenameResult is the `{range, placeholder}` form of the prepareRename
+// answer: the characters the editor selects, and the name it offers to edit.
+type prepareRenameResult struct {
+	Range       lsp.Range `json:"range"`
+	Placeholder string    `json:"placeholder"`
+}
+
+// requestFailed is the LSP error code for a request that was understood and
+// could not be done, which a refused rename is.
+const requestFailed = -32803
 
 // codeActionOptions says which kinds of action the server can return.
 //
@@ -441,6 +524,9 @@ func capabilities() serverCapabilities {
 			TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
 		},
 		DefinitionProvider:         true,
+		ReferencesProvider:         true,
+		DocumentHighlightProvider:  true,
+		RenameProvider:             &renameOptions{PrepareProvider: true},
 		DocumentSymbolProvider:     true,
 		DocumentFormattingProvider: true,
 	}
