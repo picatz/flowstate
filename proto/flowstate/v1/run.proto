@@ -1119,6 +1119,76 @@ message RunState {
   bytes debug = 17 [(buf.validate.field).bytes = {max_len: 262144}];
 }
 
+// Checkpoint is a [RunState] taken at a boundary the interpreter could have
+// continued as new from, with what a different process needs to decide whether
+// starting a run from it is sound.
+//
+// # What it is for
+//
+// A Continue-As-New handover already hands a run's whole future to a new
+// execution as a RunState. A Checkpoint makes that handover a public contract:
+// an operator can start a new run from the point, optionally with a patched
+// workflow, to rehearse a what-if or to retry from a failed step with a fixed
+// program. A run started this way is an ordinary run of an ordinary driver, and
+// is linked to its origin by [origin] in metadata, not by any special mode.
+//
+// # What a resume must refuse to change
+//
+// The inputs, the identity, the trigger and every carried value (vars, pending
+// signals, outputs, undo registrations) are exactly the carried ones: they were
+// established once, before the point, and a run that edited them would no longer
+// be a continuation of anything. The workflow is the one field a patch may
+// replace, and only when the steps already executed are unchanged; see
+// `ResumeCheckpoint` in pkg/flowstate/v1/checkpoint.go, which owns the rule and
+// the refusals.
+//
+// # Size
+//
+// Bounded by the same limit as the state it wraps ([MaxRunStateBytes]), because
+// a resumed run carries that state across its own Continue-As-New.
+message Checkpoint {
+  // Version is the checkpoint format. It is 1 today; a reader refuses a version
+  // it does not know rather than guessing at the shape of the state.
+  uint32 version = 1 [(buf.validate.field).uint32 = {const: 1}];
+
+  // State is the run state to start from. Its workflow is the program the
+  // origin run was executing at the point.
+  RunState state = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED
+  ];
+
+  // SpecHash is the canonical digest ([CanonicalDigest]) of state.workflow when
+  // the checkpoint was taken. A resume recomputes it, so a workflow edited
+  // without updating it is refused. It is a consistency check, not
+  // authentication: it is unkeyed and covers only the workflow, so whoever
+  // accepts a checkpoint from an untrusted source must authenticate it.
+  string spec_hash = 3 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+
+  // InterpreterBuild names the interpreter that emitted the checkpoint. A resume
+  // by a different build is refused: the carried state means what the emitting
+  // interpreter said it means, and a build that reads it differently would
+  // continue the run into steps the origin never took.
+  string interpreter_build = 4 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
+
+  // Origin is the run and the point the checkpoint was taken from.
+  CheckpointOrigin origin = 5 [(buf.validate.field).required = true];
+}
+
+// CheckpointOrigin links a resumed run to the run and point it came from.
+message CheckpointOrigin {
+  // Run is the run the checkpoint was taken from.
+  RunAddress run = 1 [(buf.validate.field).required = true];
+
+  // Segment is the origin run's segment count at the point, so two checkpoints
+  // of one run order without comparing their states.
+  uint32 segment = 2;
+
+  // Step is the id of the next top-level step the origin would have executed,
+  // empty when the point is the end of the run's steps.
+  string step = 3 [(buf.validate.field).string = {max_len: 128}];
+}
+
 // TimelineEntry is one thing a run did, read back from its own durable history.
 //
 // # Why a run needs this at all

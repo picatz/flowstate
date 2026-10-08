@@ -1230,6 +1230,83 @@ func init() {
 				" back by the engine that wrote it. Empty when no session is attached.\n",
 		},
 		{
+			Name: "flowstate.v1.Checkpoint",
+			Leading: " Checkpoint is a [RunState] taken at a boundary the interpreter could have\n" +
+				" continued as new from, with what a different process needs to decide whether\n" +
+				" starting a run from it is sound.\n" +
+				"\n" +
+				" # What it is for\n" +
+				"\n" +
+				" A Continue-As-New handover already hands a run's whole future to a new\n" +
+				" execution as a RunState. A Checkpoint makes that handover a public contract:\n" +
+				" an operator can start a new run from the point, optionally with a patched\n" +
+				" workflow, to rehearse a what-if or to retry from a failed step with a fixed\n" +
+				" program. A run started this way is an ordinary run of an ordinary driver, and\n" +
+				" is linked to its origin by [origin] in metadata, not by any special mode.\n" +
+				"\n" +
+				" # What a resume must refuse to change\n" +
+				"\n" +
+				" The inputs, the identity, the trigger and every carried value (vars, pending\n" +
+				" signals, outputs, undo registrations) are exactly the carried ones: they were\n" +
+				" established once, before the point, and a run that edited them would no longer\n" +
+				" be a continuation of anything. The workflow is the one field a patch may\n" +
+				" replace, and only when the steps already executed are unchanged; see\n" +
+				" `ResumeCheckpoint` in pkg/flowstate/v1/checkpoint.go, which owns the rule and\n" +
+				" the refusals.\n" +
+				"\n" +
+				" # Size\n" +
+				"\n" +
+				" Bounded by the same limit as the state it wraps ([MaxRunStateBytes]), because\n" +
+				" a resumed run carries that state across its own Continue-As-New.\n",
+		},
+		{
+			Name: "flowstate.v1.Checkpoint.version",
+			Leading: " Version is the checkpoint format. It is 1 today; a reader refuses a version\n" +
+				" it does not know rather than guessing at the shape of the state.\n",
+		},
+		{
+			Name: "flowstate.v1.Checkpoint.state",
+			Leading: " State is the run state to start from. Its workflow is the program the\n" +
+				" origin run was executing at the point.\n",
+		},
+		{
+			Name: "flowstate.v1.Checkpoint.spec_hash",
+			Leading: " SpecHash is the canonical digest ([CanonicalDigest]) of state.workflow when\n" +
+				" the checkpoint was taken. A resume recomputes it, so a workflow edited\n" +
+				" without updating it is refused. It is a consistency check, not\n" +
+				" authentication: it is unkeyed and covers only the workflow, so whoever\n" +
+				" accepts a checkpoint from an untrusted source must authenticate it.\n",
+		},
+		{
+			Name: "flowstate.v1.Checkpoint.interpreter_build",
+			Leading: " InterpreterBuild names the interpreter that emitted the checkpoint. A resume\n" +
+				" by a different build is refused: the carried state means what the emitting\n" +
+				" interpreter said it means, and a build that reads it differently would\n" +
+				" continue the run into steps the origin never took.\n",
+		},
+		{
+			Name:    "flowstate.v1.Checkpoint.origin",
+			Leading: " Origin is the run and the point the checkpoint was taken from.\n",
+		},
+		{
+			Name:    "flowstate.v1.CheckpointOrigin",
+			Leading: " CheckpointOrigin links a resumed run to the run and point it came from.\n",
+		},
+		{
+			Name:    "flowstate.v1.CheckpointOrigin.run",
+			Leading: " Run is the run the checkpoint was taken from.\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointOrigin.segment",
+			Leading: " Segment is the origin run's segment count at the point, so two checkpoints\n" +
+				" of one run order without comparing their states.\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointOrigin.step",
+			Leading: " Step is the id of the next top-level step the origin would have executed,\n" +
+				" empty when the point is the end of the run's steps.\n",
+		},
+		{
 			Name: "flowstate.v1.TimelineEntry",
 			Leading: " TimelineEntry is one thing a run did, read back from its own durable history.\n" +
 				"\n" +
