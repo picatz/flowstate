@@ -117,8 +117,12 @@ outputs: {}
 	}, ids)
 }
 
-// firstIteration is the internal-package twin of the external tests' helper of
-// the same purpose: a deterministic mutation test runs once per process.
+// firstIteration skips every run of a test after its first in the process. Only
+// the enumeration test uses it: it is pure (no case runs, so no interleaving to
+// vary) and applies and validates every mutant of every shipped example, which
+// under the ordering leg (`-race -cpu=1 -count=20`, a 480s budget the whole
+// package shares) is the cost that mattered. The tests that run cases stay
+// repeatable.
 func firstIteration(t *testing.T) {
 	t.Helper()
 	if _, again := internalMutateRan.LoadOrStore(t.Name(), true); again {

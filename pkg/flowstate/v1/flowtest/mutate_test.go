@@ -2,7 +2,6 @@ package flowtest_test
 
 import (
 	"path/filepath"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -11,20 +10,6 @@ import (
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
-
-// firstIterationOnly skips every run of a test after its first in the process.
-// The mutation tests are deterministic and each runs whole cases, so under the
-// ordering leg (`-race -cpu=1 -count=20`, a 480s budget the whole package
-// shares) twenty runs of them are twenty times a cost that proves nothing the
-// first did not.
-func firstIterationOnly(t *testing.T) {
-	t.Helper()
-	if _, again := mutateRan.LoadOrStore(t.Name(), true); again {
-		t.Skip("deterministic; the first iteration in this process proved it")
-	}
-}
-
-var mutateRan sync.Map
 
 const mutateWorkflow = `
 edition: v2026.4
@@ -81,7 +66,6 @@ tests:
 // gate being negated or removed.
 func TestMutateKillsEveryGateAStrongSuiteAsserts(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	run := runMutate(t, strongSuite, flowtest.MutateOptions{Max: flowtest.DefaultMutants})
 	for _, c := range run.Report.GetCases() {
@@ -98,7 +82,6 @@ func TestMutateKillsEveryGateAStrongSuiteAsserts(t *testing.T) {
 // are the proof the file would not notice the program changing.
 func TestMutateReportsTheGatesAWeakSuiteNeverChecks(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	run := runMutate(t, `
 tests:
@@ -129,7 +112,6 @@ tests:
 // A mutant is replayable by name, and only that mutant runs.
 func TestMutateReplaysOneMutantByID(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	weak := `
 tests:
@@ -155,7 +137,6 @@ tests:
 // the report says so.
 func TestMutateBoundsTheMutantsItRuns(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	run := runMutate(t, strongSuite, flowtest.MutateOptions{Max: 2})
 	mutation := run.Report.GetMutation()
@@ -167,7 +148,6 @@ func TestMutateBoundsTheMutantsItRuns(t *testing.T) {
 // is not mutated and the report says why.
 func TestMutateRefusesARedSuite(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	run := runMutate(t, `
 tests:
@@ -196,7 +176,6 @@ func TestMutateIsOffByDefault(t *testing.T) {
 // made of step ids, so it goes through the same redaction the coverage does.
 func TestMutateDoesNotPrintAStepNameThatSpellsAWithheldValue(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	path := nameSuite(t, `
   - name: plain
@@ -224,7 +203,6 @@ func TestMutateDoesNotPrintAStepNameThatSpellsAWithheldValue(t *testing.T) {
 // would read as a survivor: the file is not mutated.
 func TestMutateIsNotRunOverASelection(t *testing.T) {
 	t.Parallel()
-	firstIterationOnly(t)
 
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), mutateWorkflow)
