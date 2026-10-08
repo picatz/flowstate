@@ -241,6 +241,11 @@ func checkPolicyInputSchema() map[string]any {
 // one call away from being one of them.
 const maxSchemaNodes = 50_000
 
+// compiledWorkflowMessage is the compiled specification a Compile result
+// carries and Run, CreateSchedule and SignalWithStart accept. Its schema is
+// rendered opaquely, see [valueSchema].
+const compiledWorkflowMessage protoreflect.FullName = "flowstate.v1.Workflow"
+
 // schemaBudget carries what the walk must remember: the messages on the current
 // path, how many more schema objects the whole projection may emit, and how
 // deep the walk is, which decides how much of each field's prose it carries
@@ -479,6 +484,22 @@ func valueSchema(fd protoreflect.FieldDescriptor, budget *schemaBudget) map[stri
 				return nil
 			}
 			return map[string]any{"type": "object"}
+		}
+
+		// The compiled specification is the one message too large to describe: it
+		// carries the whole expression AST, which is hundreds of kilobytes of
+		// schema per tool that embeds it, and a model never builds one by hand.
+		// It is advertised as an opaque object that says where it comes from; the
+		// server still decodes and validates it exactly as before (#1288).
+		if fd.Message().FullName() == compiledWorkflowMessage {
+			if !budget.take(1) {
+				return nil
+			}
+			return map[string]any{
+				"type": "object",
+				"description": "A compiled workflow specification. Pass the `workflow` field of a " +
+					"`flowstate_compile` result here unchanged; do not write one by hand.",
+			}
 		}
 
 		// The two well-known types protojson spells as strings, and the cycle
