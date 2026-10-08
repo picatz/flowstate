@@ -54,6 +54,21 @@ steps:
 	assert.Contains(t, hover, "the tenant id that was created")
 	assert.Contains(t, hover, "callee.yaml")
 
+	// The step itself lists what the callee produces; a name it does not
+	// declare gets no invented meaning.
+	bare := "edition: v2026.4\nname: caller\nsteps:\n  - id: provision\n    call: ./callee.yaml\n  - id: use\n    log:\n      message: ${steps.provision}\n"
+	barePath := filepath.Join(dir, "bare.yaml")
+	require.NoError(t, os.WriteFile(barePath, []byte(bare), 0o644))
+	c.open("file://"+barePath, bare)
+	step := positionOf(t, bare, "steps.provision}", 1)
+	assert.Contains(t, hoverText(c.hover("file://"+barePath, step.Line, step.Character+len("steps.pro"))), "Outputs: `tenant`, `seats`")
+	missing := "edition: v2026.4\nname: caller\nsteps:\n  - id: provision\n    call: ./callee.yaml\n  - id: use\n    log:\n      message: ${steps.provision.nope}\n"
+	missingPath := filepath.Join(dir, "missing.yaml")
+	require.NoError(t, os.WriteFile(missingPath, []byte(missing), 0o644))
+	c.open("file://"+missingPath, missing)
+	at := positionOf(t, missing, "provision.nope", 1)
+	assert.Empty(t, hoverText(c.hover("file://"+missingPath, at.Line, at.Character+len("provision."))))
+
 	menu := "edition: v2026.4\nname: caller\nsteps:\n  - id: provision\n    call: ./callee.yaml\n  - id: use\n    log:\n      message: ${steps.provision.|}\n"
 	text, cursor := splitCursor(t, menu)
 	menuPath := filepath.Join(dir, "menu.yaml")
