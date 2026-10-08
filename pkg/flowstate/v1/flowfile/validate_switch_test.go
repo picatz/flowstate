@@ -699,3 +699,172 @@ steps:
 		}
 	}
 }
+
+// TestSwitchOverATypedValueRefusesACaseOfAnotherType is #1639: a discriminant
+// whose type the file states (a typed input, a constant `value:` step) takes no
+// arm for a case of another type, and until now nothing said so.
+func TestSwitchOverATypedValueRefusesACaseOfAnotherType(t *testing.T) {
+	t.Parallel()
+
+	const body = `    switch:
+      value: %s
+      cases:
+        - case: %s
+          steps: []
+      default:
+        steps: []
+`
+	flag := `edition: v2026.4
+name: t
+inputs:
+  retries:
+    type: int
+  verbose:
+    type: bool
+  mode:
+    type: string
+steps:
+  - id: flag
+    value: ${true}
+  - id: forwarded
+    value: ${inputs.verbose}
+  - id: pick
+`
+	refused := []struct{ value, caze, want string }{
+		{"${steps.flag.value}", `"yes"`, `case "yes" is a string, and `},
+		{"${inputs.retries}", `"3"`, `case "3" is a string, and `},
+		{"${inputs.verbose}", `"true"`, `case "true" is a string, and `},
+		{"${inputs.mode}", `true`, `case true is a bool, and `},
+		{"${steps.forwarded.value}", `"true"`, `case "true" is a string, and `},
+	}
+	for _, c := range refused {
+		ds := validateSwitchSrc(t, flag+fmt.Sprintf(body, c.value, c.caze))
+		require.NotEmpty(t, ds, "%s with case %s must be refused", c.value, c.caze)
+		assert.Contains(t, diagnosticMessages(ds), c.want, "%s with case %s", c.value, c.caze)
+		assert.Equal(t, "type-mismatch", string(ds[0].Code), "%s with case %s", c.value, c.caze)
+	}
+
+	for _, c := range []struct{ value, caze string }{
+		{"${steps.flag.value}", `true`},
+		{"${inputs.retries}", `3`},
+		{"${inputs.retries}", `3.0`}, // the switch compares numbers by value
+		{"${inputs.verbose}", `false`},
+		{"${inputs.mode}", `"fast"`},
+		{"${steps.forwarded.value}", `false`},
+	} {
+		ds := validateSwitchSrc(t, flag+fmt.Sprintf(body, c.value, c.caze))
+		assert.Empty(t, ds, "%s with case %s must validate: %v", c.value, c.caze, ds)
+	}
+}
+
+// TestEnumOutputValuesMustCoverTheExpressionsDomain is the second half of #1554:
+// an enum output whose `values:` omits a value its expression can produce is a
+// validate-time refusal, not a failure after every step has run.
+func TestEnumOutputValuesMustCoverTheExpressionsDomain(t *testing.T) {
+	t.Parallel()
+
+	const file = `edition: v2026.4
+name: t
+inputs:
+  tenant:
+    type: string
+    default: acme
+steps:
+  - id: outcome
+    value: '${inputs.tenant == "acme" ? "approved" : "lapsed"}'
+outputs:
+  outcome:
+    value: ${steps.outcome.value}
+    type: enum
+    values: [%s]
+`
+
+	ds := validateSwitchSrc(t, fmt.Sprintf(file, "approved, rejected"))
+	require.NotEmpty(t, ds, "an enum missing a producible value was accepted")
+	text := diagnosticMessages(ds)
+	assert.Contains(t, text, `can produce "lapsed"`)
+	assert.Contains(t, text, `"approved", "rejected"`)
+
+	assert.Empty(t, validateSwitchSrc(t, fmt.Sprintf(file, "approved, lapsed")), "a covering values list must validate")
+	assert.Empty(t, validateSwitchSrc(t, fmt.Sprintf(file, "approved, lapsed, rejected")), "extra values are allowed")
+}
+
+// TestEnumOutputDomainDiagnosticStaysBoundedOnLargeLists keeps #1554's check
+// near-linear and its message short when both lists are large: a Validate
+// request chooses their size.
+func TestEnumOutputDomainDiagnosticStaysBoundedOnLargeLists(t *testing.T) {
+	t.Parallel()
+
+	var inputValues, outputValues []string
+	for i := range 5000 {
+		inputValues = append(inputValues, fmt.Sprintf("in%d", i))
+		outputValues = append(outputValues, fmt.Sprintf("out%d", i))
+	}
+
+	ds := validateSwitchSrc(t, fmt.Sprintf(`edition: v2026.4
+name: t
+inputs:
+  x:
+    type: enum
+    values: [%s]
+    required: true
+steps:
+  - id: noop
+    log:
+      message: hi
+outputs:
+  y:
+    value: ${inputs.x}
+    type: enum
+    values: [%s]
+`, strings.Join(inputValues, ", "), strings.Join(outputValues, ", ")))
+
+	text := diagnosticMessages(ds)
+	require.Contains(t, text, "can produce", "the disjoint lists must still be refused")
+	assert.Contains(t, text, "… and ")
+	assert.Less(t, len(text), 2000, "the message spelled out every value")
+}
+
+// TestSwitchOverABoolInputHasATwoValueDomain is the last half of #1639: a switch
+// reading a `type: bool` input is exhaustive over [true, false], so a missing
+// arm without a `default:` and a `default:` beside both arms are diagnosed as
+// they are for an enum.
+func TestSwitchOverABoolInputHasATwoValueDomain(t *testing.T) {
+	t.Parallel()
+
+	const head = `edition: v2026.4
+name: t
+inputs:
+  verbose:
+    type: bool
+steps:
+  - id: pick
+    switch:
+      value: ${inputs.verbose}
+      cases:
+`
+	const arm = `        - case: %s
+          steps: []
+`
+	const dflt = `      default:
+        steps: []
+`
+	cases := func(values ...string) string {
+		var b strings.Builder
+		b.WriteString(head)
+		for _, v := range values {
+			fmt.Fprintf(&b, arm, v)
+		}
+		return b.String()
+	}
+
+	ds := validateSwitchSrc(t, cases("true"))
+	assert.Contains(t, diagnosticMessages(ds), `cases do not handle "false"`)
+
+	ds = validateSwitchSrc(t, cases("true", "false")+dflt)
+	assert.Contains(t, diagnosticMessages(ds), "`default:` can never run")
+
+	assert.Empty(t, validateSwitchSrc(t, cases("true", "false")))
+	assert.Empty(t, validateSwitchSrc(t, cases("true")+dflt))
+	assert.Empty(t, validateSwitchSrc(t, cases("[true, false]")))
+}

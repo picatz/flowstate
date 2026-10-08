@@ -3,6 +3,8 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -77,12 +79,36 @@ func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 			seen[name] = i
 		}
 
-		ds = append(ds, validateInputDefault(table, profile, declaration, field)...)
-		ds = append(ds, validateInputConstraintShape(profile, declaration, field)...)
-		ds = append(ds, validateInputExample(table, profile, declaration, field)...)
+		// A `must:` that does not compile fails the same way for the declaration, its
+		// default and its example, so it is reported once, on the declaration, whatever
+		// else is wrong with the declaration's other constraints.
+		defaults := validateInputDefault(table, profile, declaration, field)
+		shape := validateInputConstraintShape(profile, declaration, field)
+		examples := validateInputExample(table, profile, declaration, field)
+		if declaration.Must != nil {
+			if _, err := v1.CompileMustExpression(profile, declaration.GetMust(), declaration.GetType()); err != nil {
+				if mustErr, ok := errors.AsType[*v1.MustCompileError](err); ok {
+					defaults = withoutMessagesContaining(defaults, mustErr.Error())
+					examples = withoutMessagesContaining(examples, mustErr.Error())
+					for i := range shape {
+						if strings.Contains(shape[i].Message, mustErr.Error()) {
+							shape[i].Code = v1.DiagnosticCodeTypeMismatch
+						}
+					}
+				}
+			}
+		}
+		ds = append(ds, defaults...)
+		ds = append(ds, shape...)
+		ds = append(ds, examples...)
 	}
 
 	return ds
+}
+
+// withoutMessagesContaining drops the diagnostics whose message contains text.
+func withoutMessagesContaining(ds Diagnostics, text string) Diagnostics {
+	return slices.DeleteFunc(ds, func(d Diagnostic) bool { return strings.Contains(d.Message, text) })
 }
 
 // validateInputConstraintShape reports what is wrong with a declaration's
@@ -302,6 +328,9 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 		if d := checkOutputValueType(wf, scope.types, declaration, field); d != nil {
 			ds = append(ds, *d)
 		}
+		if d := checkOutputEnumDomain(wf, scope, declaration, field); d != nil {
+			ds = append(ds, *d)
+		}
 	}
 
 	return ds
@@ -443,6 +472,69 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 
 		return nil
 	}
+}
+
+// checkOutputEnumDomain refuses an enum output whose `values:` omits a value
+// its expression can produce, where that is a property of the file (#1554).
+//
+// The domain is the one `switch:` already infers for a discriminant
+// ([switchDomain]): conditionals over string literals, a declared enum input.
+// Without this the omission surfaced only after every step had run, as the
+// completion check [v1.CheckOutputValue] refusing the value the run produced.
+// An expression whose domain is open stays silent, as it does for a switch.
+func checkOutputEnumDomain(wf *v1.Workflow, scope refScope, declaration *v1.OutputDeclaration, field string) *Diagnostic {
+	if declaration.GetType() != v1.InputDeclaration_TYPE_ENUM || len(declaration.GetValues()) == 0 {
+		return nil
+	}
+	value := declaration.GetValue()
+	if _, isExpr := value.GetKind().(*v1.Value_Expr); !isExpr {
+		return nil
+	}
+
+	domain, known := switchDomain(value, scope, wf)
+	if !known {
+		return nil
+	}
+
+	// Membership is built once: both lists are author-controlled and a Validate
+	// request may carry two large ones, so a scan of one per member of the other
+	// would be quadratic work an attacker chooses.
+	declared := make(map[string]struct{}, len(declaration.GetValues()))
+	for _, value := range declaration.GetValues() {
+		declared[value] = struct{}{}
+	}
+	var missing []string
+	for _, produced := range domain {
+		if _, ok := declared[produced]; !ok {
+			missing = append(missing, produced)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return &Diagnostic{
+		Field: field, Value: declaration.GetName(),
+		Code: v1.DiagnosticCodeTypeMismatch,
+		Message: fmt.Sprintf(
+			"output %q is declared an enum of %s, but this expression can produce %s; "+
+				"add the missing values, or change the expression",
+			declaration.GetName(), quotedList(clipForMessage(declaration.GetValues())), quotedList(clipForMessage(missing))),
+	}
+}
+
+// maxListedValues bounds how many values a diagnostic spells out, so a message
+// about an oversized list stays a message.
+const maxListedValues = 10
+
+// clipForMessage is values cut to [maxListedValues] with a final element
+// saying how many more there are.
+func clipForMessage(values []string) []string {
+	if len(values) <= maxListedValues {
+		return values
+	}
+
+	return append(slices.Clone(values[:maxListedValues]), fmt.Sprintf("… and %d more", len(values)-maxListedValues))
 }
 
 // staticExpressionType reports the declared type an output expression is known

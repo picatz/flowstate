@@ -494,3 +494,88 @@ func TestPluginMaxCallTimeoutIsReachableFromAShippedBinary(t *testing.T) {
 		t.Cleanup(func() { _ = host.Close(t.Context()) })
 	})
 }
+
+// TestPluginsListSaysASecretsPluginNeedsAnAccessPolicy is #1545: a plugin that
+// advertises a secret scheme registers a provider when it launches, and a
+// process holding one refuses to run tasks without --auth-policy, so the
+// listing says so before the refusal does, and says nothing for a plugin that
+// advertises no scheme.
+func TestPluginsListSaysASecretsPluginNeedsAnAccessPolicy(t *testing.T) {
+	t.Parallel()
+
+	catalog := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{
+		{Name: "vaultish", Path: "/bin/flowstate-plugin-vaultish", SecretSchemes: []string{"vaultish"}},
+		{Name: "plain", Path: "/bin/flowstate-plugin-plain"},
+	}}
+
+	var out bytes.Buffer
+	require.NoError(t, writePluginCatalog(ui.Plain(&out, &bytes.Buffer{}), catalog))
+
+	rendered := out.String()
+	const advice = "launching it needs --auth-policy with a secrets section"
+	assert.Equal(t, 1, strings.Count(rendered, advice), "only the secrets plugin carries the advice")
+	assert.Less(t, strings.Index(rendered, "vaultish"), strings.Index(rendered, advice))
+	assert.Less(t, strings.Index(rendered, advice), strings.Index(rendered, "plain\n"), "the advice sits under the plugin that needs it")
+}
+
+// TestAPluginDirThatDoesNotExistIsRefusedWhenNamedOnTheCommandLine pins #1541: a
+// mistyped --plugin-dir used to be a Debug line and a worker with no plugins.
+// Only the flag is refused; the ambient search path stays tolerant, because one
+// value is reasonably set across hosts that do not all have plugins installed.
+func TestAPluginDirThatDoesNotExistIsRefusedWhenNamedOnTheCommandLine(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "plugin")
+
+	flagged := &cobra.Command{Use: "flagged"}
+	addPluginFlags(flagged)
+	require.NoError(t, flagged.Flags().Set("plugin-dir", missing))
+	_, err := pluginFlagsOf(flagged)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), missing)
+	assert.Contains(t, err.Error(), "does not exist")
+
+	existing := &cobra.Command{Use: "existing"}
+	addPluginFlags(existing)
+	require.NoError(t, existing.Flags().Set("plugin-dir", t.TempDir()))
+	_, err = pluginFlagsOf(existing)
+	require.NoError(t, err, "a directory that is there must not be refused")
+
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	notDir := &cobra.Command{Use: "notdir"}
+	addPluginFlags(notDir)
+	require.NoError(t, notDir.Flags().Set("plugin-dir", file))
+	_, err = pluginFlagsOf(notDir)
+	require.Error(t, err, "a file named as the plugin directory would start a worker with no plugins")
+	assert.Contains(t, err.Error(), "not a directory")
+}
+
+// TestAnAmbientPluginDirThatDoesNotExistIsTolerated is the other half: the
+// environment's search path is set across hosts that do not all have plugins
+// installed, so a missing entry there is not an error. Not parallel, because
+// the environment is the input.
+func TestAnAmbientPluginDirThatDoesNotExistIsTolerated(t *testing.T) {
+	t.Setenv(pluginSearchPathEnv, filepath.Join(t.TempDir(), "absent"))
+
+	cmd := &cobra.Command{Use: "ambient"}
+	addPluginFlags(cmd)
+	flags, err := pluginFlagsOf(cmd)
+	require.NoError(t, err)
+	assert.True(t, flags.configured(), "the ambient search path should have been read, or this proves nothing")
+}
+
+// TestATaskFromASavedCatalogDoesNotClaimToHaveBeenLaunched pins the second half
+// of #1541: the portable catalog carries no path, so the provenance sentence
+// must not say "launched from ".
+func TestATaskFromASavedCatalogDoesNotClaimToHaveBeenLaunched(t *testing.T) {
+	t.Parallel()
+
+	def := v1.TaskDef{Name: "slack.post"}
+	saved := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{Name: "slack", Version: "0.2.0"}}}
+	launched := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{Name: "slack", Version: "0.2.0", Path: "/opt/p/flowstate-plugin-slack"}}}
+
+	assert.NotContains(t, taskProvenance(def, saved), "launched from")
+	assert.Contains(t, taskProvenance(def, saved), "saved catalog")
+	assert.Contains(t, taskProvenance(def, launched), "launched from /opt/p/flowstate-plugin-slack")
+}

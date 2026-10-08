@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
@@ -238,6 +240,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
 	debugging, _ := cmd.Flags().GetBool("debug")
+	record, err := recordPath(cmd)
+	if err != nil {
+		return err
+	}
 
 	var (
 		console *debugConsole
@@ -316,6 +322,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// it, and a habit that holds only where it is load-bearing is one that
 		// will be missing where it is.
 		defer func() { _ = session.Close() }()
+		// Registered last, so it runs first: the file is written while the
+		// session still holds what it accepted, on every way out.
+		defer recordSession(record, session, surface.Err)()
 
 		fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
 			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
@@ -384,8 +393,18 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// person reads is covered — the wrapper's own frame included — and so
 		// the loopback remedy is resolved off the original chain before that
 		// chain is dropped. See [redactFailureError].
-		return redactFailureError(
-			wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr)), sensitive)
+		failure := fmt.Errorf("error running workflow locally: %w", runErr)
+		// An expression failure shows where it broke, compiler style. Drawn from
+		// the redacted response, whose structured account is dropped whenever
+		// the run declares a sensitive value: redacting the sentence's text can
+		// move the operator without moving a caret computed before it, so the
+		// excerpt is omitted rather than drawn under the wrong character. The
+		// same rule `flow get` follows.
+		if rendered := failureExcerpt(response.GetError().GetExpression()); rendered != "" {
+			failure = fmt.Errorf("%w\n%s", failure, rendered)
+		}
+
+		return redactFailureError(wrapLoopbackDenial(cmd, failure), sensitive)
 	}
 
 	// The same word `flow get` uses for the same outcome, through the same pill, on
@@ -448,6 +467,7 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		errorResponse := &v1.RunResponse_Error{Message: runErr.Error()}
 		if response.GetStatus() == v1.RunResponse_STATUS_FAILED {
 			errorResponse.Kind = v1.ClassifyError(runErr).String()
+			errorResponse.Expression = v1.ExpressionFailureOf(runErr)
 		}
 		response.Kind = &v1.GetResponse_Error{Error: errorResponse}
 
@@ -520,4 +540,29 @@ func debugRevealRefusal(name string, decided carriedValues) error {
 			"%q's sensitive-value declarations could not be fully inspected, so it is not debugged "+
 			"without explicit disclosure; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
 	}
+}
+
+// failureExcerpt is the lines an expression failure adds under its sentence: the
+// step's place in its file (`--> path:line:col`) when the specification carried
+// one, then the failing subexpression with a caret under the operator. It is
+// built from the structured account alone, which every redaction drops whole, so
+// it is absent wherever the message is.
+func failureExcerpt(failure *v1.ExpressionFailure) string {
+	var lines []string
+	if where := failure.GetLocation(); where.GetFile() != "" && where.GetLine() > 0 {
+		position := fmt.Sprintf("%s:%d", ui.EscapeControl(where.GetFile()), where.GetLine())
+		if where.GetColumn() > 0 {
+			position += fmt.Sprintf(":%d", where.GetColumn())
+		}
+		lines = append(lines, "    --> "+position)
+	}
+	if excerpt := failure.Excerpt("    "); excerpt != "" {
+		// The excerpt is drawn from text a remote peer supplied, one line per
+		// source line; escape each so a control byte cannot reach the terminal.
+		for line := range strings.SplitSeq(excerpt, "\n") {
+			lines = append(lines, ui.EscapeControl(line))
+		}
+	}
+
+	return strings.Join(lines, "\n")
 }

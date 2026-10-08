@@ -177,6 +177,11 @@ const (
 
 	// ToneDanger is a step failure the run does not absorb.
 	ToneDanger
+
+	// ToneValue is an inspected value as [RenderValue] wrote it. A front that
+	// can colour hands the text to [ValueTokens]; one that cannot writes it
+	// as it is, so the tone changes how a value looks and never what it says.
+	ToneValue
 )
 
 // Options configures a [Session].
@@ -2094,25 +2099,25 @@ func nativeText(native any) string {
 	return string(encoded)
 }
 
-// refValTextWith renders an inspection's result through the same conversion
-// a `value:` step's result takes — [cel.RefValueToValue] then
-// [v1.LiteralToGo], exactly as EvalValueNode does — so what an inspection
-// prints and what the same expression would produce in the file are one
-// rendering of one value, rather than two that can drift.
+// redactedTree is the native tree an inspection renders, after both
+// redactions, and whether out could be converted. It is converted the way a
+// `value:` step's result is — [cel.RefValueToValue] then [v1.LiteralToGo],
+// exactly as EvalValueNode does — so what an inspection prints and what the
+// same expression would produce in the file are one rendering of one value.
 //
-// Redacted as a tree first, through value and then [withheldLeaves] with
-// text, for the reason [withheldLeaves] gives; the caller's pass over the
-// rendered line is the backstop behind it.
-func refValTextWith(out ref.Val, text func(string) string, value func(any) any) string {
+// Redacted as a tree first, through value and then [withheldLeaves] with text,
+// for the reason [withheldLeaves] gives; the caller's pass over the rendered
+// text is the backstop behind it.
+func redactedTree(out ref.Val, text func(string) string, value func(any) any) (any, bool) {
 	native, ok := redactedNative(out, nil)
 	if !ok {
-		return unrenderedText(out, text != nil || value != nil)
+		return nil, false
 	}
 	if value != nil {
 		native = value(native)
 	}
 
-	return nativeText(withheldLeaves(text, native))
+	return withheldLeaves(text, native), true
 }
 
 // pauseRedactors are the redactors an answer at the current pause renders

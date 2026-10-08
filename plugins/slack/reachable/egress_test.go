@@ -59,8 +59,8 @@ func TestAnOperatorDenyRuleStopsASlackPost(t *testing.T) {
 	})
 
 	defs := host.TaskDefs()
-	if len(defs) != 2 {
-		t.Fatalf("the launched plugin does not offer exactly slack.post and slack.update: %v", defs)
+	if len(defs) != 3 {
+		t.Fatalf("the launched plugin does not offer exactly slack.post, slack.update and slack.respond: %v", defs)
 	}
 	post := defs[slices.IndexFunc(defs, func(d flowstatev1.TaskDef) bool { return d.Name == "slack.post" })]
 

@@ -30,6 +30,22 @@ import (
 // the interrupt is next checked.
 const interruptCheckFrequency = 100
 
+// Literals returns the environment option that makes a rule whose regex,
+// duration or timestamp literal cannot be parsed fail at load (#1856).
+//
+// Without it the checker accepts `host.matches('(')` and the rule refuses every
+// request it is later asked, a mistake an operator meets in production rather
+// than at start-up. Every policy environment carries it, as the workflow
+// environment carries the same three validators, so a literal that cannot work
+// is refused the same way wherever it is written.
+func Literals() cel.EnvOption {
+	return cel.ASTValidators(
+		cel.ValidateRegexLiterals(),
+		cel.ValidateDurationLiterals(),
+		cel.ValidateTimestampLiterals(),
+	)
+}
+
 // Rule is one compiled predicate. The program is built once, at load, and is
 // safe to evaluate concurrently.
 type Rule struct {

@@ -136,3 +136,36 @@ message UpdateOutputs {
   // ts is the timestamp of the updated message, unchanged.
   string ts = 2;
 }
+
+// RespondInputs describes an answer to an interaction through the response_url
+// Slack sent with it. The URL is the credential, scoped by Slack to the one
+// conversation the interaction happened in and valid for 30 minutes and five
+// uses, so this task takes no token. It must be the response_url of a delivery
+// the trigger verified, for example ${event.body.response_url}.
+message RespondInputs {
+  // response_url is the https://hooks.slack.com/actions/... or /commands/...
+  // address from the interaction. Any other address is refused before a request.
+  string response_url = 1 [(buf.validate.field).string = {min_len: 1, max_len: 512}];
+
+  // how says what the answer does: "replace" (the default) swaps the message
+  // the clicked control was on, "delete" removes it, "ephemeral" shows a new
+  // message only to the person who clicked, and "in_channel" posts a new
+  // message everyone can see.
+  string how = 2 [(buf.validate.field).string = {in: ["", "replace", "delete", "ephemeral", "in_channel"]}];
+
+  // text is the message, or its notification fallback beside a card or blocks,
+  // exactly as for slack.post. Not used by "delete".
+  string text = 3 [(buf.validate.field).string.max_len = 4000];
+
+  // card is a preset layout. Exclusive with blocks.
+  flowstate.chat.v1.Card card = 4;
+
+  // blocks is native Block Kit, at most 50. Exclusive with card.
+  repeated Block blocks = 5 [(buf.validate.field).repeated.max_items = 50];
+}
+
+// RespondOutputs reports what the answer did.
+message RespondOutputs {
+  // how is the action taken: replace, delete, ephemeral or in_channel.
+  string how = 1;
+}

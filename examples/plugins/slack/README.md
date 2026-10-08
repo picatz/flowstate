@@ -1,6 +1,6 @@
 # Slack messages
 
-Two tested examples of the [`slack` plugin](../../../plugins/slack/README.md):
+Three tested examples of the [`slack` plugin](../../../plugins/slack/README.md):
 
 - [`approval.yaml`](approval.yaml) completes the outbound half of a practical
   human-in-the-loop flow. `slack.post` sends an **approval card** (summary,
@@ -13,6 +13,12 @@ Two tested examples of the [`slack` plugin](../../../plugins/slack/README.md):
   and edits the same message as each stage finishes, with a progress bar, a
   state, and a link. `slack.update` names its target, so a retry policy may
   repeat it safely.
+
+- [`click.yaml`](click.yaml) closes the loop: the card's buttons are answered by
+  a `verify: slack` webhook trigger bridged to the run's gate with `signal:`, and
+  `slack.respond` replaces the card through the click's `response_url`. A
+  redelivered click joins the run instead of answering twice, and the receiver
+  answers Slack with the bodyless `200` it requires.
 
 Slack is notification, not authority. This plugin has no inbound listener and
 does not treat a button click or message as an approval; provider verification

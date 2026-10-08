@@ -48,6 +48,10 @@ type Driver struct {
 	// than sent — a durable pause after a detach would attach the run anew.
 	detached bool
 
+	// roots is [Driver.Complete]'s root listing, read at rootsRevision.
+	roots         []Candidate
+	rootsRevision uint64
+
 	// Wait bounds how long a movement waits for the next stop. Zero waits
 	// until ctx ends.
 	Wait time.Duration
@@ -111,6 +115,10 @@ func (d *Driver) Do(ctx context.Context, line string) (*DriveResult, error) {
 
 // DoWith runs one line with a caller's request id and expected revision.
 func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*DriveResult, error) {
+	// Kept as typed, past its leading space: `complete` reads the end of the
+	// text after its verb, and a trailing space is what says the word the
+	// cursor is on is empty.
+	raw := strings.TrimLeft(line, " \t")
 	line = strings.TrimSpace(line)
 	if line == "" || IsComment(line) {
 		return &DriveResult{}, nil
@@ -264,6 +272,15 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		return d.inspect(ctx, rest, true)
 	case "scope":
 		return d.scope(ctx)
+
+	case "complete":
+		_, text := cutWord(raw)
+		answer, err := d.Complete(ctx, text)
+		if err != nil {
+			return nil, err
+		}
+
+		return &DriveResult{Text: RenderCompletion(answer)}, nil
 
 	case "backtrace":
 		snapshot, err := d.target.Snapshot(ctx)
@@ -823,4 +840,25 @@ func formatFrames(snapshot *v1.DebugSnapshot) string {
 // SourceName is a short name for a source document, for rendering.
 func SourceName(uri string) string {
 	return filepath.Base(strings.TrimPrefix(uri, "file://"))
+}
+
+// MovesForward reports whether a line a [Driver] reads moves the run forward:
+// `step`, `continue`, `until` and their aliases. A host whose session already
+// writes the account of a forward movement — the break line and what each step
+// did — does not repeat it from the answer; a rewind is not one of these, since
+// the run it lands on was replayed in silence.
+func MovesForward(line string) bool {
+	verb, _ := split(strings.TrimSpace(line))
+	c, ok := resolveOn(verb, frontDriver)
+
+	return ok && c.effect == effectMoves && !c.rewinds
+}
+
+// StepsBack reports whether a line a [Driver] reads rewinds the run: `back`
+// and `reverse-continue`.
+func StepsBack(line string) bool {
+	verb, _ := split(strings.TrimSpace(line))
+	c, ok := resolveOn(verb, frontDriver)
+
+	return ok && c.rewinds
 }

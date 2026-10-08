@@ -66,6 +66,10 @@ func canonicalize(m protoreflect.Message) {
 	case *Workflow:
 		msg.ResolvedPlugins = nil
 		msg.ResolvedTaskCapabilities = nil
+	case *Node:
+		// Where a step is written is not what it does: the same program
+		// compiled from a re-indented file is the same program.
+		msg.Source = nil
 	}
 
 	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {

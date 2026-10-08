@@ -480,6 +480,12 @@ func wrap(text string, width int) string {
 
 	lines := strings.Split(text, "\n")
 	for i, line := range lines {
+		// An indented line is laid out by whoever wrote it (a source excerpt
+		// with a caret beneath it): re-flowing it would drop the indentation and
+		// move the caret off the character it points at.
+		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
+			continue
+		}
 		lines[i] = wrapLine(line, width)
 	}
 

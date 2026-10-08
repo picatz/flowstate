@@ -84,7 +84,7 @@ steps:
             url: ${'https://example.invalid/' + cursor}
   - id: after
     log:
-      message: ${has(steps.paginate)}
+      message: ${string(has(steps.paginate))}
 `
 
 func TestTheLoopWholeStepFileIsLegal(t *testing.T) {
@@ -107,7 +107,7 @@ func TestHoverOnALoopsWholeStepListsResultsAndState(t *testing.T) {
 	uri := "file:///loop-whole-hover.yaml"
 	c.open(uri, loopWholeStepFile)
 
-	at := positionOf(t, loopWholeStepFile, "message: ${has(steps.paginate)}", len("message: ${has(steps.pagin"))
+	at := positionOf(t, loopWholeStepFile, "message: ${string(has(steps.paginate))}", len("message: ${string(has(steps.pagin"))
 	h := c.hover(uri, at.Line, at.Character)
 	require.NotNil(t, h)
 	text := hoverText(h)
@@ -127,7 +127,7 @@ steps:
       timeout: 1h
   - id: report
     log:
-      message: ${steps.gate.timed_out}
+      message: ${string(steps.gate.timed_out)}
 `
 
 func TestTheWaitGateFileIsLegal(t *testing.T) {
@@ -320,7 +320,7 @@ func TestCompletionAfterAnUnshapedGateOffersTheThreeReservedNames(t *testing.T) 
 	uri := "file:///wait-gate-completion.yaml"
 	c.open(uri, waitGateFile)
 
-	at := positionOf(t, waitGateFile, "message: ${steps.gate.timed_out}", len("message: ${steps.gate."))
+	at := positionOf(t, waitGateFile, "message: ${string(steps.gate.timed_out)}", len("message: ${string(steps.gate."))
 	got := labels(c.complete(uri, at.Line, at.Character).Items)
 	assert.Contains(t, got, "timed_out")
 	assert.Contains(t, got, "payload")
@@ -339,7 +339,7 @@ func TestHoverOnAnUnshapedGatesTimedOutDescribesIt(t *testing.T) {
 	uri := "file:///wait-gate-hover.yaml"
 	c.open(uri, waitGateFile)
 
-	at := positionOf(t, waitGateFile, "message: ${steps.gate.timed_out}", len("message: ${steps.gate.")+1)
+	at := positionOf(t, waitGateFile, "message: ${string(steps.gate.timed_out)}", len("message: ${string(steps.gate.")+1)
 	h := c.hover(uri, at.Line, at.Character)
 	require.NotNil(t, h)
 	text := hoverText(h)

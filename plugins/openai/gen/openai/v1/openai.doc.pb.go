@@ -69,7 +69,7 @@ func init() {
 		},
 		{
 			Name: "openai.v1.DecideInputs.question_set",
-			Leading: " QuestionSet is a flowstate.decision.v1.QuestionSet written as a mapping: a\n" +
+			Leading: " QuestionSet is written in a Flowfile as a mapping: a\n" +
 				" `questions` list whose entries each have a `name`, optional\n" +
 				" `instructions`, and exactly one of `predicate: {}`, `choice: {options:\n" +
 				" [...]}` or `score: {levels: [...]}`. It is validated against the schema's\n" +

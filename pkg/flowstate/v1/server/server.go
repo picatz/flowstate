@@ -1859,11 +1859,13 @@ func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
 // does. A deployment-owned copy compiled from other bytes, or from none, is
 // still the program a client submitted when nothing else differs.
 func sameProgram(a, b *v1.Workflow) bool {
-	if a.GetSourceDigest() == b.GetSourceDigest() {
-		return proto.Equal(a, b)
+	a, b = v1.WithoutSourceLocations(a), v1.WithoutSourceLocations(b)
+	if a != nil {
+		a.SourceDigest = ""
 	}
-	a, b = proto.CloneOf(a), proto.CloneOf(b)
-	a.SourceDigest, b.SourceDigest = "", ""
+	if b != nil {
+		b.SourceDigest = ""
+	}
 
 	return proto.Equal(a, b)
 }
@@ -2478,6 +2480,26 @@ func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRe
 // failure's type is looked up among a run's declarations.
 var declaredKindName = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]{0,127}$`)
 
+// expressionDetail reads the structured account of an expression failure the
+// run's own failure carries after its marker (#1551), or nil when it carries
+// none. It is read only from an error that bears the marker, the same
+// discipline [failureError] applies to a declared kind: a detail on some other
+// application error is a payload this build did not put there.
+func expressionDetail(app *temporal.ApplicationError) *v1.ExpressionFailure {
+	if !carriesRunFailureMarker(app) {
+		return nil
+	}
+	var (
+		marker string
+		detail v1.ExpressionFailure
+	)
+	if app.Details(&marker, &detail) != nil || detail.GetOperator()+detail.GetSelected() == "" {
+		return nil
+	}
+
+	return &detail
+}
+
 // carriesRunFailureMarker reports whether an application error is the one the
 // engine made of the run's own failure ([engine.RunFailureMarker]), as opposed to
 // an error that reached the client unchanged, such as a pre-step activity failure
@@ -2585,6 +2607,7 @@ func failureError(
 			// produced.
 			result.Kind = app.Type()
 		}
+		result.Expression = expressionDetail(app)
 
 		return result
 	}

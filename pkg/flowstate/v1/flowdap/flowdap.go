@@ -105,6 +105,8 @@ type capabilities struct {
 	SupportsHitConditionalBreakpoints bool              `json:"supportsHitConditionalBreakpoints"`
 	SupportsLogPoints                 bool              `json:"supportsLogPoints"`
 	SupportsEvaluateForHovers         bool              `json:"supportsEvaluateForHovers"`
+	SupportsCompletionsRequest        bool              `json:"supportsCompletionsRequest"`
+	CompletionTriggerCharacters       []string          `json:"completionTriggerCharacters,omitempty"`
 	SupportsTerminateRequest          bool              `json:"supportsTerminateRequest"`
 	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
 	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
@@ -203,6 +205,21 @@ type evaluateBody struct {
 	Result             string `json:"result"`
 	Type               string `json:"type,omitempty"`
 	VariablesReference int    `json:"variablesReference"`
+}
+
+// completionsBody answers `completions`. Each item is a name the run's scope
+// holds; none carries a value.
+type completionsBody struct {
+	Targets []completionItem `json:"targets"`
+}
+
+type completionItem struct {
+	Label string `json:"label"`
+	Text  string `json:"text,omitempty"`
+	Type  string `json:"type,omitempty"`
+	Start int    `json:"start"`
+	// Length is how much of the typed text the item replaces.
+	Length int `json:"length"`
 }
 
 type breakpoint struct {

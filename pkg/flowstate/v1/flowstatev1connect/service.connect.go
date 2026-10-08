@@ -52,6 +52,9 @@ const (
 	// WorkflowServiceGetTimelineProcedure is the fully-qualified name of the WorkflowService's
 	// GetTimeline RPC.
 	WorkflowServiceGetTimelineProcedure = "/flowstate.v1.WorkflowService/GetTimeline"
+	// WorkflowServiceGetCheckpointProcedure is the fully-qualified name of the WorkflowService's
+	// GetCheckpoint RPC.
+	WorkflowServiceGetCheckpointProcedure = "/flowstate.v1.WorkflowService/GetCheckpoint"
 	// WorkflowServiceCancelProcedure is the fully-qualified name of the WorkflowService's Cancel RPC.
 	WorkflowServiceCancelProcedure = "/flowstate.v1.WorkflowService/Cancel"
 	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
@@ -234,6 +237,18 @@ type WorkflowServiceClient interface {
 	// `first_run_id` and follow `next_run_id`, or walk back with
 	// `previous_run_id`.
 	GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error)
+	// GetCheckpoint reports whether a run segment started from a point a new run
+	// could be started from, and where that point stands.
+	//
+	// Every segment's start input is the run's complete carried state, so the
+	// answer is read from history and changes nothing. It describes the point
+	// without returning the state, which holds the run's inputs and outputs in
+	// full; see [CheckpointInfo]. A segment whose position is inside a call, a
+	// loop or concurrent work is reported unavailable with the reason, because
+	// only a position between top-level steps is a legal starting state.
+	//
+	// `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
+	GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -444,6 +459,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("GetTimeline")),
 			connect.WithClientOptions(opts...),
 		),
+		getCheckpoint: connect.NewClient[v1.GetCheckpointRequest, v1.GetCheckpointResponse](
+			httpClient,
+			baseURL+WorkflowServiceGetCheckpointProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("GetCheckpoint")),
+			connect.WithClientOptions(opts...),
+		),
 		cancel: connect.NewClient[v1.CancelRequest, v1.CancelResponse](
 			httpClient,
 			baseURL+WorkflowServiceCancelProcedure,
@@ -571,6 +592,7 @@ type workflowServiceClient struct {
 	signalWithStart     *connect.Client[v1.SignalWithStartRequest, v1.SignalWithStartResponse]
 	list                *connect.Client[v1.ListRequest, v1.ListResponse]
 	getTimeline         *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
+	getCheckpoint       *connect.Client[v1.GetCheckpointRequest, v1.GetCheckpointResponse]
 	cancel              *connect.Client[v1.CancelRequest, v1.CancelResponse]
 	terminate           *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	debugAttach         *connect.Client[v1.DebugAttachRequest, v1.DebugAttachResponse]
@@ -630,6 +652,11 @@ func (c *workflowServiceClient) List(ctx context.Context, req *connect.Request[v
 // GetTimeline calls flowstate.v1.WorkflowService.GetTimeline.
 func (c *workflowServiceClient) GetTimeline(ctx context.Context, req *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
 	return c.getTimeline.CallUnary(ctx, req)
+}
+
+// GetCheckpoint calls flowstate.v1.WorkflowService.GetCheckpoint.
+func (c *workflowServiceClient) GetCheckpoint(ctx context.Context, req *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error) {
+	return c.getCheckpoint.CallUnary(ctx, req)
 }
 
 // Cancel calls flowstate.v1.WorkflowService.Cancel.
@@ -853,6 +880,18 @@ type WorkflowServiceHandler interface {
 	// `first_run_id` and follow `next_run_id`, or walk back with
 	// `previous_run_id`.
 	GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error)
+	// GetCheckpoint reports whether a run segment started from a point a new run
+	// could be started from, and where that point stands.
+	//
+	// Every segment's start input is the run's complete carried state, so the
+	// answer is read from history and changes nothing. It describes the point
+	// without returning the state, which holds the run's inputs and outputs in
+	// full; see [CheckpointInfo]. A segment whose position is inside a call, a
+	// loop or concurrent work is reported unavailable with the reason, because
+	// only a position between top-level steps is a legal starting state.
+	//
+	// `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
+	GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -1059,6 +1098,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("GetTimeline")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceGetCheckpointHandler := connect.NewUnaryHandler(
+		WorkflowServiceGetCheckpointProcedure,
+		svc.GetCheckpoint,
+		connect.WithSchema(workflowServiceMethods.ByName("GetCheckpoint")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceCancelHandler := connect.NewUnaryHandler(
 		WorkflowServiceCancelProcedure,
 		svc.Cancel,
@@ -1191,6 +1236,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceListHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetTimelineProcedure:
 			workflowServiceGetTimelineHandler.ServeHTTP(w, r)
+		case WorkflowServiceGetCheckpointProcedure:
+			workflowServiceGetCheckpointHandler.ServeHTTP(w, r)
 		case WorkflowServiceCancelProcedure:
 			workflowServiceCancelHandler.ServeHTTP(w, r)
 		case WorkflowServiceTerminateProcedure:
@@ -1268,6 +1315,10 @@ func (UnimplementedWorkflowServiceHandler) List(context.Context, *connect.Reques
 
 func (UnimplementedWorkflowServiceHandler) GetTimeline(context.Context, *connect.Request[v1.GetTimelineRequest]) (*connect.Response[v1.GetTimelineResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetTimeline is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetCheckpoint is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {

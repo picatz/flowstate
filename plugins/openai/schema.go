@@ -1,47 +1,29 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
-
-	"google.golang.org/protobuf/encoding/protojson"
 
 	decisionv1 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 )
 
-// parseQuestionSet reads the author's mapping as a flowstate.decision.v1.QuestionSet and
-// validates it against the schema's own rules, so a set the contract would call
-// malformed never becomes a request.
-//
-// The conversion goes through protojson with unknown fields refused, which is
-// what makes a misspelt `options` an error rather than a question with no
-// options that the validator then has to describe.
-func parseQuestionSet(v *flowstatev1.Value) (*decisionv1.QuestionSet, error) {
-	literal, ok := v.GetKind().(*flowstatev1.Value_Literal)
-	if !ok {
+// checkQuestionSet validates the author's question set against the decision
+// schema's own rules, so a set the contract would call malformed never becomes
+// a request. The host has already filled the typed input from the Flowfile's
+// mapping, refusing a misspelt key by name, and checked these same rules at
+// `flow validate`; this is the plugin's own check, because a task does not
+// trust that its caller ran one.
+func checkQuestionSet(set *decisionv1.QuestionSet) (*decisionv1.QuestionSet, error) {
+	if set == nil {
 		return nil, sdk.InvalidInput("question_set is required and must be a mapping with a questions list")
 	}
-	native, err := flowstatev1.LiteralToGo(literal.Literal)
-	if err != nil {
-		return nil, sdk.InvalidInput("question_set is not plain data: %v", err)
-	}
-	encoded, err := json.Marshal(native)
-	if err != nil {
-		return nil, sdk.InvalidInput("question_set is not plain data: %v", err)
-	}
-
-	var set decisionv1.QuestionSet
-	if err := (protojson.UnmarshalOptions{}).Unmarshal(encoded, &set); err != nil {
-		return nil, sdk.InvalidInput("question_set is not a flowstate.decision.v1.QuestionSet: %s", bounded(err.Error()))
-	}
-	if err := flowstatev1.Validate(&set); err != nil {
+	if err := flowstatev1.Validate(set); err != nil {
 		return nil, sdk.InvalidInput("question_set violates the decision schema: %s", violations(err))
 	}
-	return &set, nil
+	return set, nil
 }
 
 // violations names the rules a validation error broke and the fields they

@@ -272,7 +272,7 @@ refuses to send a token over plaintext to anything but this machine
 (`cmd/flow/credentials.go:63`), which protects the client, not the server's own
 posture. `--insecure-no-auth` admits everyone as anonymous and is a
 development posture (read in `authFlagsOf` at `cmd/flow/main.go:227-231`, resolved to
-`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1793`;
+`auth.InsecureAnonymousVerifier` at `cmd/flow/main.go:1804`;
 `pkg/flowstate/v1/auth/connect.go:142-160`, [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md#the-four-tier-isolation-model)).
 
 **Planned.** OAuth 2.1 alignment for the remote MCP surface and webhook ingress as
@@ -507,8 +507,8 @@ four first-party plugins whose Go implementations open network connections also
 enforce the grant on those actual paths: Slack and GitHub through the SDK-governed
 HTTP transport, and git and vcs through the governed transport installed into
 go-git
-(`plugins/slack/post.go`, `plugins/github/client.go`, `plugins/git/clone.go`,
-`plugins/vcs/clone.go`). A worker with no operator policy grants these processes
+(`plugins/slack/post.go`, `plugins/slack/respond.go`, `plugins/github/client.go`, `plugins/git/clone.go`,
+`plugins/vcs/clone.go`). `slack.respond` also pins its destination to Slack's `hooks.slack.com` interaction paths and refuses redirects, because its address arrives in a delivery body. A worker with no operator policy grants these processes
 the same marked default its built-in HTTP task uses. This is actual enforcement
 in vetted first-party dial paths, but it remains voluntary plugin behavior, not
 plugin-process confinement. A third-party plugin can ignore the SDK and open its

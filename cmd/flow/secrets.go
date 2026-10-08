@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -416,11 +417,32 @@ func newSecretStore(cmd *cobra.Command, registry *secrets.Registry) (*secrets.St
 	return secrets.NewStoreFromRegistry(registry, opts...)
 }
 
-func runtimePolicy(cmd *cobra.Command, secretsConfigured bool) (*auth.Policy, *auth.SecretPolicy, error) {
+// missingSecretPolicyError is the refusal for a process that holds a secret
+// provider and no access policy: a provider with no policy is one anyone in
+// the process can read through, so it fails closed.
+//
+// It names what registered the providers, because the person reading it often
+// configured nothing: a plugin that advertises a secrets capability registers
+// its scheme when it launches (#1545). The way out is the policy that admits
+// the provider. --plugin-scheme is deliberately not offered: it refuses a
+// plugin that claims an unpermitted scheme outright rather than launching it
+// task-only, so it is not a way to continue this invocation.
+func missingSecretPolicyError(schemes []string) error {
+	if len(schemes) == 0 {
+		return errors.New("a secret provider is configured but no access policy is: pass --auth-policy with a secrets section")
+	}
+
+	return fmt.Errorf("this process holds secret providers (scheme %s), from --secret-* flags or from plugins that advertise a secrets capability, "+
+		"and a provider with no access policy is readable by anyone in the process: "+
+		"pass --auth-policy with a secrets section (examples/plugins/greet/auth.yaml is one)",
+		strings.Join(schemes, ", "))
+}
+
+func runtimePolicy(cmd *cobra.Command, secretsConfigured bool, schemes []string) (*auth.Policy, *auth.SecretPolicy, error) {
 	path, _ := cmd.Flags().GetString("auth-policy")
 	if path == "" {
 		if secretsConfigured {
-			return nil, nil, fmt.Errorf("secret providers are configured but no access policy is: pass --auth-policy with a secrets section")
+			return nil, nil, missingSecretPolicyError(schemes)
 		}
 		return nil, nil, nil
 	}
@@ -446,7 +468,7 @@ func runtimePolicy(cmd *cobra.Command, secretsConfigured bool) (*auth.Policy, *a
 }
 
 func workerRuntime(cmd *cobra.Command, registry *secrets.Registry, configured bool) (engine.TaskRuntimeConfig, error) {
-	policy, secretAccess, err := runtimePolicy(cmd, configured || len(registry.Schemes()) > 0)
+	policy, secretAccess, err := runtimePolicy(cmd, configured || len(registry.Schemes()) > 0, registry.Schemes())
 	if err != nil {
 		return engine.TaskRuntimeConfig{}, err
 	}
@@ -578,7 +600,7 @@ func withLocalTaskRuntimeUsing(cmd *cobra.Command, ctx context.Context, workflow
 	// in the rehearsal of it.
 	configured := providers.configured || len(providers.registry.Schemes()) > 0
 
-	policy, secretAccess, err := runtimePolicy(cmd, configured)
+	policy, secretAccess, err := runtimePolicy(cmd, configured, providers.registry.Schemes())
 	if err != nil {
 		return nil, err
 	}

@@ -628,6 +628,9 @@ func WithholdUnrequestedTimelineFailures(response *GetTimelineResponse, revealAc
 func WithholdGetResponseFailures(response *GetResponse) {
 	if failed := response.GetError(); failed.GetMessage() != "" {
 		failed.Message = FailureWithheldMarker
+		// The structured account quotes the same expression text the message
+		// does, so it goes with it.
+		failed.Expression = nil
 	}
 	for _, pending := range response.GetPendingActivities() {
 		if pending.GetLastFailure() != "" {
@@ -662,6 +665,11 @@ func RedactGetResponseFailures(response *GetResponse, sensitive SensitiveValues)
 		// fixed vocabulary, not a value the workload put there, and it is the
 		// only structured thing left to act on once the message is redacted.
 		failed.Error.Message = sensitive.RedactTextWithin(failed.Error.GetMessage(), FailureWithheldMarker, RedactedEntityStateAllowance)
+		// Dropped rather than redacted field by field: the subexpression and the
+		// names it quotes are the same text the message just had redacted, and
+		// a run that declares a sensitive value fails closed on the rest
+		// (invariant 6) instead of trusting a second scrub to agree with the first.
+		failed.Error.Expression = nil
 	}
 
 	for _, pending := range response.GetPendingActivities() {

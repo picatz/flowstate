@@ -148,5 +148,46 @@ func init() {
 			Name:    "slack.v1.UpdateOutputs.ts",
 			Leading: " ts is the timestamp of the updated message, unchanged.\n",
 		},
+		{
+			Name: "slack.v1.RespondInputs",
+			Leading: " RespondInputs describes an answer to an interaction through the response_url\n" +
+				" Slack sent with it. The URL is the credential, scoped by Slack to the one\n" +
+				" conversation the interaction happened in and valid for 30 minutes and five\n" +
+				" uses, so this task takes no token. It must be the response_url of a delivery\n" +
+				" the trigger verified, for example ${event.body.response_url}.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs.response_url",
+			Leading: " response_url is the https://hooks.slack.com/actions/... or /commands/...\n" +
+				" address from the interaction. Any other address is refused before a request.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs.how",
+			Leading: " how says what the answer does: \"replace\" (the default) swaps the message\n" +
+				" the clicked control was on, \"delete\" removes it, \"ephemeral\" shows a new\n" +
+				" message only to the person who clicked, and \"in_channel\" posts a new\n" +
+				" message everyone can see.\n",
+		},
+		{
+			Name: "slack.v1.RespondInputs.text",
+			Leading: " text is the message, or its notification fallback beside a card or blocks,\n" +
+				" exactly as for slack.post. Not used by \"delete\".\n",
+		},
+		{
+			Name:    "slack.v1.RespondInputs.card",
+			Leading: " card is a preset layout. Exclusive with blocks.\n",
+		},
+		{
+			Name:    "slack.v1.RespondInputs.blocks",
+			Leading: " blocks is native Block Kit, at most 50. Exclusive with card.\n",
+		},
+		{
+			Name:    "slack.v1.RespondOutputs",
+			Leading: " RespondOutputs reports what the answer did.\n",
+		},
+		{
+			Name:    "slack.v1.RespondOutputs.how",
+			Leading: " how is the action taken: replace, delete, ephemeral or in_channel.\n",
+		},
 	})
 }

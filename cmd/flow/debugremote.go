@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -63,6 +64,7 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	addServerFlags(attachCmd)
 	addOutputFlag(attachCmd)
 	attachCmd.Flags().String("run-id", "", "pin the run, as the first run id of its chain; unset follows the current one")
+	addRecordFlag(attachCmd)
 	attachCmd.Flags().String("session", "", "rejoin this session instead of attaching a new one")
 	attachCmd.Flags().Duration("lease", 2*time.Minute, "how long each renewal holds the session; the engine bounds it")
 	attachCmd.Flags().String("script", "", "read commands from this file instead of the terminal")
@@ -155,6 +157,12 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	script, _ := cmd.Flags().GetString("script")
 	program, _ := cmd.Flags().GetString("program")
 	wait, _ := cmd.Flags().GetDuration("wait")
+	record, _ := cmd.Flags().GetString("record")
+	if script != "" {
+		if err := refuseRecordingOver(cmd, script); err != nil {
+			return err
+		}
+	}
 
 	var sourceMap *v1.DebugSourceMap
 	if program != "" {
@@ -189,6 +197,13 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 
 	driver := flowdebug.NewDriver(remote)
 	driver.Wait = wait
+
+	// The lines the run accepted, written however the session ends. Registered
+	// after the release above, so it runs first.
+	recording := &attachRecording{}
+	if record != "" {
+		defer func() { writeRecording(record, recording.lines, recording.truncated, surface.Err) }()
+	}
 
 	// The first stop, or the news that the run has not reached a boundary.
 	// A failure here detaches through the deferred Close: nothing has told
@@ -227,14 +242,49 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	keep := false
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 0, 4096), flowdebug.MaxCommandBytes+1)
-	for {
+
+	// A person at a terminal gets the line editor and tab completion; a script
+	// or a pipe keeps the scanner and the bytes it has always produced. The
+	// console reads stdin itself, so it is wanted only where stdin is the
+	// terminal and neither a script nor a machine format has taken its place.
+	var console *debugConsole
+	if script == "" && !format.Machine() {
+		var restore func()
+		console, _, restore = debugConsoleFor(cmd.InOrStdin(), surface.Out, surface.Theme)
+		defer restore()
+	}
+	if console != nil {
+		console.SetCompleter(attachCompleter(ctx, driver))
+	}
+	// next is one line of input. Both the end of input and an interrupt at the
+	// console end the session the same way: the run is released, because a
+	// debugger that is gone must not keep a production run held. Any other
+	// failure to read the terminal is kept in consoleErr and handled where a
+	// scanner's read failure is.
+	var consoleErr error
+	next := func() (string, bool) {
+		if console != nil {
+			text, err := console.Prompt()
+			consoleErr = unexpectedPromptError(err)
+
+			return text, err == nil
+		}
 		if interactive {
 			fmt.Fprint(prompt, flowdebug.Prompt)
 		}
+
 		if !scanner.Scan() {
+			return "", false
+		}
+
+		return scanner.Text(), true
+	}
+	for {
+		text, more := next()
+		if !more {
 			break
 		}
-		line := strings.TrimSpace(scanner.Text())
+		line := strings.TrimSpace(text)
 		switch line {
 		case "":
 			continue
@@ -267,6 +317,9 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		if err := answers.add(line, result); err != nil {
 			return err
 		}
+		if notDone(result) == nil {
+			recording.add(line)
+		}
 		if line == "detach" {
 			// A detach the run did not accept leaves it held; Close sends
 			// one that cannot be refused as stale, rather than walking
@@ -293,7 +346,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	// not the end of input: the rest of the script was never read. The
 	// session is left attached for a rejoin, its lease bounding the hold,
 	// and the command fails rather than reporting a run it did not drive.
-	if err := scanner.Err(); err != nil {
+	if err := cmp.Or(scanner.Err(), consoleErr); err != nil {
 		_ = remote.Disconnect()
 		if errors.Is(err, bufio.ErrTooLong) {
 			err = fmt.Errorf("a command is at most %d bytes", flowdebug.MaxCommandBytes)
@@ -314,6 +367,42 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	// The end of input releases the run: a debugger that is gone must not
 	// keep a production run held.
 	return remote.Close()
+}
+
+// unexpectedPromptError is the part of a console prompt's failure that is not
+// the person ending the session: the end of input and an interrupt both mean
+// "release the run", and anything else is a terminal that failed to be read.
+func unexpectedPromptError(err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, flowdebug.ErrConsoleInterrupted) {
+		return nil
+	}
+
+	return err
+}
+
+// completionTimeout bounds what one tab press may spend asking the target.
+const completionTimeout = 2 * time.Second
+
+// attachCompleter completes at the console over what the attached run says
+// about itself, with the driver's rules: names and never values, and nothing
+// the caller's own `inspect` could not reach. A target that does not answer
+// within [completionTimeout] leaves the keystroke with nothing to offer instead
+// of holding the terminal.
+func attachCompleter(ctx context.Context, driver *flowdebug.Driver) func(line string, pos int) flowdebug.Completion {
+	return func(line string, pos int) flowdebug.Completion {
+		if pos >= 0 && pos < len(line) {
+			line = line[:pos]
+		}
+		ctx, cancel := context.WithTimeout(ctx, completionTimeout)
+		defer cancel()
+
+		answer, err := driver.Complete(ctx, line)
+		if err != nil {
+			return flowdebug.Completion{}
+		}
+
+		return answer
+	}
 }
 
 func terminalDebugState(state v1.DebugRunState) bool {

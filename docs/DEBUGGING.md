@@ -70,6 +70,11 @@ $ flow run local --debug examples/loop-accumulate/workflow.yaml
 $ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumulate/workflow.yaml
 ```
 
+Add `--record session.script` to `flow run local --debug` or `flow test --debug` and the
+commands the session accepted are written to that file when it ends (end of run, `quit` or an
+error): a mistyped command or a refused `break` is not in it, the file
+is made readable by you alone, and `flow debug replay` reaches the same stops from it. `flow debug attach --record` does the same for an attached durable run (without the `detach` that leaves it); a durable session's lines replay only where the verbs exist on a local run.
+
 [examples/debugging](../examples/debugging) walks one small workflow — a loop, a
 parallel block and a call — through every front, local and durable.
 
@@ -168,7 +173,7 @@ nothing here is worth learning twice. `help` lists it.
 | `inspect <expr>`, `p` | every front | evaluate a CEL expression against this run's scope |
 | `expand <expr>` | prompt, driver | list a map's or list's children |
 | `scope` | every front | list what this run can name right now |
-| `complete <partial-command>` | prompt, autopsy | list what could be written at the end of that text |
+| `complete <partial-command>` | every front | list what could be written at the end of that text |
 | `status` | prompt, driver | where the run is, and why |
 | `info`, `step-info` | prompt | describe the step the run is stopped at |
 | `backtrace`, `bt` | prompt, driver | list this step and each iteration, branch, arm and call around it |
@@ -200,7 +205,11 @@ The forms a verb takes:
 - `pause` holds a running run at its next boundary; a run that completes before
   reaching one says so. `back` and `reverse-continue` (`rc`) return to the
   previous stop and to the nearest earlier breakpoint stop, for a target that can
-  step back; any other says so and does not move.
+  step back; any other says so and does not move. `flow test --debug` at a
+  terminal steps back too (a stubbed case, as under `flow dap`); `flow run
+  local --debug` and a script's session stay forward-only. A failed case is
+  held once more after its verdict, and `back` from there returns to its last
+  stop.
 - An empty line at the prompt is `step`.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
@@ -359,6 +368,24 @@ script.txt` and the `flowstate_debug` tool read the same commands the same way
 they always did; the line editor is attached only where somebody is actually
 typing.
 
+**A value is one line when it fits and a tree when it does not.** `inspect`
+answers a scalar or a small record as the compact JSON it always has, and a
+value wider than a line (100 characters) as a tree: a map one sorted key per
+line, a list one indexed item per line, strings quoted and escaped so a control
+character in data cannot reach the terminal as itself. Three levels are opened
+and 48 entries of a container written; what is left out is said in place
+(`… 12 more keys`, `… 4000 more items`, `{… 7 keys}`), and how much is
+counted depends on the shape of the value and never on what a cut string held.
+The tree is laid out after the redaction, from the same redacted value, so a
+withheld leaf is the marker it always was. The layout does not depend on a
+terminal: a script piped to the prompt gets the same tree. The JSON answers (`-o json`, MCP, DAP) are unchanged.
+
+At a terminal the value is also coloured by what each part is: keys and `…` elisions
+recede, numbers and `true`/`false`/`null` take the accent, and the `[redacted]`
+marker takes the warning style so it is easy to find (a string that spells the marker is indistinguishable from one the redactor wrote, in colour or without). Strings keep the base
+style, and the colour never changes a byte: with `NO_COLOR` or a pipe the text is
+identical. The MCP transcript labels these fragments with the tone `value`.
+
 ## What `inspect` answers
 
 `inspect` is the reason to stop at all. It is the *engine's own* evaluator over
@@ -422,7 +449,7 @@ a session replayable.
 ```
 
 The answer carries three things: the `session` transcript (each fragment with
-the `tone` a terminal would have coloured it — `break`, `warning`, `danger`), the
+the `tone` a terminal would have coloured it — `break`, `warning`, `danger`, `value`), the
 `script` the session accepted, and the `report` — the ordinary `flow test`
 verdict, because a debugged run is the run.
 
@@ -790,7 +817,12 @@ applied
 (The lease line after each stop is left out here.)
 
 `flow debug attach` reads commands from the terminal or `--script`, and prints
-each answer as text; with `-o jsonl` each answer is a line of the schema's JSON,
+each answer as text. With text output at a terminal it is the same prompt as above: tab completes
+the commands, the step ids and the names in the held run's scope, asking the run
+for them, so a caller without the durable `workload.debug_inspect` action is
+offered commands and step ids and no names, and a run that does not answer in
+two seconds leaves the key with nothing to offer. A pipe or `--script` reads
+plain lines; with `-o jsonl` each answer is a line of the schema's JSON,
 and with `-o json` they are one array, written when the session ends; with
 either, the prompt goes to stderr. At a terminal a line that fails prints why
 and the prompt returns. A script's later lines assume its earlier ones did

@@ -403,6 +403,15 @@ that colours `${...}` and `must:` as CEL, and an `ftplugin`. It also carries the
 the section above gets semantic tokens from the server — though its runtime
 accepts the same files.
 
+## Tree-sitter
+
+`editors/tree-sitter-cel` holds a tree-sitter grammar for CEL, with highlight
+queries, and Flowfile injection queries that run over the stock YAML parser and
+hand the `must:` values and whole-scalar `${...}` fences to it. It is the parser
+an editor needs to colour and fold CEL structurally; `flow lsp` supplies the
+scope-aware part. [Its README](../editors/tree-sitter-cel/README.md) says what is
+covered and what is not, and CI builds and tests it.
+
 ## Visual Studio Code
 
 `editors/vscode/` in this repository is a thin client over `flow lsp`, built to
@@ -826,6 +835,13 @@ console is a REPL over the held run, and hovering a name evaluates it:
 > steps.flagged.value.exists(a, a > 500)
 true
 ```
+
+The console completes as you type, on `.` and on demand (the `completions`
+request): `steps.` offers the steps that have finished, and `steps.flagged.`
+offers that step's outputs. A completion is a name and never a value, and it
+stops at the names an author wrote: a key inside a produced value is data, so
+`steps.flagged.value.` offers nothing, as the terminal prompt's tab does not. A
+name the redactor would change is left out rather than shown redacted.
 
 A map or list answers with a reference the variables pane expands, a page at a
 time. The pane is the same scope, grouped as `scope` groups it: `steps`, `vars`,

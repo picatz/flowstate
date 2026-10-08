@@ -71,13 +71,11 @@ refuses to start without a policy that has a `secrets:` section.
 [`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
 that allows every reference.
 
-`flow run` refuses every file here today (#1548): it checks a file against its
-own build's task registry, takes no `--plugin-dir`, and so reports each `git.*`
-task as one nothing registered before the server sees it. Until that is fixed,
-`flow run local` with the same `--plugin-dir` and `--auth-policy` runs one in a
-single process, and an agent host running `flow mcp --plugin-dir ./plugins`
-submits it to this server with `flowstate_compile` then `flowstate_run`. The
-`flow run` lines below are refused the same way.
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow plugins --plugin-dir ./plugins --output json`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on

@@ -585,3 +585,9 @@ const (
 	// forgotten the first hundred or is not arranging work at all.
 	MaxSchedulesPerNamespace = 100
 )
+
+// RunStateEncodedSize is the size [CheckRunStateSize] weighs st by, for a caller
+// that reports it rather than refuses on it.
+func RunStateEncodedSize(st *RunState) int {
+	return encodedPayloadSize(st)
+}

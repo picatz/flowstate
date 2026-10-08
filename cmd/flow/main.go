@@ -52,6 +52,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Set by the build system, e.g. using -ldflags="-X main.version=1.0.0"
@@ -973,7 +974,28 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// tenant the server will derive is not part of the sentence.
 	announceVenue(cmd, serverVenue(serverFlagsOf(cmd), os.Getenv))
 
-	workflow, err := loadWorkflow(args[0])
+	// Built before the file is read so the file can be checked against what
+	// this deployment runs (#1548); see [registerDeploymentCatalog]. It also
+	// moves a misconfigured --credential-source ahead of the file, which was
+	// already ahead of the submission.
+	client, err := newFollowClient(serverFlagsOf(cmd))
+	if err != nil {
+		return err
+	}
+	spec, _ := cmd.Flags().GetBool("spec")
+
+	// A compiled specification names its tasks already resolved, so there is
+	// nothing for a catalog to check it against on this side; the server
+	// validates it as it does any submission.
+	var workflow *v1.Workflow
+	if spec {
+		workflow, err = loadCompiledSpec(args[0])
+	} else {
+		if err := registerDeploymentCatalog(cmd, client); err != nil {
+			return err
+		}
+		workflow, err = loadWorkflow(args[0])
+	}
 	if err != nil {
 		return err
 	}
@@ -1020,22 +1042,11 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 
 	server := serverFlagsOf(cmd)
 
-	// Built once and used for both the request that starts the run and every
-	// poll of the follow phase below, rather than once per RPC — see
-	// [newFollowClient]. That also moves a misconfigured --credential-source
-	// ahead of the Flowfile being submitted at all: refused here, before
-	// anything has started, instead of surfacing from the transport on the
-	// first request the same as any other refusal.
-	client, err := newFollowClient(server)
-	if err != nil {
-		return err
-	}
-
 	started, err := client.Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason, RequestId: &requestID}))
 	if err != nil {
 		arguments, redacted := runArgumentFlags(cmd, workflow)
-		refusal := refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
+		refusal := refusedStart(runSuggestionFile(spec, args[0]), workflow.GetName(), arguments, redacted, server, err)
 		if noServerAnswered(err) {
 			// No server answered, so nothing quotes an argument, and the
 			// remedy's own arguments are already redacted.
@@ -2607,6 +2618,45 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 // message of its own because the diagnostics have already been printed.
 var errValidationFailed = errors.New("validation failed")
 
+// runSuggestionFile is the file a failed `flow run` may offer in a runnable
+// command: a Flowfile can be offered back as `flow run <file>` and
+// `flow run local <file>`, but a compiled specification can be neither (the
+// first needs --spec, the second reads Flowfiles), so it offers none.
+func runSuggestionFile(spec bool, path string) string {
+	if spec {
+		return ""
+	}
+
+	return path
+}
+
+// maxCompiledSpecBytes bounds a compiled specification read from disk. A
+// specification carries every expression, descriptor pin and call it resolved,
+// so it is larger than the Flowfile it came from, and the bound exists so a
+// path naming something enormous is refused before it is parsed (#1548).
+const maxCompiledSpecBytes = 16 << 20
+
+// loadCompiledSpec reads what `flow compile` wrote: one protojson
+// [v1.Workflow]. Unknown fields are refused rather than dropped, because a
+// specification produced by a newer build that this one would silently
+// truncate is a different workflow than the one that was compiled.
+func loadCompiledSpec(path string) (*v1.Workflow, error) {
+	data, err := readBoundedFile(path, "a compiled specification", maxCompiledSpecBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	var workflow v1.Workflow
+	if err := protojson.Unmarshal(data, &workflow); err != nil {
+		return nil, fmt.Errorf("%s is not a compiled specification (`flow compile --output json` writes one): %w", path, err)
+	}
+	if err := v1.Validate(&workflow); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return &workflow, nil
+}
+
 // loadWorkflow reads, compiles, and validates a Flowfile.
 //
 // Validation happens before execution so that a mistake is reported instead of
@@ -2621,7 +2671,7 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	// One pass, not [flowfile.ParseFile] followed by [flowfile.ValidateSourceFile]:
 	// the second compiled the file again from its bytes, every expression parsed
 	// twice before a step ran (#1795).
-	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
+	workflow, positions, diagnostics, err := flowfile.ParseAndValidateFileAt(path)
 	if err != nil {
 		// Positioned diagnostics get a line each naming this file, like every
 		// other diagnostic surface. Wrapping the error instead put the filename on
@@ -2636,6 +2686,11 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	if len(diagnostics) > 0 {
 		return nil, diagnosticsError(path, diagnostics)
 	}
+
+	// Where each step is written travels with the specification it is run from, so
+	// a failure can point back at this file wherever it is read, not only in this
+	// process. Advisory, and cleared from every digest.
+	flowfile.AttachSources(workflow, positions, path)
 
 	return workflow, nil
 }
@@ -2759,6 +2814,9 @@ flow validate examples/hello-world/workflow.yaml`,
 	addRawOutputFlag(runCmd)
 	addFollowFlags(runCmd)
 	addInputFlags(runCmd)
+	addPluginCatalogFlag(runCmd)
+	runCmd.Flags().Bool("spec", false,
+		"treat the argument as a compiled specification (`flow compile --output json`) rather than a Flowfile")
 
 	// Why a person is starting this run, recorded on it. Optional here and
 	// required by the *workflow*: a file declaring `manual: {require_reason:
@@ -2891,6 +2949,7 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 		"hold the run before each step and read commands from the terminal — step, "+
 			"continue, until, break, inspect, scope, quit; the console shares stderr "+
 			"with the run's account, so stdout stays the answer under every `--output`")
+	addRecordFlag(runLocalCmd)
 
 	// Supplying signals up front, and naming who they are from. Declared
 	// through a helper because `flow debug replay` is the same local run with

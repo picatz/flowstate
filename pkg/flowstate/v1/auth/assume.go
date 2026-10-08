@@ -177,6 +177,7 @@ func newAssumeEnv() (*cel.Env, error) {
 		principal.Var(attrIdentity),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	)
 }
 

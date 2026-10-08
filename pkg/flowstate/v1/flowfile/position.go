@@ -167,6 +167,40 @@ func (p *Positions) StepPath(id string) (string, bool) {
 	return path, ok
 }
 
+// UniqueStepPath is [Positions.StepPath] for a caller that reports a failure
+// from a running step: it answers only when the id names exactly one step in the
+// file. Sibling `for_each` or `loop:` bodies may each declare a step with one id,
+// and a failure carries the bare id, so for those StepPath would print the first
+// declaration's line for a failure that happened in the second; no location is
+// better than a confidently wrong one.
+func (p *Positions) UniqueStepPath(id string) (string, bool) {
+	path, ok := p.UniqueStepPaths()[id]
+
+	return path, ok
+}
+
+// UniqueStepPaths is [Positions.UniqueStepPath] for every id at once, built in
+// one pass over the declarations for a caller that asks about each step of a
+// file; asking one id at a time would scan them all once per step.
+func (p *Positions) UniqueStepPaths() map[string]string {
+	if p == nil {
+		return nil
+	}
+	paths := make(map[string]string, len(p.stepAt))
+	duplicated := map[string]struct{}{}
+	for path, id := range p.stepAt {
+		if _, again := paths[id]; again {
+			duplicated[id] = struct{}{}
+		}
+		paths[id] = path
+	}
+	for id := range duplicated {
+		delete(paths, id)
+	}
+
+	return paths
+}
+
 // TriggerPath returns the path of the webhook trigger with the given name, at
 // its original position in the `triggers:` list.
 //

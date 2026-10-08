@@ -114,3 +114,37 @@ func TestAnEvaluationFailureIsARefusalUnlessTheContextEnded(t *testing.T) {
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.False(t, errors.As(err, &failed), "a cancelled context is not a policy decision")
 }
+
+// TestLiteralsRefuseAnUnparseableLiteralAtLoad is #1856: a regex, duration or
+// timestamp literal that cannot work is refused where the rule is compiled, not
+// on every request the rule is later asked.
+func TestLiteralsRefuseAnUnparseableLiteralAtLoad(t *testing.T) {
+	t.Parallel()
+
+	env, err := cel.NewEnv(cel.Variable("host", cel.StringType), celrule.Literals())
+	require.NoError(t, err)
+
+	for _, src := range []string{
+		`host.matches('(')`,
+		`duration('3 days') > duration('1h')`,
+		`timestamp('yesterday') < timestamp('2020-01-01T00:00:00Z')`,
+	} {
+		_, err := celrule.Compile(env, src, 1000)
+		require.Error(t, err, src)
+		assert.ErrorContains(t, err, "is invalid", src)
+	}
+
+	for _, src := range []string{
+		`host.matches('^a.*$')`,
+		`duration('1h') > duration('1m')`,
+		`host == 'a'`,
+	} {
+		_, err := celrule.Compile(env, src, 1000)
+		require.NoError(t, err, src)
+	}
+
+	plain, err := cel.NewEnv(cel.Variable("host", cel.StringType))
+	require.NoError(t, err)
+	_, err = celrule.Compile(plain, `host.matches('(')`, 1000)
+	require.NoError(t, err, "the option is what makes the difference, so the test pins it")
+}

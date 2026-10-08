@@ -187,9 +187,8 @@ var commands = []command{
 	{verb: "scope", completes: completesNothing, fronts: frontsAll, effect: effectRead,
 		help:       "list what this run can name right now",
 		driverHelp: "list what this stop can name"},
-	{verb: "complete", argument: "<partial-command>", completes: completesNothing, fronts: frontPrompt | frontAutopsy, effect: effectRead,
-		help:      "list what could be written at the end of that text",
-		elsewhere: "`complete` is a prompt command: the structured fronts do not complete a line"},
+	{verb: "complete", argument: "<partial-command>", completes: completesNothing, fronts: frontsAll, effect: effectRead,
+		help: "list what could be written at the end of that text"},
 	{verb: "status", completes: completesNothing, fronts: frontsLive, effect: effectRead,
 		help: "where the run is, and why"},
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing, fronts: frontPrompt, effect: effectRead,
@@ -672,7 +671,22 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(applyText(text, refValTextWith(out, text, value)), MaxInspectRunes))
+	//
+	// A value that does not fit a line is laid out as a tree, from the tree the
+	// redactors already walked; the backstop pass over what it writes is
+	// unchanged.
+	//
+	// Only the renderer's own shapes are a value tone: the fallback is Go's
+	// formatting, whose text ValueTokens has no grammar for.
+	tone := ToneInfo
+	var rendered string
+	if native, ok := redactedTree(out, text, value); ok {
+		rendered = RenderValue(native, Layout{})
+		tone = ToneValue
+	} else {
+		rendered = unrenderedText(out, text != nil || value != nil)
+	}
+	s.printfTone(tone, "%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.

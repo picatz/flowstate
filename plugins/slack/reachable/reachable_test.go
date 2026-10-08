@@ -78,8 +78,8 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	for _, task := range p.Manifest().GetTasks() {
 		tasks = append(tasks, task.GetName())
 	}
-	if !ok || !slices.Equal(tasks, []string{"post", "update"}) {
-		t.Fatalf("catalog manifest exposes tasks %v, want exactly slack.post and slack.update", tasks)
+	if !ok || !slices.Equal(tasks, []string{"post", "update", "respond"}) {
+		t.Fatalf("catalog manifest exposes tasks %v, want exactly slack.post, slack.update and slack.respond", tasks)
 	}
 
 	// A block list written wholly as literals is checked structurally by the host

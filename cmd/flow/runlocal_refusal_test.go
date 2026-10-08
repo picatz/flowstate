@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // refusalWorkflow declares one of each thing a command line can get wrong: a
@@ -211,8 +213,10 @@ func TestARefusedCommandLineDoesNotPrintASensitiveArgument(t *testing.T) {
 			value: "hunter2",
 		},
 		"a one-rune word the flag cannot coerce to the declared type": {
-			args:  []string{"--input", "pin=x"},
-			value: "x",
+			// Not `x`: the document spells `expression` as a key, so a
+			// one-rune sentinel has to be a letter no field name contains.
+			args:  []string{"--input", "pin=q"},
+			value: "q",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -374,4 +378,113 @@ func TestARefusalDocumentIsTheWholeReportAndBoundsTheInputName(t *testing.T) {
 	err = refuseRunLocally(surface, runRendering{format: FormatText}, v1.SensitiveValues{}, short)
 	require.Error(t, err)
 	assert.False(t, isQuietError(err), "a text refusal has no document, so its prose is the report")
+}
+
+// TestAnExpressionFailureShowsWhereItBrokeWithACaret pins the compiler-style
+// excerpt `flow run local` prints for a run-time expression failure (#1551): the
+// failing subexpression indented under the sentence, and a caret under the
+// operator, with the indentation kept exactly so the caret stays under it.
+func TestAnExpressionFailureShowsWhereItBrokeWithACaret(t *testing.T) {
+	t.Parallel()
+
+	_, stderr, err := runLocal(t, `edition: v2026.4
+name: overload
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: bad
+    value: ${steps.n.value.k + "x"}
+`)
+	require.Error(t, err)
+
+	assert.Contains(t, stderr+err.Error(), "\n    steps.n.value.k + \"x\"\n                    ^\n")
+	// The step's own line and column in the file, which the sentence alone does
+	// not give: `bad` is declared on line 6, its mapping starting at column 5.
+	assert.Contains(t, stderr+err.Error(), ":6:5\n    steps.n.value.k")
+	assert.Contains(t, stderr+err.Error(), "\n    --> ")
+}
+
+// TestWrapKeepsAnIndentedLineWhole pins that an indented line is not re-flowed:
+// a caret line is only right at the column it was written to.
+func TestWrapKeepsAnIndentedLineWhole(t *testing.T) {
+	t.Parallel()
+
+	text := "a sentence that is longer than ten columns\n    x + \"y\"\n        ^"
+	got := wrap(text, 10)
+
+	assert.Contains(t, got, "\n    x + \"y\"\n        ^")
+}
+
+// TestARedactedExpressionFailureDrawsNoCaret pins that a run declaring a
+// sensitive value prints no excerpt: redacting the sentence's text can move the
+// operator without moving a caret computed before it.
+func TestARedactedExpressionFailureDrawsNoCaret(t *testing.T) {
+	t.Parallel()
+
+	_, stderr, err := runLocal(t, `edition: v2026.4
+name: redacted-caret
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: bad
+    value: ${steps.n.value.k + "x"}
+`, "--input", "token=sk-live-0123456789abcdef")
+	require.Error(t, err)
+
+	assert.NotContains(t, stderr+err.Error(), "^")
+	assert.NotContains(t, stderr+err.Error(), "-->", "the location is drawn from the same account the excerpt is")
+}
+
+// TestAFailureInsideACalleeIsNotLocatedInTheCallersFile pins that a step id is
+// read within the file that declares it: a callee's `first` colliding with the
+// caller's `first` must not print the caller's line.
+func TestAFailureInsideACalleeIsNotLocatedInTheCallersFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"), []byte(`edition: v2026.4
+name: callee
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: first
+    value: ${steps.n.value.k + "x"}
+`), 0o600))
+	caller := filepath.Join(dir, "caller.yaml")
+	require.NoError(t, os.WriteFile(caller, []byte(`edition: v2026.4
+name: caller
+steps:
+  - id: first
+    value: ${3}
+  - id: called
+    call: ./callee.yaml
+`), 0o600))
+
+	_, stderr, err := runLocalFile(t, caller)
+	require.Error(t, err)
+
+	rendered := stderr + err.Error()
+	assert.Contains(t, rendered, "steps.n.value.k + \"x\"", "the excerpt still shows")
+	assert.NotContains(t, rendered, "-->", "the caller's own `first` is not where this failed")
+}
+
+// A failure account can come from a remote peer, so the position and the
+// excerpt it prints must not carry a control byte to the terminal.
+func TestFailureExcerptEscapesControlBytes(t *testing.T) {
+	t.Parallel()
+
+	out := failureExcerpt(&v1.ExpressionFailure{
+		Location:      &v1.SourceLocation{File: "a\x1b[2Jb.yaml", Line: 3, Column: 1},
+		Subexpression: "x\x1b]0;t\x07 + 1",
+		Caret:         proto.Int32(2),
+	})
+
+	assert.NotContains(t, out, "\x1b")
+	assert.NotContains(t, out, "\x07")
+	assert.Contains(t, out, "-->")
 }

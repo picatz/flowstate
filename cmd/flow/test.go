@@ -207,6 +207,7 @@ flow test -o jsonl examples/`,
 			"refused with `--output json` and with `--seeds`. With `--seed N` it steps through "+
 			"that seed's own run — the faults it injects and the order it chose — which is how "+
 			"a reported violation is opened in the debugger")
+	addRecordFlag(cmd)
 
 	return cmd
 }
@@ -390,10 +391,17 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	// word "interactive" stops being true of the run, and a session that
 	// attached anyway would be a prompt nobody is answering.
 	debugging, _ := cmd.Flags().GetBool("debug")
-	var session *flowdebug.Session
+	record, err := recordPath(cmd)
+	if err != nil {
+		return err
+	}
+	var (
+		session *flowdebug.Session
+		front   *reversibleFront
+	)
 	restoreTerminal := func() {}
 	if debugging {
-		if session, restoreTerminal, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
+		if session, front, restoreTerminal, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
 			return err
 		}
 		// A terminal the session put into raw mode, put back — before this
@@ -407,7 +415,16 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// closed anyway, because the surface where it is not free
 		// (`flow mcp serve`) is served by the same habit rather than a
 		// different one.
-		defer func() { _ = session.Close() }()
+		if session != nil {
+			defer func() { _ = session.Close() }()
+			// Last registered, first run: the file is written while the session
+			// still holds what it accepted, on every way out of this function.
+			defer recordSession(record, session, surface.Err)()
+		}
+		if front != nil && record != "" {
+			front.Record = &attachRecording{}
+			defer func() { writeRecording(record, front.Record.lines, front.Record.truncated, surface.Err) }()
+		}
 	}
 
 	started := time.Now()
@@ -430,7 +447,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// Coverage arrives already attached to the report — flowtest's runSuite
 		// owns that now, for every door at once, so the MCP tool and this
 		// command cannot disagree about what the document carries (#931).
-		run := flowtest.RunPath(cmd.Context(), path, flowtest.RunOptions{
+		runOptions := flowtest.RunOptions{
 			Budget:      budget,
 			Fuzz:        fuzzOpts,
 			Select:      selectCase,
@@ -442,7 +459,15 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// what every other run in the world passes: the engine's boundary
 			// does one context lookup and finds nothing.
 			Debugger: debuggerOrNil(session),
-		})
+		}
+		var run flowtest.RunResult
+		if front != nil {
+			if run, err = front.play(cmd.Context(), path, runOptions); err != nil {
+				return err
+			}
+		} else {
+			run = flowtest.RunPath(cmd.Context(), path, runOptions)
+		}
 		// The console owned the line for as long as the run did — the autopsy
 		// is inside that call — and no longer: the report below prints onto
 		// what should be an ordinary terminal again, and a transcript printed

@@ -337,6 +337,13 @@ func taskProvenance(def v1.TaskDef, catalog *v1.PluginCatalog) string {
 			continue
 		}
 
+		if p.GetPath() == "" {
+			// A saved catalog deliberately carries no path (#1498): nothing was
+			// launched, so claiming a launch directory would be false.
+			return fmt.Sprintf("Provided by the %s plugin, %s, as described by a saved catalog; nothing was launched.",
+				name, p.GetVersion())
+		}
+
 		return fmt.Sprintf("Provided by the %s plugin, %s, launched from %s.",
 			name, p.GetVersion(), p.GetPath())
 	}

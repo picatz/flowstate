@@ -238,6 +238,12 @@ func init() {
 				" the argument to fix without parsing `message`.\n",
 		},
 		{
+			Name: "flowstate.v1.RunResponse.Error.expression",
+			Leading: " Expression says which operation failed and what it saw, when `kind` is\n" +
+				" `Expression` and the cause was an operator with no overload for its\n" +
+				" operands or a selection of a missing key. Unset for every other failure.\n",
+		},
+		{
 			Name:    "flowstate.v1.RunResponse.Status",
 			Leading: " Status is where a run is in its lifecycle.\n",
 		},
@@ -1033,6 +1039,39 @@ func init() {
 				" text, under the same action.\n",
 		},
 		{
+			Name:    "flowstate.v1.GetCheckpointRequest",
+			Leading: " GetCheckpointRequest addresses one run segment.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointRequest.workflow_id",
+			Leading: " WorkflowId is the workload to read, as Run's `workflow_id` reports it. 1 to\n" +
+				" 256 bytes. The caller may read only runs in its own tenant.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointRequest.run_id",
+			Leading: " RunId names one segment of the workload, as a UUID. Empty reads the\n" +
+				" latest segment.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointResponse",
+			Leading: " GetCheckpointResponse is the checkpoint a segment started from, or why there\n" +
+				" is none.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetCheckpointResponse.checkpoint",
+			Leading: " Checkpoint is set when the segment's start is a legal starting state.\n",
+		},
+		{
+			Name: "flowstate.v1.GetCheckpointResponse.unavailable_reason",
+			Leading: " UnavailableReason is set when it is not: the position is inside a call,\n" +
+				" a loop or concurrent work, the carried state is invalid or too large to\n" +
+				" resume, or it could not be read.\n",
+		},
+		{
+			Name:    "flowstate.v1.GetCheckpointResponse.result",
+			Leading: " Result is the checkpoint, or why there is none. Exactly one is set.\n",
+		},
+		{
 			Name:    "flowstate.v1.GetTimelineResponse",
 			Leading: " GetTimelineResponse is what one run did.\n",
 		},
@@ -1389,6 +1428,20 @@ func init() {
 				" workload that continued as new has one timeline per segment: start at\n" +
 				" `first_run_id` and follow `next_run_id`, or walk back with\n" +
 				" `previous_run_id`.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.GetCheckpoint",
+			Leading: " GetCheckpoint reports whether a run segment started from a point a new run\n" +
+				" could be started from, and where that point stands.\n" +
+				"\n" +
+				" Every segment's start input is the run's complete carried state, so the\n" +
+				" answer is read from history and changes nothing. It describes the point\n" +
+				" without returning the state, which holds the run's inputs and outputs in\n" +
+				" full; see [CheckpointInfo]. A segment whose position is inside a call, a\n" +
+				" loop or concurrent work is reported unavailable with the reason, because\n" +
+				" only a position between top-level steps is a legal starting state.\n" +
+				"\n" +
+				" `run_id` names the segment, as in [GetTimeline]; empty reads the latest.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkflowService.Cancel",

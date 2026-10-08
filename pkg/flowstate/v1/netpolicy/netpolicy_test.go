@@ -1240,3 +1240,24 @@ func Test_Policy_dialWithVerdict_undecidedCause(t *testing.T) {
 		})
 	}
 }
+
+// TestNonCanonicalIPv4NamesTheAddressToWrite pins the exported question a
+// validator asks of a literal URL's host: only an inet_aton spelling answers
+// yes, and it answers with the canonical address (#1768).
+func TestNonCanonicalIPv4NamesTheAddressToWrite(t *testing.T) {
+	t.Parallel()
+
+	for host, want := range map[string]string{
+		"127.1": "127.0.0.1", "2130706433": "127.0.0.1", "0x7f.0.0.1": "127.0.0.1", "0177.0.0.1": "127.0.0.1",
+	} {
+		got, ok := NonCanonicalIPv4(host)
+		if !ok || got.String() != want {
+			t.Errorf("NonCanonicalIPv4(%q) = %v, %v; want %s, true", host, got, ok, want)
+		}
+	}
+	for _, host := range []string{"127.0.0.1", "::1", "localhost", "example.com", "1.2.3.4.nip.io", ""} {
+		if got, ok := NonCanonicalIPv4(host); ok {
+			t.Errorf("NonCanonicalIPv4(%q) = %v, true; want false", host, got)
+		}
+	}
+}

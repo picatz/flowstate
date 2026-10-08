@@ -472,7 +472,7 @@ flow debug [command]
 
 Attach the step debugger to a durable run, read its debug state, and drive it one command at a time; or play back a script of the commands a local debugging session accepted, one per line.
 
-A local run is debugged as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor, which can also attach to a durable run). None of those writes a script to disk; the `flowstate_debug` MCP tool's answer carries one, and a script can be written by hand.
+A local run is debugged as `flow run local --debug` (a real run, at a terminal), as `flow test --debug` (one test case), and as `flow dap` (from an editor, which can also attach to a durable run). `flow run local --debug` and `flow test --debug` write a script to disk with `--record`; the `flowstate_debug` MCP tool's answer carries one, and a script can be written by hand.
 
 ## `flow debug attach`
 
@@ -517,6 +517,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--lease <duration>` | `duration` | `2m0s` | — | how long each renewal holds the session; the engine bounds it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, the deployment's plugin and task pins aside |
+| `--record <string>` | `string` | — | — | write the commands the session accepted to this file when it ends (end of run, `quit`, error), so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is not in it). Requires --debug where the command has one |
 | `--run-id <string>` | `string` | — | — | pin the run, as the first run id of its chain; unset follows the current one |
 | `--script <string>` | `string` | — | — | read commands from this file instead of the terminal |
 | `--session <string>` | `string` | — | — | rejoin this session instead of attaching a new one |
@@ -696,6 +697,7 @@ flow debug replay session.script examples/computed-outputs/workflow.yaml \
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
+| `--record <string>` | `string` | — | — | write the commands the session accepted to this file when it ends (end of run, `quit`, error), so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is not in it). Requires --debug where the command has one |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with `--secret-command-namespaced`, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in `--secret-command` with the tenant's namespace |
@@ -1533,10 +1535,12 @@ flow validate examples/hello-world/workflow.yaml
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reason <string>` | `string` | — | — | why this run is being started, recorded on it; required by a workflow whose `manual:` block asks for one |
 | `--request-id <string>` | `string` | — | — | idempotency key for this submission, a UUID or a caller-chosen string; a second `flow run` carrying the same value is answered with the run the first started rather than starting another. Generated per invocation when unset |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
+| `--spec` | `bool` | `false` | — | treat the argument as a compiled specification (`flow compile --output json`) rather than a Flowfile |
 | `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
@@ -1640,6 +1644,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
+| `--record <string>` | `string` | — | — | write the commands the session accepted to this file when it ends (end of run, `quit`, error), so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is not in it). Requires --debug where the command has one |
 | `--reveal-sensitive` | `bool` | `false` | — | show values declared `sensitive: true` in the clear, instead of `[redacted: <name>]`. Display etiquette only: the value already sits in the run's history exactly like any other input or output, and this flag does not add or remove that; see ${secret(...)} for keeping a value out of history in the first place. Typed on purpose, every invocation: there is no configuration default. |
 | `--secret-command <string,...>` | `stringArray` | — | `FLOWSTATE_SECRET_COMMAND` | argv of the command that resolves command: secrets, repeatable in order (executable first);"{{name}}" and, with `--secret-command-namespaced`, "{{namespace}}" are substituted literally into one argument, never through a shell (default $FLOWSTATE_SECRET_COMMAND, :-separated) |
 | `--secret-command-namespaced` | `bool` | `false` | — | substitute "{{namespace}}" in `--secret-command` with the tenant's namespace |
@@ -2507,6 +2512,7 @@ flow test -o jsonl examples/
 | `--junit <string>` | `string` | — | — | also write the results to this file as JUnit XML, for CI systems that annotate failures; failed expectations are <failure>, a case or file that could not be judged is <error> |
 | `--list` | `bool` | `false` | — | print the names of the cases that would run, one per line under their file, without running any; honours --run, and shows cases a `skip:` leaves out |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--record <string>` | `string` | — | — | write the commands the session accepted to this file when it ends (end of run, `quit`, error), so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is not in it). Requires --debug where the command has one |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and `--coverage-required` is refused alongside it, because a subset's coverage gaps are not the suite's |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
 | `--seed0 <uint64>` | `uint64` | `1` | — | the first seed `--seeds` walks upward from, to move the search to a different part of the seed space |

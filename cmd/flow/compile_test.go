@@ -48,9 +48,11 @@ func TestCompileWritesTheSpecificationTheCompilerProduces(t *testing.T) {
 
 	// From the file, as `flow compile` compiles it: a program compiled from a
 	// file records the digest of its bytes.
-	want, _, err := flowfile.ParseFile(path)
+	want, positions, _, err := flowfile.ParseAndValidateFileAt(path)
 	require.NoError(t, err)
 	require.NotEmpty(t, want.GetSourceDigest())
+	flowfile.AttachSources(want, positions, path)
+	require.NotNil(t, want.GetSteps()[0].GetSource(), "compile must carry where each step is written")
 
 	out, errOut, err := compileOutput(t, path)
 	require.NoError(t, err, "a valid example was refused; stderr said:\n%s", errOut)
@@ -243,8 +245,9 @@ func TestCompileCompilesEveryExample(t *testing.T) {
 
 	for _, path := range paths {
 		t.Run(filepath.Base(filepath.Dir(path)), func(t *testing.T) {
-			want, _, err := flowfile.ParseFile(path)
+			want, positions, _, err := flowfile.ParseAndValidateFileAt(path)
 			require.NoError(t, err)
+			flowfile.AttachSources(want, positions, path)
 
 			out, errOut, err := compileOutput(t, path)
 			require.NoError(t, err, "the example was refused; stderr said:\n%s", errOut)

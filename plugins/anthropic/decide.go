@@ -153,7 +153,7 @@ func validateInputs(in *anthropicv1.DecideInputs) (*decisionv1.QuestionSet, erro
 	if in.GetMaxTokens() < 0 || in.GetMaxTokens() > maxMaxTokens {
 		return nil, sdk.InvalidInput("max_tokens must be between 0 and %d", maxMaxTokens)
 	}
-	return parseQuestionSet(in.GetQuestionSet())
+	return checkQuestionSet(in.GetQuestionSet())
 }
 
 // decide sends the request and turns the reply into validated answers.

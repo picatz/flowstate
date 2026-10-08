@@ -183,6 +183,8 @@ func debugToneName(tone flowdebug.Tone) string {
 		return "warning"
 	case flowdebug.ToneDanger:
 		return "danger"
+	case flowdebug.ToneValue:
+		return "value"
 	default:
 		return "info"
 	}

@@ -549,7 +549,7 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 			// session gets of why it stopped here (#2124).
 			e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FAILED, node, err)
 
-			return stepFailed(err, "step %q", node.GetId())
+			return stepFailed(attributeToStep(err, node), "step %q", node.GetId())
 		}
 		if !run {
 			workflow.GetLogger(e.ctx).Info("skipping step, condition is false", "id", node.GetId())
@@ -864,7 +864,7 @@ func (e *executor) recordOutcome(node *v1.Node, err error) error {
 		// keeps the failure inside this step, records it without naming
 		// the step it is already filed under. The local driver adds its
 		// `step %q` at exactly this point too.
-		return stepFailed(err, "step %q", node.GetId())
+		return stepFailed(attributeToStep(err, node), "step %q", node.GetId())
 	}
 	workflow.GetLogger(e.ctx).Info("step failed but is allowed to continue",
 		"id", node.GetId(), "error", err.Error())
@@ -1163,7 +1163,7 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		//
 		// Carrying what the callee withholds, for a debugger rendering the
 		// failure at the caller (#2210), as the local driver's runCall does.
-		return withFailureSensitive(stepFailed(err, "workflow %q", callee.GetName()), nested.debugFailureSensitive())
+		return withFailureSensitive(stepFailed(qualifyStep(err, callee.GetName()), "workflow %q", callee.GetName()), nested.debugFailureSensitive())
 	}
 
 	outputs, cost, err := v1.CallOutputsWithCost(evalContext(), callee, inner)
