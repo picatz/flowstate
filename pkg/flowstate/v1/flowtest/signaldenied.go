@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
@@ -199,13 +200,25 @@ func undeliveredSignalWarnings(scripts []SignalScript, o *signalOutcomes) []*v1.
 	o.mu.Lock()
 	defer o.mu.Unlock()
 
+	// Only a signal scripted for a later virtual instant is judged. One with no
+	// `at:` is sent by a goroutine that races the run's own end, so whether it
+	// ran before a workflow that never waits finished is a fact about
+	// scheduling and not about the case; a virtual instant is ordered by the
+	// clock, which makes the same case warn the same way every time.
 	scripted := map[string]int{}
+	immediate := map[string]bool{}
 	for _, s := range scripts {
+		if d, err := time.ParseDuration(s.At); err != nil || d <= 0 {
+			immediate[s.Name] = true
+		}
 		scripted[s.Name]++
 	}
 
 	var warnings []*v1.Diagnostic
 	for _, name := range slices.Sorted(maps.Keys(scripted)) {
+		if immediate[name] {
+			continue
+		}
 		seen := o.delivered[name] + o.denied[name] + o.otherRefused[name] + o.dropped[name] + o.delayed[name]
 		if seen > 0 {
 			continue

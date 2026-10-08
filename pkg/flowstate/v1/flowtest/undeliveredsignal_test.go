@@ -73,3 +73,14 @@ func TestALateRepeatOfADeliveredSignalDoesNotWarn(t *testing.T) {
 
 	assert.Empty(t, signalCaseWarnings(t, `[{name: deploy-approved, at: 1h}, {name: deploy-approved, at: 48h}]`))
 }
+
+// TestAnImmediateSignalIsNotJudged keeps the warning deterministic: a signal
+// with no `at:` races the run's own end, so the same case must not warn on one
+// scheduling and stay quiet on another.
+func TestAnImmediateSignalIsNotJudged(t *testing.T) {
+	t.Parallel()
+
+	for range 20 {
+		assert.Empty(t, signalCaseWarnings(t, `[{name: deploy-approved}]`))
+	}
+}
