@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // TestResumeRunStartsAnOrdinaryRunFromACheckpoint resumes a real run's start
@@ -109,4 +110,29 @@ func TestResumeRunStartsAnOrdinaryRunFromACheckpoint(t *testing.T) {
 		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err),
 			"a run in another tenant must be indistinguishable from a missing one")
 	})
+}
+
+// TestResumeRunCannotPatchADeploymentOwnedWorkflow proves a patch does not
+// carry caller-written steps past the substitution [server.WithTrustedWorkflows]
+// makes on Run: the trusted specification binds, so only an unpatched resume
+// of it is allowed.
+func TestResumeRunCannotPatchADeploymentOwnedWorkflow(t *testing.T) {
+	t.Parallel()
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal, server.WithTrustedWorkflows("", gatedWorkflow()))
+
+	started, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: gatedWorkflow()}))
+	require.NoError(t, err)
+	origin := started.Msg.GetWorkflowId()
+
+	patch := proto.Clone(gatedWorkflow()).(*v1.Workflow)
+	patch.Steps[2].GetTask().Inputs["message"] = v1.NewLiteral("rewritten by the caller")
+
+	_, err = flowstate.ResumeRun(t.Context(), connect.NewRequest(&v1.ResumeRunRequest{WorkflowId: origin, Patch: patch}))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "%v", err)
+
+	_, err = flowstate.ResumeRun(t.Context(), connect.NewRequest(&v1.ResumeRunRequest{WorkflowId: origin}))
+	require.NoError(t, err, "the trusted specification itself may be resumed unpatched")
 }

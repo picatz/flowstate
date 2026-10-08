@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -70,6 +71,17 @@ func (s *FlowstateServer) ResumeRun(
 	patch := req.Msg.GetPatch()
 	if patch != nil {
 		patch = proto.Clone(patch).(*v1.Workflow)
+		// A deployment-trusted specification is what [FlowstateServer.Run]
+		// substitutes for whatever a caller submits under its name, so that its
+		// `manual:` policy and steps bind. A patch would carry caller-written
+		// steps past that substitution, so a trusted workflow cannot be patched.
+		if _, trusted, err := s.trustedWorkflow(caller.GetPrincipal().GetNamespace(), patch); err != nil {
+			return nil, err
+		} else if trusted {
+			return nil, s.auditDeny(ctx, "ResumeRun", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, execution.GetWorkflowId(),
+				v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED,
+				connect.NewError(connect.CodePermissionDenied, errors.New("this workflow's specification is owned by the deployment, so a resume cannot patch it")))
+		}
 		// A patch is a specification a caller sent, so it is admitted as one.
 		if err := s.validateSpecification(patch); err != nil {
 			return nil, err
