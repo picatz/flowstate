@@ -1455,7 +1455,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// that never reached a run at all (result.Error set) returns above and
 	// never gets here.
 	if runErr == nil {
-		result.Warnings = unusedStubWarnings(stubs)
+		result.Warnings = append(unusedStubWarnings(stubs), undeliveredSignalWarnings(test.Signals, outcomes)...)
 	}
 
 	// Whatever the run's verdict, and ahead of the idle-stub account above:

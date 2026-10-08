@@ -1,10 +1,12 @@
 package flowtest
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"sync"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -177,4 +179,48 @@ func deniedSignalFailures(want *Expectation, o *signalOutcomes) []*v1.Diagnostic
 	}
 
 	return failures
+}
+
+// undeliveredSignalWarnings is the account of every scripted signal the run
+// ended before delivering (#1669): a signal scripted past the `timeout:` of the
+// gate it was meant for, with nothing else keeping the run going, is never sent
+// at all, and the case reads as though a person approved. The same shape as a
+// stub the run never consulted, and for the same reason a warning and not a
+// failure: it is a hole in the case, not a verdict on the run.
+//
+// A signal a fault dropped or delayed, or that a policy denied, did have an
+// outcome, and so does one of several sends to the same gate (a quorum that
+// closed before the last send is the design, not a hole), so only a name none
+// of whose scripts had an outcome is reported.
+func undeliveredSignalWarnings(scripts []SignalScript, o *signalOutcomes) []*v1.Diagnostic {
+	if o == nil || len(scripts) == 0 {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	scripted := map[string]int{}
+	for _, s := range scripts {
+		scripted[s.Name]++
+	}
+
+	var warnings []*v1.Diagnostic
+	for _, name := range slices.Sorted(maps.Keys(scripted)) {
+		seen := o.delivered[name] + o.denied[name] + o.otherRefused[name] + o.dropped[name] + o.delayed[name]
+		if seen > 0 {
+			continue
+		}
+		var at []string
+		for _, s := range scripts {
+			if s.Name == name {
+				at = append(at, cmp.Or(s.At, "0s"))
+			}
+		}
+		warnings = append(warnings, &v1.Diagnostic{Field: "signals", Message: fmt.Sprintf(
+			"signal %q (at %s) was never delivered: the run ended first, so nothing answered it; "+
+				"if it was meant for a gate whose timeout is shorter, the case is certifying the timeout path",
+			name, strings.Join(at, ", "))})
+	}
+
+	return warnings
 }
