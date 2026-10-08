@@ -116,6 +116,10 @@ func planRespond(in *slackv1.RespondInputs) (*respondPlan, error) {
 		p.body.ResponseType = "in_channel"
 		no := false
 		p.body.ReplaceOrig = &no
+	default:
+		// An expression can produce a string the proto allow-list never saw,
+		// and an unrecognised mode must not become a plan.
+		return nil, sdk.InvalidInput("how must be replace, delete, ephemeral or in_channel")
 	}
 	return p, nil
 }
@@ -150,7 +154,9 @@ func sendRespond(ctx context.Context, client *http.Client, p *respondPlan) error
 	if err != nil {
 		return sdk.Failed("encoding the bounded Slack request: %v", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.url, bytes.NewReader(body))
+	// The address is the credential, and nothing in the request says so: marking
+	// it lets an operator rule that keeps credentials from a host apply here.
+	req, err := http.NewRequestWithContext(sdk.WithCredentials(ctx), http.MethodPost, p.url, bytes.NewReader(body))
 	if err != nil {
 		return sdk.Failed("building the Slack request: %v", err)
 	}

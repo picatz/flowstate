@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
+
 	slackv1 "github.com/picatz/flowstate/plugins/slack/gen/slack/v1"
 )
 
@@ -66,6 +68,11 @@ func TestPlanRespond(t *testing.T) {
 		p, err := planRespond(&slackv1.RespondInputs{ResponseUrl: goodResponseURL, How: howDelete})
 		if err != nil || p.body.DeleteOriginal == nil || !*p.body.DeleteOriginal {
 			t.Fatalf("plan = %+v err = %v", p, err)
+		}
+	})
+	t.Run("an unknown mode is refused", func(t *testing.T) {
+		if _, err := planRespond(&slackv1.RespondInputs{ResponseUrl: goodResponseURL, How: "broadcast", Text: "x"}); err == nil {
+			t.Fatal("an unknown how was planned")
 		}
 	})
 	t.Run("a message needs content", func(t *testing.T) {
@@ -131,5 +138,24 @@ func TestSendRespondDoesNotFollowARedirect(t *testing.T) {
 	}
 	if elsewhere.Load() != 0 {
 		t.Fatal("the redirect target received the body")
+	}
+}
+
+func TestAResponseURLCallIsACredentialedRequestToTheEgressPolicy(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { requests.Add(1) }))
+	t.Cleanup(server.Close)
+	policy, err := netpolicy.New(netpolicy.WithAllowLoopback(), netpolicy.WithDenyRules(`credentials`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := planRespond(&slackv1.RespondInputs{ResponseUrl: goodResponseURL, Text: "x"})
+	p.url = server.URL + "/actions/T/1/x"
+	err = sendRespond(t.Context(), policy.Client(), p)
+	if err == nil || !strings.Contains(err.Error(), "egress policy denied") {
+		t.Fatalf("sendRespond = %v, want a denial by a rule that keeps credentials away", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatal("the denied request reached the listener")
 	}
 }
