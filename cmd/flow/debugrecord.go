@@ -78,7 +78,7 @@ func writeRecording(path string, lines []string, truncated bool, stderr io.Write
 		b.WriteByte('\n')
 	}
 	if truncated {
-		b.WriteString("# the recording stopped at the script bounds; this file replays a prefix of the session\n")
+		b.WriteString("# the recording stopped here, at a script bound or a step back; this file replays a prefix of the session\n")
 	}
 	// Owner-only: an expression typed at `inspect` can name anything in scope.
 	// Narrowed before a byte is written when the file already existed, since a
@@ -101,12 +101,24 @@ type attachRecording struct {
 	lines     []string
 	bytes     int
 	truncated bool
+	// stopped is set once the session stepped back, which a script has no way
+	// to say: what followed would replay from a different stop than it was
+	// typed at, so the recording is the prefix before it.
+	stopped bool
+}
+
+// rewound ends the recording at a step back. See [attachRecording.stopped].
+func (r *attachRecording) rewound() {
+	r.stopped, r.truncated = true, true
 }
 
 // add keeps one accepted line. Leaving the session — `detach`, `disconnect` —
 // is not a command the run was given, and a script that ended in one could not
 // be replayed by a verb that has neither.
 func (r *attachRecording) add(line string) {
+	if r.stopped {
+		return
+	}
 	switch line {
 	case "detach", "disconnect":
 		return

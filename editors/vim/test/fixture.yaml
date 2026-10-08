@@ -1,0 +1,21 @@
+name: syntax
+inputs:
+  n:
+    type: int
+    must: this > 0 && size(vars.xs) == 1 # why
+    description: this > 0
+steps:
+  - id: say
+    if: ${inputs.n > 1}
+    log:
+      message: "hi ${size(steps.say.out)} and ${{'a': 1}.a}"
+      other: plain ${a.b} text
+      # a comment mentioning ${inputs.n}
+      escaped: $${inputs.version} literal
+      multi: |-
+        first ${size(
+          inputs.xs)} tail
+      broken: ${inputs.n
+      after: plain
+  - id: quoted
+    must: "this >= 1 && this != 'a'"

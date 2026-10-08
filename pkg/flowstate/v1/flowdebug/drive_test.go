@@ -67,6 +67,10 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	assert.Contains(t, stop.Text, "breakpoint")
 	assert.Equal(t, "2\n", do("inspect item").Text)
 	assert.Contains(t, do("expand [1, [2, 3]]").Text, "list")
+	// And a page the first one cut off is the driver's to read too.
+	long := longList(flowdebug.DefaultInspectLimit + 3)
+	assert.Contains(t, do("expand "+long).Text, "… and 3 more (repeat the expand with `from 100`)")
+	assert.Contains(t, do("expand "+long+" from 100").Text, "102  int  102")
 	assert.Contains(t, do("bt").Text, "iteration 1")
 	assert.Contains(t, do("scope").Text, "locals: item")
 	assert.Contains(t, do("breakpoints").Text, "each/touch  hits 1")

@@ -101,12 +101,15 @@ func TestTheReversibleFrontReleasesTheRunAtTheEndOfInput(t *testing.T) {
 }
 
 // TestTheReversibleFrontRecordsWhatTheRunAccepted: a refused rewind is not part
-// of the session it would reproduce.
+// of the session it would reproduce, and an accepted one ends the recording,
+// because a script replays forward only.
 func TestTheReversibleFrontRecordsWhatTheRunAccepted(t *testing.T) {
 	var recording attachRecording
 	playReversible(t, "step\nback\nback\nfrobnicate\nstep\n", &recording)
 
-	assert.Equal(t, []string{"step", "back", "step"}, recording.lines)
+	assert.Equal(t, []string{"step"}, recording.lines,
+		"a script cannot step back, so what follows the first rewind would replay from another stop")
+	assert.True(t, recording.truncated, "the recording does not say it stopped early")
 }
 
 // TestASeededRunStepsBackToTheSameFault: the seed's schedule is part of what a
@@ -253,4 +256,14 @@ func TestTheReversibleFrontSaysWhyAForwardVerbWasRefused(t *testing.T) {
 	out, _ := playReversible(t, "until nosuch\nstep\n", nil)
 
 	assert.Contains(t, out, "nosuch", "the refusal of `until nosuch` was swallowed:\n"+out)
+}
+
+// TestTheReversibleFrontDoesNotRecordARefusedRewind: `back` at the first stop is
+// refused, so it neither enters the recording nor ends it.
+func TestTheReversibleFrontDoesNotRecordARefusedRewind(t *testing.T) {
+	var recording attachRecording
+	playReversible(t, "back\nfrobnicate\nstep\n", &recording)
+
+	assert.Equal(t, []string{"step"}, recording.lines)
+	assert.False(t, recording.truncated)
 }

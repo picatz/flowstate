@@ -74,6 +74,7 @@ Add `--record session.script` to `flow run local --debug` or `flow test --debug`
 commands the session accepted are written to that file when it ends (end of run, `quit` or an
 error): a mistyped command or a refused `break` is not in it, the file
 is made readable by you alone, and `flow debug replay` reaches the same stops from it. `flow debug attach --record` does the same for an attached durable run (without the `detach` that leaves it); a durable session's lines replay only where the verbs exist on a local run.
+A session that steps back is recorded up to its first `back`, with a comment saying so: a script replays forward only, so what followed would reach other stops.
 
 [examples/debugging](../examples/debugging) walks one small workflow — a loop, a
 parallel block and a call — through every front, local and durable.
@@ -171,7 +172,7 @@ nothing here is worth learning twice. `help` lists it.
 | `clear` | driver | remove every breakpoint, whoever set it |
 | `breakpoints` | prompt, driver | list them |
 | `inspect <expr>`, `p` | every front | evaluate a CEL expression against this run's scope |
-| `expand <expr>` | prompt, driver | list a map's or list's children |
+| `expand <expr> [from <n>]` | prompt, driver | list a map's or list's children |
 | `scope` | every front | list what this run can name right now |
 | `complete <partial-command>` | every front | list what could be written at the end of that text |
 | `status` | prompt, driver | where the run is, and why |
@@ -195,6 +196,10 @@ The forms a verb takes:
 - `until <step>` runs to that step without stopping in between; a run that
   completes without reaching it says so, local or durable. A `<step>` is a bare
   id or an address like `pages[2]/page`.
+- `expand <expr>` lists a map's or list's children, one level, a page at a time.
+  A page that was cut off ends with `… and N more` and the way to ask for the
+  rest: `expand <expr> from <n>` starts the page at child `n`, at the prompt and
+  over MCP alike.
 - `until <step> if <expr>` runs to that step, stopping only where the expression
   holds. The structured fronts do not take it: a typed resume names a step and
   nothing more, so the condition is refused rather than dropped, and
@@ -207,9 +212,9 @@ The forms a verb takes:
   previous stop and to the nearest earlier breakpoint stop, for a target that can
   step back; any other says so and does not move. `flow test --debug` at a
   terminal steps back too (a stubbed case, as under `flow dap`); `flow run
-  local --debug` and a script's session stay forward-only. A failed case is
-  held once more after its verdict, and `back` from there returns to its last
-  stop.
+  local --debug` steps back only with `--reverse` (below), and a script's
+  session stays forward-only. A failed case is held once more after its verdict,
+  and `back` from there returns to its last stop.
 - An empty line at the prompt is `step`.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
@@ -483,6 +488,21 @@ The tool debugs a *test case* — stubs, no egress, no secret resolved, a virtua
 clock — which is why it needs no operator opt-in. Debugging a real, unstubbed
 local run is `flow run local --debug`, at a terminal, under that command's own
 egress policy.
+
+### Stepping back through a real local run
+
+`flow run local --debug --reverse` makes `back` and `reverse-continue` work at
+the terminal prompt of a real run. Going back runs the workflow again from its
+start and replays your commands up to the earlier stop, so **every task runs
+again**; the replay says nothing until it replaces the run before it, and a stop
+it reaches must show what the first time showed or the step is refused.
+
+Because that re-executes effects, `--reverse` is refused for a workflow with a
+task that may act outside the process, or a `wait:` step that would be waited
+for again. Only `log` is known not to act outside; a plugin, `http` and `exec`
+are not, nor is a task not named here. `--reverse=unsafe` (with the equals sign; `--reverse unsafe` is a positional argument) takes
+the risk and prints a warning. It also needs a terminal and `--debug`, and is
+refused with `--signal`, which is delivered once.
 
 ### A session that outlives the call
 

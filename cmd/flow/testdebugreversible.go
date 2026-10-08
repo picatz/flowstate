@@ -31,8 +31,19 @@ type reversibleFront struct {
 	Path string
 	Run  flowtest.RunOptions
 
-	// Steps are the ids `break` and `until` complete over.
-	Steps []flowdebug.Step
+	// Steps are the ids `break` and `until` complete over, and Program, when
+	// set, the workflow a target or a condition is judged against.
+	Steps   []flowdebug.Step
+	Program *v1.Workflow
+
+	// RevealSensitive is `--reveal-sensitive`, for every pass's session.
+	RevealSensitive bool
+
+	// Execute, when set, runs one pass of the program under the debugger it is
+	// handed instead of the case at Path. The report it returns is the pass's
+	// verdict: a case that did not pass is a run that failed. Failure words it.
+	Execute func(ctx context.Context, debugger v1.Debugger) flowtest.RunResult
+	Failure func(*v1.TestReport) error
 
 	// Next reads one line: [io.EOF] at the end of input, and
 	// [flowdebug.ErrConsoleInterrupted] when the person interrupted. Out is
@@ -60,6 +71,9 @@ type reversibleFront struct {
 	// goroutine while the prompt loop answers from this one.
 	mu sync.Mutex
 
+	// shown is the session of the run the person is looking at.
+	shown atomic.Pointer[flowdebug.Session]
+
 	// The line reader: one goroutine asked for one line at a time, so a
 	// cancelled run leaves at most the read the terminal itself cannot abandon.
 	readerOnce sync.Once
@@ -75,6 +89,16 @@ type readLine struct {
 	err  error
 }
 
+// Speaks is whether the pass under debugger is the one the person is looking
+// at, which is the only one whose own narration (a `log:` step) is theirs to
+// read: a replay is silent until it replaces the run before it. Before any run
+// is shown only the first can be running.
+func (f *reversibleFront) Speaks(debugger v1.Debugger) bool {
+	shown := f.shown.Load()
+
+	return shown == nil || v1.Debugger(shown) == debugger
+}
+
 // write is the one way text reaches Out.
 func (f *reversibleFront) write(text string) {
 	f.mu.Lock()
@@ -87,7 +111,6 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 	var (
 		results  sync.Map // *v1.TestReport -> flowtest.RunResult
 		verdict  = make(chan flowtest.RunResult, 1)
-		shown    atomic.Pointer[flowdebug.Session]
 		settleAt sync.Once
 		first    atomic.Bool
 		replay   atomic.Bool
@@ -98,10 +121,13 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 	}
 
 	launch := stubbedCase{
-		Steps: f.Steps,
-		Speak: emit,
+		Program:         f.Program,
+		RevealSensitive: f.RevealSensitive,
+		Failure:         f.Failure,
+		Steps:           f.Steps,
+		Speak:           emit,
 		Shown: func(session *flowdebug.Session) {
-			shown.Store(session)
+			f.shown.Store(session)
 			// A replay that was stopped will never be asked for its verdict, and
 			// each step or rewind makes another: only the shown run's is kept.
 			// The first shown run is the original, which may already have stored
@@ -118,9 +144,14 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			if session, ok := debugger.(*flowdebug.Session); ok && first.CompareAndSwap(false, true) {
 				f.Panes.setSession(session)
 			}
-			opts := f.Run
-			opts.Debugger = debugger
-			result := flowtest.RunPath(ctx, f.Path, opts)
+			var result flowtest.RunResult
+			if f.Execute != nil {
+				result = f.Execute(ctx, debugger)
+			} else {
+				opts := f.Run
+				opts.Debugger = debugger
+				result = flowtest.RunPath(ctx, f.Path, opts)
+			}
 			results.Store(result.Report, result)
 
 			return result
@@ -202,7 +233,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		if line == "quit" || line == "q" || line == "exit" {
 			// The verdict stays the one the prompt has always given: the case
 			// ended by the person, which is the session's own to say.
-			if session := shown.Load(); session != nil {
+			if session := f.shown.Load(); session != nil {
 				if session.Control(ctx, "quit") == nil && f.Record != nil {
 					f.Record.add("quit")
 				}
@@ -219,7 +250,11 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			continue
 		}
 		if notDone(result) == nil && f.Record != nil {
-			f.Record.add(line)
+			if flowdebug.StepsBack(line) {
+				f.Record.rewound()
+			} else {
+				f.Record.add(line)
+			}
 		}
 		// The shown run narrates a forward movement itself, as it always has;
 		// repeating that from the answer would say each stop twice. A rewind is

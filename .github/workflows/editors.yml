@@ -77,6 +77,7 @@ on:
       # registry changes what completion offers, and the probe asserts on that.
       - 'docs/EDITORS.md'
       - 'tools/editorsmoke/**'
+      - 'editors/vim/**'
       - 'pkg/flowstate/v1/flowfile/**'
       - 'cmd/flow/**'
       - 'editors/vscode/**'
@@ -160,6 +161,11 @@ jobs:
 
       - name: Drive flow lsp through Neovim
         run: nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
+
+      # The same syntax test the Vim package ships, run on Neovim's runtime: it
+      # asks the syntax engine where CEL starts and stops in a Flowfile.
+      - name: Check the Vim syntax file
+        run: nvim --headless -u NONE -S editors/vim/test/syntax_test.vim
 
   vscode:
     name: VS Code extension
