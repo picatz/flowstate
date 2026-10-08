@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -74,5 +75,40 @@ func TestRunValidatesAgainstTheDeploymentsPluginCatalog(t *testing.T) {
 			"the refusal does not name the deployment as its source:\n%s", output)
 		assert.Contains(t, output, "no plugin task",
 			"a plugin the deployment does not have was accepted:\n%s", output)
+	})
+}
+
+// TestRunSubmitsACompiledSpecification is the compile-then-submit path of
+// #1548: what `flow compile --output json` wrote is what `flow run --spec`
+// submits, with no plugin flag and no catalog fetch, and a file that is not a
+// specification is refused naming `flow compile`.
+func TestRunSubmitsACompiledSpecification(t *testing.T) {
+	bin := buildFlowBinary(t)
+	catalog := pluginCatalogFor(t, bin)
+
+	compiled, err := runFlowCapturing(t, bin, "compile", "--"+pluginCatalogFlag, catalog, "--output", "json", exampleGreetWorkflow)
+	require.NoError(t, err, "compiling the example:\n%s", compiled)
+
+	specPath := filepath.Join(t.TempDir(), "spec.json")
+	require.NoError(t, os.WriteFile(specPath, []byte(compiled), 0o600))
+
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(catalogServer{}))
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	t.Run("a compiled specification reaches the server", func(t *testing.T) {
+		output, err := runFlowCapturing(t, bin, "run", "--spec", specPath, "--address", server.URL)
+		require.Error(t, err, "the stub server refuses every submission:\n%s", output)
+		assert.Contains(t, output, "starting plugin-greeting",
+			"the specification never reached the server:\n%s", output)
+	})
+
+	t.Run("a Flowfile is not a specification", func(t *testing.T) {
+		output, err := runFlowCapturing(t, bin, "run", "--spec", exampleGreetWorkflow, "--address", server.URL)
+		require.Error(t, err)
+		assert.Contains(t, output, "not a compiled specification",
+			"a Flowfile passed as a specification was not named as one:\n%s", output)
+		assert.NotContains(t, output, "starting plugin-greeting")
 	})
 }

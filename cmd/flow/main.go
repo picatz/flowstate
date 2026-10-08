@@ -52,6 +52,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
+	"google.golang.org/protobuf/encoding/protojson"
 )
 
 // Set by the build system, e.g. using -ldflags="-X main.version=1.0.0"
@@ -981,11 +982,20 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := registerDeploymentCatalog(cmd, client); err != nil {
-		return err
-	}
+	spec, _ := cmd.Flags().GetBool("spec")
 
-	workflow, err := loadWorkflow(args[0])
+	// A compiled specification names its tasks already resolved, so there is
+	// nothing for a catalog to check it against on this side; the server
+	// validates it as it does any submission.
+	var workflow *v1.Workflow
+	if spec {
+		workflow, err = loadCompiledSpec(args[0])
+	} else {
+		if err := registerDeploymentCatalog(cmd, client); err != nil {
+			return err
+		}
+		workflow, err = loadWorkflow(args[0])
+	}
 	if err != nil {
 		return err
 	}
@@ -2614,6 +2624,33 @@ var errValidationFailed = errors.New("validation failed")
 // partially performed. An unknown task name, for instance, used to fail only when
 // its step was reached, by which point earlier steps had already made their
 // requests.
+// maxCompiledSpecBytes bounds a compiled specification read from disk. A
+// specification carries every expression, descriptor pin and call it resolved,
+// so it is larger than the Flowfile it came from, and the bound exists so a
+// path naming something enormous is refused before it is parsed (#1548).
+const maxCompiledSpecBytes = 16 << 20
+
+// loadCompiledSpec reads what `flow compile` wrote: one protojson
+// [v1.Workflow]. Unknown fields are refused rather than dropped, because a
+// specification produced by a newer build that this one would silently
+// truncate is a different workflow than the one that was compiled.
+func loadCompiledSpec(path string) (*v1.Workflow, error) {
+	data, err := readBoundedFile(path, "a compiled specification", maxCompiledSpecBytes)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	var workflow v1.Workflow
+	if err := protojson.Unmarshal(data, &workflow); err != nil {
+		return nil, fmt.Errorf("%s is not a compiled specification (`flow compile --output json` writes one): %w", path, err)
+	}
+	if err := v1.Validate(&workflow); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+
+	return &workflow, nil
+}
+
 func loadWorkflow(path string) (*v1.Workflow, error) {
 	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
 	// a `call:` step is resolved relative to this file's own directory, and only
@@ -2761,6 +2798,8 @@ flow validate examples/hello-world/workflow.yaml`,
 	addFollowFlags(runCmd)
 	addInputFlags(runCmd)
 	addPluginCatalogFlag(runCmd)
+	runCmd.Flags().Bool("spec", false,
+		"treat the argument as a compiled specification (`flow compile --output json`) rather than a Flowfile")
 
 	// Why a person is starting this run, recorded on it. Optional here and
 	// required by the *workflow*: a file declaring `manual: {require_reason:
