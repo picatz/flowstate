@@ -1037,50 +1037,14 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 			close(entry.done)
 		})
 	}
-	var launched atomic.Bool
-	reversible, err := flowdebug.NewReversible(runCtx, func(context.Context) (*flowdebug.Run, error) {
-		run := &stubbedRun{done: make(chan struct{}), initial: !launched.Swap(true), finish: finish}
-		// A replay is silent: the caller was shown that account the first time.
-		session, err := flowdebug.New(flowdebug.Options{
-			Controlled: true, Workflow: program, Steps: steps,
-			Emit: func(text string, tone flowdebug.Tone) {
-				if run.speaks() {
-					transcript.add(text, tone)
-				}
-			},
-		})
-		if err != nil {
-			return nil, err
-		}
-		caseCtx, cancelCase := context.WithCancel(runCtx)
-		go func() {
-			defer close(run.done)
-			defer cancelCase()
-
-			result := flowtest.RunSourceWith(caseCtx, "<submitted>", []byte(args.Workflow), []byte(args.Tests),
-				flowtest.RunOptions{Select: selected, Debugger: session})
-			if testReportFailed(result.Report) {
-				session.Finished(caseFailure(result.Report))
-			} else {
-				session.Finished(nil)
-			}
-			_ = session.Close()
-			run.ended(result.Report)
-		}()
-
-		return &flowdebug.Run{
-			Session: session,
-			Live:    run.shown,
-			Stop: func() {
-				// Cancelled before the session is released, which would
-				// otherwise let the run carry on through its remaining steps.
-				run.stopped.Store(true)
-				cancelCase()
-				_ = session.Close()
-				<-run.done
-			},
-		}, nil
-	})
+	launch := stubbedCase{
+		Program: program, Steps: steps, Speak: transcript.add, Finish: finish,
+		Run: func(ctx context.Context, debugger v1.Debugger) flowtest.RunResult {
+			return flowtest.RunSourceWith(ctx, "<submitted>", []byte(args.Workflow), []byte(args.Tests),
+				flowtest.RunOptions{Select: selected, Debugger: debugger})
+		},
+	}.launcher(runCtx)
+	reversible, err := flowdebug.NewReversible(runCtx, launch)
 	if err != nil {
 		entry.startErr = err
 		cancel()
@@ -1120,55 +1084,6 @@ func (r *debugSessions) start(ctx context.Context, req *mcp.CallToolRequest) (*m
 	}
 
 	return entry.answerAfter(ctx).result(), nil
-}
-
-// stubbedRun is one run of a stubbed case under a [flowdebug.Reversible]: the
-// first, or a replay that a rewind has made, or is making, the one shown.
-type stubbedRun struct {
-	done    chan struct{}
-	initial bool
-	stopped atomic.Bool
-	finish  func(*v1.TestReport)
-
-	mu       sync.Mutex
-	live     bool
-	finished bool
-	report   *v1.TestReport
-}
-
-// speaks is whether this run's account is the caller's: the first run's
-// from its first word, a replay's only once it has replaced the run before it.
-func (r *stubbedRun) speaks() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return (r.live || r.initial) && !r.stopped.Load()
-}
-
-// shown is [flowdebug.Run.Live]. A run that had already ended when it became
-// the one shown ends the case now.
-func (r *stubbedRun) shown() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.live = true
-	if r.finished && !r.stopped.Load() {
-		r.finish(r.report)
-	}
-}
-
-// ended records the run's verdict, which is the case's only if the run is the
-// one shown and no rewind has stopped it: a replay that ends before it is shown
-// was never the caller's, and a run a rewind cancelled ends in the
-// cancellation, not in a verdict.
-func (r *stubbedRun) ended(report *v1.TestReport) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	r.finished, r.report = true, report
-	if r.live && !r.stopped.Load() {
-		r.finish(report)
-	}
 }
 
 // caseFailure is why a case did not pass, for the session's snapshot: a case
