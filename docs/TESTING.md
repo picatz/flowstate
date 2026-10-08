@@ -650,7 +650,8 @@ before the workflow saw it. A signal that arrives before its gate is carried
 across the Continue-As-New like any other. A workflow that requires plugins is
 pinned to, and admitted against, a catalog holding exactly what it requires:
 the plugins' tasks are the case's stubs, answered as on the local driver, and a
-plugin task with no stub fails the case on both drivers alike. A case that injects `faults:`,
+plugin task with no stub fails the case on the local driver, which runs first,
+so the durable one is never asked. A case that injects `faults:`,
 replays a trigger delivery, reads `run.local`, `run.identity`, `run.workflow_id` or `run.run_id`
 (which differ by design), or stubs a step by id in a workflow with calls or compensations
 stays on the local driver and reports `driver: local only: <why>`
