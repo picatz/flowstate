@@ -643,10 +643,14 @@ local one (maps compare as maps, so key order is not a disagreement).
 What it proves is the carried state, the step outputs, loop frames and
 variables a continued run hands to its next segment. A continued run retains
 only the outputs later steps read, so a step it dropped is not compared. It
-does not prove signals or faults. A case that scripts `signals:` or `faults:`,
+does not prove faults. Scripted `signals:` are replayed to the durable run at
+the same offsets from the same senders, and only those the local run accepted:
+a delivery its signal policy refused is absent, as a server would refuse it
+before the workflow saw it. A signal that arrives before its gate is carried
+across the Continue-As-New like any other. A case that injects `faults:`,
 replays a trigger delivery, requires plugins, stubs a task this build does
-not register, reads `run.local`, `sender.local` or `run.identity` (which differ
-by design), or stubs a step by id in a workflow with calls or compensations
+not register, reads `run.local`, `run.identity`, `run.workflow_id` or `run.run_id`
+(which differ by design), or stubs a step by id in a workflow with calls or compensations
 stays on the local driver and reports `driver: local only: <why>`
 as a warning, so a green never silently skipped the proof. A stub whose `where:` cannot be
 evaluated on the durable side (it reads a loop binding an activity lacks) does

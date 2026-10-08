@@ -14,6 +14,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"sync/atomic"
 	"time"
 
 	"go.temporal.io/sdk/converter"
@@ -25,6 +28,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
 // MaxSegments bounds how many segments one run may chain. Each is a full
@@ -49,16 +53,61 @@ type Result struct {
 	Segments int
 }
 
-// Run executes wf with inputs on the durable interpreter, one step per segment.
+// Runner is the [flowtest.DurableRunner] that `flow test --driver both` hands
+// the harness: it carries a request's scripted signals into [Run] and returns
+// what the harness compares.
+func Runner(ctx context.Context, req flowtest.DurableRequest) (flowtest.DurableResult, error) {
+	signals := make([]Signal, 0, len(req.Signals))
+	for _, s := range req.Signals {
+		signals = append(signals, Signal{Name: s.Name, Offset: s.At, Payload: s.Payload, Sender: s.Sender})
+	}
+
+	res, err := Run(ctx, Request{
+		Workflow: req.Workflow, Inputs: req.Inputs, Start: req.Start, Runtime: req.Runtime, Signals: signals,
+	})
+	if res == nil {
+		return flowtest.DurableResult{}, err
+	}
+
+	return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
+}
+
+// Signal is one signal to deliver to the run, Offset after it began.
+type Signal struct {
+	Name    string
+	Offset  time.Duration
+	Payload *v1.Node_Outputs
+	Sender  *v1.SignalSender
+}
+
+// Request is one run to execute.
+type Request struct {
+	Workflow *v1.Workflow
+	Inputs   map[string]*v1.Value
+
+	// Start is when the run begins on the test environment's virtual clock,
+	// which each segment resumes where the last one ended.
+	Start time.Time
+
+	// Runtime is the secret access the case grants.
+	Runtime v1.TaskRuntime
+
+	// Signals are delivered at their offsets, signals sharing one offset in the
+	// order given. One not yet delivered when a segment ends is delivered in the
+	// next, so a signal can arrive before the gate that reads it and be carried
+	// across a Continue-As-New, as it is in production.
+	Signals []Signal
+}
+
+// Run executes the request on the durable interpreter, one step per segment.
 //
 // ctx is handed to every activity as its base context, which is how the case's
 // registry (its stubs) reaches the tasks: they resolve through the context,
-// exactly as they do on the local driver. runtime is the secret access the case
-// grants. The run begins at start on the test environment's virtual clock, which
-// each segment resumes where the last one ended, and carries the trigger ctx
-// holds. A workflow that fails returns its error with the segments it took.
-func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (*Result, error) {
-	bound, err := v1.BindRunInputs(wf, inputs)
+// exactly as they do on the local driver. It also carries the trigger. A
+// workflow that fails returns its error with the segments it took.
+func Run(ctx context.Context, req Request) (*Result, error) {
+	wf, start, runtime := req.Workflow, req.Start, req.Runtime
+	bound, err := v1.BindRunInputs(wf, req.Inputs)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +123,7 @@ func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, star
 		WorkloadStartedAt: timestamppb.New(start),
 	}
 	now := start
+	delivered := make([]atomic.Bool, len(req.Signals))
 
 	// The case's own secret store and policy, so a reference resolves on the
 	// worker as it does on the local driver and nowhere else.
@@ -108,6 +158,7 @@ func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, star
 		if segment > 1 {
 			env.SetContinuedExecutionRunID(fmt.Sprintf("segment-%d", segment-1))
 		}
+		scheduleSignals(env, req.Signals, delivered, now.Sub(start))
 		env.ExecuteWorkflow(engine.Run, state)
 		now = env.Now()
 
@@ -130,5 +181,29 @@ func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, star
 		default:
 			return &Result{Segments: segment}, err
 		}
+	}
+}
+
+// scheduleSignals registers, on a segment's fresh environment, every signal not
+// yet delivered. elapsed is how far into the run the segment starts, so a signal
+// due at an offset already past arrives at once, and one still ahead arrives
+// when the segment's clock reaches it. One callback serves each offset so that
+// signals sharing it arrive in the order given, whatever the order the
+// environment would run equal-time callbacks in.
+func scheduleSignals(env *testsuite.TestWorkflowEnvironment, signals []Signal, delivered []atomic.Bool, elapsed time.Duration) {
+	groups := map[time.Duration][]int{}
+	for i, sig := range signals {
+		if !delivered[i].Load() {
+			delay := max(sig.Offset-elapsed, 0)
+			groups[delay] = append(groups[delay], i)
+		}
+	}
+	for _, delay := range slices.Sorted(maps.Keys(groups)) {
+		env.RegisterDelayedCallback(func() {
+			for _, i := range groups[delay] {
+				delivered[i].Store(true)
+				env.SignalWorkflow(signals[i].Name, &v1.SignalDelivery{Payload: signals[i].Payload, Sender: signals[i].Sender})
+			}
+		}, delay)
 	}
 }

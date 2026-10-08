@@ -13,6 +13,8 @@ import (
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -38,11 +40,39 @@ type DurableResult struct {
 	Segments int
 }
 
-// A DurableRunner runs wf with inputs on the durable interpreter, one step per
-// segment, beginning at start on its virtual clock as the local run does. ctx
-// reaches every task, which is how the case's stubs do, and carries the case's
-// trigger; runtime is the secret access the case grants.
-type DurableRunner func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (DurableResult, error)
+// DurableSignal is one signal the local run delivered, replayed to the durable
+// run at the same offset from the start.
+type DurableSignal struct {
+	Name    string
+	At      time.Duration
+	Payload *v1.Node_Outputs
+
+	// Sender is the very sender the local delivery carried (a rehearsal), so a
+	// gate's outputs read the same on both drivers.
+	Sender *v1.SignalSender
+}
+
+// A DurableRequest is one run to prove on the durable interpreter.
+type DurableRequest struct {
+	Workflow *v1.Workflow
+	Inputs   map[string]*v1.Value
+
+	// Start is when the run begins on the virtual clock, as it does locally.
+	Start time.Time
+
+	// Runtime is the secret access the case grants.
+	Runtime v1.TaskRuntime
+
+	// Signals are the deliveries the local run accepted, in the order it
+	// delivered them. A delivery the local run's signal policy refused is
+	// absent: a server refuses it before the workflow ever sees it.
+	Signals []DurableSignal
+}
+
+// A DurableRunner runs a request on the durable interpreter, one step per
+// segment. ctx reaches every task, which is how the case's stubs do, and
+// carries the case's trigger.
+type DurableRunner func(ctx context.Context, req DurableRequest) (DurableResult, error)
 
 // durableFailureField names a disagreement between the drivers in a report.
 const durableFailureField = "driver"
@@ -69,8 +99,6 @@ func durableFrom(ctx context.Context) DurableRunner {
 // green that silently skipped the proof would read as one that passed it.
 func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStub, unregistered []string) string {
 	switch {
-	case len(test.Signals) > 0:
-		return "it scripts signals, which the durable driver does not yet receive"
 	case len(test.Faults) > 0:
 		return "it injects faults, which only the local driver's scheduler can"
 	case test.Trigger != nil:
@@ -79,8 +107,8 @@ func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStu
 	if pins, err := v1.PinnedPlugins(workflow); err != nil || len(pins) > 0 {
 		return "the workflow requires plugins, which a durable worker takes from a deployment's selection"
 	}
-	if text := prototext.Format(workflow); strings.Contains(text, "run.local") || strings.Contains(text, "sender.local") || strings.Contains(text, "run.identity") {
-		return "it reads run.local, sender.local or run.identity, which differ by design between a local run and a durable one"
+	if readsRunFacts(workflow) {
+		return "it reads run.local, run.identity, run.workflow_id or run.run_id, which differ by design between a local run and a durable one"
 	}
 	// A step-scoped stub is matched on the durable side by the step id the
 	// activity carries, which names neither the workflow it runs in nor whether
@@ -97,6 +125,86 @@ func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStu
 	}
 
 	return ""
+}
+
+// divergentRunFacts are the facts about a run that a local run and a durable one answer
+// differently by design: that the run is local, who started it, and its address.
+var divergentRunFacts = map[string]bool{"local": true, "identity": true, "workflow_id": true, "run_id": true}
+
+// readsRunFacts reports whether a workflow reads one of [divergentRunFacts] as
+// `run.<fact>` anywhere an expression can stand, or reaches `run` any other
+// way. Scope is not tracked: a name shadowing `run` keeps the case local, which
+// costs coverage and never soundness.
+func readsRunFacts(wf *v1.Workflow) bool {
+	found := false
+	v1.WalkWorkflow(wf, v1.Walk{Value: func(site v1.ValueSite) {
+		if !found && valueReadsRunFacts(site.Value, 0) {
+			found = true
+		}
+	}})
+
+	return found
+}
+
+// maxRunFactDepth bounds the descent into a value or an expression, which a
+// specification need not have come from a Flowfile to nest arbitrarily; past it
+// the case stays local.
+const maxRunFactDepth = 64
+
+func valueReadsRunFacts(value *v1.Value, depth int) bool {
+	if depth > maxRunFactDepth {
+		return true
+	}
+	switch kind := value.GetKind().(type) {
+	case *v1.Value_Expr:
+		return exprReadsRunFacts(kind.Expr.GetExpr(), 0)
+	case *v1.Value_Structure_:
+		switch structure := kind.Structure.GetKind().(type) {
+		case *v1.Value_Structure_List_:
+			return slices.ContainsFunc(structure.List.GetValues(), func(v *v1.Value) bool { return valueReadsRunFacts(v, depth+1) })
+		case *v1.Value_Structure_Map_:
+			return slices.ContainsFunc(slices.Collect(maps.Values(structure.Map.GetEntries())), func(v *v1.Value) bool { return valueReadsRunFacts(v, depth+1) })
+		}
+	}
+
+	return false
+}
+
+func exprReadsRunFacts(e *expr.Expr, depth int) bool {
+	if e == nil {
+		return false
+	}
+	if depth > maxRunFactDepth {
+		return true
+	}
+	var children []*expr.Expr
+	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		// `run` reached any way but a plain `run.<field>` below (indexed, bound
+		// to a name, passed on) cannot be told apart from a read of a fact that
+		// differs, so it keeps the case local.
+		return kind.IdentExpr.GetName() == "run"
+	case *expr.Expr_SelectExpr:
+		sel := kind.SelectExpr
+		if ident := sel.GetOperand().GetIdentExpr(); ident != nil && ident.GetName() == "run" {
+			return divergentRunFacts[sel.GetField()]
+		}
+		children = append(children, sel.GetOperand())
+	case *expr.Expr_CallExpr:
+		children = append(children, kind.CallExpr.GetTarget())
+		children = append(children, kind.CallExpr.GetArgs()...)
+	case *expr.Expr_ListExpr:
+		children = append(children, kind.ListExpr.GetElements()...)
+	case *expr.Expr_StructExpr:
+		for _, entry := range kind.StructExpr.GetEntries() {
+			children = append(children, entry.GetMapKey(), entry.GetValue())
+		}
+	case *expr.Expr_ComprehensionExpr:
+		c := kind.ComprehensionExpr
+		children = append(children, c.GetIterRange(), c.GetAccuInit(), c.GetLoopCondition(), c.GetLoopStep(), c.GetResult())
+	}
+
+	return slices.ContainsFunc(children, func(c *expr.Expr) bool { return exprReadsRunFacts(c, depth+1) })
 }
 
 // stepScopeAmbiguity matches a workflow that calls another or compensates a step.
@@ -126,9 +234,10 @@ func unregisteredTasks(names []string) []string {
 // it dropped are not evidence either way; the ones it kept must equal the
 // local run's, because a value that changed across a seam is the bug this
 // exists to find.
-func durableDisagreements(ctx context.Context, runner DurableRunner, workflow *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime,
+func durableDisagreements(ctx context.Context, runner DurableRunner, req DurableRequest,
 	unanswered *unstubbedTasks, local *v1.Workflow_StepOutputs, localErr error, sensitive sensitiveInputs) (failures []*v1.Diagnostic, localOnly string) {
-	got, err := runner(ctx, workflow, inputs, start, runtime)
+	workflow := req.Workflow
+	got, err := runner(ctx, req)
 
 	// The durable driver gathers no account of what its steps withhold, so a
 	// value it printed could be a private one only the durable run saw (a
@@ -243,4 +352,28 @@ func (u *unstubbedTasks) matcherFailed() bool {
 	defer u.mu.Unlock()
 
 	return u.matcherErrors > 0
+}
+
+// durableSignals is what the local run accepted of the case's scripted
+// signals, as the durable run is to receive them: at the same offset, from the
+// same sender, in the order they were delivered. A script the local run's
+// policy refused, a fault dropped, or the run ended before is absent.
+func durableSignals(scripts []SignalScript, outcomes *signalOutcomes) []DurableSignal {
+	var out []DurableSignal
+	for _, n := range outcomes.acceptedScripts() {
+		s := scripts[n]
+		var at time.Duration
+		if s.At != "" {
+			// Parsed already by scriptSignals; a script it refused never ran.
+			at, _ = time.ParseDuration(s.At)
+		}
+		out = append(out, DurableSignal{
+			Name:    s.Name,
+			At:      max(at, 0),
+			Payload: &v1.Node_Outputs{NamedValues: v1.NewNamedValues(s.Payload)},
+			Sender:  scriptedSender(s.Sender, s.DeliveryID),
+		})
+	}
+
+	return out
 }

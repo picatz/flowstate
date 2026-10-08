@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,16 +13,6 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest/durable"
 )
 
-// durableRunner is what `flow test --driver both` hands the harness.
-func durableRunner(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
-	res, err := durable.Run(ctx, wf, inputs, start, runtime)
-	if res == nil {
-		return flowtest.DurableResult{}, err
-	}
-
-	return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
-}
-
 func runBoth(t *testing.T, workflow, tests string) *flowtest.RunResult {
 	t.Helper()
 
@@ -31,7 +20,7 @@ func runBoth(t *testing.T, workflow, tests string) *flowtest.RunResult {
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), workflow)
 	path := filepath.Join(dir, "workflow.test.yaml")
 	writeFile(t, path, tests)
-	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Durable: durableRunner})
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Durable: durable.Runner})
 
 	return &run
 }
@@ -73,58 +62,112 @@ tests:
 	assert.Empty(t, c.GetWarnings(), "an eligible case reports no local-only note")
 }
 
-// The proof is not vacuous: a value that differs by design between the drivers
-// (`run.local`) and is read by a later step fails the case at that step, naming
-// the value, so a green here is a claim that could have been red.
+// The proof is not vacuous: when the durable run's retained value differs from
+// the local one, the case fails at that step, naming the value, so a green here
+// is a claim that could have been red.
 func TestADriverDisagreementFailsTheCaseAtTheValueThatDiffers(t *testing.T) {
 	t.Parallel()
 
-	run := runBoth(t, `
-edition: v2026.4
-name: drivers
-steps:
-  - id: where
-    value: ${run.local}
-  - id: use
-    log:
-      message: ${string(steps.where.value)}
-`, `
+	tamper := func(ctx context.Context, req flowtest.DurableRequest) (flowtest.DurableResult, error) {
+		res, err := durable.Runner(ctx, req)
+		for _, outputs := range res.Outputs.GetStepValues() {
+			for name := range outputs.GetNamedValues() {
+				outputs.NamedValues[name] = v1.NewLiteral("tampered")
+			}
+		}
+
+		return res, err
+	}
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), durableWorkflow)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, `
 tests:
-  - name: reads the driver
+  - name: greets
     workflow: ./workflow.yaml
+    inputs: {who: world}
     stubs: [{task: log, returns: {}}]
     expect:
-      ran: [where, use]
+      ran: [greeting, shout, after]
 `)
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Durable: tamper})
 	c := run.Report.GetCases()[0]
-	require.False(t, c.GetPassed(), "the drivers disagree about run.local, and the case must say so")
-	require.Len(t, c.GetFailures(), 1)
+	require.False(t, c.GetPassed(), "the drivers disagree and the case must say so")
+	require.NotEmpty(t, c.GetFailures())
 	failure := c.GetFailures()[0]
 	assert.Equal(t, "driver", failure.GetField())
-	assert.Equal(t, "where", failure.GetStep())
-	assert.Contains(t, failure.GetMessage(), "where.value changed")
+	assert.Contains(t, failure.GetMessage(), "changed once the run continued as new")
 }
 
-// A case the durable driver cannot take stays local and says why: the proof is
-// never silently skipped.
-func TestACaseWithSignalsStaysLocalAndSaysSo(t *testing.T) {
+// A scripted signal is replayed to the durable run: one that arrives before its
+// gate is carried across the Continue-As-New, one due later arrives when the
+// virtual clock reaches it, and the gate reads the same payload on both drivers.
+func TestScriptedSignalsAreProvedAcrossTheSeams(t *testing.T) {
 	t.Parallel()
 
 	run := runBoth(t, `
 edition: v2026.4
 name: gated
 steps:
-  - id: gate
+  - id: before
+    value: ${"one"}
+  - id: early
     wait_for_signal:
-      name: go
+      name: early
       timeout: 1h
+  - id: between
+    value: ${steps.early.payload.n + 1}
+  - id: late
+    wait_for_signal:
+      name: late
+      timeout: 1h
+outputs:
+  early:
+    value: ${steps.early.payload.n}
+  late:
+    value: ${steps.late.payload.n}
+  between:
+    value: ${steps.between.value}
+  late_timed_out:
+    value: ${steps.late.timed_out}
 `, `
 tests:
-  - name: answered
+  - name: both arrive
     workflow: ./workflow.yaml
     signals:
-      - name: go
-        payload: {}
+      - name: early
+        payload: {n: 1}
+      - name: late
+        at: 10m
+        payload: {n: 7}
+    expect:
+      outputs:
+        early: 1
+        late: 7
+        between: 2
+        late_timed_out: false
+`)
+	c := run.Report.GetCases()[0]
+	require.True(t, c.GetPassed(), "%v %v", c.GetError(), c.GetFailures())
+	assert.Empty(t, c.GetWarnings(), "the case was proved durably, not left local")
+}
+
+// A workflow reading a fact the drivers answer differently by design stays local
+// and says why, so the proof is never silently skipped.
+func TestACaseReadingRunLocalStaysLocalAndSaysSo(t *testing.T) {
+	t.Parallel()
+
+	run := runBoth(t, `
+edition: v2026.4
+name: local-gated
+steps:
+  - id: gate
+    if: ${run.local}
+    value: ${"local"}
+`, `
+tests:
+  - name: ran
+    workflow: ./workflow.yaml
     expect:
       ran: [gate]
 `)
@@ -133,7 +176,7 @@ tests:
 	require.Len(t, c.GetWarnings(), 1)
 	assert.Equal(t, "driver", c.GetWarnings()[0].GetField())
 	assert.Contains(t, c.GetWarnings()[0].GetMessage(), "local only")
-	assert.Contains(t, c.GetWarnings()[0].GetMessage(), "signals")
+	assert.Contains(t, c.GetWarnings()[0].GetMessage(), "run.local")
 }
 
 // A step-scoped stub answers on the durable driver as on the local one, so a

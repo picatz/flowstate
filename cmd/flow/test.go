@@ -2,7 +2,6 @@ package main
 
 import (
 	"cmp"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -212,8 +211,8 @@ flow test -o jsonl examples/`,
 	cmd.Flags().String("driver", driverLocal,
 		"which driver proves each case: local (the default), or both, which also runs each passing case on the "+
 			"durable interpreter, in-process, with a Continue-As-New between every pair of steps, and fails "+
-			"where the two disagree; a case with signals, faults, a trigger delivery, plugins or stub tasks "+
-			"this build does not register stays local and says so")
+			"where the two disagree; a case with faults, a trigger delivery, plugins, stub tasks this build "+
+			"does not register, or a workflow reading run.local, run.identity or the run's address stays local and says so")
 
 	// The step debugger (#928 slice 1). Interactive by nature, so it is
 	// refused wherever "interactive" is not true of the run: a machine-format
@@ -1405,14 +1404,7 @@ func driverOption(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOptio
 			"run them separately so a finding names one cause")
 	}
 
-	return func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
-		res, err := durable.Run(ctx, wf, inputs, start, runtime)
-		if res == nil {
-			return flowtest.DurableResult{}, err
-		}
-
-		return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
-	}, nil
+	return durable.Runner, nil
 }
 
 // mutantFound reports that some file's report ran the mutant `--mutant` named.
