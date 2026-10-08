@@ -758,8 +758,11 @@ absent. A type whose defaults expand past 4096 entries once a value leaves every
 default that is a record whose fields default to records) is refused where it is declared, and a
 submitted value that would fill more than 65536 defaults is refused before it is filled.
 `example:` is held the same way and never bound. A record an expression builds mid-run is its own: defaults apply at the boundaries a value
-crosses, not inside an expression. Beyond that nothing more is carried yet: a field that sets
-`sensitive:` is refused with that reason rather than parsed and silently not enforced.
+crosses, not inside an expression. A field marked `sensitive:` makes every input and output
+typed by the record (at any depth, through lists and maps) sensitive whole: the compiler marks the
+declaration, so what is withheld is decided once where the type is declared, and a specification
+that types a declaration by such a record without marking it is refused. A run shows a value that
+holds a sensitive field the way it shows any sensitive value, never field by field.
 
 *Slice 2:* an expression reading a field is checked against the record. `inputs.order.id` is a
 `string` wherever an expression is checked, so `inputs.order.id + 1` and an `if:` that reads a

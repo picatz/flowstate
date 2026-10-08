@@ -143,23 +143,19 @@ func TestAnUndeclaredTypeInAHandBuiltSpecificationIsRefusedAtSubmit(t *testing.T
 	assert.Contains(t, err.Error(), "Order")
 }
 
-func TestRecordDeclarationsRefuseWhatAFieldDoesNotCarry(t *testing.T) {
+func TestARecordDeclarationHoldingASensitiveFieldMustBeMarked(t *testing.T) {
 	t.Parallel()
 
-	for name, mutate := range map[string]func(*v1.InputDeclaration){
-		"sensitive": func(f *v1.InputDeclaration) { f.Sensitive = true },
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	wf := recordOrderWorkflow()
+	wf.DeclaredTypes[0].Fields[0].Sensitive = true
 
-			wf := recordOrderWorkflow()
-			mutate(wf.DeclaredTypes[0].Fields[0])
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "`sensitive: true`")
 
-			err := v1.CheckRecordDeclarations(wf)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "`"+name+"`")
-		})
-	}
+	v1.DeriveSensitive(wf)
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+	assert.True(t, wf.DeclaredInputs[0].GetSensitive())
 }
 
 // A field carries the bounds an input does, judged by the same functions: the

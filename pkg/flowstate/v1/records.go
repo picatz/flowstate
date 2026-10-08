@@ -213,9 +213,9 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // twice, a field repeated, a type that refers to a record nobody declared, and a
 // cycle. A cycle is refused because a value of a recursive record has no bound
 // until the type has one, and the checks that walk a value would be the only
-// thing standing between an author and an unbounded literal. A field that sets
-// `default`, `example` or `sensitive` is refused with the reason
-// [TypeDeclaration] gives, rather than carrying a promise nothing keeps.
+// thing standing between an author and an unbounded literal. An input or an
+// output whose type holds a `sensitive` field must be sensitive itself (see
+// [HoldsSensitive]).
 //
 // The compiler runs it with a position to point at through the same
 // function, and [CheckDeclarationTypes] runs it again for a specification that
@@ -272,10 +272,16 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		if err := checkTypeResolves(declaration.GetValueType(), table); err != nil {
 			return fmt.Errorf("input %q: %w", declaration.GetName(), err)
 		}
+		if err := checkHoldsSensitive("input", declaration, table); err != nil {
+			return err
+		}
 	}
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		if err := checkTypeResolves(declaration.GetValueType(), table); err != nil {
 			return fmt.Errorf("output %q: %w", declaration.GetName(), err)
+		}
+		if err := checkHoldsSensitive("output", declaration, table); err != nil {
+			return err
 		}
 	}
 
@@ -340,18 +346,6 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable, p
 		return err
 	}
 
-	for _, unsupported := range []struct {
-		word string
-		set  bool
-	}{
-		{"sensitive", field.GetSensitive()},
-	} {
-		if unsupported.set {
-			return fmt.Errorf("type %q field %q sets `%s`, which a record field does not carry yet; "+
-				"put it on the input or output that uses the type", record, name, unsupported.word)
-		}
-	}
-
 	if field.Must != nil {
 		if _, err := CompileMustExpression(profile, field.GetMust(), field.GetType()); err != nil {
 			return fmt.Errorf("type %q field %q %w", record, name, err)
@@ -384,6 +378,78 @@ func checkRecordFieldValues(record string, field *InputDeclaration, table TypeTa
 	}
 
 	return nil
+}
+
+// HoldsSensitive reports whether a value of t can carry a field declared
+// `sensitive`, at any depth: t is a record with one, or a list or map of records
+// that reach one.
+//
+// Sensitivity is whole-value everywhere a run is shown (results, timelines, the
+// debugger, failure text), so a value that holds a sensitive field is withheld
+// whole rather than field by field. Each record is entered once, so the work is
+// bounded by the number of declared types.
+func (table TypeTable) HoldsSensitive(t *Type) bool {
+	seen := map[string]bool{}
+
+	var walk func(*Type) bool
+	walk = func(t *Type) bool {
+		for _, name := range messageNames(t, nil, 0) {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+
+			for _, field := range table[name].GetFields() {
+				if field.GetSensitive() || walk(field.GetValueType()) {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+	return walk(t)
+}
+
+// DeriveSensitive marks every input and output whose type holds a sensitive field
+// `sensitive` itself, so what is withheld is decided where the type is declared and
+// not repeated at each use. The Flowfile compiler runs it; the specification check
+// ([CheckRecordDeclarations]) refuses a declaration it has not been run for.
+func DeriveSensitive(wf *Workflow) {
+	table := TypesOf(wf)
+	if table == nil {
+		return
+	}
+
+	for _, declaration := range wf.GetDeclaredInputs() {
+		if table.HoldsSensitive(declaration.GetValueType()) {
+			declaration.Sensitive = true
+		}
+	}
+	for _, declaration := range wf.GetDeclaredOutputs() {
+		if table.HoldsSensitive(declaration.GetValueType()) {
+			declaration.Sensitive = true
+		}
+	}
+}
+
+// typedDeclaration is what an input and an output share that the sensitivity
+// check reads.
+type typedDeclaration interface {
+	GetName() string
+	GetSensitive() bool
+	GetValueType() *Type
+	TypeText() string
+}
+
+func checkHoldsSensitive(kind string, declaration typedDeclaration, table TypeTable) error {
+	if declaration.GetSensitive() || !table.HoldsSensitive(declaration.GetValueType()) {
+		return nil
+	}
+
+	return fmt.Errorf("%s %q is typed %s, which holds a sensitive field, so it must be declared `sensitive: true`",
+		kind, declaration.GetName(), declaration.TypeText())
 }
 
 // messageNames appends to into every record name t mentions, at any depth.

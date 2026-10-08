@@ -1124,8 +1124,10 @@ func (x *FunctionParameter) GetType() *Type {
 //
 // Only `name`, `type`, `value_type`, `required`, `description`, an enum's
 // `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,
-// `max_items`) and `must` are carried by a field today. `default`, `example` and
-// `sensitive` are refused by the compiler and at submit, not ignored.
+// `max_items`), `must`, `default`, `example` and `sensitive` are carried by a
+// field. A `sensitive` field makes every input and output typed by the record,
+// at any depth, sensitive whole: the Flowfile compiler marks them, and a
+// specification that does not is refused at submit.
 //
 // A value of a record type is a map at run time, keyed by field name, so a
 // reader that does not know the type (an older worker, a CEL expression the

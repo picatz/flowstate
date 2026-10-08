@@ -631,8 +631,10 @@ func init() {
 				"\n" +
 				" Only `name`, `type`, `value_type`, `required`, `description`, an enum's\n" +
 				" `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,\n" +
-				" `max_items`) and `must` are carried by a field today. `default`, `example` and\n" +
-				" `sensitive` are refused by the compiler and at submit, not ignored.\n" +
+				" `max_items`), `must`, `default`, `example` and `sensitive` are carried by a\n" +
+				" field. A `sensitive` field makes every input and output typed by the record,\n" +
+				" at any depth, sensitive whole: the Flowfile compiler marks them, and a\n" +
+				" specification that does not is refused at submit.\n" +
 				"\n" +
 				" A value of a record type is a map at run time, keyed by field name, so a\n" +
 				" reader that does not know the type (an older worker, a CEL expression the\n" +
