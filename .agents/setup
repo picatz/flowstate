@@ -39,7 +39,7 @@ if [[ "$(uname -m)" != x86_64 ]]; then
 fi
 go_arch=amd64
 case "$go_version" in
-	1.27.0) go_sha256=675c26c449cbb18fc24b74650de1eabbae6e16f64326fd85a283fb3b58280685 ;;
+	1.27.2) go_sha256=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5 ;;
 	*)
 		echo "no linux-amd64 archive checksum is pinned for go$go_version" >&2
 		echo "update .agents/setup alongside the go directive" >&2
