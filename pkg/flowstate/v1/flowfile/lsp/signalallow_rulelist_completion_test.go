@@ -34,7 +34,13 @@ edition: v2026.4
 
 		got := labels(c.complete(uri, pos.Line, pos.Character).Items)
 		assert.NotContains(t, got, "sender", typed)
-		assert.NotContains(t, got, "run", typed)
+		// `run` itself is a root of the general scope; what must not leak in is the
+		// allow predicate's own `run`, which is the starter's identity alone.
+		for _, item := range c.complete(uri, pos.Line, pos.Character).Items {
+			if item.Label == "run" {
+				assert.NotEqual(t, "the run's starter", item.Detail, typed)
+			}
+		}
 		if typed == "" {
 			assert.Contains(t, got, "steps")
 		}

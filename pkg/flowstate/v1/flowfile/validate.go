@@ -2818,6 +2818,13 @@ var runIdentityFields = []string{"subject", "issuer", "namespace", "claims", "pr
 // halves of that.
 var runFields = []string{"identity", "local", "workflow_id", "run_id", "started_at"}
 
+// RunFields returns the fields an expression may select directly on `run`, in the
+// order a diagnostic lists them. The editor offers exactly these.
+func RunFields() []string { return slices.Clone(runFields) }
+
+// RunIdentityFields returns the fields an expression may select on `run.identity`.
+func RunIdentityFields() []string { return slices.Clone(runIdentityFields) }
+
 // unknownRunField reports a reference to a field `run` does not have.
 //
 // Unlike [unknownStepOutput], this is never silent about a field it can name: a
