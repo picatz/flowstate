@@ -110,6 +110,10 @@ func (r *readTyper) walk(e *expr.Expr, bound map[string]struct{}) *expr.Expr {
 // replace writes the chain e reads as a select of the declared leaf, when e spells
 // at least one link as a call and the whole path is declared.
 func (r *readTyper) replace(e *expr.Expr, root string, fields []string) (*expr.Expr, bool) {
+	if sel, isSelect := e.GetExprKind().(*expr.Expr_SelectExpr); isSelect && sel.SelectExpr.GetTestOnly() {
+		// A presence test stays one: its operand is the read.
+		return nil, false
+	}
 	if _, declared := r.leaves[root+"."+strings.Join(fields, ".")]; !declared {
 		return nil, false
 	}

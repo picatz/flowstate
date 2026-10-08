@@ -377,6 +377,8 @@ func TestARecordFieldIsTypedWhereItIsRead(t *testing.T) {
 		{"an optional read chained through hasValue", `inputs.order.?id.hasValue()`, ""},
 		{"an index read is typed as the field", `inputs.order["id"] + 1 > 0`, "no matching overload"},
 		{"an index read is the field's own type", `inputs.order["id"].startsWith("o-")`, ""},
+		{"a presence test through an index", `has(inputs["order"].id) && true`, ""},
+		{"a presence test through an optional", `has(inputs.?order.id) && true`, ""},
 		{"an index by an empty key", `inputs.order[""] == "x"`, `has no field ""`},
 		{"an index by an undeclared field", `inputs.order["idd"] == "x"`, `the record Order has no field "idd"`},
 		{"a comprehension variable named like the root", `[inputs].exists(inputs, has(inputs.order.coupon))`, ""},
