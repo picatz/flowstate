@@ -589,6 +589,16 @@ func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, nam
 			kind, name, declaredAs, verb, DeclaredTypeName(got))
 	}
 
+	// An unsigned above the signed range reads as an int in [inputTypeOf] and has
+	// no int to become (see [NormalizeWireValue]); admitting it would let a value
+	// the declaration calls an int reach arithmetic that cannot add to it (#1432).
+	if declared == InputDeclaration_TYPE_INT {
+		if unsigned, ok := literal.GetKind().(*expr.Value_Uint64Value); ok && unsigned.Uint64Value > math.MaxInt64 {
+			return fmt.Errorf("%s %q is declared %s but %s a value above the largest int, %d",
+				kind, name, declaredAs, verb, int64(math.MaxInt64))
+		}
+	}
+
 	// A float is a finite number. NaN and the infinities are values a double
 	// can hold and JSON cannot spell, so a declared float that carried one
 	// would reach the run document — every `-o json`, `flow get` and MCP

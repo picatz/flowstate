@@ -394,3 +394,22 @@ func TestAnUnsignedThatFitsAnIntIsNarrowedWhereAnIntIsDeclared(t *testing.T) {
 	got = v1.NormalizeWireValue(nil, v1.TypeOfLegacy(v1.InputDeclaration_TYPE_FLOAT), uintValue(3))
 	assert.Equal(t, uint64(3), got.GetUint64Value(), "only an int declaration narrows")
 }
+
+// An unsigned above the signed range is not an int, so a declaration of `int` refuses
+// it rather than hold a value that arithmetic cannot add to; the largest int itself
+// is fine, and the refusal never prints the value.
+func TestAnUnsignedAboveTheSignedRangeIsNotAnInt(t *testing.T) {
+	t.Parallel()
+
+	output := &v1.OutputDeclaration{Name: "n", Type: v1.InputDeclaration_TYPE_INT}
+	value := func(n uint64) *v1.Value {
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: n}}}}
+	}
+
+	require.NoError(t, v1.CheckOutputValue(output, value(math.MaxInt64)))
+
+	err := v1.CheckOutputValue(output, value(math.MaxUint64))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "above the largest int")
+	assert.NotContains(t, err.Error(), "18446744073709551615")
+}
