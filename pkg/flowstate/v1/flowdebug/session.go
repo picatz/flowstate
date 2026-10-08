@@ -177,6 +177,11 @@ const (
 
 	// ToneDanger is a step failure the run does not absorb.
 	ToneDanger
+
+	// ToneValue is an inspected value as [RenderValue] wrote it. A front that
+	// can colour hands the text to [ValueTokens]; one that cannot writes it
+	// as it is, so the tone changes how a value looks and never what it says.
+	ToneValue
 )
 
 // Options configures a [Session].

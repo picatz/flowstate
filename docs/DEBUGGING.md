@@ -371,6 +371,12 @@ The tree is laid out after the redaction, from the same redacted value, so a
 withheld leaf is the marker it always was. The layout does not depend on a
 terminal: a script piped to the prompt gets the same tree. The JSON answers (`-o json`, MCP, DAP) are unchanged.
 
+At a terminal the value is also coloured by what each part is: keys and `…` elisions
+recede, numbers and `true`/`false`/`null` take the accent, and the `[redacted]`
+marker takes the warning style so it cannot be read as data. Strings keep the base
+style, and the colour never changes a byte: with `NO_COLOR` or a pipe the text is
+identical. The MCP transcript labels these fragments with the tone `value`.
+
 ## What `inspect` answers
 
 `inspect` is the reason to stop at all. It is the *engine's own* evaluator over
@@ -434,7 +440,7 @@ a session replayable.
 ```
 
 The answer carries three things: the `session` transcript (each fragment with
-the `tone` a terminal would have coloured it — `break`, `warning`, `danger`), the
+the `tone` a terminal would have coloured it — `break`, `warning`, `danger`, `value`), the
 `script` the session accepted, and the `report` — the ordinary `flow test`
 verdict, because a debugged run is the run.
 

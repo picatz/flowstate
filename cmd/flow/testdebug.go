@@ -271,6 +271,7 @@ const maxCallInventoryDepth = v1.MaxCallDepth
 //     printTranscript, because a tolerated failure must look identical
 //     whether an author meets it live at a breakpoint or afterward in a
 //     failing case's account;
+//   - an inspected value is coloured token by token (see [paintValue]);
 //   - the account itself stays plain, matching the transcript.
 //
 // Styling is applied to the fragment minus its trailing newline, so the
@@ -287,6 +288,8 @@ func debugEmitter(out io.Writer, theme ui.Theme) func(string, flowdebug.Tone) {
 			trimmed = theme.Warning.Render(trimmed)
 		case flowdebug.ToneDanger:
 			trimmed = theme.Danger.Render(trimmed)
+		case flowdebug.ToneValue:
+			trimmed = paintValue(trimmed, theme)
 		}
 		if hadNewline {
 			fmt.Fprintln(out, trimmed)
@@ -294,6 +297,28 @@ func debugEmitter(out io.Writer, theme ui.Theme) func(string, flowdebug.Tone) {
 		}
 		fmt.Fprint(out, trimmed)
 	}
+}
+
+// paintValue colours a rendered value by the kind of each run: keys and
+// elisions recede, literals take the product's accent, and the withheld marker
+// takes the warning style so it cannot be read as data. Strings stay in the base
+// style, which is how a theme with no colours (a pipe, NO_COLOR) loses emphasis
+// and no information: the bytes are the same either way.
+func paintValue(text string, theme ui.Theme) string {
+	var b strings.Builder
+	for kind, run := range flowdebug.ValueTokens(text) {
+		switch kind {
+		case flowdebug.TokenKey, flowdebug.TokenElision:
+			run = theme.Muted.Render(run)
+		case flowdebug.TokenLiteral:
+			run = theme.Accent.Render(run)
+		case flowdebug.TokenRedacted:
+			run = theme.Warning.Render(run)
+		}
+		b.WriteString(run)
+	}
+
+	return b.String()
 }
 
 // debuggerOrNil hands a session to [flowtest.RunOptions] as the interface it

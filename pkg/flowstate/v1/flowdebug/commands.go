@@ -681,7 +681,7 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	} else {
 		rendered = unrenderedText(out, text != nil || value != nil)
 	}
-	s.printf("%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
+	s.printfTone(ToneValue, "%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.
