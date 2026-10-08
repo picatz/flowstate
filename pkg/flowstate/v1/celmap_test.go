@@ -175,3 +175,39 @@ func TestCanonicalMapOrderingIsIdempotent(t *testing.T) {
 	require.IsType(t, orderedMap{}, value)
 	require.Equal(t, value, orderMap(value))
 }
+
+// TestMapKeysTheTraversalCannotOrderAreRefusedAtCheck is #1859: a map literal
+// whose key is provably a double, timestamp, duration, bytes or null failed
+// only at run, inside the first comprehension to walk it. The checker now
+// refuses it where it is written, including a map built by a comprehension,
+// and leaves every orderable or undecidable key alone.
+func TestMapKeysTheTraversalCannotOrderAreRefusedAtCheck(t *testing.T) {
+	t.Parallel()
+
+	env, err := NewEvaluator().ProfileEnv(CurrentProfile)
+	require.NoError(t, err)
+
+	for _, refused := range []string{
+		`{1.5: 'a'}.map(k, k)`,
+		`{1.5: 'a'}`,
+		`[timestamp('2020-01-01T00:00:00Z')].map(t, {t: 1})`,
+		`{duration('1h'): 1}`,
+		`{b'x': 1}`,
+		`{null: 1}`,
+	} {
+		_, issues := env.Compile(refused)
+		require.Error(t, issues.Err(), refused)
+		require.ErrorContains(t, issues.Err(), "map keys must be bool, int, uint or string", refused)
+	}
+
+	for _, accepted := range []string{
+		`{1: 'a', 2: 'b'}.map(k, k)`,
+		`{'a': 1}.filter(k, true)`,
+		`{true: 1, false: 2u}`,
+		`{1u: 1}`,
+		`[1, 2].map(i, {i: i})`,
+	} {
+		_, issues := env.Compile(accepted)
+		require.NoError(t, issues.Err(), accepted)
+	}
+}
