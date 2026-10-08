@@ -9,11 +9,17 @@ inputs:
     required: true
     description: stable Slack conversation ID, not a channel name
     example: C123APPROVAL
-  request_idempotency_key:
+  request_message_key:
     type: string
     required: true
     description: UUID chosen once for this approval card and reused unchanged only for the same logical message
     example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+  outcome_message_key:
+    type: string
+    required: true
+    description: distinct UUID chosen once for the in-thread outcome notification
+    example: 018f0e6c-80aa-7550-972a-7bc69716cc3b
     must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
   change:
     type: string
@@ -72,7 +78,7 @@ steps:
           footer:
             plain: Slack buttons notify only; the decision is the Flowstate signal change-approved.
       channel: ${inputs.channel}
-      idempotency_key: ${inputs.request_idempotency_key}
+      idempotency_key: ${inputs.request_message_key}
       # The notification text and what a screen reader says. The card below is
       # the message people see.
       text: '${"Approval required: " + inputs.change}'
@@ -117,6 +123,15 @@ steps:
       text: '${steps.outcome_title.value + ": " + inputs.change}'
       token: ${secret('env:SLACK_BOT_TOKEN')}
       ts: ${steps.notify.ts}
+  # Editing a card does not notify anyone, so the outcome is also posted in the
+  # card's thread, under its own key so a retry cannot post it twice.
+  - id: announce
+    slack.post:
+      channel: ${steps.notify.channel}
+      idempotency_key: ${inputs.outcome_message_key}
+      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      thread_ts: ${steps.notify.ts}
+      token: ${secret('env:SLACK_BOT_TOKEN')}
 outputs:
   approved:
     value: ${steps.approval.approved && !steps.approval.timed_out}

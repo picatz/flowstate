@@ -4,7 +4,8 @@ tests:
     workflow: ./approval.yaml
     inputs:
       channel: C123APPROVAL
-      request_idempotency_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+      request_message_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+      outcome_message_key: 018f0e6c-80aa-7550-972a-7bc69716cc3b
       change: deploy api v1.4.2 to production
       expected_approver: sre-lead@example.com
     secrets:
@@ -30,8 +31,12 @@ tests:
         returns:
           channel: C123APPROVAL
           ts: "1503435956.000247"
+      - step: announce
+        returns:
+          channel: C123APPROVAL
+          ts: "1503435957.000100"
     expect:
-      ran: [notify, approval, approval_decision, outcome, outcome_title, outcome_state, report]
+      ran: [notify, approval, approval_decision, outcome, outcome_title, outcome_state, report, announce]
       outputs:
         approved: true
         request_message_ts: "1503435956.000247"
