@@ -100,6 +100,7 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 	case *Node_Loop:
 		out := []NamedOutput{{
 			Name:        LoopResultsField,
+			Type:        &Type{Kind: &Type_List{List: dynType()}},
 			Description: "One entry per iteration, each a map of body step id to that step's named outputs. Body outputs do not escape the loop.",
 		}}
 		if LoopCarriesState(kind.Loop) {
@@ -113,6 +114,7 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 	case *Node_ForEach:
 		return []NamedOutput{{
 			Name:        LoopResultsField,
+			Type:        &Type{Kind: &Type_List{List: dynType()}},
 			Description: "One entry per iteration, each a map of body step id to that step's named outputs. Body outputs do not escape the loop.",
 		}}, true
 

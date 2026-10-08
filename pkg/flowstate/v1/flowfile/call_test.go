@@ -818,3 +818,97 @@ steps:
 	require.NotEmpty(t, bad)
 	require.Contains(t, bad.Error(), "no matching overload")
 }
+
+// A loop's `results` is a list, and the checker says so: a string index on it is
+// refused where it is written rather than at the step that reads it.
+func TestALoopsResultsIsAList(t *testing.T) {
+	t.Parallel()
+
+	source := func(read string) string {
+		return `edition: v2026.4
+name: results
+inputs:
+  names:
+    type: list(dyn)
+    default: [a, b]
+steps:
+  - id: loop
+    for_each:
+      items: ${inputs.names}
+      steps:
+        - id: x
+          value: ${item}
+  - id: after
+    value: ${` + read + `}
+`
+	}
+
+	for read, want := range map[string]string{
+		`steps.loop.results.size()`:     "",
+		`steps.loop.results[0].x.value`: "",
+		`steps.loop.results.first`:      "does not support field selection",
+	} {
+		ds, err := flowfile.ValidateSource([]byte(source(read)))
+		require.NoError(t, err)
+		if want == "" {
+			require.Empty(t, ds, read)
+			continue
+		}
+		require.NotEmpty(t, ds, read)
+		require.Contains(t, ds.Error(), want, read)
+	}
+}
+
+// A `for_each` binds its iterator with the element type of `items:`: a field read
+// on a string item is refused where it is written, a declared `list(dyn)` stays
+// silent, and an inner loop sees the outer's iterator.
+func TestAForEachIteratorTakesTheElementTypeOfItems(t *testing.T) {
+	t.Parallel()
+
+	source := func(itemsType, body string) string {
+		return `edition: v2026.4
+name: iterator
+inputs:
+  names:
+    type: ` + itemsType + `
+    default: [a, b]
+steps:
+  - id: loop
+    for_each:
+      items: ${inputs.names}
+      as: n
+      steps:
+        - id: x
+          value: ${` + body + `}
+        - id: inner
+          for_each:
+            items: ${["p", "q"]}
+            as: m
+            steps:
+              - id: y
+                value: ${` + body + `}
+`
+	}
+
+	for _, test := range []struct {
+		name, itemsType, body, want string
+	}{
+		{"a string item used as one", "list(string)", `n.startsWith("a")`, ""},
+		{"a field read on a string item", "list(string)", `n.first_name`, "does not support field selection"},
+		{"an int method on a string item", "list(string)", `n + 1`, "no matching overload"},
+		{"an untyped list stays dyn", "list(dyn)", `n.first_name`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(source(test.itemsType, test.body)))
+			require.NoError(t, err)
+			if test.want == "" {
+				require.Empty(t, ds)
+				return
+			}
+			require.NotEmpty(t, ds)
+			require.Contains(t, ds.Error(), test.want)
+		})
+	}
+}

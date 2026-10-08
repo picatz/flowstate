@@ -178,7 +178,7 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		return ds
 	}
 
-	leaves := table.leavesFor(parsed, table.before(site))
+	leaves := table.leavesFor(parsed, table.before(site), site.Step)
 	env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 	if err != nil {
 		// Building the environment failed, which is a defect in this build rather
@@ -340,6 +340,10 @@ func envDeclaring(names []string, leaves map[string]*cel.Type) (*cel.Env, error)
 
 	opts := make([]cel.EnvOption, 0, len(names)+len(leaves))
 	for _, name := range names {
+		if _, typed := leaves[name]; typed {
+			// A bare name a leaf types (a loop's iterator) is declared once, typed.
+			continue
+		}
 		opts = append(opts, cel.Variable(name, cel.DynType))
 	}
 	for _, name := range slices.Sorted(maps.Keys(leaves)) {

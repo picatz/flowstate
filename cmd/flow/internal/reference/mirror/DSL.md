@@ -708,6 +708,11 @@ output with no declared `type:`, a loop's `results`. Like a `value:` step, a tas
 wait is typed only for positions written after it, and only when its id is unique. What a
 loop's `as:` carries is the rest of #1634.
 
+A `for_each` binds its `as:` name (`item` by default) with the element type of `items:`: over a
+`list(string)` input the item is a `string`, so `n.first_name` is refused where it is written, and
+over a `list(dyn)` it stays `dyn`. A loop's `results` is a list, so `steps.loop.results.first` is refused
+too. A `loop:`'s `state` and the fields of a record item are not typed yet.
+
 *Since written, a type of your own (slice 1):* **`types:` names a record.** A shape
 that more than one declaration repeats is declared once, under `types:`, and used by name
 wherever a type is written:

@@ -559,7 +559,7 @@ func staticExpressionType(wf *v1.Workflow, table *typeTable, parsed *expr.Parsed
 		return t, nil, true
 	}
 
-	leaves := table.leavesFor(parsed, table.before(v1.ValueSite{Slot: v1.SlotDeclaredOutput}))
+	leaves := table.leavesFor(parsed, table.before(v1.ValueSite{Slot: v1.SlotDeclaredOutput}), "")
 	env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 	if err != nil {
 		// A defect in this build rather than in the file; the same answer
