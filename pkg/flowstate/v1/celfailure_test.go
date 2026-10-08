@@ -317,5 +317,10 @@ func TestAnExpressionFailureDrawsACaretUnderItsOperator(t *testing.T) {
 	}
 
 	assert.Empty(t, (*ExpressionFailure)(nil).Excerpt(""))
-	assert.Equal(t, "  a\n   ^", (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(1)}).Excerpt("  "))
+	// A caret a peer sent outside its text draws nothing instead of panicking
+	// or allocating a column of the peer's choosing.
+	assert.Empty(t, (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(-1)}).Excerpt(""))
+	assert.Empty(t, (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(1)}).Excerpt(""))
+	assert.Empty(t, (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(1 << 30)}).Excerpt(""))
+	assert.Equal(t, "  ab\n   ^", (&ExpressionFailure{Subexpression: "ab", Caret: proto.Int32(1)}).Excerpt("  "))
 }

@@ -511,6 +511,11 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 	if f == nil || f.Caret == nil || f.GetSubexpression() == "" {
 		return ""
 	}
+	// A response is data from a peer: a caret outside the text it points into
+	// would panic strings.Repeat (negative) or allocate what the peer chose.
+	if column := int(f.GetCaret()); column < 0 || column >= utf8.RuneCountInString(f.GetSubexpression()) {
+		return ""
+	}
 
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
 }
