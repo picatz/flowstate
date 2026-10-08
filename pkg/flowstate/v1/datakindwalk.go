@@ -178,7 +178,8 @@ func NormalizeInputValue(table TypeTable, declaration *InputDeclaration, value *
 // lit itself when nothing is missing, and anything that is not a map is left for the
 // shape check to refuse.
 //
-// budget is shared by the whole walk and spent one per field filled.
+// budget is shared by the whole walk and spent by the size of each default written,
+// in nodes, since a fill costs what the default it copies is made of.
 //
 // A default is a literal [CheckInputDefaultIn] already held to the field's type and
 // rules when the record was declared, so nothing here judges it again; it is shared,
@@ -204,10 +205,11 @@ func fillFieldDefaults(declared *TypeDeclaration, lit *expr.Value, budget *int) 
 		// The work one normalization does is bounded where it is done, whoever the
 		// caller is: past the budget a field stays as the value left it, and a
 		// caller that needs a refusal has asked [CheckDefaultFillBound] first.
-		if *budget <= 0 {
+		cost := 1 + literalNodes(fallback, *budget)
+		if cost > *budget {
 			break
 		}
-		*budget--
+		*budget -= cost
 
 		if out == nil {
 			out = append([]*expr.MapValue_Entry(nil), entries...)
@@ -286,9 +288,35 @@ func countFills(table TypeTable, t *Type, lit *expr.Value, depth int, budget *in
 			}
 
 			if fallback := field.GetDefault().GetLiteral(); fallback != nil {
-				*budget--
+				*budget -= 1 + literalNodes(fallback, max(*budget, 0))
 				countFills(table, field.DeclaredType(), fallback, depth+1, budget)
 			}
 		}
 	}
+}
+
+// literalNodes counts the nodes of a literal (a scalar is one, a list or a map one
+// plus its elements, keys and values), and stops once the count passes limit, so
+// measuring a default never costs more than the bound it is measured against.
+func literalNodes(lit *expr.Value, limit int) int {
+	n := 1
+	switch kind := lit.GetKind().(type) {
+	case *expr.Value_ListValue:
+		for _, element := range kind.ListValue.GetValues() {
+			if n > limit {
+				return n
+			}
+			n += literalNodes(element, limit-n)
+		}
+
+	case *expr.Value_MapValue:
+		for _, entry := range kind.MapValue.GetEntries() {
+			if n > limit {
+				return n
+			}
+			n += literalNodes(entry.GetKey(), limit-n) + literalNodes(entry.GetValue(), limit-n)
+		}
+	}
+
+	return n
 }

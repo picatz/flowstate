@@ -340,3 +340,39 @@ func TestNormalizingStopsFillingAtTheWorkBudget(t *testing.T) {
 	assert.LessOrEqual(t, filled, 1<<16, "fills past the budget are not written")
 	assert.Positive(t, filled)
 }
+
+// The fill is charged for the size of the default it copies, not one unit per field:
+// a record whose single default is a long list, left out of thousands of near-empty
+// records, is refused before the lists are rebuilt.
+func TestAFillIsChargedForTheSizeOfTheDefaultItCopies(t *testing.T) {
+	t.Parallel()
+
+	moments := make([]any, 5000)
+	for i := range moments {
+		moments[i] = "2026-01-01T00:00:00Z"
+	}
+	big := &v1.TypeDeclaration{Name: "Big", Fields: []*v1.InputDeclaration{{
+		Name: "d", Type: v1.InputDeclaration_TYPE_LIST, Default: v1.NewLiteralList(moments...),
+		ValueType: &v1.Type{Kind: &v1.Type_List{List: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_TIMESTAMP}}}},
+	}}}
+	wf := &v1.Workflow{
+		Name: "big", Profile: v1.CurrentProfile, DeclaredTypes: []*v1.TypeDeclaration{big},
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name: "rows", Type: v1.InputDeclaration_TYPE_LIST, Required: true,
+			ValueType: &v1.Type{Kind: &v1.Type_List{List: recordTypeOf("Big")}},
+		}},
+		Steps: []*v1.Node{{Id: "a", Kind: &v1.Node_Value{Value: v1.NewExpr("1")}}},
+	}
+	require.Error(t, v1.CheckRecordDeclarations(wf), "a 5000-node default exceeds what one empty record may expand to")
+
+	big.Fields[0].Default = v1.NewLiteralList(moments[:100]...)
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+
+	rows := make([]any, 2000)
+	for i := range rows {
+		rows[i] = map[string]any{}
+	}
+	_, err := v1.BindRunInputs(wf, map[string]*v1.Value{"rows": v1.NewLiteralList(rows...)})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fields that take a default")
+}
