@@ -522,6 +522,13 @@ type refScope struct {
 	// things and completing one as the other is the mistake this package exists to
 	// avoid.
 	vars []celcomplete.Candidate
+
+	// inputs are the workflow's declared inputs, offered after `inputs.` and
+	// never bare, and the same list wherever the cursor is for the reason vars
+	// are. Their detail and documentation come from the compiled declaration when
+	// the file compiles — which a file with a half-typed `${inputs.` often does
+	// not — and are the declared names alone when it does not.
+	inputs []celcomplete.Candidate
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -556,6 +563,7 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	// where the model is unavailable but this block usually still parsed.
 	if doc.parsed != nil {
 		scope.vars = varsCandidates(doc.parsed.varsEntry, "a variable declared by the workflow")
+		scope.inputs = declaredInputCandidates(doc)
 	}
 
 	scope.locals = append(scope.locals, declaredFunctionCandidates(doc)...)
@@ -882,6 +890,64 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	return scope
 }
 
+// declaredInputCandidates lists the file's declared inputs as names for after `inputs.`.
+func declaredInputCandidates(doc *document) []celcomplete.Candidate {
+	var top *entry
+	for _, e := range doc.parsed.entries {
+		if e.key == "inputs" {
+			top = e
+		}
+	}
+	if top == nil {
+		return nil
+	}
+
+	wf := compiledWorkflow(doc)
+	var out []celcomplete.Candidate
+	for _, e := range nestedEntries(top) {
+		if e.key == "" {
+			continue
+		}
+		c := celcomplete.Candidate{Name: e.key, Kind: celcomplete.KindValue, Detail: writtenInputDetail(e)}
+		if wf != nil {
+			if d := declaredInput(wf, e.key); d != nil {
+				c.Detail = v1.TypeString(d.DeclaredType())
+				if d.GetRequired() {
+					c.Detail += " (required)"
+				}
+				c.Docs = declarationDoc(e.key, d, "")
+			}
+		}
+		out = append(out, c)
+	}
+
+	return out
+}
+
+// writtenInputDetail summarizes an input from the keys the author wrote under it,
+// for the moment the file does not compile (a half-typed `${inputs.` is such a
+// moment) and the compiled declaration is unavailable.
+func writtenInputDetail(e *entry) string {
+	var kind string
+	var required bool
+	for _, field := range nestedEntries(e) {
+		switch field.key {
+		case "type":
+			kind = field.valueText()
+		case "required":
+			required = field.valueText() == "true"
+		}
+	}
+	if kind == "" {
+		return "an input declared by the workflow"
+	}
+	if required {
+		kind += " (required)"
+	}
+
+	return kind
+}
+
 // varsCandidates offers the keys of a `vars:` block.
 //
 // One function for both positions, because the block is one grammar rule written at
@@ -1129,9 +1195,7 @@ func taskOutputs(def v1.TaskDef) []celcomplete.Candidate {
 // a file is written before there is anything to reference and the name is still
 // what an author needs to learn. The vars root is offered only where the file
 // declares one, because a root that resolves to an empty map is a name nobody
-// should be taught. There is no inputs root, and that is a gap rather than a
-// decision: a Flowfile's `inputs:` are declared in the file and an editor could
-// offer them — see the note on [refScope.vars].
+// should be taught. The inputs root follows the vars rule.
 func (s refScope) shared() celcomplete.Scope {
 	shared := celcomplete.Scope{
 		// The editor completes against the vocabulary this build compiles
@@ -1142,6 +1206,9 @@ func (s refScope) shared() celcomplete.Scope {
 	}
 	if len(s.vars) > 0 {
 		shared.Roots = append(shared.Roots, celcomplete.VarsRoot(s.vars))
+	}
+	if len(s.inputs) > 0 {
+		shared.Roots = append(shared.Roots, celcomplete.InputsRoot(s.inputs))
 	}
 
 	return shared

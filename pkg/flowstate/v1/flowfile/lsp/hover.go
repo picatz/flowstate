@@ -53,6 +53,9 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		// author's position `edition:` and `timeout:` are the same kind of thing: a
 		// word the grammar defines, whose meaning is not readable off the value
 		// written beside it.
+		if h := hoverInputDeclaration(doc, pos); h != nil {
+			return h
+		}
 		if k, rng, ok := documentKeyAt(doc.parsed, pos); ok {
 			return dslKeyHover(k, rng)
 		}
@@ -373,6 +376,9 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 // loopScopeNone everywhere else — see [parsedStep.loopScopeOf].
 func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
 	if h := hoverInputPath(doc, v, f, cursor); h != nil {
+		return h
+	}
+	if h := hoverVarPath(doc, v, f, cursor); h != nil {
 		return h
 	}
 
