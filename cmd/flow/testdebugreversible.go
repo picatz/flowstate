@@ -59,6 +59,20 @@ type reversibleFront struct {
 	// mu serialises writes to Out: the shown run narrates from its own
 	// goroutine while the prompt loop answers from this one.
 	mu sync.Mutex
+
+	// The line reader: one goroutine asked for one line at a time, so a
+	// cancelled run leaves at most the read the terminal itself cannot abandon.
+	readerOnce sync.Once
+	wants      chan struct{}
+	lines      chan readLine
+	stop       chan struct{}
+	readErr    error
+}
+
+// readLine is one answer from the reader goroutine.
+type readLine struct {
+	text string
+	err  error
 }
 
 // write is the one way text reaches Out.
@@ -87,6 +101,9 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		Speak: emit,
 		Shown: func(session *flowdebug.Session) {
 			shown.Store(session)
+			// A replay that was stopped will never be asked for its verdict, and
+			// each step or rewind makes another: only the shown run's is kept.
+			results.Clear()
 			f.Panes.setSession(session)
 		},
 		Run: func(ctx context.Context, debugger v1.Debugger) flowtest.RunResult {
@@ -105,7 +122,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		},
 		Finish: func(report *v1.TestReport) {
 			settleAt.Do(func() {
-				if result, ok := results.Load(report); ok {
+				if result, ok := results.LoadAndDelete(report); ok {
 					verdict <- result.(flowtest.RunResult)
 				} else {
 					verdict <- flowtest.RunResult{Report: report}
@@ -119,6 +136,8 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		return flowtest.RunResult{}, err
 	}
 	defer reversible.Stop()
+	f.stop = make(chan struct{})
+	defer close(f.stop)
 
 	driver := flowdebug.NewDriver(reversible)
 	driver.Wait = 30 * time.Second
@@ -134,7 +153,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 	for {
 		snapshot, err := reversible.WaitSnapshot(ctx, after)
 		if err != nil {
-			break
+			return flowtest.RunResult{}, err
 		}
 		after = snapshot.GetRevision()
 		if terminalDebugState(snapshot.GetState()) {
@@ -157,7 +176,10 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		if f.Console == nil && f.Prompt != "" {
 			f.write(f.Prompt)
 		}
-		text, err := f.read()
+		text, err := f.read(ctx)
+		if ctx.Err() != nil {
+			return flowtest.RunResult{}, ctx.Err()
+		}
 		if errors.Is(err, flowdebug.ErrConsoleInterrupted) {
 			// ctrl-C ends the run exactly as `quit` does.
 			text = "quit"
@@ -176,7 +198,9 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			// The verdict stays the one the prompt has always given: the case
 			// ended by the person, which is the session's own to say.
 			if session := shown.Load(); session != nil {
-				_ = session.Control(ctx, "quit")
+				if session.Control(ctx, "quit") == nil && f.Record != nil {
+					f.Record.add("quit")
+				}
 			}
 			after, ended = reversibleRevision(ctx, reversible), true
 
@@ -195,7 +219,9 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		// The shown run narrates a forward movement itself, as it always has;
 		// repeating that from the answer would say each stop twice. A rewind is
 		// not narrated, because the run it lands on was replayed in silence.
-		if !flowdebug.MovesForward(line) {
+		// A forward verb that was refused (`until nosuch`) narrates nothing, so
+		// its explanation is only in the answer.
+		if !flowdebug.MovesForward(line) || notDone(result) != nil {
 			f.write(result.Text)
 			if f.Panes != nil && flowdebug.StepsBack(line) && notDone(result) == nil {
 				f.Panes.paint()
@@ -203,6 +229,10 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		}
 		if terminalDebugState(result.Snapshot.GetState()) {
 			after, ended = result.Snapshot.GetRevision(), true
+		} else if notDone(result) == nil && strings.HasPrefix(line, "detach") {
+			// An accepted detach carries no snapshot: the case runs on unattended
+			// and its verdict is what is waited for.
+			after, ended = reversibleRevision(ctx, reversible), true
 		}
 	}
 }
@@ -270,12 +300,45 @@ func (f *reversibleFront) release(ctx context.Context, driver *flowdebug.Driver,
 }
 
 // read is one line of input.
-func (f *reversibleFront) read() (string, error) {
-	if f.Console != nil {
-		return f.Console.Prompt()
+func (f *reversibleFront) read(ctx context.Context) (string, error) {
+	if f.readErr != nil {
+		return "", f.readErr
 	}
+	f.readerOnce.Do(func() {
+		f.wants = make(chan struct{}, 1)
+		f.lines = make(chan readLine, 1)
+		go func() {
+			for {
+				select {
+				case <-f.wants:
+				case <-f.stop:
+					return
+				}
+				var line readLine
+				if f.Console != nil {
+					line.text, line.err = f.Console.Prompt()
+				} else {
+					line.text, line.err = f.Next()
+				}
+				f.lines <- line
+				if line.err != nil && !errors.Is(line.err, flowdebug.ErrConsoleInterrupted) {
+					return
+				}
+			}
+		}()
+	})
+	f.wants <- struct{}{}
 
-	return f.Next()
+	select {
+	case line := <-f.lines:
+		if line.err != nil && !errors.Is(line.err, flowdebug.ErrConsoleInterrupted) {
+			f.readErr = line.err
+		}
+
+		return line.text, line.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
 }
 
 // play runs the case in the file at path under the front.

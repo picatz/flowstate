@@ -237,3 +237,20 @@ func TestTheReversibleFrontDoesNotPromptForACaseThatEndedBeforeAnyStop(t *testin
 	assert.True(t, testReportFailed(result.Report), "a missing workflow cannot pass")
 	assert.NotContains(t, out.String(), flowdebug.Prompt)
 }
+
+// TestTheReversibleFrontRecordsAnAcceptedQuit: a session abandoned by the person
+// replays as abandoned, not released at the end of its input.
+func TestTheReversibleFrontRecordsAnAcceptedQuit(t *testing.T) {
+	var recording attachRecording
+	playReversible(t, "step\nq\n", &recording)
+
+	assert.Equal(t, []string{"step", "quit"}, recording.lines)
+}
+
+// TestTheReversibleFrontSaysWhyAForwardVerbWasRefused: a forward verb narrates
+// itself only when it moves, so a refusal is the answer's to say.
+func TestTheReversibleFrontSaysWhyAForwardVerbWasRefused(t *testing.T) {
+	out, _ := playReversible(t, "until nosuch\nstep\n", nil)
+
+	assert.Contains(t, out, "nosuch", "the refusal of `until nosuch` was swallowed:\n"+out)
+}
