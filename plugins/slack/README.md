@@ -243,6 +243,13 @@ checked before the egress policy is consulted, and never follows a redirect: the
 arrives inside a delivery, so it is another party's input and is not trusted to name a host.
 The egress policy must also admit `hooks.slack.com` (see the example policy).
 
+A `response_url` is a bearer capability, so treat it as one: it lets its holder post into the
+one conversation the click happened in, for 30 minutes and five uses, and nothing else. When
+it travels through a `signal:` bridge it is part of the signal payload and so of the run's
+durable history, which is why that exposure is bounded by Slack's expiry and not by redaction.
+A host-managed slot that keeps it out of history is a follow-up, not something this task
+promises.
+
 Credential release is not destination authorization. The host forwards the exact
 bounded bytes it already parsed from `--egress-policy` as an immutable
 launch-time snapshot, or, when no policy was configured, the default its own

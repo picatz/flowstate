@@ -12,6 +12,10 @@
 # decision record, and until it lands the card is a notification and the
 # decision is only as trustworthy as the channel it was posted in.
 #
+# The click's response_url rides in the signal payload, so it is in the run's
+# history. It is a short-lived capability (30 minutes, five uses, one
+# conversation), not a credential for the workspace; see the plugin README.
+#
 # Slack shows the clicker anything but a bodyless 200 as a failure, so the
 # receiver answers a delivery it started or joined with exactly that, and the
 # visible answer is the `slack.respond` step below. `respond_within:` is refused
