@@ -16,7 +16,7 @@ export const isFlowfile = (path: string): boolean => {
   return FLOWFILE.test(unix) && !TEST_FILE.test(unix)
 }
 
-/** What a field the CLI omitted reads as: the schema's zero values. */
+/** What a field the CLI omitted reads as: the schema's zero values, except `code`, which reads as the "general" class. */
 const EMPTY_DIAGNOSTIC: Diagnostic = {
   line: 0,
   column: 0,

@@ -171,6 +171,9 @@ func (c *collector) addMessage(m *protogen.Message) error {
 	if _, done := c.messages[m.Desc.FullName()]; done || wellKnown(m.Desc) != "" {
 		return nil
 	}
+	if m.Desc.ParentFile().Package() == "google.protobuf" {
+		return fmt.Errorf("%s has no declared JSON shape", m.Desc.FullName())
+	}
 	if err := c.claim(tsName(m.Desc), m.Desc.FullName()); err != nil {
 		return err
 	}
@@ -224,8 +227,10 @@ func wellKnown(m protoreflect.MessageDescriptor) string {
 		return "string"
 	case "BoolValue":
 		return "boolean"
-	case "Int32Value", "UInt32Value", "FloatValue", "DoubleValue":
+	case "Int32Value", "UInt32Value":
 		return "number"
+	case "FloatValue", "DoubleValue":
+		return nonFinite
 	case "Struct":
 		return "{ [key: string]: unknown }"
 	case "Value":
@@ -295,6 +300,11 @@ func fieldType(f *protogen.Field) (string, error) {
 	return typ, nil
 }
 
+// nonFinite is the JSON type of a float or double: proto3 JSON spells NaN and
+// the infinities as these strings, so `number` alone would declare valid output
+// impossible.
+const nonFinite = `number | "NaN" | "Infinity" | "-Infinity"`
+
 func singular(f *protogen.Field) (string, error) {
 	switch f.Desc.Kind() {
 	case protoreflect.StringKind, protoreflect.BytesKind,
@@ -304,9 +314,11 @@ func singular(f *protogen.Field) (string, error) {
 	case protoreflect.BoolKind:
 		return "boolean", nil
 	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind,
-		protoreflect.Uint32Kind, protoreflect.Fixed32Kind,
-		protoreflect.FloatKind, protoreflect.DoubleKind:
+		protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
 		return "number", nil
+	case protoreflect.FloatKind, protoreflect.DoubleKind:
+		// proto3 JSON writes a non-finite value as a string.
+		return nonFinite, nil
 	case protoreflect.EnumKind:
 		return tsName(f.Enum.Desc), nil
 	case protoreflect.MessageKind:

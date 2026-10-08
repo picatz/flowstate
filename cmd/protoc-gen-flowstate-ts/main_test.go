@@ -69,6 +69,7 @@ func reportProto() *descriptorpb.FileDescriptorProto {
 					field("owner", "owner", msg, ".rep.v1.Owner", number(8)),
 					field("note", "note", str, "", number(9), func(f *fdp) { f.Proto3Optional = proto.Bool(true); f.OneofIndex = proto.Int32(1) }),
 					field("tags", "tags", str, "", repeated, number(10)),
+					field("ratio", "ratio", descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, "", number(12)),
 					field("by_id", "byId", str, "", number(11), func(f *fdp) { f.OneofIndex = proto.Int32(0) }),
 				},
 				OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: proto.String("who")}, {Name: proto.String("_note")}},
@@ -133,17 +134,18 @@ func TestGeneratesTheJSONShape(t *testing.T) {
 
 	for _, want := range []string{
 		"export interface Report {",
-		"  fileName: string\n",                 // lowerCamelCase JSON name
-		"  count: number\n",                    // int32 is a number
-		"  size: string\n",                     // int64 is a string in proto3 JSON
-		"  problems: Report_Problem[]\n",       // nested message, repeated
-		"  labels: { [key: string]: Owner }\n", // map
-		"  severity: Severity\n",               // enum by name
-		"  at?: string | null\n",               // Timestamp is a string; a message field may be null or absent
-		"  owner?: Owner | null\n",             // message field
-		"  note?: string\n",                    // proto3 optional may be absent
-		"  tags: string[]\n",                   // repeated scalar
-		"  byId?: string\n",                    // oneof member may be absent
+		"  fileName: string\n",                                      // lowerCamelCase JSON name
+		"  count: number\n",                                         // int32 is a number
+		"  size: string\n",                                          // int64 is a string in proto3 JSON
+		"  problems: Report_Problem[]\n",                            // nested message, repeated
+		"  labels: { [key: string]: Owner }\n",                      // map
+		"  severity: Severity\n",                                    // enum by name
+		"  at?: string | null\n",                                    // Timestamp is a string; a message field may be null or absent
+		"  owner?: Owner | null\n",                                  // message field
+		"  note?: string\n",                                         // proto3 optional may be absent
+		`  ratio: number | "NaN" | "Infinity" | "-Infinity"` + "\n", // non-finite values are strings
+		"  tags: string[]\n",                                        // repeated scalar
+		"  byId?: string\n",                                         // oneof member may be absent
 		`export type Severity = "SEVERITY_UNSPECIFIED" | "SEVERITY_ERROR"`,
 		"export interface Report_Problem {",
 		"export interface Owner {",
@@ -186,15 +188,21 @@ func TestRefusals(t *testing.T) {
 	anyField.MessageType[1].Field = append(anyField.MessageType[1].Field,
 		field("payload", "payload", descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, ".google.protobuf.Any", number(2)))
 
+	// An entry point named directly must be refused too, not only a field that
+	// reaches it; protogen only loads a file something imports.
+	anyEntry := reportProto()
+	anyEntry.Dependency = append(anyEntry.Dependency, "google/protobuf/any.proto")
+
 	for name, tc := range map[string]struct {
 		parameter string
 		files     []*descriptorpb.FileDescriptorProto
 		want      string
 	}{
-		"no entry point":       {"file=a.d.ts", []*descriptorpb.FileDescriptorProto{timestampProto(), reportProto()}, "no message= option"},
-		"unknown message":      {"message=rep.v1.Nope", []*descriptorpb.FileDescriptorProto{timestampProto(), reportProto()}, "no such message"},
-		"not a declaration":    {"file=a.ts,message=rep.v1.Owner", []*descriptorpb.FileDescriptorProto{timestampProto(), reportProto()}, "ends in .d.ts"},
-		"undeclarable message": {"message=rep.v1.Owner", []*descriptorpb.FileDescriptorProto{timestampProto(), protodesc.ToFileDescriptorProto(anypb.File_google_protobuf_any_proto), anyField}, "no declared JSON shape"},
+		"no entry point":           {"file=a.d.ts", []*descriptorpb.FileDescriptorProto{timestampProto(), reportProto()}, "no message= option"},
+		"unknown message":          {"message=rep.v1.Nope", []*descriptorpb.FileDescriptorProto{timestampProto(), reportProto()}, "no such message"},
+		"not a declaration":        {"file=a.ts,message=rep.v1.Owner", []*descriptorpb.FileDescriptorProto{timestampProto(), reportProto()}, "ends in .d.ts"},
+		"undeclarable entry point": {"message=google.protobuf.Any", []*descriptorpb.FileDescriptorProto{timestampProto(), protodesc.ToFileDescriptorProto(anypb.File_google_protobuf_any_proto), anyEntry}, "no declared JSON shape"},
+		"undeclarable message":     {"message=rep.v1.Owner", []*descriptorpb.FileDescriptorProto{timestampProto(), protodesc.ToFileDescriptorProto(anypb.File_google_protobuf_any_proto), anyField}, "no declared JSON shape"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			resp := run(t, tc.parameter, tc.files...)
