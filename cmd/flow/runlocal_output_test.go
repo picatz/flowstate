@@ -364,6 +364,18 @@ func TestAFailureIsClassifiedByWhoStoppedTheRun(t *testing.T) {
 			assert.Equal(t, test.want, run.GetStatus())
 			assert.NotEmpty(t, run.GetError().GetMessage(),
 				"the reason was dropped, so a caller has a status and nothing to act on")
+
+			// The kind agrees with the durable driver's for the same event:
+			// only a whole-run timeout is RunTimeout, and an operator's
+			// cancel stays unclassified rather than borrowing it (#1310).
+			wantKind := ""
+			switch test.want {
+			case v1.RunResponse_STATUS_TIMED_OUT:
+				wantKind = v1.ErrorKindRunTimeout.String()
+			case v1.RunResponse_STATUS_FAILED:
+				wantKind = v1.ClassifyError(test.runErr).String()
+			}
+			assert.Equal(t, wantKind, run.GetError().GetKind())
 		})
 	}
 }
