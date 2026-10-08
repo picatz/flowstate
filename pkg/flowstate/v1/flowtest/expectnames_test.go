@@ -120,16 +120,15 @@ tests:
 	require.Contains(t, c.GetError(), `did you mean "greet"?`)
 }
 
-// TestCompensatedAbstainsUnderACallStep pins the deliberate hole in the
-// compensated check: a `call:` registers the callee's own `undo:` steps onto
-// this run's stack under the callee's ids (examples/progressive-rollout names
-// `record` and `shift`, steps of its callee), and the checker never loads a
-// callee — so a workflow with a `call:` anywhere leaves `compensated:`
-// unchecked rather than refusing a name it cannot see. The case still fails,
-// on the ordinary "the run's account does not say so" diagnostic, which is
-// the honest verdict: the claim ran and did not hold, rather than being
-// refused as unwritable.
-func TestCompensatedAbstainsUnderACallStep(t *testing.T) {
+// TestCompensatedResolvesNamesThroughACallee pins both directions of the
+// compensated check under a `call:`. The call registers the callee's own `undo:`
+// steps onto this run's stack under the callee's ids (examples/progressive-rollout
+// names `record` and `shift`, steps of its callee), and the compiler embeds every
+// callee, so a callee's step is a legal name and a name no workflow in the call
+// tree declares is refused before the run, as it is without a `call:` (#1446).
+// The legal name still fails, on the ordinary "the run's account does not say so"
+// diagnostic: the claim ran and did not hold, rather than being refused.
+func TestCompensatedResolvesNamesThroughACallee(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -167,6 +166,22 @@ tests:
 		"the name must not be refused before the run: a callee's steps are legitimately nameable here")
 	require.NotEmpty(t, c.GetFailures(),
 		"the claim still runs and fails on the run's own account")
+
+	typo := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: compensated names a step no workflow in the call tree has
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      compensated: [inner_]
+`))
+
+	c = typo.GetCases()[0]
+	require.False(t, c.GetPassed())
+	require.Contains(t, c.GetError(), `expect.compensated names unknown step "inner_"`)
+	require.Contains(t, c.GetError(), `did you mean "inner"?`, "the callee's ids are candidates too")
 }
 
 // TestSwitchBodyStepsJoinTheClosedClaimUniverse is the mutation proof for the
