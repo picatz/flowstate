@@ -385,10 +385,13 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// the loopback remedy is resolved off the original chain before that
 		// chain is dropped. See [redactFailureError].
 		failure := fmt.Errorf("error running workflow locally: %w", runErr)
-		// An expression failure shows where it broke, compiler style. Added
-		// before the redaction below, so the excerpt is scrubbed with the rest
-		// of the sentence it quotes.
-		if excerpt := v1.ExpressionFailureOf(runErr).Excerpt("    "); excerpt != "" {
+		// An expression failure shows where it broke, compiler style. Drawn from
+		// the redacted response, whose structured account is dropped whenever
+		// the run declares a sensitive value: redacting the sentence's text can
+		// move the operator without moving a caret computed before it, so the
+		// excerpt is omitted rather than drawn under the wrong character. The
+		// same rule `flow get` follows.
+		if excerpt := response.GetError().GetExpression().Excerpt("    "); excerpt != "" {
 			failure = fmt.Errorf("%w\n%s", failure, excerpt)
 		}
 

@@ -513,8 +513,21 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 	}
 	// A response is data from a peer: a caret outside the text it points into
 	// would panic strings.Repeat (negative) or allocate what the peer chose.
-	if column := int(f.GetCaret()); column < 0 || column >= utf8.RuneCountInString(f.GetSubexpression()) {
+	column := int(f.GetCaret())
+	if column < 0 || column >= utf8.RuneCountInString(f.GetSubexpression()) {
 		return ""
+	}
+	// The caret counts characters, and padding counts terminal cells: they agree
+	// only for single-width text. A wide or combining character before the caret
+	// would put it off its target, so the excerpt is omitted rather than drawn
+	// under the wrong character.
+	for i, r := range f.GetSubexpression() {
+		if utf8.RuneCountInString(f.GetSubexpression()[:i]) >= column {
+			break
+		}
+		if r < 0x20 || r >= 0x7f {
+			return ""
+		}
 	}
 
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"

@@ -408,3 +408,27 @@ func TestWrapKeepsAnIndentedLineWhole(t *testing.T) {
 
 	assert.Contains(t, got, "\n    x + \"y\"\n        ^")
 }
+
+// TestARedactedExpressionFailureDrawsNoCaret pins that a run declaring a
+// sensitive value prints no excerpt: redacting the sentence's text can move the
+// operator without moving a caret computed before it.
+func TestARedactedExpressionFailureDrawsNoCaret(t *testing.T) {
+	t.Parallel()
+
+	_, stderr, err := runLocal(t, `edition: v2026.4
+name: redacted-caret
+inputs:
+  token:
+    type: string
+    required: true
+    sensitive: true
+steps:
+  - id: n
+    value: '${{"k": 1}}'
+  - id: bad
+    value: ${steps.n.value.k + "x"}
+`, "--input", "token=sk-live-0123456789abcdef")
+	require.Error(t, err)
+
+	assert.NotContains(t, stderr+err.Error(), "^")
+}

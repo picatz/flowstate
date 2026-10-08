@@ -317,6 +317,11 @@ func TestAnExpressionFailureDrawsACaretUnderItsOperator(t *testing.T) {
 	}
 
 	assert.Empty(t, (*ExpressionFailure)(nil).Excerpt(""))
+	// A wide or combining character before the caret misaligns terminal padding,
+	// so no excerpt is drawn; one after it does not matter.
+	assert.Empty(t, (&ExpressionFailure{Subexpression: "\"界\" + a", Caret: proto.Int32(4)}).Excerpt(""))
+	assert.Empty(t, (&ExpressionFailure{Subexpression: "\"e\u0301\" + a", Caret: proto.Int32(5)}).Excerpt(""))
+	assert.Equal(t, "a + \"界\"\n  ^", (&ExpressionFailure{Subexpression: "a + \"界\"", Caret: proto.Int32(2)}).Excerpt(""))
 	// A caret a peer sent outside its text draws nothing instead of panicking
 	// or allocating a column of the peer's choosing.
 	assert.Empty(t, (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(-1)}).Excerpt(""))
