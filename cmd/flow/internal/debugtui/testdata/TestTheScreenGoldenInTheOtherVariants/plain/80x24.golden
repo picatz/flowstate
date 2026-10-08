@@ -1,0 +1,24 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                 ? help
+steps ───────────────────────── → scope 4 names ────────────────────────────────
+  ○ checkout pending             ▾ inputs      {2}                              
+→ ▶ build running                    version   "2026.9.0"                       
+  ○ flaky pending                    region    "eu-west-1"                      
+  ○ gated pending                ▾ steps       {1}                              
+  ○ deploy pending              →  ▸ checkout  {artifact: checkout.tar.gz, sha: 
+  ○ notify pending               ▸ run         {1}                              
+  6 step(s)                                                                     
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+console ────────────────────────────────────────────────────────────────────────
+                                                                                
+                                                                                
+                                                                                
+debug>                                                                          
+                                                                                
+s step  n next  c continue  tab focus  : console  ? help  q quit                

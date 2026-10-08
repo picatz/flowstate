@@ -71,6 +71,8 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd.Flags().String("program", "", "the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, "+
 		"the deployment's plugin and task pins aside")
 	attachCmd.Flags().Duration("wait", time.Minute, "how long a movement waits for the next stop before reporting the run still running")
+	attachCmd.Flags().Bool("tui", false, "drive the run from a full-screen debugger (keyboard and mouse) instead of the line editor; "+
+		"needs a terminal at least 60x12, and is declined with a note on stderr where there is none")
 
 	getCmd := &cobra.Command{
 		Use:   "get <workflow-id>",
@@ -164,6 +166,18 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		}
 	}
 
+	// --tui is opt-in and is declined, with a sentence on stderr, wherever the
+	// screen could not be drawn: the attach then runs as it would have without
+	// the flag, byte for byte on stdout.
+	surface := newSurface(cmd)
+	wantTUI, _ := cmd.Flags().GetBool("tui")
+	if wantTUI {
+		if why := debugTUIRefusal(cmd.InOrStdin(), surface.Out, script, format); why != "" {
+			fmt.Fprintf(surface.Err, "flow: --tui is not used: %s; using the line editor\n", why)
+			wantTUI = false
+		}
+	}
+
 	var (
 		sourceMap *v1.DebugSourceMap
 		parsed    *v1.Workflow
@@ -188,7 +202,6 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	// reached, an error from the target. Close after Disconnect or Close is
 	// a no-op, so this only acts where no path chose.
 	defer func() { _ = remote.Close() }()
-	surface := newSurface(cmd)
 	answers := &driveAnswers{out: surface.Out, format: format}
 	defer func() { err = errors.Join(err, answers.flush()) }()
 	if !format.Machine() {
@@ -223,6 +236,11 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	}
 	if err := answers.add("status", first); err != nil {
 		return err
+	}
+
+	// The screen drives the run itself and ends the way the loop below does.
+	if wantTUI {
+		return attachWithTUI(ctx, cmd, remote, driver, parsed, sourceMap, surface, recording, args[0])
 	}
 
 	in, interactive := io.Reader(cmd.InOrStdin()), stdinIsInteractive(cmd)

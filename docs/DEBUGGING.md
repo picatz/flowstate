@@ -870,6 +870,59 @@ lines. Where a deployment runs its own copy of a workflow in place of the one
 submitted, the run executes that copy, so `--program` must name the deployed
 file.
 
+#### The full-screen debugger: `--tui`
+
+`flow debug attach <workflow-id> --tui` drives the same session from one screen
+instead of the line editor: the run, its steps and its scope, a console, and the
+keys below. It is opt-in, and every command still goes through the same driver,
+so a key, a click and a line typed at the console are one call with one answer
+and one refusal. The screen draws only what the run answers, so a value the run
+withholds is withheld here too. It follows the run by waiting on the run's own
+revisions rather than a timer, so a stop that happens while you look at it
+appears without a key.
+
+It needs a terminal at least 60 columns by 12 rows on stdin and stdout, no
+`--script`, and no machine `-o` format. Where it cannot be drawn, `--tui` is
+declined with one sentence on stderr (`flow: --tui is not used: stdin is not a
+terminal; using the line editor`) and the attach runs exactly as it would have
+without the flag, so a script that gains the flag keeps its output.
+
+| Key | Does |
+| --- | --- |
+| `s` or `space`, `n`, `f`, `c` | `step`, `next`, `finish`, `continue` |
+| `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them |
+| `tab`, `shift+tab` | focus the next or previous pane: steps, scope, console |
+| `:` or `/` | type a command; every verb in the table above works there, with tab completion |
+| `i` | open the console on `inspect <the selected scope row>` |
+| `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane |
+| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent) |
+| `?` | the help overlay: these keys, then the verbs that have no key |
+| `q` | `detach` and let the run go on unattended |
+| `ctrl+c` | leave at once and release the run, as `quit` does |
+| `ctrl+d` | leave and release the run |
+
+The help overlay and the hint bar are generated from the command table's
+driver front, so a verb the front does not answer has no key and no help line,
+and a verb added to the table must be given a key or named as console-only
+before the tests pass. A refusal (a movement the run will not take, a `back`
+on a run that cannot step back) is shown in the line above the hint bar until
+the next key, and changes nothing. Only one command runs at a time.
+
+With the mouse, a click on a scope row selects it and opens or closes it (a
+`… N more` row loads the next page), a click on a pane's heading or a tab
+focuses it, and the wheel scrolls the pane under the pointer. A click on
+anything the screen did not draw is ignored.
+
+The panes fold as the terminal narrows:
+
+| Columns | Layout |
+| --- | --- |
+| 120 and up | steps, scope and the selected row's detail, side by side |
+| 100 to 119 | steps beside the scope, with the detail under it |
+| 80 to 99 | steps beside the scope |
+| 60 to 79 | one pane at a time under tabs (`tab` or a click switches) |
+| under 60, or under 12 rows | the screen is not drawn |
+
 Two more verbs work without holding anything open:
 
 ```console

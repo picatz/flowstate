@@ -1,0 +1,36 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
+steps ───────────────────────────── → scope 4 names ───────────────────────────── inspector ────────────────────────────
+  ○ checkout pending                 ▾ inputs      {2}                            expression  steps.checkout            
+→ ▶ build running                        version   "2026.9.0"                     type        map                       
+  ○ flaky pending                        region    "eu-west-1"                    children    2                         
+  ○ gated pending                    ▾ steps       {1}                            value       {artifact: checkout.tar.gz
+  ○ deploy pending                  →  ▸ checkout  {artifact: checkout.tar.gz, sh             , sha: 9f2c}              
+  ○ notify pending                   ▸ run         {1}                                                                  
+  6 step(s)                                                                                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+console ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+debug>                                                                                                                  
+                                                                                                                        
+s step  n next  c continue  tab focus  : console  ? help  q quit                                                        

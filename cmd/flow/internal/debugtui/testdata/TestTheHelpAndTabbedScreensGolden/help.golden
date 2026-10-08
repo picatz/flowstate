@@ -1,0 +1,30 @@
+[1;38;2;241;239;239mflow debug[m[2;38;2;133;131;146m · release-1 · run 3f7c9a2e · held step · rev 2[m                                     [2;38;2;133;131;146m? help[m
+[38;2;107;80;255m→ help[m [2;38;2;133;131;146m? or esc closes[m [2;38;2;133;131;146m─────────────────────────────────────────────────────────────────────────────[m
+[1;38;2;133;131;146mRun the program[m                                                                                     
+  [1;38;2;241;239;239ms space[m    run to the next step anywhere, including inside this one                               
+  [1;38;2;241;239;239mn[m          run this step whole; stop at the next step at this level or above                      
+  [1;38;2;241;239;239mf[m          run until the loop, parallel, switch, or call around this step is left                 
+  [1;38;2;241;239;239mc[m          run to the next breakpoint, or the end                                                 
+  [1;38;2;241;239;239mb[m          return to the previous stop (a session that can step back)                             
+  [1;38;2;241;239;239mr[m          return to the nearest earlier breakpoint stop, or the first                            
+  [1;38;2;241;239;239mp[m          hold at the next step boundary                                                         
+                                                                                                    
+[1;38;2;133;131;146mMove[m                                                                                                
+  [1;38;2;241;239;239mup k[m       move up a row                                                                          
+  [1;38;2;241;239;239mdown j[m     move down a row                                                                        
+  [1;38;2;241;239;239menter[m      open or close the row (click does the same)                                            
+  [1;38;2;241;239;239mright l[m    open the row                                                                           
+  [1;38;2;241;239;239mleft h[m     close the row, or go to its parent                                                     
+  [1;38;2;241;239;239mPgUp[m       up a page                                                                              
+  [1;38;2;241;239;239mPgDn[m       down a page                                                                            
+  [1;38;2;241;239;239mhome g[m     first row                                                                              
+  [1;38;2;241;239;239mend G[m      last row                                                                               
+                                                                                                    
+[1;38;2;133;131;146mScreen[m                                                                                              
+  [1;38;2;241;239;239mtab[m        focus the next pane (click a pane to focus it)                                         
+  [1;38;2;241;239;239mshift+tab[m  focus the previous pane                                                                
+  [1;38;2;241;239;239m: /[m        type a command; every verb below works there                                           
+  [1;38;2;241;239;239mi[m          inspect the selected scope row in the console                                          
+  [1;38;2;241;239;239m?[m          show or hide this help                                                                 
+                                                                                                    
+[1;38;2;241;239;239ms[m [2;38;2;133;131;146mstep[m  [1;38;2;241;239;239mn[m [2;38;2;133;131;146mnext[m  [1;38;2;241;239;239mc[m [2;38;2;133;131;146mcontinue[m  [1;38;2;241;239;239mtab[m [2;38;2;133;131;146mfocus[m  [1;38;2;241;239;239m:[m [2;38;2;133;131;146mconsole[m  [1;38;2;241;239;239m?[m [2;38;2;133;131;146mhelp[m  [1;38;2;241;239;239mq[m [2;38;2;133;131;146mquit[m                                    

@@ -2,6 +2,7 @@ package flowdebug
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -76,4 +77,46 @@ func DriverCommandList() string {
 	}
 
 	return strings.Join(spellings, ", ")
+}
+
+// Verb is one verb a structured front answers, spelled as the command table
+// spells it for that front.
+//
+// It exists so a surface that binds keys to verbs (a full-screen debugger) can
+// derive what it offers from the table rather than keep a second list: a verb
+// the driver front does not answer is not in [DriverVerbs], so nothing can bind
+// a key to it, and a verb added to the table is there to be bound or to be
+// deliberately left to the console.
+type Verb struct {
+	// Name is the canonical spelling, the one [Driver.Do] resolves aliases to.
+	Name string
+
+	// Aliases are the short forms, in the order help shows them.
+	Aliases []string
+
+	// Argument is the grammar written after the verb on this front, or empty.
+	Argument string
+
+	// Help is the sentence beside the verb on this front.
+	Help string
+
+	// Moves reports that the verb resumes the run or steps it back.
+	Moves bool
+}
+
+// DriverVerbs lists the verbs a [Driver] answers, in the table's order.
+func DriverVerbs() []Verb {
+	table := commandsOn(frontDriver)
+	verbs := make([]Verb, 0, len(table))
+	for _, c := range table {
+		verbs = append(verbs, Verb{
+			Name:     c.verb,
+			Aliases:  slices.Clone(c.aliases),
+			Argument: c.argumentOn(frontDriver),
+			Help:     c.helpOn(frontDriver),
+			Moves:    c.effect == effectMoves,
+		})
+	}
+
+	return verbs
 }
