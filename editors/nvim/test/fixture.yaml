@@ -15,3 +15,4 @@ steps:
       doubled: '${inputs.t == ''x''}'
   - must: 'this == "a"'
   - must: "this == \"a\""
+  - must: '''x'

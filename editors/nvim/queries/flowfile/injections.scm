@@ -34,7 +34,7 @@
   key: (flow_node (plain_scalar (string_scalar) @_key))
   value: (flow_node (single_quote_scalar) @injection.content))
   (#eq? @_key "must")
-  (#not-match? @injection.content "^'.+''.*'$")
+  (#not-match? @injection.content "''")
   (#offset! @injection.content 0 1 0 -1)
   (#set! injection.language "cel"))
 
