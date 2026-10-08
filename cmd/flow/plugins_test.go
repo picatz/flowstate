@@ -517,3 +517,47 @@ func TestPluginsListSaysASecretsPluginNeedsAnAccessPolicy(t *testing.T) {
 	assert.Less(t, strings.Index(rendered, "vaultish"), strings.Index(rendered, advice))
 	assert.Less(t, strings.Index(rendered, advice), strings.Index(rendered, "plain\n"), "the advice sits under the plugin that needs it")
 }
+
+// TestAPluginDirThatDoesNotExistIsRefusedWhenNamedOnTheCommandLine pins #1541: a
+// mistyped --plugin-dir used to be a Debug line and a worker with no plugins.
+// Only the flag is refused; the ambient search path stays tolerant, because one
+// value is reasonably set across hosts that do not all have plugins installed.
+func TestAPluginDirThatDoesNotExistIsRefusedWhenNamedOnTheCommandLine(t *testing.T) {
+	t.Parallel()
+
+	missing := filepath.Join(t.TempDir(), "plugin")
+
+	flagged := &cobra.Command{Use: "flagged"}
+	addPluginFlags(flagged)
+	require.NoError(t, flagged.Flags().Set("plugin-dir", missing))
+	_, err := pluginFlagsOf(flagged)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), missing)
+	assert.Contains(t, err.Error(), "does not exist")
+
+	existing := &cobra.Command{Use: "existing"}
+	addPluginFlags(existing)
+	require.NoError(t, existing.Flags().Set("plugin-dir", t.TempDir()))
+	_, err = pluginFlagsOf(existing)
+	require.NoError(t, err, "a directory that is there must not be refused")
+
+	ambient := &cobra.Command{Use: "ambient"}
+	addPluginFlags(ambient)
+	_, err = pluginFlagsOf(ambient)
+	require.NoError(t, err, "no --plugin-dir named is not an error")
+}
+
+// TestATaskFromASavedCatalogDoesNotClaimToHaveBeenLaunched pins the second half
+// of #1541: the portable catalog carries no path, so the provenance sentence
+// must not say "launched from ".
+func TestATaskFromASavedCatalogDoesNotClaimToHaveBeenLaunched(t *testing.T) {
+	t.Parallel()
+
+	def := v1.TaskDef{Name: "slack.post"}
+	saved := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{Name: "slack", Version: "0.2.0"}}}
+	launched := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{Name: "slack", Version: "0.2.0", Path: "/opt/p/flowstate-plugin-slack"}}}
+
+	assert.NotContains(t, taskProvenance(def, saved), "launched from")
+	assert.Contains(t, taskProvenance(def, saved), "saved catalog")
+	assert.Contains(t, taskProvenance(def, launched), "launched from /opt/p/flowstate-plugin-slack")
+}

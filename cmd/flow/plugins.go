@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -191,6 +193,21 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 			return pluginFlags{}, fmt.Errorf("resolving plugin directory %q: %w", dir, err)
 		}
 		absolute = append(absolute, abs)
+	}
+
+	// A directory named on the command line that is not there is a typo, and a
+	// worker started with it would come up with no plugins and fail every step
+	// that names one at dispatch (#1541). The ambient $FLOWSTATE_PLUGIN_DIR is
+	// exempt: one search path is reasonably set across hosts that do not all have
+	// plugins installed, which is why discovery itself skips an absent entry.
+	if cmd.Flags().Changed("plugin-dir") {
+		for i, dir := range absolute {
+			if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+				return pluginFlags{}, newUsageError(fmt.Errorf(
+					"--plugin-dir %q does not exist; check the spelling, or create the directory "+
+						"(a plugin is an executable named flowstate-plugin-<name> inside it)", dirs[i]))
+			}
+		}
 	}
 
 	// A pin with nowhere to look is refused here, not silently ignored.
