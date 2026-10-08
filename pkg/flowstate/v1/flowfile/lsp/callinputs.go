@@ -241,8 +241,23 @@ func callInputDetail(declaration *v1.InputDeclaration) string {
 // something they cannot see on the screen in front of them, and naming where it
 // came from is what makes the answer checkable.
 func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) string {
+	return declarationDoc(declaration.GetName(), declaration,
+		fmt.Sprintf("Input of workflow `%s`, declared in `%s`.", called.workflow.GetName(), called.path))
+}
+
+// declarationDoc renders one input declaration the one way a hover says it,
+// whether the cursor is on a caller's `with:` key or on `inputs.<name>` in the
+// file that declares it: type, requiredness and default, where it came from,
+// the description, the members of an enum, the bounds, `must:` and the example.
+//
+// label is what the reader wrote (`tenant`, or `order.id` for a field reached by
+// a path) and provenance is a sentence saying where the declaration lives, empty
+// when the reader is looking at it. A sensitive declaration is described and its
+// example shown, as `flow run --help` does, and no value is ever shown because
+// hover has none.
+func declarationDoc(label string, declaration *v1.InputDeclaration, provenance string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**`%s`** · `%s`", declaration.GetName(), declaration.TypeText())
+	fmt.Fprintf(&b, "**`%s`** · `%s`", label, v1.TypeString(declaration.DeclaredType()))
 	if declaration.GetRequired() {
 		b.WriteString(" · required")
 	} else {
@@ -255,18 +270,29 @@ func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) strin
 			b.WriteString(" · has a default")
 		}
 	}
+	if declaration.GetSensitive() {
+		b.WriteString(" · sensitive")
+	}
 
-	fmt.Fprintf(&b, "\n\nInput of workflow `%s`, declared in `%s`.",
-		called.workflow.GetName(), called.path)
-
+	if provenance != "" {
+		fmt.Fprintf(&b, "\n\n%s", provenance)
+	}
 	if description := declaration.GetDescription(); description != "" {
 		fmt.Fprintf(&b, "\n\n%s", description)
+	}
+	if values := declaration.GetValues(); len(values) > 0 {
+		fmt.Fprintf(&b, "\n\nOne of `%s`.", strings.Join(values, "`, `"))
 	}
 	if bounds := declaredBounds(declaration); len(bounds) > 0 {
 		fmt.Fprintf(&b, "\n\nHeld to %s.", strings.Join(bounds, ", "))
 	}
 	if must := declaration.GetMust(); must != "" {
 		fmt.Fprintf(&b, "\n\nMust satisfy `%s`.", must)
+	}
+	if declaration.GetExample() != nil {
+		if text, ok := declaredValueText(declaration.GetExample()); ok {
+			fmt.Fprintf(&b, "\n\nExample: `%s`.", text)
+		}
 	}
 	return b.String()
 }

@@ -82,21 +82,14 @@ func hoverInputPath(doc *document, v *value, f fence, cursor int) *lsp.Hover {
 // inputPathDoc renders one declaration reached by a path: the input itself, or a
 // field of the record that holds it.
 func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.TypeDeclaration, table v1.TypeTable) string {
-	var b strings.Builder
-	typ := declaration.DeclaredType()
-	fmt.Fprintf(&b, "**`%s`** · `%s`", path, v1.TypeString(typ))
-	if declaration.GetRequired() {
-		b.WriteString(" · required")
-	} else {
-		b.WriteString(" · optional")
+	var provenance string
+	if parent != nil {
+		provenance = fmt.Sprintf("A field of the record `%s`.", parent.GetName())
 	}
 
-	if parent != nil {
-		fmt.Fprintf(&b, "\n\nA field of the record `%s`.", parent.GetName())
-	}
-	if description := declaration.GetDescription(); description != "" {
-		fmt.Fprintf(&b, "\n\n%s", description)
-	}
+	var b strings.Builder
+	b.WriteString(declarationDoc(path, declaration, provenance))
+	typ := declaration.DeclaredType()
 
 	if record := table[typ.GetMessage()]; record != nil {
 		fmt.Fprintf(&b, "\n\nThe record `%s`", record.GetName())
@@ -166,4 +159,65 @@ func wordAt(src string, cursor int) (int, string, bool) {
 	}
 
 	return start, src[start:end], start < end
+}
+
+// hoverInputDeclaration describes the key of a workflow input where it is
+// declared, in the words [hoverInputPath] uses for a reference to it, so the
+// declaration and its uses cannot say it two ways. It is answered from the
+// compiled workflow like they are, and a document that does not compile gets
+// none.
+func hoverInputDeclaration(doc *document, pos lsp.Position) *lsp.Hover {
+	for _, top := range doc.parsed.entries {
+		if top.key != "inputs" {
+			continue
+		}
+		for _, in := range nestedEntries(top) {
+			if !contains(in.keyRange, pos) {
+				continue
+			}
+			wf := compiledWorkflow(doc)
+			if wf == nil {
+				return nil
+			}
+			declaration := declaredInput(wf, in.key)
+			if declaration == nil {
+				return nil
+			}
+
+			return markdownHover(inputPathDoc(in.key, declaration, nil, v1.TypesOf(wf)), in.keyRange)
+		}
+	}
+
+	return nil
+}
+
+// hoverVarPath describes `vars.<name>` in an expression: the workflow var's
+// expression and the line it is written on. The var is read from the document's
+// own `vars:` block rather than the compiled workflow, since what an author
+// wants to know is what they wrote.
+func hoverVarPath(doc *document, v *value, f fence, cursor int) *lsp.Hover {
+	start, word, ok := wordAt(f.source, cursor)
+	if !ok {
+		return nil
+	}
+
+	segments := strings.Split(word, ".")
+	if len(segments) < 2 || segments[0] != v1.VarsRoot || segments[1] == "" || cursor > start+len(v1.VarsRoot)+1+len(segments[1]) {
+		return nil
+	}
+
+	for _, e := range nestedEntries(doc.parsed.varsEntry) {
+		if e.key != segments[1] {
+			continue
+		}
+		rng := v.fenceSpanOrWhole(doc.index, f, start, start+len(v1.VarsRoot)+1+len(segments[1]))
+		body := fmt.Sprintf("**`%s.%s`** · workflow var, declared on line %d", v1.VarsRoot, e.key, e.keyRange.Start.Line+1)
+		if text := e.valueText(); text != "" {
+			body += fmt.Sprintf("\n\nEvaluated once before the first step: `%s`", text)
+		}
+
+		return markdownHover(body, rng)
+	}
+
+	return nil
 }
