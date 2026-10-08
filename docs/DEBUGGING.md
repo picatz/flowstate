@@ -359,6 +359,18 @@ script.txt` and the `flowstate_debug` tool read the same commands the same way
 they always did; the line editor is attached only where somebody is actually
 typing.
 
+**A value is one line when it fits and a tree when it does not.** `inspect`
+answers a scalar or a small record as the compact JSON it always has, and a
+value wider than a line (100 characters) as a tree: a map one sorted key per
+line, a list one indexed item per line, strings quoted and escaped so a control
+character in data cannot reach the terminal as itself. Three levels are opened
+and 48 entries of a container written; what is left out is said in place
+(`… 12 more keys`, `… 4000 more items`, `{… 7 keys}`), and how much is
+counted depends on the shape of the value and never on what a cut string held.
+The tree is laid out after the redaction, from the same redacted value, so a
+withheld leaf is the marker it always was. The layout does not depend on a
+terminal: a script piped to the prompt gets the same tree. The JSON answers (`-o json`, MCP, DAP) are unchanged.
+
 ## What `inspect` answers
 
 `inspect` is the reason to stop at all. It is the *engine's own* evaluator over

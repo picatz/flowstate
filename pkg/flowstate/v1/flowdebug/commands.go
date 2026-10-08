@@ -671,7 +671,17 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(applyText(text, refValTextWith(out, text, value)), MaxInspectRunes))
+	//
+	// A value that does not fit a line is laid out as a tree, from the tree the
+	// redactors already walked; the backstop pass over what it writes is
+	// unchanged.
+	var rendered string
+	if native, ok := redactedTree(out, text, value); ok {
+		rendered = RenderValue(native, Layout{})
+	} else {
+		rendered = unrenderedText(out, text != nil || value != nil)
+	}
+	s.printf("%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.
