@@ -63,3 +63,33 @@ func TestRecordNeedsADebugSession(t *testing.T) {
 	assert.Contains(t, res.Err.Error(), "--record")
 	assert.NoFileExists(t, recording)
 }
+
+// TestARecordingNarrowsAFileThatWasAlreadyThere: a write keeps an existing
+// file's mode, and the file holds typed expressions.
+func TestARecordingNarrowsAFileThatWasAlreadyThere(t *testing.T) {
+	path := writeRunLocalDebugFixture(t)
+	recording := filepath.Join(t.TempDir(), "session.script")
+	require.NoError(t, os.WriteFile(recording, []byte("stale\n"), 0o644))
+
+	runFlowStdin(t, "step\nquit\n", "run", "local", path, "--debug", "--record", recording)
+
+	info, err := os.Stat(recording)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+}
+
+// TestReplayRefusesToRecordOverItsOwnScript: the script is read first and the
+// recording written last, so a quit replay would truncate its source.
+func TestReplayRefusesToRecordOverItsOwnScript(t *testing.T) {
+	path := writeRunLocalDebugFixture(t)
+	const script = "break second\ncontinue\ncontinue\n"
+	scriptFile := writeDebugScript(t, script)
+
+	res := runFlow(t, "debug", "replay", scriptFile, path, "--record", scriptFile)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "--record")
+
+	got, err := os.ReadFile(scriptFile)
+	require.NoError(t, err)
+	assert.Equal(t, script, string(got), "the script was written over")
+}

@@ -60,9 +60,9 @@ func newDebugCommand() *cobra.Command {
 			"session accepted, one per line.\n\n" +
 			"A local run is debugged as `flow run local --debug` (a real run, at a terminal), " +
 			"as `flow test --debug` (one test case), and as `flow dap` (from an editor, which " +
-			"can also attach to a durable run). None of those writes a script to disk; the " +
-			"`flowstate_debug` MCP tool's answer carries one, and a script can be written by " +
-			"hand.",
+			"can also attach to a durable run). `flow run local --debug` and `flow test --debug` " +
+			"write a script to disk with `--record`; the `flowstate_debug` MCP tool's answer " +
+			"carries one, and a script can be written by hand.",
 	}
 
 	replayCmd := &cobra.Command{
@@ -208,6 +208,9 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 
 	lines, err := readDebugScript(scriptPath)
 	if err != nil {
+		return err
+	}
+	if err := refuseRecordingOver(cmd, scriptPath); err != nil {
 		return err
 	}
 

@@ -16,7 +16,7 @@ import (
 // accepted commands to, in the format `flow debug replay` reads.
 func addRecordFlag(cmd *cobra.Command) {
 	cmd.Flags().String("record", "",
-		"with --debug, write the commands the session accepted to this file when it ends, however it ends, "+
+		"with --debug, write the commands the session accepted to this file when it ends (end of run, `quit`, error), "+
 			"so `flow debug replay` can reproduce the session (a mistyped command, or a `break` the run "+
 			"refused, is not in it)")
 }
@@ -31,6 +31,26 @@ func recordPath(cmd *cobra.Command) (string, error) {
 	}
 
 	return path, nil
+}
+
+// refuseRecordingOver refuses `--record` naming the script being replayed: the
+// script is read first and the recording written last, so a replay that is
+// shortened or quit would truncate the very file it came from.
+func refuseRecordingOver(cmd *cobra.Command, script string) error {
+	record, _ := cmd.Flags().GetString("record")
+	if record == "" {
+		return nil
+	}
+	scriptInfo, err := os.Stat(script)
+	if err != nil {
+		return nil
+	}
+	if recordInfo, err := os.Stat(record); err == nil && os.SameFile(scriptInfo, recordInfo) {
+		return fmt.Errorf("--record %s is the script being replayed, and recording over it would truncate it; "+
+			"name another file", record)
+	}
+
+	return nil
 }
 
 // recordSession returns the function a caller defers to write the session's
@@ -57,7 +77,13 @@ func recordSession(path string, session *flowdebug.Session, stderr io.Writer) fu
 			b.WriteString("# the recording stopped at the script bounds; this file replays a prefix of the session\n")
 		}
 		// Owner-only: an expression typed at `inspect` can name anything in scope.
-		if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		// And narrowed when the file already existed, which keeps its old mode
+		// through a write.
+		err := os.WriteFile(path, []byte(b.String()), 0o600)
+		if err == nil {
+			err = os.Chmod(path, 0o600)
+		}
+		if err != nil {
 			fmt.Fprintf(stderr, "could not write the recording to %s: %v\n", path, err)
 		}
 	}
