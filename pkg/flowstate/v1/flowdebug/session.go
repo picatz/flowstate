@@ -2104,15 +2104,28 @@ func nativeText(native any) string {
 // text, for the reason [withheldLeaves] gives; the caller's pass over the
 // rendered line is the backstop behind it.
 func refValTextWith(out ref.Val, text func(string) string, value func(any) any) string {
-	native, ok := redactedNative(out, nil)
+	native, ok := redactedTree(out, text, value)
 	if !ok {
 		return unrenderedText(out, text != nil || value != nil)
+	}
+
+	return nativeText(native)
+}
+
+// redactedTree is the native tree [refValTextWith] renders, after both
+// redactions, and whether out could be converted. A caller that lays the tree
+// out itself starts from this rather than from the text, so what it formats is
+// what the single-line rendering would have shown.
+func redactedTree(out ref.Val, text func(string) string, value func(any) any) (any, bool) {
+	native, ok := redactedNative(out, nil)
+	if !ok {
+		return nil, false
 	}
 	if value != nil {
 		native = value(native)
 	}
 
-	return nativeText(withheldLeaves(text, native))
+	return withheldLeaves(text, native), true
 }
 
 // pauseRedactors are the redactors an answer at the current pause renders
