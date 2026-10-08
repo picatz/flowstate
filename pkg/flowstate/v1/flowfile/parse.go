@@ -987,6 +987,9 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.DeclaredOutputs = c.declaredOutputs(f.value, "outputs", ref{path: "outputs", label: "outputs"})
 	}
 
+	// A declaration typed by a record with a `sensitive:` field is sensitive whole.
+	v1.DeriveSensitive(workflow)
+
 	return workflow
 }
 

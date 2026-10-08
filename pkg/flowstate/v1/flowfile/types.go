@@ -23,8 +23,8 @@ import (
 //
 // A field is written exactly like an input, and is compiled by the function that
 // compiles one ([compiler.declaredInput]) so a field cannot come to differ from an
-// input in what it accepts. What a record field does not carry yet is refused by
-// [v1.CheckRecordDeclarations] with the reason, not parsed and ignored.
+// input in what it accepts. A field's `sensitive:` makes what is typed by the record
+// sensitive whole; see [v1.DeriveSensitive].
 
 var typeKeys = []string{"description", "fields", "must"}
 

@@ -1124,8 +1124,10 @@ func (x *FunctionParameter) GetType() *Type {
 //
 // Only `name`, `type`, `value_type`, `required`, `description`, an enum's
 // `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,
-// `max_items`) and `must` are carried by a field today. `default`, `example` and
-// `sensitive` are refused by the compiler and at submit, not ignored.
+// `max_items`), `must`, `default`, `example` and `sensitive` are carried by a
+// field. A `sensitive` field makes every input and output typed by the record,
+// at any depth, sensitive whole: the Flowfile compiler marks them, and a
+// specification that does not is refused at submit.
 //
 // A value of a record type is a map at run time, keyed by field name, so a
 // reader that does not know the type (an older worker, a CEL expression the
@@ -1146,11 +1148,9 @@ type TypeDeclaration struct {
 	// Fields are the record's members in the order they were written, which is the
 	// order every report of them uses. Each name is unique within the type.
 	//
-	// `default`, `example` and `sensitive` are not carried by a field yet: a
-	// default would have to be applied inside a value, an example checked, and a
-	// sensitive field withheld wherever the record travels, and each of those is a
-	// decision that has not been made. A field that sets one is refused rather
-	// than silently not enforced.
+	// A field carries what an input does, including `default`, `example` and
+	// `sensitive`. A `sensitive` field makes every input and output typed by the
+	// record sensitive whole; see the message comment.
 	Fields []*InputDeclaration `protobuf:"bytes,3,rep,name=fields,proto3" json:"fields,omitempty"`
 	// Must is a CEL predicate over `this`, the record, for a rule across fields that
 	// no field can state alone (`this.start < this.end`). A field's own `must` binds

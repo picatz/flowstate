@@ -210,32 +210,83 @@ func TestTypesRefuseWhatCannotRun(t *testing.T) {
 	}
 }
 
-// What a field does not carry yet is refused with the reason, not parsed and
-// ignored: a `must:` that nothing enforces reads as a promise.
-func TestAFieldRefusesWhatItDoesNotCarryYet(t *testing.T) {
+// A field marked sensitive makes every input and output the record types sensitive
+// whole, at any depth; the compiler marks them, so an author names it once.
+func TestASensitiveFieldMakesWhatItTypesSensitive(t *testing.T) {
 	t.Parallel()
 
-	for _, key := range []string{
-		"sensitive: true",
-	} {
-		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
-			t.Parallel()
-
-			wf, _, err := flowfile.Parse([]byte(typesSource(`types:
-  Order:
+	wf, _, err := flowfile.Parse([]byte(`edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Login:
     fields:
-      id:
+      user:
         type: string
-        `+key+`
-`, "Order")))
-			require.NoError(t, err)
+      password:
+        type: string
+        sensitive: true
+  Account:
+    fields:
+      login:
+        type: Login
+inputs:
+  login:
+    type: Login
+    required: true
+  accounts:
+    type: list(Account)
+    required: true
+  plain:
+    type: string
+    required: true
+steps:
+  - id: done
+    value: ${inputs.plain}
+outputs:
+  who:
+    value: ${inputs.login}
+    type: Login
+  name:
+    value: ${inputs.plain}
+    type: string
+`))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(wf))
 
-			ds := flowfile.Validate(wf)
-			require.NotEmpty(t, ds)
-			assert.Contains(t, ds.Error(), "does not carry yet")
-			assert.Contains(t, ds.Error(), "`"+strings.SplitN(key, ":", 2)[0]+"`")
-		})
+	sensitive := v1.SensitiveInputNames(wf)
+	assert.True(t, sensitive["login"], "a record with a sensitive field")
+	assert.True(t, sensitive["accounts"], "a list of records that reach one")
+	assert.False(t, sensitive["plain"])
+	assert.True(t, v1.SensitiveOutputNames(wf)["who"])
+	assert.False(t, v1.SensitiveOutputNames(wf)["name"])
+}
+
+// A specification that skipped the compiler is refused when it types a declaration
+// by a record with a sensitive field and leaves the declaration unmarked: it fails
+// closed rather than showing the value.
+func TestAnUnmarkedDeclarationOfASensitiveRecordIsRefused(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		DeclaredTypes: []*v1.TypeDeclaration{{
+			Name: "Login",
+			Fields: []*v1.InputDeclaration{
+				{Name: "password", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+			},
+		}},
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name:      "login",
+			Type:      v1.InputDeclaration_TYPE_STRUCT,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Login"}},
+		}},
 	}
+
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be declared `sensitive: true`")
+
+	v1.DeriveSensitive(wf)
+	assert.NoError(t, v1.CheckRecordDeclarations(wf))
 }
 
 func TestADuplicateTypeFieldIsReported(t *testing.T) {
