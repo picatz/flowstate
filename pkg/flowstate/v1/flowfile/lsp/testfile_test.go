@@ -776,7 +776,10 @@ func TestOpeningDefaultsNeverPublishesSavedFilePositionsOntoTheLiveBuffer(t *tes
 		require.NoError(t, os.WriteFile(defaultsPath,
 			[]byte("defaults:\n  stubs:\n    - task: log\n      returns: {}\n    - returns: {}\n"), 0o600))
 
+		// Two tracked suites: re-running the first must not notify the buffer while
+		// the second still contributes its saved-file positions.
 		c.open(suiteURI, validSuite)
+		c.open("file://"+filepath.Join(dir, "second.test.yaml"), validSuite)
 		synctest.Wait()
 		saved, ok := c.lastPublishedFor(defaultsURI)
 		require.True(t, ok)

@@ -623,7 +623,8 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 				if !ok || suite.kind != docTestFile {
 					continue
 				}
-				s.publishTestDiagnostics(ctx, conn, source, diagnoseTestPublications(suite, doc), suite, doc)
+				s.publishTestDiagnosticsWithholding(ctx, conn, source, diagnoseTestPublications(suite, doc),
+					[]lsp.DocumentURI{doc.uri, testDefaultsDependencyURI(doc)}, suite, doc)
 			}
 		}
 		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
@@ -730,6 +731,18 @@ func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.Docu
 // analyses; publishing while the diagnostics lock is held keeps notification
 // order identical to cache-update order under concurrent document changes.
 func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI, publications []diagnosticPublication, guards ...*document) {
+	s.publishTestDiagnosticsWithholding(ctx, conn, source, publications, nil, guards...)
+}
+
+// publishTestDiagnosticsWithholding is [FlowfileServer.publishTestDiagnostics]
+// that records everything but does not notify the URIs in withheld.
+//
+// A live defaults buffer re-runs each tracked suite against itself before it
+// publishes its own aggregate. Every one of those re-runs would otherwise
+// notify the defaults URI with the suites not yet re-run still contributing their
+// saved-file positions, so the buffer is withheld until the last one is current
+// and then published once (#1273).
+func (s *FlowfileServer) publishTestDiagnosticsWithholding(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI, publications []diagnosticPublication, withheld []lsp.DocumentURI, guards ...*document) {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
 	for _, guard := range guards {
@@ -794,6 +807,9 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	}
 	s.testDiagnosticsBySource[source] = next
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
+		if slices.Contains(withheld, publication.URI) {
+			continue
+		}
 		s.notify(ctx, conn, publication)
 	}
 }
