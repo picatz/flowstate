@@ -26,7 +26,7 @@ func TestARunContinuesAsNewBetweenEveryPairOfSteps(t *testing.T) {
 	wf := &v1.Workflow{Name: "w", Profile: v1.CurrentProfile, Steps: []*v1.Node{
 		logStep("a", "x"), logStep("b", "y"), logStep("c", "z"),
 	}}
-	res, err := durable.Run(t.Context(), wf, nil, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), v1.TaskRuntime{})
+	res, err := durable.Run(t.Context(), durable.Request{Workflow: wf, Start: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
 	require.NoError(t, err)
 	assert.Equal(t, 3, res.Segments, "three steps, one per segment")
 	assert.Contains(t, res.Outputs.GetStepValues(), "c", "the last step is always retained")
@@ -41,7 +41,7 @@ func TestAFailingRunReportsItsErrorAndTheSegmentsItTook(t *testing.T) {
 		logStep("a", "x"),
 		{Id: "boom", Kind: &v1.Node_Task{Task: &v1.Task{Name: "no-such-task"}}},
 	}}
-	res, err := durable.Run(t.Context(), wf, nil, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), v1.TaskRuntime{})
+	res, err := durable.Run(t.Context(), durable.Request{Workflow: wf, Start: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)})
 	require.Error(t, err)
 	require.NotNil(t, res)
 	assert.GreaterOrEqual(t, res.Segments, 1)

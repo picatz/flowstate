@@ -35,6 +35,10 @@ type signalOutcomes struct {
 	// delayed counts the deliveries a `signal:` fault made late, whether or not
 	// the run was still there when they arrived.
 	delayed map[string]int
+	// accepted lists, in the order they were delivered, the scripts (by their
+	// position in the case) whose delivery a signal policy and the queue let
+	// through: what a durable run is replayed.
+	accepted []int
 }
 
 func newSignalOutcomes() *signalOutcomes {
@@ -63,6 +67,28 @@ func (o *signalOutcomes) note(name string, err error) {
 	default:
 		o.otherRefused[name]++
 	}
+}
+
+// noteAccepted records that script n was delivered into the run.
+func (o *signalOutcomes) noteAccepted(n int) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	o.accepted = append(o.accepted, n)
+}
+
+// acceptedScripts is the positions noteAccepted recorded, in delivery order.
+func (o *signalOutcomes) acceptedScripts() []int {
+	if o == nil {
+		return nil
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+
+	return slices.Clone(o.accepted)
 }
 
 // noteDropped records that a fault lost one delivery of name.

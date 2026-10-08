@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -13,6 +14,14 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 		return &v1.Node{Id: id, Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}}}
 	}
 	plain := &v1.Workflow{Name: "plain", Steps: []*v1.Node{logTask("a")}}
+	readsLocal := &v1.Workflow{Name: "local", Steps: []*v1.Node{{
+		Id: "a",
+		Condition: &v1.Value{Kind: &v1.Value_Expr{Expr: &expr.ParsedExpr{Expr: &expr.Expr{ExprKind: &expr.Expr_SelectExpr{SelectExpr: &expr.Expr_Select{
+			Operand: &expr.Expr{ExprKind: &expr.Expr_IdentExpr{IdentExpr: &expr.Expr_Ident{Name: "run"}}},
+			Field:   "local",
+		}}}}}},
+		Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+	}}}
 	compensated := &v1.Workflow{Name: "saga", Steps: []*v1.Node{{
 		Id:   "a",
 		Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
@@ -27,7 +36,8 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 		want         string
 	}{
 		"nothing in the way":     {test: &Test{}, workflow: plain},
-		"signals":                {test: &Test{Signals: []SignalScript{{}}}, workflow: plain, want: "scripts signals"},
+		"signals":                {test: &Test{Signals: []SignalScript{{}}}, workflow: plain},
+		"reads run.local":        {test: &Test{}, workflow: readsLocal, want: "run.local"},
 		"faults":                 {test: &Test{Faults: []Fault{{}}}, workflow: plain, want: "injects faults"},
 		"unregistered stub task": {test: &Test{}, workflow: plain, unregistered: []string{"nope.task"}, want: "nope.task"},
 		"step stub, plain":       {test: &Test{}, workflow: plain, compiled: []compiledStub{{step: "a"}}},

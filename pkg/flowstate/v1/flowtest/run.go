@@ -1448,8 +1448,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		durableRuntime.Step.Workflow = workflow.GetName()
 		dctx = v1.ContextWithTaskRuntime(dctx, durableRuntime)
 		dctx = v1.NewContextWithTrigger(dctx, trigger)
-		disagreements, localOnly := durableDisagreements(dctx, durableFrom(base), workflow, inputs, test.StartTime(), durableRuntime,
-			durableUnanswered, outputs, runErr, sensitive)
+		disagreements, localOnly := durableDisagreements(dctx, durableFrom(base), DurableRequest{
+			Workflow: workflow,
+			Inputs:   inputs,
+			Start:    test.StartTime(),
+			Runtime:  durableRuntime,
+			Signals:  durableSignals(test.Signals, outcomes),
+		}, durableUnanswered, outputs, runErr, sensitive)
 		result.Failures = append(result.Failures, disagreements...)
 		durableSkipped = localOnly
 	}
@@ -1846,6 +1851,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 	}
 
 	type job struct {
+		idx     int
 		name    string
 		at      time.Duration
 		payload map[string]any
@@ -1902,7 +1908,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		}
 		turnDone := make(chan struct{})
 		jobs = append(jobs, job{
-			name: s.Name, at: at, payload: s.Payload,
+			idx: n, name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
 			drop:          dropped[n],
@@ -2003,6 +2009,9 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			deliver := func() error {
 				err := signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 				outcomes.note(j.name, err)
+				if err == nil {
+					outcomes.noteAccepted(j.idx)
+				}
 
 				return err
 			}
