@@ -31,6 +31,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_run` | via a server | `flowstate.v1.RunRequest` | `flowstate.v1.RunResponse` |
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
 | `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
+| `flowstate_get_checkpoint` | via a server | `flowstate.v1.GetCheckpointRequest` | `flowstate.v1.GetCheckpointResponse` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
 | `flowstate_get_gate` | via a server | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
 | `flowstate_list_gates` | via a server | `flowstate.v1.ListGatesRequest` | `flowstate.v1.ListGatesResponse` |
@@ -113,6 +114,14 @@ GetTimeline reports what a run did, event by event, read back from its own durab
 `Get` answers what a run is now; this answers what happened, which is what to read for a run that has already failed: which step, on which attempt, with what error, and what it was waiting for before that. It starts, signals and changes nothing. Authorized like every other verb addressing a run.
 
 `max_entries` defaults to 500 and is at most 5000. When `truncated` is set, call again with `run_id` set to the answer's `run_id` and `after_event_id` set to the last entry's `event_id`; repeat until `truncated` is false. A workload that continued as new has one timeline per segment: start at `first_run_id` and follow `next_run_id`, or walk back with `previous_run_id`.
+
+## `flowstate_get_checkpoint`
+
+GetCheckpoint reports whether a run segment started from a point a new run could be started from, and where that point stands.
+
+Every segment's start input is the run's complete carried state, so the answer is read from history and changes nothing. It describes the point without returning the state, which holds the run's inputs and outputs in full; see `CheckpointInfo`. A segment whose position is inside a call, a loop or concurrent work is reported unavailable with the reason, because only a position between top-level steps is a legal starting state.
+
+`run_id` names the segment, as in `GetTimeline`; empty reads the latest.
 
 ## `flowstate_signal`
 
