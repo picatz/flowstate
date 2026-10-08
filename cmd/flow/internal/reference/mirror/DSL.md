@@ -2021,7 +2021,9 @@ slash command is. A form whose only field is `payload` (Slack interactivity) is 
 JSON document, so `event.body.actions[0].action_id` reads the same as it would in a JSON
 delivery. A form that repeats a field is refused, since two values for one name has no single
 reading. A webhook verified with `slack` also answers Slack's `url_verification` handshake
-with the challenge, after the signature verifies and without starting a run. In `flow test`,
+with the challenge, after the signature verifies and without starting a run, and answers a
+delivery it started or joined with an empty `200`, because Slack shows the clicker any other status
+or body as a failure; the other schemes keep `202` and the run's address. In `flow test`,
 a form fixture states its `Content-Type` header and holds its exact bytes under `raw_body`.
 
 The mapping is the part a file controls, and it is the part `flow test` replays

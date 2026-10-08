@@ -892,6 +892,15 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	if v1.WebhookAnswersEmpty(route.trigger) {
+		// The sender shows anything else to the person whose click this was,
+		// and a run address means nothing to it. Started or joined, the delivery
+		// is done, which is all a 200 says.
+		w.WriteHeader(http.StatusOK)
+
+		return
+	}
+
 	status := http.StatusAccepted
 	if accepted.Joined {
 		// 200 rather than 202: nothing was accepted for processing, because this

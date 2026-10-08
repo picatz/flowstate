@@ -47,6 +47,11 @@ type webhookScheme struct {
 
 	// base64 selects standard base64 over hex for the digest.
 	base64 bool
+
+	// answerEmpty marks a sender that reads anything but a bodyless 200 as a
+	// failure of the delivery it just made. Slack shows a non-200, or a body it
+	// did not ask for, to the person who clicked; the others read any 2xx.
+	answerEmpty bool
 }
 
 // webhookSchemes is the one table. Its order is the order a diagnostic lists the
@@ -57,7 +62,7 @@ var webhookSchemes = []webhookScheme{
 	{name: WebhookSchemeGitHub, kind: kindBodyHMAC, header: "X-Hub-Signature-256", prefix: hmacPrefix},
 	{name: WebhookSchemeShopify, kind: kindBodyHMAC, header: "X-Shopify-Hmac-Sha256", base64: true},
 	{name: WebhookSchemeLinear, kind: kindBodyHMAC, header: "Linear-Signature"},
-	{name: WebhookSchemeSlack, kind: kindSlack, header: "X-Slack-Signature", timestampHeader: slackTimestampHeader, prefix: slackSignaturePrefix},
+	{name: WebhookSchemeSlack, kind: kindSlack, header: "X-Slack-Signature", timestampHeader: slackTimestampHeader, prefix: slackSignaturePrefix, answerEmpty: true},
 	{name: WebhookSchemeStripe, kind: kindStripe, header: StripeSignatureHeader},
 }
 
@@ -84,6 +89,21 @@ func lookupWebhookScheme(name string) (webhookScheme, bool) {
 	}
 
 	return webhookScheme{}, false
+}
+
+// WebhookAnswersEmpty reports whether the trigger is verified under a scheme
+// whose sender takes only a bodyless 200 as success (Slack's interactivity and
+// events URLs). The receiver then answers an accepted or joined delivery with
+// that, in place of 202 and the run's address. A decline or a refusal keeps its
+// own status: a failure is the truthful answer there.
+func WebhookAnswersEmpty(trigger *WebhookTrigger) bool {
+	for name := range trigger.GetVerify() {
+		if scheme, ok := lookupWebhookScheme(name); ok && scheme.answerEmpty {
+			return true
+		}
+	}
+
+	return false
 }
 
 // WebhookSignatureHeaders returns every header a signing scheme writes, so an
