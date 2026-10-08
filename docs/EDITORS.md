@@ -394,6 +394,15 @@ filetype does not have to be `flowfile`:
 :lua vim.lsp.start({ name = 'flowstate', cmd = { 'flow', 'lsp' } })
 ```
 
+## Tree-sitter
+
+`editors/tree-sitter-cel` holds a tree-sitter grammar for CEL, with highlight
+queries, and Flowfile injection queries that run over the stock YAML parser and
+hand the `must:` values and whole-scalar `${...}` fences to it. It is the parser
+an editor needs to colour and fold CEL structurally; `flow lsp` supplies the
+scope-aware part. [Its README](../editors/tree-sitter-cel/README.md) says what is
+covered and what is not, and CI builds and tests it.
+
 ## Visual Studio Code
 
 `editors/vscode/` in this repository is a thin client over `flow lsp`, built to

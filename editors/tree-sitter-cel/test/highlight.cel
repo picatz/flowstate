@@ -1,0 +1,1 @@
+size(vars.xs) > 0 && pkg.T{a: 1}.a in ['x', b'y', 1u, 1.5, true, null] // c

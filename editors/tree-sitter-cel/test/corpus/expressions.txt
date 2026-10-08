@@ -1,0 +1,333 @@
+=======================
+member, call and method
+=======================
+size(vars.xs) > 0 && inputs.n.matches('a')
+---
+
+(source_file
+  (binary_expression
+    (binary_expression
+      (call
+        (identifier)
+        (arguments
+          (field_access
+            (identifier)
+            (identifier))))
+      (integer))
+    (method_call
+      (field_access
+        (identifier)
+        (identifier))
+      (identifier)
+      (arguments
+        (string)))))
+
+=====================================
+precedence: and binds tighter than or
+=====================================
+a || b && c
+---
+
+(source_file
+  (binary_expression
+    (identifier)
+    (binary_expression
+      (identifier)
+      (identifier))))
+
+========================================
+precedence: multiplication over addition
+========================================
+1 + 2 * 3 - 4 % 5
+---
+
+(source_file
+  (binary_expression
+    (binary_expression
+      (integer)
+      (binary_expression
+        (integer)
+        (integer)))
+    (binary_expression
+      (integer)
+      (integer))))
+
+================================
+conditional is right associative
+================================
+a ? b : c ? d : e
+---
+
+(source_file
+  (conditional
+    (identifier)
+    (identifier)
+    (conditional
+      (identifier)
+      (identifier)
+      (identifier))))
+
+============
+unary chains
+============
+!!a && -b < --c
+---
+
+(source_file
+  (binary_expression
+    (unary_expression
+      (unary_expression
+        (identifier)))
+    (binary_expression
+      (unary_expression
+        (identifier))
+      (unary_expression
+        (unary_expression
+          (identifier))))))
+
+================
+relations and in
+================
+x in [1, 2] && y != 'a' && z >= 3
+---
+
+(source_file
+  (binary_expression
+    (binary_expression
+      (binary_expression
+        (identifier)
+        (list
+          (integer)
+          (integer)))
+      (binary_expression
+        (identifier)
+        (string)))
+    (binary_expression
+      (identifier)
+      (integer))))
+
+=============
+integer forms
+=============
+[0, 42, 0x1F]
+---
+
+(source_file
+  (list
+    (integer)
+    (integer)
+    (integer)))
+
+========================
+unsigned and float forms
+========================
+[1u, 0x1Fu, 1.5, .5, 2e3, 1.5E-2]
+---
+
+(source_file
+  (list
+    (unsigned_integer)
+    (unsigned_integer)
+    (float)
+    (float)
+    (float)
+    (float)))
+
+========
+strings
+========
+['a', "b", 'it\'s', """multi
+line""", '''x''']
+---
+
+(source_file
+  (list
+    (string)
+    (string)
+    (string)
+    (string)
+    (string)))
+
+=====================
+raw strings and bytes
+=====================
+[r'\d+', R"x", b'ab', rb'\x', bR"y"]
+---
+
+(source_file
+  (list
+    (string)
+    (string)
+    (bytes)
+    (bytes)
+    (bytes)))
+
+=================
+booleans and null
+=================
+true || false && null == null
+---
+
+(source_file
+  (binary_expression
+    (boolean)
+    (binary_expression
+      (boolean)
+      (binary_expression
+        (null)
+        (null)))))
+
+=============================================
+list with optional element and trailing comma
+=============================================
+[1, ?a, 'x',]
+---
+
+(source_file
+  (list
+    (integer)
+    (identifier)
+    (string)))
+
+======================
+map and optional entry
+======================
+{'a': 1, ?'b': x, 'c': {}}
+---
+
+(source_file
+  (map
+    (map_entry
+      (string)
+      (integer))
+    (map_entry
+      (string)
+      (identifier))
+    (map_entry
+      (string)
+      (map))))
+
+====================
+message construction
+====================
+pkg.Type{name: 'x', ?opt: y}
+---
+
+(source_file
+  (message
+    (type_name
+      (identifier)
+      (identifier))
+    (field_initializer
+      (identifier)
+      (string))
+    (field_initializer
+      (identifier)
+      (identifier))))
+
+============
+rooted names
+============
+.pkg.Type{} == .fn(x)
+---
+
+(source_file
+  (binary_expression
+    (message
+      (type_name
+        (identifier)
+        (identifier)))
+    (call
+      (identifier)
+      (arguments
+        (identifier)))))
+
+=========================
+index and optional access
+=========================
+a[0][?'k'] + a.?b.c
+---
+
+(source_file
+  (binary_expression
+    (index_access
+      (index_access
+        (identifier)
+        (integer))
+      (string))
+    (field_access
+      (field_access
+        (identifier)
+        (identifier))
+      (identifier))))
+
+========
+macros
+========
+xs.filter(x, x > 1).map(y, y * 2).exists(z, z == 4)
+---
+
+(source_file
+  (method_call
+    (method_call
+      (method_call
+        (identifier)
+        (identifier)
+        (arguments
+          (identifier)
+          (binary_expression
+            (identifier)
+            (integer))))
+      (identifier)
+      (arguments
+        (identifier)
+        (binary_expression
+          (identifier)
+          (integer))))
+    (identifier)
+    (arguments
+      (identifier)
+      (binary_expression
+        (identifier)
+        (integer)))))
+
+=============
+parenthesised
+=============
+(a + b) * c
+---
+
+(source_file
+  (binary_expression
+    (parenthesized
+      (binary_expression
+        (identifier)
+        (identifier)))
+    (identifier)))
+
+========
+comment
+========
+a // trailing
+&& b
+---
+
+(source_file
+  (binary_expression
+    (identifier)
+    (comment)
+    (identifier)))
+
+=========================
+receiver call after index
+=========================
+a[0].size()
+---
+
+(source_file
+  (method_call
+    (index_access
+      (identifier)
+      (integer))
+    (identifier)
+    (arguments)))
