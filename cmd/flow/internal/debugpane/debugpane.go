@@ -462,6 +462,26 @@ func Render(frame Frame, theme ui.Theme, symbols ui.SymbolSet, layout Layout) st
 	return b.String()
 }
 
+// StepLines are the step pane's lines for frame, untrimmed, and the index of
+// the line that is the held step, or -1.
+//
+// The same rows [Render] draws, for a caller that places them in a region of
+// its own: a full-screen view windows them to the height it has, and needs to
+// know which one to keep in sight. A frame holding no steps answers the pane's
+// note, if it has one, and no held line.
+func StepLines(frame Frame, theme ui.Theme, symbols ui.SymbolSet) (lines []string, held int) {
+	lines = stepRows(frame, theme, symbols)
+	held = -1
+	if frame.Held >= 0 && len(frame.Steps) > 0 {
+		held = frame.Held
+		if frame.StepsBefore > 0 {
+			held++
+		}
+	}
+
+	return lines, held
+}
+
 // paneRows is how many rows one pane may draw, given the terminal's height.
 //
 // Half the height, because there are two of them, less the chrome each pays
@@ -652,14 +672,17 @@ func window(n, at, budget int) (first, last int) {
 // emphasis and no information.
 func stepRow(step flowdebug.Step, held bool, qualifier, label string, overridden bool, theme ui.Theme, symbols ui.SymbolSet) string {
 	gutter := " "
-	name := step.ID
+	// Ids and workflow names are the author's file, and a file can be anything:
+	// nothing in a pane reaches the terminal with a control character in it.
+	name := ui.EscapeControl(step.ID)
+	qualifier = ui.EscapeControl(qualifier)
 	if overridden {
-		name = label
+		name = ui.EscapeControl(label)
 	} else if qualifier != "" {
 		// The qualifier first, muted, because the id is still the name: a
 		// reader scanning the column is looking for `build`, and the prefix is
 		// there to tell two of them apart rather than to be read.
-		name = theme.Muted.Render(qualifier+".") + step.ID
+		name = theme.Muted.Render(qualifier+".") + name
 	}
 
 	id := name

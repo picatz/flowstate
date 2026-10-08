@@ -525,6 +525,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
+| `--tui` | `bool` | `false` | — | drive the run from a full-screen debugger (keyboard and mouse) instead of the line editor; needs a terminal at least 60x12, and is declined with a note on stderr where there is none |
 | `--wait <duration>` | `duration` | `1m0s` | — | how long a movement waits for the next stop before reporting the run still running |
 
 ## `flow debug do`

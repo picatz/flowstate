@@ -181,6 +181,8 @@ func TestTheRepositoryWallClockSleepsOnlyGoDown(t *testing.T) {
 // while it happens.
 var repositoryPolls = map[string]int{
 	"cmd/flow/debugworkerrestart_test.go":            5,
+	"cmd/flow/internal/debugtui/program_test.go":     2, // a real bubbletea Program on a pipe
+	"cmd/flow/internal/debugtui/pty_linux_test.go":   3, // a real pseudo-terminal the child writes to
 	"cmd/flow/main_test.go":                          1,
 	"cmd/flow/workerinternallistener_test.go":        1,
 	"cmd/flow/workershutdown_test.go":                2,
