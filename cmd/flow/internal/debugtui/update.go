@@ -15,7 +15,7 @@ import (
 func (m *Model) setFocus(name string) {
 	m.ring = m.ring.Set(name)
 	m.screen.Focus = m.ring.Current()
-	if name == paneSteps || name == paneScope {
+	if name == paneFlow || name == paneSteps || name == paneScope {
 		m.screen.Pane = name
 	}
 }
@@ -151,6 +151,10 @@ func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 		}
 		m.screen.Console.Text = "inspect " + expression
 		m.setFocus(paneConsole)
+	case bindUntil:
+		return m.flowUntil()
+	case bindBreak:
+		return m.flowBreak()
 	case bindHelp:
 		m.screen.Help = true
 	case bindQuit:
@@ -196,6 +200,9 @@ func (m *Model) quit() tea.Cmd {
 // navigate moves within the focused pane.
 func (m Model) navigate(name string) (tea.Model, tea.Cmd) {
 	switch m.screen.Focus {
+	case paneFlow:
+		return m.navigateFlow(name)
+
 	case paneSteps:
 		step := map[string]int{bindUp: -1, bindDown: 1, bindPageUp: -m.stepRows(), bindPageDown: m.stepRows()}[name]
 		m.scrollSteps(step)
@@ -327,12 +334,19 @@ func (m Model) submit(line string) (tea.Model, tea.Cmd) {
 // right now, so a click can only land on something that is on screen; one
 // outside every hit is ignored.
 func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
-	if mouse.Button != tea.MouseLeft {
+	if mouse.Button != tea.MouseLeft && mouse.Button != tea.MouseRight {
 		return m, nil
 	}
 	_, hits := m.screen.Draw(m.cfg.Style)
 	hit, ok := hits.At(mouse.X, mouse.Y)
 	if !ok {
+		return m, nil
+	}
+	if hit.Kind == pane.KindNode {
+		return m.clickNode(hit.ID, mouse.Button == tea.MouseRight)
+	}
+	if mouse.Button != tea.MouseLeft {
+		// A right click means something only on a step.
 		return m, nil
 	}
 
@@ -403,6 +417,10 @@ func (m Model) wheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		m.screen.Tree.Scroll(delta, max(1, m.scopeRows()))
 	case hit.ID == panePrefix+paneSteps:
 		m.scrollSteps(delta)
+	case strings.HasPrefix(hit.ID, flowPrefix), strings.HasPrefix(hit.ID, foldPrefix), hit.ID == panePrefix+paneFlow:
+		if rows := m.flowRows(); rows > 0 && m.screen.Loaded {
+			m.screen.Flow.scrollBy(m.screen.Frame, rows, delta)
+		}
 	}
 
 	return m, nil

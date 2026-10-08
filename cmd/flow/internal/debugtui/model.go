@@ -63,6 +63,11 @@ type Config struct {
 
 	// Accepted is called with each line the run took, for a recording.
 	Accepted func(line string)
+
+	// Now is the clock a double click is judged by. The screen reads no clock of
+	// its own; a screen given none never sees a double click, and a click then
+	// only selects.
+	Now func() time.Time
 }
 
 // Bounds on work the screen starts.
@@ -155,7 +160,14 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		return Model{}, err
 	}
 
-	ring := tui.NewRing(paneSteps, paneScope, paneConsole)
+	ring := tui.NewRing(paneFlow, paneSteps, paneScope, paneConsole)
+	focus := paneSteps
+	if cfg.Frame.Program != nil {
+		// With a program the flow is the first thing to look at; without one it is
+		// a sentence, and keys belong to the steps.
+		focus = paneFlow
+	}
+	ring = ring.Set(focus)
 
 	return Model{
 		cfg:     cfg,
@@ -166,7 +178,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		reading: true,
 		screen: Screen{
 			Size: cfg.Size, Tree: pane.NewTree(nil), Console: NewConsole(), Keys: keys, Verbs: cfg.Verbs,
-			Focus: ring.Current(), Pane: paneSteps, Diverged: map[uint64]bool{},
+			Focus: ring.Current(), Pane: focus, Diverged: map[uint64]bool{}, Flow: NewFlow(),
 		},
 	}, nil
 }
@@ -307,6 +319,10 @@ func (m *Model) run(line string) tea.Cmd {
 		return nil
 	}
 	m.screen.Busy = line
+	if m.moves(line) {
+		// The run is about to be somewhere else, and the view goes with it.
+		m.screen.Flow.Follow()
+	}
 	driver, ctx := m.cfg.Driver, m.ctx
 
 	return func() tea.Msg {
@@ -337,6 +353,7 @@ func (m Model) framed(msg frameMsg) (tea.Model, tea.Cmd) {
 	m.screen.Frame, m.screen.Loaded, m.screen.Problem = msg.frame, true, ""
 	m.frameRev = msg.frame.Snapshot.GetRevision()
 	m.screen.Tree.SetRoots(ScopeNodes(msg.frame))
+	m.screen.Flow.Apply(msg.frame)
 	m.revealSelection()
 
 	var cmds []tea.Cmd

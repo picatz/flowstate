@@ -43,6 +43,8 @@ const (
 	bindFocusPrev  = "focus-prev"
 	bindConsole    = "console"
 	bindInspect    = "inspect-selected"
+	bindUntil      = "flow-until"
+	bindBreak      = "flow-break"
 	bindHelp       = "help"
 	bindQuit       = "quit"
 	bindInterrupt  = "interrupt"
@@ -89,9 +91,9 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 	bindings = append(bindings,
 		tui.Binding{Name: bindUp, Keys: []string{"up", "k"}, Help: "move up a row", Group: "Move"},
 		tui.Binding{Name: bindDown, Keys: []string{"down", "j"}, Help: "move down a row", Group: "Move"},
-		tui.Binding{Name: bindToggle, Keys: []string{"enter"}, Help: "open or close the row (click does the same)", Group: "Move"},
-		tui.Binding{Name: bindExpand, Keys: []string{"right", "l"}, Help: "open the row", Group: "Move"},
-		tui.Binding{Name: bindCollapse, Keys: []string{"left", "h"}, Help: "close the row, or go to its parent", Group: "Move"},
+		tui.Binding{Name: bindToggle, Keys: []string{"enter"}, Help: "open or close the row (click too); in the flow, run until it", Group: "Move"},
+		tui.Binding{Name: bindExpand, Keys: []string{"right", "l"}, Help: "open the row; in the flow, unfold it", Group: "Move"},
+		tui.Binding{Name: bindCollapse, Keys: []string{"left", "h"}, Help: "close the row, or go to its parent; in the flow, fold it", Group: "Move"},
 		tui.Binding{Name: bindPageUp, Keys: []string{"pgup"}, Help: "up a page", Group: "Move"},
 		tui.Binding{Name: bindPageDown, Keys: []string{"pgdown"}, Help: "down a page", Group: "Move"},
 		tui.Binding{Name: bindHome, Keys: []string{"home"}, Help: "first row", Group: "Move"},
@@ -105,6 +107,14 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 	if offered("inspect") {
 		bindings = append(bindings, tui.Binding{Name: bindInspect, Keys: []string{"i"},
 			Help: "inspect the selected scope row in the console", Group: "Screen"})
+	}
+	if offered("until") {
+		bindings = append(bindings, tui.Binding{Name: bindUntil, Keys: []string{"u"},
+			Help: "run until the selected flow step (double click too)", Group: "Flow"})
+	}
+	if offered("break") {
+		bindings = append(bindings, tui.Binding{Name: bindBreak, Keys: []string{"B"},
+			Help: "toggle a breakpoint on the selected flow step (right click too)", Group: "Flow"})
 	}
 	bindings = append(bindings,
 		tui.Binding{Name: bindHelp, Keys: []string{"?"}, Help: "show or hide this help", Group: "Screen", Hint: true, Short: "help"},

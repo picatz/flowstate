@@ -24,6 +24,8 @@ const (
 	KindHeading Kind = "heading"
 	// KindRow is a selectable row of a [Tree].
 	KindRow Kind = "row"
+	// KindNode is a node of a drawn flow; a click selects it.
+	KindNode Kind = "node"
 	// KindMore is a tree's "… N more" row.
 	KindMore Kind = "more"
 	// KindTab is a tab that names a pane the screen has folded away.

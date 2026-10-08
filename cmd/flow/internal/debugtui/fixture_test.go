@@ -49,6 +49,15 @@ type fakeTarget struct {
 	resumes  []*v1.DebugResumeRequest
 	inspects []*v1.DebugInspectRequest
 
+	// observations, breakpoints and occurrence are what the snapshot carries
+	// besides the position: the outcomes the run has seen, the breakpoints it
+	// holds, and a held occurrence that replaces the one derived from program.
+	// replaced is every breakpoint set the target was sent.
+	observations []*v1.DebugObservation
+	breakpoints  []*v1.DebugBreakpointState
+	occurrence   *v1.DebugOccurrence
+	replaced     []*v1.DebugSetBreakpointsRequest
+
 	// timelined has the snapshot carry a timeline: a point for every step the run
 	// has reached, and dropped more before them. diverge names the points a
 	// travel finds the run cannot be brought back to; travels is what it was asked.
@@ -123,7 +132,11 @@ func (f *fakeTarget) snapshot() *v1.DebugSnapshot {
 			Site:    &v1.DebugSite{Workflow: "release", Path: []string{f.program[f.at]}, Kind: "task"},
 			Address: f.program[f.at],
 		}
+		if f.occurrence != nil {
+			snap.Occurrence = f.occurrence
+		}
 	}
+	snap.Observations, snap.Breakpoints = f.observations, f.breakpoints
 
 	return snap
 }
@@ -226,8 +239,17 @@ func (f *fakeTarget) Pause(context.Context, string) (*v1.DebugReceipt, error) {
 	return &v1.DebugReceipt{Status: v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED}, nil
 }
 
-func (f *fakeTarget) ReplaceBreakpoints(context.Context, *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
-	return &v1.DebugSetBreakpointsResponse{}, nil
+func (f *fakeTarget) ReplaceBreakpoints(_ context.Context, req *v1.DebugSetBreakpointsRequest) (*v1.DebugSetBreakpointsResponse, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.replaced = append(f.replaced, req)
+	f.breakpoints = nil
+	for _, bp := range req.GetBreakpoints() {
+		f.breakpoints = append(f.breakpoints, &v1.DebugBreakpointState{Id: bp.GetId(), Verified: true, Definition: bp})
+	}
+
+	return &v1.DebugSetBreakpointsResponse{Breakpoints: f.breakpoints}, nil
 }
 
 func (f *fakeTarget) Close() error { return nil }

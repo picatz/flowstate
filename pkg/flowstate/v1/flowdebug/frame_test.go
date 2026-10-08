@@ -110,6 +110,7 @@ type seenAtAStop struct {
 	points  int
 	totals  map[string]int32
 	values  map[string]string
+	overlay flowdebug.Overlay
 }
 
 func seen(t *testing.T, target flowdebug.Target, opts flowdebug.FrameOptions) seenAtAStop {
@@ -128,6 +129,7 @@ func seen(t *testing.T, target flowdebug.Target, opts flowdebug.FrameOptions) se
 		points:     len(frame.Snapshot.GetTimeline().GetPoints()),
 		totals:     map[string]int32{},
 		values:     map[string]string{},
+		overlay:    frame.Overlay,
 	}
 	for _, group := range frame.Scope.GetGroups() {
 		at.totals[group.GetGroup()] = group.GetTotal()
@@ -178,17 +180,34 @@ func TestAFrameReadsTheSameOnEveryFront(t *testing.T) {
 			assert.Equal(t, want[i].points, got[i].points, "%s stop %d: timeline points", name, i)
 			assert.Equal(t, want[i].totals, got[i].totals, "%s stop %d: scope totals", name, i)
 			assert.Equal(t, want[i].values, got[i].values, "%s stop %d: scope values", name, i)
+			assert.Equal(t, want[i].overlay, got[i].overlay, "%s stop %d: overlay", name, i)
 		}
 	}
 
 	// The comparison is not vacuous: the stops differ from each other, so a
 	// front that kept answering about the first stop would have failed above.
 	assert.NotEqual(t, want[0].occurrence.GetAddress(), want[1].occurrence.GetAddress())
+	assert.Zero(t, doneIn(want[0].overlay), "the first stop has finished nothing")
+	assert.Positive(t, doneIn(want[2].overlay), "the overlay never carried what the run finished")
 	assert.NotEqual(t, want[0].values, want[2].values, "the scope never changed across stops")
 	for i, at := range want {
+		assert.Equal(t, flowdebug.StaticAddress(at.occurrence.GetAddress()), at.overlay.Held, "stop %d: the overlay holds a different step", i)
+		assert.Equal(t, flowdebug.NodeHeld, at.overlay.State(at.overlay.Held))
 		assert.Equal(t, int32(i), at.current, "the timeline does not follow the run")
 		assert.Equal(t, i+1, at.points, "a point for every stop shown")
 	}
+}
+
+// doneIn counts the sites an overlay says finished.
+func doneIn(o flowdebug.Overlay) int {
+	n := 0
+	for _, state := range o.States {
+		if state == flowdebug.NodeDone {
+			n++
+		}
+	}
+
+	return n
 }
 
 // TestAFrameFromTheWireNamesOnlyWhatTheSnapshotCarries: with no program a

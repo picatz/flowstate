@@ -1,0 +1,49 @@
+=== 32 wide
+→ flow 9 steps ─────────────────
+     ✓ fetch task "http"
+     — validate skipped task "ht
+  ┌▾ ✓ checks parallel
+  │  branch 1
+  │     ✓ notify task "http"
+  │  branch 2
+  │     △ audit tolerated task "
+  └──
+  ┌▾ ▶ pages running loop
+  │     ✓ page task "http"
+→ │     ▶ store held task "http"
+  └──
+     ○ charge task "http"
+
+=== 46 wide
+→ flow 9 steps ───────────────────────────────
+     ✓ fetch task "http"
+     — validate skipped task "http"
+  ┌▾ ✓ checks parallel
+  │  branch 1
+  │     ✓ notify task "http"
+  │  branch 2
+  │     △ audit tolerated task "http"
+  └──
+  ┌▾ ▶ pages running loop
+  │     ✓ page task "http"
+→ │     ▶ store held task "http"
+  └──
+     ○ charge task "http"
+
+=== 64 wide
+→ flow 9 steps ─────────────────────────────────────────────────
+     ✓ fetch task "http"
+     — validate skipped task "http"
+  ┌▾ ✓ checks parallel
+  │  branch 1
+  │     ✓ notify task "http"
+  │  branch 2
+  │     △ audit tolerated task "http"
+  └──
+  ┌▾ ▶ pages running loop
+  │     ✓ page task "http"
+→ │     ▶ store held task "http"
+  └──
+     ○ charge task "http"
+
+

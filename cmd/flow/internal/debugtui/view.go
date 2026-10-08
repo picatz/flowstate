@@ -39,20 +39,28 @@ const (
 // is asked, which is what leaves the body this much.
 const minBody = 3
 
-// grid is how the screen folds as the terminal narrows: three columns with the
+// grid is how the screen folds as the terminal narrows. The flow is the leftmost
+// column wherever there is room for a ladder: three further columns with the
 // selected name's detail on the right, the detail folded under the scope, the
-// detail dropped, and below 80 columns one pane at a time under tabs.
+// detail dropped and the flow stacked over the steps, and below 80 columns one
+// pane at a time under tabs.
 var grid = tui.Grid{
 	Min: tui.Size{W: MinWidth, H: minBody},
 	Rules: []tui.Rule{
-		{MinWidth: 120, Root: tui.Divide(pane.Split{Percent: 30, Gap: 1},
-			tui.Leaf(paneSteps),
-			tui.Divide(pane.Split{Percent: 55, Gap: 1}, tui.Leaf(paneScope), tui.Leaf(paneInspector)))},
-		{MinWidth: 100, Root: tui.Divide(pane.Split{Percent: 40, Gap: 1},
-			tui.Leaf(paneSteps),
-			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneScope), tui.Leaf(paneInspector)))},
-		{MinWidth: 80, Root: tui.Divide(pane.Split{Percent: 40, Gap: 1}, tui.Leaf(paneSteps), tui.Leaf(paneScope))},
-		{MinWidth: MinWidth, Tabs: []string{paneSteps, paneScope}},
+		{MinWidth: 120, Root: tui.Divide(pane.Split{Percent: 28, Gap: 1},
+			tui.Leaf(paneFlow),
+			tui.Divide(pane.Split{Percent: 30, Gap: 1},
+				tui.Leaf(paneSteps),
+				tui.Divide(pane.Split{Percent: 55, Gap: 1}, tui.Leaf(paneScope), tui.Leaf(paneInspector))))},
+		{MinWidth: 100, Root: tui.Divide(pane.Split{Percent: 34, Gap: 1},
+			tui.Leaf(paneFlow),
+			tui.Divide(pane.Split{Percent: 40, Gap: 1},
+				tui.Leaf(paneSteps),
+				tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneScope), tui.Leaf(paneInspector))))},
+		{MinWidth: 80, Root: tui.Divide(pane.Split{Percent: 42, Gap: 1},
+			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneFlow), tui.Leaf(paneSteps)),
+			tui.Leaf(paneScope))},
+		{MinWidth: MinWidth, Tabs: []string{paneFlow, paneSteps, paneScope}},
 	},
 }
 
@@ -77,13 +85,17 @@ type Screen struct {
 	Tree       *pane.Tree
 	StepScroll int
 
+	// Flow is the flow pane's state; nil draws the program unfolded with nothing
+	// selected.
+	Flow *Flow
+
 	Console Console
 	Toast   tui.Toast
 	Keys    tui.Keymap
 	Verbs   []flowdebug.Verb
 
 	// Focus is the focused member of the ring, and Pane the content pane a
-	// tabbed layout shows (the last of steps and scope that was focused).
+	// tabbed layout shows (the last of flow, steps and scope that was focused).
 	Focus string
 	Pane  string
 	Help  bool
@@ -148,7 +160,7 @@ func (s Screen) geometry() (geometry, error) {
 	g.status = pane.Rect{X: 0, Y: h - 1, W: w, H: 1}
 
 	shown := s.Pane
-	if shown != paneSteps && shown != paneScope {
+	if shown != paneFlow && shown != paneSteps && shown != paneScope {
 		shown = paneSteps
 	}
 	var err error
@@ -196,6 +208,8 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 
 		var text string
 		switch cell.Pane {
+		case paneFlow:
+			text = FlowView(s.Flow, s.Frame, s.Loaded, o)
 		case paneSteps:
 			text = StepsView(s.Frame, s.Loaded, s.StepScroll, o)
 		case paneScope:
