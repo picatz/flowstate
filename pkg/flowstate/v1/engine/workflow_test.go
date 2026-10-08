@@ -2856,6 +2856,7 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		Subexpression: `steps.n.value + "x"`,
 		Offset:        proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
 		Caret:         proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
+		Step:          "bad",
 	}
 
 	t.Run("local", func(t *testing.T) {

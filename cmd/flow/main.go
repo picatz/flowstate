@@ -2664,6 +2664,14 @@ func loadCompiledSpec(path string) (*v1.Workflow, error) {
 // its step was reached, by which point earlier steps had already made their
 // requests.
 func loadWorkflow(path string) (*v1.Workflow, error) {
+	workflow, _, err := loadWorkflowAt(path)
+
+	return workflow, err
+}
+
+// loadWorkflowAt is [loadWorkflow] that also returns where the file's steps are
+// written, for a command that points a run-time failure back at the file.
+func loadWorkflowAt(path string) (*v1.Workflow, *flowfile.Positions, error) {
 	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
 	// a `call:` step is resolved relative to this file's own directory, and only
 	// the path-aware entry points know it.
@@ -2671,7 +2679,7 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	// One pass, not [flowfile.ParseFile] followed by [flowfile.ValidateSourceFile]:
 	// the second compiled the file again from its bytes, every expression parsed
 	// twice before a step ran (#1795).
-	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
+	workflow, positions, diagnostics, err := flowfile.ParseAndValidateFileAt(path)
 	if err != nil {
 		// Positioned diagnostics get a line each naming this file, like every
 		// other diagnostic surface. Wrapping the error instead put the filename on
@@ -2679,15 +2687,15 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 		// (#384). A failure that is not diagnostics is about the invocation rather
 		// than the file, and keeps its own wrapping.
 		if parsed, ok := errors.AsType[flowfile.Diagnostics](err); ok {
-			return nil, diagnosticsError(path, parsed)
+			return nil, nil, diagnosticsError(path, parsed)
 		}
-		return nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, fmt.Errorf("%s: %w", path, err)
 	}
 	if len(diagnostics) > 0 {
-		return nil, diagnosticsError(path, diagnostics)
+		return nil, nil, diagnosticsError(path, diagnostics)
 	}
 
-	return workflow, nil
+	return workflow, positions, nil
 }
 
 // newRootCommand builds the whole CLI: every command, its flags, and the groups the

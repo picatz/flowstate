@@ -13,6 +13,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -149,7 +150,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	workflow, err := loadWorkflow(args[0])
+	workflow, positions, err := loadWorkflowAt(args[0])
 	if err != nil {
 		return err
 	}
@@ -391,6 +392,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// move the operator without moving a caret computed before it, so the
 		// excerpt is omitted rather than drawn under the wrong character. The
 		// same rule `flow get` follows.
+		if where := failureLocation(args[0], positions, response.GetError().GetExpression()); where != "" {
+			failure = fmt.Errorf("%w\n    --> %s", failure, where)
+		}
 		if excerpt := response.GetError().GetExpression().Excerpt("    "); excerpt != "" {
 			failure = fmt.Errorf("%w\n%s", failure, excerpt)
 		}
@@ -531,4 +535,24 @@ func debugRevealRefusal(name string, decided carriedValues) error {
 			"%q's sensitive-value declarations could not be fully inspected, so it is not debugged "+
 			"without explicit disclosure; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
 	}
+}
+
+// failureLocation is where in the file at path the step an expression failure
+// happened in is written, as `path:line:col`, or "" when the failure names no
+// step or the file does not place it. Taken from the redacted response's
+// account, so it is absent wherever the excerpt is.
+func failureLocation(path string, positions *flowfile.Positions, failure *v1.ExpressionFailure) string {
+	if failure.GetStep() == "" {
+		return ""
+	}
+	stepPath, ok := positions.StepPath(failure.GetStep())
+	if !ok {
+		return ""
+	}
+	span, ok := positions.At(stepPath)
+	if !ok || !span.IsValid() {
+		return ""
+	}
+
+	return path + ":" + span.Start.String()
 }

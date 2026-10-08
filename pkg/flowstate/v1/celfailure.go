@@ -534,3 +534,15 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
 }
+
+// AttributeToStep records on err's structured account the step it failed in,
+// when err carries one and no inner step claimed it first, so nesting names the
+// innermost. It returns err unchanged: both drivers call it where they wrap a
+// failure with the step's name, which is the one place the id is in hand.
+func AttributeToStep(err error, step string) error {
+	if detail := ExpressionFailureOf(err); detail != nil && detail.Step == "" {
+		detail.Step = textbound.Cut(step, maxFailureFieldBytes)
+	}
+
+	return err
+}

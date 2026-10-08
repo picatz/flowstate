@@ -396,6 +396,10 @@ steps:
 	require.Error(t, err)
 
 	assert.Contains(t, stderr+err.Error(), "\n    steps.n.value.k + \"x\"\n                    ^\n")
+	// The step's own line and column in the file, which the sentence alone does
+	// not give: `bad` is declared on line 6, its mapping starting at column 5.
+	assert.Contains(t, stderr+err.Error(), ":6:5\n    steps.n.value.k")
+	assert.Contains(t, stderr+err.Error(), "\n    --> ")
 }
 
 // TestWrapKeepsAnIndentedLineWhole pins that an indented line is not re-flowed:
@@ -431,4 +435,5 @@ steps:
 	require.Error(t, err)
 
 	assert.NotContains(t, stderr+err.Error(), "^")
+	assert.NotContains(t, stderr+err.Error(), "-->", "the location is drawn from the same account the excerpt is")
 }
