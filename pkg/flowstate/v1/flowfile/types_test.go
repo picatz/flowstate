@@ -651,3 +651,54 @@ func TestAFieldDefaultIsCheckedWhereTheFileLoads(t *testing.T) {
 		assert.Contains(t, ds.Error(), `type "Order" field "status"`, name)
 	}
 }
+
+// The optional and indexed spellings are typed in the checks that hold a value to a
+// declared contract too: a call argument against the callee's input, and a computed
+// output against its `type:`.
+func TestAnIndexedRecordReadMeetsDeclaredContracts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+inputs:
+  n:
+    type: int
+    required: true
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+
+	source := func(read string) string {
+		return `edition: v2026.4
+name: caller
+types:
+  Order:
+    fields:
+      id:
+        type: string
+inputs:
+  order:
+    type: Order
+    required: true
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+      n: ${` + read + `}
+outputs:
+  total:
+    value: ${` + read + `}
+    type: int
+`
+	}
+
+	for _, read := range []string{`inputs.order["id"]`, `inputs.order.id`} {
+		ds, err := flowfile.ValidateSourceAt([]byte(source(read)), dir+"/caller.yaml")
+		require.NoError(t, err)
+		require.NotEmpty(t, ds, read)
+		assert.Len(t, ds, 2, "one for the argument, one for the output: %s", ds.Error())
+	}
+}

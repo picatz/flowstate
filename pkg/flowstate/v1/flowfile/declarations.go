@@ -559,14 +559,15 @@ func staticExpressionType(wf *v1.Workflow, table *typeTable, parsed *expr.Parsed
 		return t, nil, true
 	}
 
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), table.leavesFor(parsed, table.before(v1.ValueSite{Slot: v1.SlotDeclaredOutput})))
+	leaves := table.leavesFor(parsed, table.before(v1.ValueSite{Slot: v1.SlotDeclaredOutput}))
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 	if err != nil {
 		// A defect in this build rather than in the file; the same answer
 		// [checkCallArgumentType] gives for the identical call.
 		return v1.InputDeclaration_TYPE_UNSPECIFIED, nil, false
 	}
 
-	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	checked, issues := env.Check(cel.ParsedExprToAst(typeReads(parsed, leaves)))
 	if issues != nil && issues.Err() != nil {
 		// Does not type-check on its own terms, which [checkExpressionTypes]
 		// already reports; a second sentence here would say the same thing in
