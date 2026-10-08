@@ -53,6 +53,8 @@ end
 table.sort(texts)
 local want = {
   'inputs.n > 1',
+  'inputs.t',
+  'this == "a"',
   'this >= 1',
   'this > 0 && size(vars.xs) == 1',
 }
@@ -64,7 +66,17 @@ check(vim.deep_equal(texts, want),
 for _, t in ipairs(texts) do
   check(not t:find('hi ', 1, true), 'a mid-text fence was injected: ' .. t)
 end
-check(#texts == 3, 'want 3 injected expressions, got ' .. #texts)
+check(#texts == #want, 'want ' .. #want .. ' injected expressions, got ' .. #texts)
+-- Scalars whose YAML decoding differs from their raw text are not injected: they
+-- would reach the CEL parser undecoded.
+for _, t in ipairs(texts) do
+  check(not t:find('\\', 1, true) and not t:find("''", 1, true), 'an escaped scalar was injected: ' .. t)
+end
+if cel then
+  for _, tree in ipairs(cel:trees()) do
+    check(not tree:root():has_error(), 'an injected expression does not parse: ' .. vim.treesitter.get_node_text(tree:root(), 0))
+  end
+end
 
 -- The CEL highlight query reaches inside an injection.
 local function captures(row, needle)
