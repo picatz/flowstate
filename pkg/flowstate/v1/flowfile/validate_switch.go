@@ -63,7 +63,7 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	}
 
 	domain, domainKnown := switchDomain(sw.GetValue(), enclosing, wf)
-	class, classKnown := switchValueClass(sw.GetValue(), enclosing, wf)
+	class, classKnown := switchValueClass(sw.GetValue().GetExpr().GetExpr(), enclosing, wf, 0)
 
 	// The case literals: computed values refused, duplicates found after
 	// flattening `case: [a, b]` lists, and — where the domain is knowable —
@@ -469,15 +469,14 @@ func switchDomain(value *v1.Value, enclosing refScope, wf *v1.Workflow) ([]strin
 //
 // Two sources, both facts the file owns: `${inputs.<name>}` where the input is
 // declared with a scalar type, and `${steps.<id>.<name>}` whose written
-// expression is a constant (a `value:` step holding `${true}`). Integers and
+// expression is a constant (a `value:` step holding `${true}`) or forwards
+// another value of known class. Integers and
 // doubles are one class because the switch compares numbers by value, as
 // CEL's own equality does. Anything else is open and stays silent.
-func switchValueClass(value *v1.Value, enclosing refScope, wf *v1.Workflow) (string, bool) {
-	parsed := value.GetExpr()
-	if parsed == nil {
+func switchValueClass(e *expr.Expr, enclosing refScope, wf *v1.Workflow, depth int) (string, bool) {
+	if e == nil || depth > maxSwitchDomainDepth {
 		return "", false
 	}
-	e := parsed.GetExpr()
 
 	if sel := e.GetSelectExpr(); sel != nil && !sel.GetTestOnly() &&
 		sel.GetOperand().GetIdentExpr().GetName() == v1.InputsRoot {
@@ -501,6 +500,12 @@ func switchValueClass(value *v1.Value, enclosing refScope, wf *v1.Workflow) (str
 	written, ok := resolveStepOutputExpr(e, enclosing)
 	if !ok {
 		return "", false
+	}
+	// A `value:` step that only forwards another typed value (`${inputs.n}`, or
+	// another step's output) has that value's class, to the same hop bound the
+	// domain tier uses.
+	if class, ok := switchValueClass(written, enclosing, wf, depth+1); ok {
+		return class, true
 	}
 	switch written.GetConstExpr().GetConstantKind().(type) {
 	case *expr.Constant_BoolValue:

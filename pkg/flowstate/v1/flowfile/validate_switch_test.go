@@ -726,6 +726,8 @@ inputs:
 steps:
   - id: flag
     value: ${true}
+  - id: forwarded
+    value: ${inputs.verbose}
   - id: pick
 `
 	refused := []struct{ value, caze, want string }{
@@ -733,6 +735,7 @@ steps:
 		{"${inputs.retries}", `"3"`, `case "3" is a string, and `},
 		{"${inputs.verbose}", `"true"`, `case "true" is a string, and `},
 		{"${inputs.mode}", `true`, `case true is a bool, and `},
+		{"${steps.forwarded.value}", `"true"`, `case "true" is a string, and `},
 	}
 	for _, c := range refused {
 		ds := validateSwitchSrc(t, flag+fmt.Sprintf(body, c.value, c.caze))
@@ -747,6 +750,7 @@ steps:
 		{"${inputs.retries}", `3.0`}, // the switch compares numbers by value
 		{"${inputs.verbose}", `false`},
 		{"${inputs.mode}", `"fast"`},
+		{"${steps.forwarded.value}", `false`},
 	} {
 		ds := validateSwitchSrc(t, flag+fmt.Sprintf(body, c.value, c.caze))
 		assert.Empty(t, ds, "%s with case %s must validate: %v", c.value, c.caze, ds)
