@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/cel-go/common/types"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -229,7 +230,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 // the file fixes, and a diagnostic drawn from a type this cannot know would be exactly
 // the false one CLAUDE.md forbids. An enum target is skipped for the `inputs` path too:
 // the field's type is knowable but the *value* is not, and an enum is judged by value.
-func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Diagnostics {
+func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
 	def, known := v1.LookupTask(task.GetName())
 	if !known || def.Inputs == nil {
 		return nil
@@ -263,11 +264,18 @@ func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Di
 		}
 
 		root, refName, ok := directReference(parsed.GetExpr())
-		if !ok {
-			continue
+		var value *expr.Value
+		var synthesized bool
+		if ok {
+			value, synthesized, ok = knowableReferenceType(root, refName, wf)
 		}
-		value, synthesized, ok := knowableReferenceType(root, refName, wf)
 		if !ok {
+			// Not a reference this file types by itself, so ask the checker what
+			// the whole expression is: `${42}`, `${inputs.n + 1}`, a step output
+			// the table types. Silent for `dyn`, which is most of them.
+			if message := expressionMismatch(table, stepID, field, parsed); message != "" {
+				ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message, Code: v1.DiagnosticCodeTypeMismatch})
+			}
 			continue
 		}
 		if synthesized && field.Kind() == protoreflect.EnumKind {
@@ -287,6 +295,70 @@ func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Di
 	}
 
 	return ds
+}
+
+// expressionMismatch reports why a field can never hold what an expression checks
+// to, or "" when it can, when the type is not decided, or when the field takes a
+// shape this declines to narrow.
+//
+// The comparison is by kind and deliberately coarser than [literalMismatch]: a
+// checked type says `int` where a literal says `42`, so an enum's membership and
+// a message's shape stay with the run. Numbers are silent across int, uint and
+// double, which is #1432's decision to make rather than this one's.
+func expressionMismatch(table *typeTable, stepID string, field protoreflect.FieldDescriptor, parsed *expr.ParsedExpr) string {
+	if table == nil {
+		return ""
+	}
+	found, ok := checkedType(table, parsed, table.before(v1.ValueSite{Step: stepID}))
+	if !ok {
+		return ""
+	}
+
+	var shape string
+	switch found.Kind() {
+	case types.StringKind:
+		shape = "a string"
+	case types.BytesKind:
+		shape = "a string of bytes"
+	case types.BoolKind:
+		shape = "true or false"
+	case types.IntKind, types.UintKind:
+		shape = "a whole number"
+	case types.DoubleKind:
+		shape = "a number"
+	case types.ListKind:
+		shape = "a list"
+	case types.MapKind:
+		shape = "a mapping"
+	default:
+		// dyn, null, a timestamp, a duration, a type: not worth a rule each.
+		return ""
+	}
+
+	assignable := false
+	switch {
+	case field.IsMap():
+		assignable = found.Kind() == types.MapKind
+	case field.IsList():
+		assignable = found.Kind() == types.ListKind
+	case field.Kind() == protoreflect.MessageKind, field.Kind() == protoreflect.GroupKind:
+		return ""
+	case field.Kind() == protoreflect.EnumKind:
+		assignable = found.Kind() == types.StringKind
+	case field.Kind() == protoreflect.StringKind, field.Kind() == protoreflect.BytesKind:
+		assignable = found.Kind() == types.StringKind || found.Kind() == types.BytesKind
+	case field.Kind() == protoreflect.BoolKind:
+		assignable = found.Kind() == types.BoolKind
+	case isNumeric(field.Kind()), field.Kind() == protoreflect.DoubleKind, field.Kind() == protoreflect.FloatKind:
+		assignable = slices.Contains([]types.Kind{types.IntKind, types.UintKind, types.DoubleKind}, found.Kind())
+	default:
+		return ""
+	}
+	if assignable {
+		return ""
+	}
+
+	return fmt.Sprintf("expected %s, but this expression is %s", inputTypePhrase(field), shape)
 }
 
 // directReference returns the root and selected name of an expression that is exactly

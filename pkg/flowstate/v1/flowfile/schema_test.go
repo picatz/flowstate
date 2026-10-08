@@ -86,10 +86,10 @@ steps:
 		// workflow which runs correctly is worse than one that misses a mistake,
 		// so these are the more important half of this table.
 		{
-			// The expression produces a list, which the field could not hold as a
-			// literal — and it is still not reported, because an expression's type
-			// is not knowable when the workflow is compiled.
-			name: "an expression is not type-checked",
+			// An expression whose type the checker cannot decide — a var's value is
+			// itself an expression, so the name is `dyn` — is not reported (#1637
+			// refuses only what is typed).
+			name: "an expression of undecided type is not type-checked",
 			src: `edition: v2026.4
 name: t
 vars:
@@ -97,7 +97,7 @@ vars:
 steps:
   - id: a
     log:
-      message: ${[vars.count]}
+      message: ${vars.count}
 `,
 		},
 		{
@@ -632,4 +632,39 @@ steps:
 	require.Len(t, ds, 1, ds.Error())
 	require.Equal(t, "token", ds[0].Field)
 	require.Contains(t, ds[0].Message, `does not accept a credential reference in input "token"`)
+}
+
+// TestComputedTaskInputIsCheckedAgainstTheFieldItFeeds is #1637: an expression
+// whose checked type is known is held to the descriptor field it feeds, the same
+// as a literal, and one the checker cannot type stays silent.
+func TestComputedTaskInputIsCheckedAgainstTheFieldItFeeds(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name, body, want string // want is "" when the file must validate clean
+	}{
+		{"integer into a string field", `message: ${42}`, "expected a string, but this expression is a whole number"},
+		{"computed integer into a string field", "message: ${1 + 2}", "expected a string, but this expression is a whole number"},
+		{"string into a string field", `message: ${"a" + "b"}`, ""},
+		{"list into a string field", `message: ${[1, 2]}`, "expected a string, but this expression is a list"},
+		{"dyn stays silent", `message: ${inputs.anything}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(logInput(tc.body)))
+			if err != nil {
+				t.Fatalf("ValidateSource() error: %v", err)
+			}
+			var got string
+			for _, d := range ds {
+				if d.Code == "type-mismatch" {
+					got = d.Message
+				}
+			}
+			if got != tc.want {
+				t.Errorf("type-mismatch = %q, want %q (all: %s)", got, tc.want, ds.Error())
+			}
+		})
+	}
 }

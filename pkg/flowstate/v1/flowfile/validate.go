@@ -675,7 +675,7 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// input written as a direct reference to a name this file types — `${inputs.x}`,
 	// `${vars.x}` — is checked here, where the workflow is in hand to read the
 	// declaration from (#158). A computed expression stays unchecked, deliberately.
-	ds = append(ds, checkExpressionInputTypes(id, task, wf)...)
+	ds = append(ds, checkExpressionInputTypes(id, task, wf, scope.types)...)
 
 	// Some inputs are evaluated by the task itself, in a scope this validator does
 	// not model — the http task's `outputs` expression references the response, not
