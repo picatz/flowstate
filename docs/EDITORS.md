@@ -518,17 +518,22 @@ else; add a third `; inherits: yaml` file named `textobjects.scm` if you want th
 Helix binds `gd` to definition, `K` to hover, and `<space>s` to document symbols
 out of the box.
 
-### CEL inside a Flowfile (Helix)
+Verified on Helix 25.07.1: the config above is picked up, the server resolves, and
+the queries fix moves both crosses to ticks. Not verified: the `workflows/*.yaml`
+glob matching a real nested path, and the editor behaviour itself — Helix is a
+terminal UI with no headless mode, so `--health` is as far as a scripted check
+reaches.
 
-To colour the CEL in a `must:` value, give Helix the CEL grammar and one
-injection query. The grammar's parser is generated, not checked in, so generate it
-first and point Helix at the directory:
+### CEL files in Helix
+
+Helix can colour a standalone `.cel` file once it has the CEL grammar. The
+grammar's parser is generated, not checked in, so generate it first and point Helix
+at the directory:
 
 ```console
 $ (cd editors/tree-sitter-cel && tree-sitter generate)
 $ mkdir -p ~/.config/helix/runtime/queries/cel
 $ cp editors/tree-sitter-cel/queries/highlights.scm ~/.config/helix/runtime/queries/cel/
-$ cp editors/helix/queries/flowfile/injections.scm ~/.config/helix/runtime/queries/flowfile/
 ```
 
 ```toml
@@ -543,18 +548,12 @@ name = "cel"
 source = { path = "/path/to/flowstate/editors/tree-sitter-cel" }
 ```
 
-Then `hx --grammar build`. **Unverified:** this was written from Helix's
-documentation and not run, and Helix 25.07.1 was only exercised for the
-`hx --health` check above. The query injects the bare `must:` value only; the
-quoted and `${...}` forms need the `#offset!` directive that the
-[Neovim query](../editors/nvim/queries/flowfile/injections.scm) uses and that this
-could not confirm Helix honours. `flow lsp` semantic tokens colour those.
-
-Verified on Helix 25.07.1: the config above is picked up, the server resolves, and
-the queries fix moves both crosses to ticks. Not verified: the `workflows/*.yaml`
-glob matching a real nested path, and the editor behaviour itself — Helix is a
-terminal UI with no headless mode, so `--health` is as far as a scripted check
-reaches.
+Then `hx --grammar build`. **Unverified:** written from Helix's documentation and
+not run. There is deliberately no injection of CEL *into* a Flowfile for Helix:
+`must:` is CEL only beneath `inputs:`, `outputs:` and `types:` and not inside a
+`default:` or `example:`, which a tree-sitter query cannot state at unbounded depth,
+and an injection that fires on every `must` key colours ordinary data as CEL. `flow
+lsp` semantic tokens enforce that scope and colour the CEL in a Flowfile.
 
 ## Zed
 
