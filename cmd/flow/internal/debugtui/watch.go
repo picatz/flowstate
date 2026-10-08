@@ -129,7 +129,7 @@ func evaluateWatches(ctx context.Context, target flowdebug.Target, frame flowdeb
 		case answer.GetValue() == nil:
 			result.outcome, result.err = outcomeError, "the target answered with no value"
 		default:
-			result.value = answer.GetValue()
+			result.outcome, result.value = outcomeValue, answer.GetValue()
 		}
 		results = append(results, result)
 	}
