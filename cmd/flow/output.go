@@ -165,20 +165,19 @@ func resolveRawOutput(cmd *cobra.Command) bool {
 // writeSchema writes a JSON Schema document the way [writeJSON] writes a message:
 // indented for a person, compact for the line-per-record form.
 func writeSchema(surface *ui.UI, format OutputFormat, schema map[string]any) error {
-	var (
-		encoded []byte
-		err     error
-	)
-	if format == FormatJSONL {
-		encoded, err = json.Marshal(schema)
-	} else {
-		encoded, err = json.MarshalIndent(schema, "", "  ")
+	// An encoder rather than json.Marshal, which would write `>` in a `must:` as
+	// \u003e in a document meant to be read.
+	var buffer strings.Builder
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if format != FormatJSONL {
+		encoder.SetIndent("", "  ")
 	}
-	if err != nil {
+	if err := encoder.Encode(schema); err != nil {
 		return fmt.Errorf("rendering the schema as %s: %w", format, err)
 	}
 
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	_, err := fmt.Fprint(surface.Out, buffer.String())
 
 	return err
 }

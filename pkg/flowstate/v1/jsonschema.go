@@ -10,13 +10,19 @@ const jsonSchemaDialect = "https://json-schema.org/draft/2020-12/schema"
 // `$defs`.
 //
 // It is a projection of the declarations and nothing more. What the schema says
-// is exactly what binding a run enforces and can be said in JSON Schema: the
+// is never stricter than what binding a run enforces, and says what JSON Schema
+// can: the
 // shape of each value, a field's required-ness, an enum's members, the length and
 // item bounds, and that an input or a record field the workflow does not declare
 // is refused (`additionalProperties: false`). What cannot be said is carried as an
 // annotation for a reader to show, never as a keyword a validator would
 // silently misjudge: a `must:` as `x-flowstate-must`, a `sensitive:` as
-// `x-flowstate-sensitive`.
+// `x-flowstate-sensitive`. A sensitive declaration's `default` and `examples` are
+// left out, since a schema is handed to readers a specification is not.
+//
+// It is weaker than binding in places: a nested number is judged by its literal
+// kind (a whole number for a `double` field is refused by binding and accepted
+// here), an `int` is bounded to 64 bits, and a `must:` is not evaluated.
 //
 // A timestamp is a `date-time` string, bytes are base64 text, and a duration is
 // a string described by its description (`format: duration` is ISO 8601, which
@@ -144,12 +150,12 @@ func (b *schemaBuilder) declaration(facts declarationFacts) map[string]any {
 	if facts.must != "" {
 		schema["x-flowstate-must"] = facts.must
 	}
-	if facts.defaulted != nil {
+	if facts.defaulted != nil && !facts.sensitive {
 		if value, err := LiteralToGo(facts.defaulted.GetLiteral()); err == nil {
 			schema["default"] = value
 		}
 	}
-	if facts.example != nil {
+	if facts.example != nil && !facts.sensitive {
 		if value, err := LiteralToGo(facts.example.GetLiteral()); err == nil {
 			schema["examples"] = []any{value}
 		}

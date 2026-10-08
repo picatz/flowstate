@@ -168,3 +168,29 @@ func TestAJSONSchemaOfAWorkflowWithNoInputsIsAnEmptyClosedObject(t *testing.T) {
 	assert.Equal(t, false, schema["additionalProperties"])
 	assert.NotContains(t, schema, "required")
 }
+
+func TestAJSONSchemaLeavesOutASensitiveDeclarationsDefaultAndExample(t *testing.T) {
+	t.Parallel()
+
+	schema := schemaOf(t, `edition: `+flowfile.CurrentEdition+`
+name: keys
+inputs:
+  api_key:
+    type: string
+    sensitive: true
+    default: hunter2
+    example: hunter3
+  region:
+    type: string
+    default: eu
+steps:
+  - id: done
+    value: ${inputs.region}
+`, v1.InputsJSONSchema)
+
+	key := at(t, schema, "properties", "api_key").(map[string]any)
+	assert.Equal(t, true, key["x-flowstate-sensitive"])
+	assert.NotContains(t, key, "default")
+	assert.NotContains(t, key, "examples")
+	assert.Equal(t, "eu", at(t, schema, "properties", "region", "default"), "a plain input keeps its default")
+}
