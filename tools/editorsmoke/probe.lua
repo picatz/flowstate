@@ -80,7 +80,7 @@ end
 -- 2. The filetype patterns the document names actually classify a Flowfile.
 section('vim.filetype.add classifies Flowfiles')
 do
-  for _, name in ipairs({ 'Flowfile', 'Flowfile.yaml', 'workflow.yaml', 'workflow.yml' }) do
+  for _, name in ipairs({ 'Flowfile', 'Flowfile.yaml', 'workflow.yaml', 'workflow.yml', 'orders.flow.yaml', 'orders.flow.yml' }) do
     local ft = vim.filetype.match({ filename = '/repo/' .. name })
     check(('%s -> flowfile'):format(name), ft == 'flowfile', tostring(ft))
   end

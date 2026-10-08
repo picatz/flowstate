@@ -273,9 +273,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
 		defer restore()
-		if reverse != "" && console == nil {
-			return errors.New("--reverse steps back at a terminal prompt, and the commands here are not coming " +
-				"from one; drop --reverse, or run it from a terminal")
+		if console == nil {
+			// The run's goroutines and the front's prompt loop share stderr.
+			narrate = &lockedWriter{w: narrate}
 		}
 	}
 
@@ -314,6 +314,14 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 				Theme:   surface.ErrTheme,
 				// The explicit opt-in, held by every pass's session.
 				RevealSensitive: reveal,
+				// A script that steps back is replayed by this same front, so
+				// the recording keeps what a terminal session typed.
+				RecordRewinds: true,
+			}
+			if console == nil {
+				// No terminal: the commands come off a stream, a script being
+				// replayed or a pipe, one to a line.
+				front.Next = scriptLines(cmd.InOrStdin())
 			}
 			if record != "" {
 				front.Record = &attachRecording{}

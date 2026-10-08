@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -35,7 +38,7 @@ const (
 var replaySafeTasks = []string{"log"}
 
 func addReverseFlag(cmd *cobra.Command) {
-	cmd.Flags().String("reverse", "", "with --debug at a terminal, make `back` and `reverse-continue` work "+
+	cmd.Flags().String("reverse", "", "with --debug, make `back` and `reverse-continue` work "+
 		"by running the workflow again from its start and replaying your commands up to the earlier stop; "+
 		"every task runs again, so the flag is refused for a workflow with a task that may act outside "+
 		"this process unless it is given as --reverse=unsafe")
@@ -204,4 +207,41 @@ func reportError(report *v1.TestReport) error {
 	}
 
 	return errors.New("the run did not finish")
+}
+
+// scriptLines reads one command per call from in, skipping comment lines the way
+// the session's own reader does, and returns [io.EOF] at the end of the stream.
+// A scanner over a stream that hands over one line per read takes no line the
+// run has not asked for, which is what the replay's account of unread commands
+// depends on.
+func scriptLines(in io.Reader) func() (string, error) {
+	scanner := bufio.NewScanner(in)
+	scanner.Buffer(make([]byte, 0, 4096), flowdebug.MaxScriptBytes)
+
+	return func() (string, error) {
+		for scanner.Scan() {
+			if text := scanner.Text(); !strings.HasPrefix(strings.TrimSpace(text), "#") {
+				return text, nil
+			}
+		}
+		if err := scanner.Err(); err != nil {
+			return "", err
+		}
+
+		return "", io.EOF
+	}
+}
+
+// lockedWriter serialises writes from the run's goroutines and the front's
+// prompt loop onto one stream that is not itself safe for concurrent use.
+type lockedWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (l *lockedWriter) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.w.Write(p)
 }

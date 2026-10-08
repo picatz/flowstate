@@ -47,7 +47,7 @@ doautocmd BufRead
 if &filetype ==# 'flowfile'
   call add(s:failures, 'other.yaml was detected as a flowfile')
 endif
-for name in ['Flowfile', 'workflow.yaml', 'a/workflows/b.yaml', 'a/c.test.yaml']
+for name in ['Flowfile', 'workflow.yaml', 'a/workflows/b.yaml', 'a/c.test.yaml', 'orders.flow.yaml', 'orders.flow.yml']
   enew
   execute 'file ' . name
   doautocmd BufRead

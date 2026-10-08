@@ -590,6 +590,44 @@ A `--fuzz` run in which no file judged a generated case fails, since it verified
 nothing. Not yet covered: stub answers drawn from output descriptors,
 structural input types, and shrinking.
 
+### Would the file notice the program changing: `--mutate`
+
+A green test file can prove nothing. `flow test --mutate` measures that: it
+compiles each workflow once, makes one deliberate fault in a copy (a *mutant*),
+and runs the file's cases against it. A mutant a case fails on is *killed*; one
+every case still passes *survived*, and the survivor is the part of the program
+the file does not check.
+
+The operators are fixed and each is one field edit on the compiled workflow:
+`if-negate` and `if-drop` (a step's `if:` negated or removed), `undo-drop` (a
+compensation removed), `retry-drop`, `continue-flip` (`continue_on_error:`
+flipped), `switch-arm-drop` and `switch-default-drop`. Each survivor prints what
+changed, where, and a replay command:
+
+```text
+survived: `if:` removed from step on_ready
+       at workflow.yaml:13
+       replay: flow test --mutant if-drop@on_ready.if -- workflow.test.yaml
+```
+
+That example is the instructive one: a file whose only case takes the `ready`
+branch cannot tell the gate from its absence, so the fix is a second case that
+takes the other branch and asserts `on_ready` was skipped. A survivor can also be
+an equivalent mutant (a change no test could observe); there is no allow-list, so
+read the survivor before adding a case.
+
+Mutants run in written order with no faults, against the cases that passed, and
+a file in which any case fails is not mutated (a red suite cannot tell a killed
+mutant from a broken test), and neither is one a `--run` selection leaves cases
+out of (a gate only an unselected case asserts would read as a survivor). A mutant the validator refuses is counted invalid,
+never killed. `--mutate` bounds the mutants per workflow at 100; `--mutate=N`
+sets the bound (at most 1000) and the report says when it truncated.
+`--mutant ID` replays one. Any survivor fails the command, and the report
+carries the account in `mutation` for `-o json`. `--mutate` is refused with
+`--seeds`, `--fuzz`, `--debug`, `--watch` and `--list`. Not yet covered:
+mutations inside a CEL expression, task inputs, `fail:` and signal rules, and the
+durable driver.
+
 ## One fixture, many rows
 
 Cases that differ in one or two values can share an entry and list their

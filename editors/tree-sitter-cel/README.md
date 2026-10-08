@@ -17,7 +17,7 @@ parser and inject this grammar.
 | `grammar.js` | The grammar. The only source; the parser is generated and not checked in. |
 | `test/corpus/` | Parse-tree tests, run by `tree-sitter test`. |
 | `queries/highlights.scm` | Highlights for `cel`. |
-| `queries-flowfile/injections.scm` | YAML injections: `must:` values and a scalar that is exactly one `${...}` fence. |
+| `queries-flowfile/injections.scm` | YAML injections: `must:` values and a scalar that is exactly one `${...}` fence. Neovim loads a copy from `editors/nvim`. |
 
 ```console
 $ cd editors/tree-sitter-cel
@@ -34,10 +34,10 @@ $ tree-sitter test
   ordinary calls, and a bare `x` is an identifier whether or not it is bound.
 - CI (`.github/workflows/editors.yml`) generates the parser with a pinned,
   digest-verified `tree-sitter` binary, runs the corpus, and checks that the
-  highlight query compiles. It does not load `queries-flowfile/injections.scm`,
-  which needs the YAML parser; that query was run by hand against
-  tree-sitter-yaml. A YAML-backed check, and wiring the queries into Neovim,
-  Helix and Zed, are separate work.
+  highlight query compiles. The injection queries are exercised by the Neovim
+  job, which builds tree-sitter-yaml at a pinned revision and asserts which ranges
+  get a `cel` tree (`editors/nvim/test/ts_test.lua`). Helix and Zed wiring is
+  separate work.
 - Inside a flow mapping, YAML forbids `{` and `}` in a plain scalar, so a
   `${...}` fence in `{a: ...}` must be quoted; the injection then sees it as a
   quoted scalar.

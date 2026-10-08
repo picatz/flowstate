@@ -204,6 +204,8 @@ specific they are:
 
 - a file literally named `Flowfile` or `Flowfile.yaml`
 - `workflow.yaml` or `workflow.yml`
+- `*.flow.yaml` or `*.flow.yml` — the name to give a Flowfile that is not alone in
+  its directory (`orders.flow.yaml`); a suite for it is `orders.flow.test.yaml`
 - anything under a `workflows/` directory
 - `*.test.yaml` and `testdefaults.yaml` — `flow test`'s suite format and its
   shared directory fixture, which the server recognizes by name and checks with
@@ -328,6 +330,7 @@ vim.filetype.add({
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.flow%.ya?ml'] = 'flowfile',
     ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
@@ -410,7 +413,9 @@ queries, and Flowfile injection queries that run over the stock YAML parser and
 hand the `must:` values and whole-scalar `${...}` fences to it. It is the parser
 an editor needs to colour and fold CEL structurally; `flow lsp` supplies the
 scope-aware part. [Its README](../editors/tree-sitter-cel/README.md) says what is
-covered and what is not, and CI builds and tests it.
+covered and what is not, and CI builds and tests it. For Neovim,
+[`editors/nvim`](../editors/nvim/README.md) wires it into a `flowfile` buffer and
+CI asserts which ranges Neovim injects.
 
 ## Visual Studio Code
 
@@ -465,6 +470,8 @@ file-types = [
   { glob = "Flowfile.yaml" },
   { glob = "workflow.yaml" },
   { glob = "workflow.yml" },
+  { glob = "*.flow.yaml" },
+  { glob = "*.flow.yml" },
   { glob = "workflows/*.yaml" },
 ]
 language-servers = ["flowstate"]
@@ -559,6 +566,7 @@ whichever of the three you actually have:
 (add-to-list 'auto-mode-alist '("/Flowfile\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflow\\.ya?ml\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflows/.*\\.ya?ml\\'" . flowfile-mode))
+(add-to-list 'auto-mode-alist '("\\.flow\\.ya?ml\\'" . flowfile-mode))
 
 (with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs
@@ -960,7 +968,7 @@ You can run the same thing yourself; it needs `flow` on `PATH` and nothing else:
 $ go build -o /usr/local/bin/flow ./cmd/flow
 $ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
 …
-36 checks, 0 failed
+40 checks, 0 failed
 ```
 
 **Verified by hand, not by CI:** Helix 25.07.1 (`hx --health flowfile`, including

@@ -39,6 +39,11 @@ type reversibleFront struct {
 	// RevealSensitive is `--reveal-sensitive`, for every pass's session.
 	RevealSensitive bool
 
+	// RecordRewinds keeps an accepted `back` or `reverse-continue` in
+	// [reversibleFront.Record] instead of ending the recording at it, for a
+	// host that replays a recording through this same front.
+	RecordRewinds bool
+
 	// Execute, when set, runs one pass of the program under the debugger it is
 	// handed instead of the case at Path. The report it returns is the pass's
 	// verdict: a case that did not pass is a run that failed. Failure words it.
@@ -219,6 +224,12 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		if errors.Is(err, flowdebug.ErrConsoleInterrupted) {
 			// ctrl-C ends the run exactly as `quit` does.
 			text = "quit"
+		} else if err != nil && !errors.Is(err, io.EOF) {
+			// Input that failed is not input that ended: releasing the run would
+			// resume every stop unattended on a read the person never finished.
+			// The case is ended, which fails it, and the error said.
+			f.write(fmt.Sprintf("input failed: %v\n", err))
+			text = "quit"
 		} else if err != nil {
 			// The end of input releases the run, as a session with no console
 			// does: every stop is resumed until the case ends.
@@ -250,7 +261,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			continue
 		}
 		if notDone(result) == nil && f.Record != nil {
-			if flowdebug.StepsBack(line) {
+			if flowdebug.StepsBack(line) && !f.RecordRewinds {
 				f.Record.rewound()
 			} else {
 				f.Record.add(line)
