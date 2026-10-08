@@ -1,10 +1,14 @@
 package flowfile_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // This file is the author-time half of the constraint system: everything the
@@ -106,30 +110,40 @@ func TestUniqueIsRefusedWithARemedy(t *testing.T) {
 	assert.Contains(t, got, "must: this == this.distinct()")
 }
 
-// TestAnInvalidRegexInMustIsReportedAgainstAnExample is the closest this
-// grammar comes, post-pattern:, to pattern:'s own unconditional "this regex
-// will never compile" diagnostic.
-//
-// The two are not quite the same guarantee, and this test exists to record
-// the difference rather than hide it: pattern:'s regexp.Compile ran in
-// [v1.CheckInputConstraintShape], against the declaration alone, so a bad
-// regex was reported even on an input with no example and no default.
-// must:'s regex only reaches Go's regexp package inside `matches()`, which
-// CEL evaluates rather than type-checks — [v1.CompileMustExpression] parses
-// and type-checks the expression itself (proven not to regress by
-// TestAMustThatDoesNotCompileIsReported below) but does not evaluate it, so
-// an unusable regex compiles clean until something evaluates the
-// expression. `flow validate` still catches it at author time whenever the
-// input carries a literal to check the constraint against — an example, a
-// default — which is the shape every declaration in this repository's own
-// examples has: an input worth constraining is documented with one.
-func TestAnInvalidRegexInMustIsReportedAgainstAnExample(t *testing.T) {
+// TestAnInvalidRegexInMustIsReportedOnceWithoutAnExample pins that a regex
+// literal in `must:` is refused when the declaration is validated, whether or
+// not a default or example happens to evaluate it, and that a declaration
+// carrying both is still one mistake and one diagnostic (#1556).
+func TestAnInvalidRegexInMustIsReportedOnceWithoutAnExample(t *testing.T) {
+	t.Parallel()
+
+	for name, extra := range map[string]string{
+		"nothing evaluates it":  "",
+		"a default and example": "    default: anything\n    example: anything\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := diagnose(t, constrainedInputWorkflow(
+				"    type: string\n    must: \"this.matches('[')\"\n"+extra))
+			assert.Equal(t, 1, strings.Count(got, "invalid matches argument"), got)
+			assert.NotContains(t, got, "ERROR:")
+			assert.NotContains(t, got, "<input>")
+		})
+	}
+}
+
+// TestATypeMismatchInMustIsOneSentenceReportedOnce is the type-check half of
+// #1556: cel-go's multi-line rendering is replaced by a sentence and a column.
+func TestATypeMismatchInMustIsOneSentenceReportedOnce(t *testing.T) {
 	t.Parallel()
 
 	got := diagnose(t, constrainedInputWorkflow(
-		"    type: string\n    must: \"this.matches('[')\"\n    example: anything\n"))
-	assert.Contains(t, got, "x")
-	assert.Contains(t, got, "example")
+		"    type: string\n    must: this > 1\n    default: acme\n    example: acme\n"))
+	assert.Equal(t, 1, strings.Count(got, "found no matching overload"), got)
+	assert.Contains(t, got, "(column 6 of the expression)")
+	assert.NotContains(t, got, "ERROR:")
+	assert.NotContains(t, got, "<input>")
 }
 
 // TestAMustThatDoesNotCompileIsReported proves a must: is compiled and
@@ -254,4 +268,39 @@ steps:
 	require.NotEmpty(t, ds, "an argument violating the callee's must: was accepted")
 	assert.Contains(t, ds.Error(), "region")
 	assert.Contains(t, ds.Error(), "must satisfy")
+}
+
+// TestAMustCompileErrorIsATypeMismatchReportedOnceBesideOtherShapeErrors pins
+// that the dedupe does not depend on the declaration's other constraints being
+// valid, and that the diagnostic carries the stable code.
+func TestAMustCompileErrorIsATypeMismatchReportedOnceBesideOtherShapeErrors(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		extra string
+		want  int
+	}{
+		"alone": {want: 1},
+		// The earlier shape error is the declaration's one diagnostic; the must:
+		// failure waits behind it rather than being repeated on the default and example.
+		"beside an earlier shape error": {extra: "    min_items: 1\n", want: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			src := constrainedInputWorkflow(
+				"    type: string\n" + test.extra + "    must: this > 1\n    default: acme\n    example: acme\n")
+			ds, err := flowfile.ValidateSource([]byte(src))
+			require.NoError(t, err)
+
+			var reports int
+			for _, d := range ds {
+				if strings.Contains(d.Message, "found no matching overload") {
+					reports++
+					assert.Equal(t, v1.DiagnosticCodeTypeMismatch, d.Code, d.Message)
+				}
+			}
+			assert.Equal(t, test.want, reports)
+		})
+	}
 }

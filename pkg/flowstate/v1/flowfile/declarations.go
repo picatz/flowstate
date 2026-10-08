@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -78,12 +79,36 @@ func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 			seen[name] = i
 		}
 
-		ds = append(ds, validateInputDefault(table, profile, declaration, field)...)
-		ds = append(ds, validateInputConstraintShape(profile, declaration, field)...)
-		ds = append(ds, validateInputExample(table, profile, declaration, field)...)
+		// A `must:` that does not compile fails the same way for the declaration, its
+		// default and its example, so it is reported once, on the declaration, whatever
+		// else is wrong with the declaration's other constraints.
+		defaults := validateInputDefault(table, profile, declaration, field)
+		shape := validateInputConstraintShape(profile, declaration, field)
+		examples := validateInputExample(table, profile, declaration, field)
+		if declaration.Must != nil {
+			if _, err := v1.CompileMustExpression(profile, declaration.GetMust(), declaration.GetType()); err != nil {
+				if mustErr, ok := errors.AsType[*v1.MustCompileError](err); ok {
+					defaults = withoutMessagesContaining(defaults, mustErr.Error())
+					examples = withoutMessagesContaining(examples, mustErr.Error())
+					for i := range shape {
+						if strings.Contains(shape[i].Message, mustErr.Error()) {
+							shape[i].Code = v1.DiagnosticCodeTypeMismatch
+						}
+					}
+				}
+			}
+		}
+		ds = append(ds, defaults...)
+		ds = append(ds, shape...)
+		ds = append(ds, examples...)
 	}
 
 	return ds
+}
+
+// withoutMessagesContaining drops the diagnostics whose message contains text.
+func withoutMessagesContaining(ds Diagnostics, text string) Diagnostics {
+	return slices.DeleteFunc(ds, func(d Diagnostic) bool { return strings.Contains(d.Message, text) })
 }
 
 // validateInputConstraintShape reports what is wrong with a declaration's
