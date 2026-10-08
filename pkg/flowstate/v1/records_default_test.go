@@ -276,3 +276,67 @@ func TestADeepNarrowDefaultFanOutIsRefusedWithoutExpandingIt(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "expands to more than")
 }
+
+// A default or an example is bounded by the same count the submitted value is, so an
+// input whose own default would fill past the bound is refused whether or not the
+// type declarations were judged first.
+func TestAnInputDefaultThatWouldFillTooMuchIsRefusedBeforeItIsFilled(t *testing.T) {
+	t.Parallel()
+
+	wide := &v1.TypeDeclaration{Name: "Wide"}
+	for i := range v1.MaxRecordFields {
+		wide.Fields = append(wide.Fields, &v1.InputDeclaration{
+			Name: fmt.Sprintf("f%02d", i), Type: v1.InputDeclaration_TYPE_INT, Default: v1.NewLiteral(int64(i)),
+		})
+	}
+	rows := map[string]any{}
+	for i := range 2000 {
+		rows[fmt.Sprintf("r%d", i)] = map[string]any{}
+	}
+	declaration := &v1.InputDeclaration{
+		Name: "rows", Type: v1.InputDeclaration_TYPE_STRUCT,
+		ValueType: &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: recordTypeOf("Wide")}}},
+		Default:   v1.NewLiteralMap(rows),
+	}
+	table := v1.TypesOf(&v1.Workflow{DeclaredTypes: []*v1.TypeDeclaration{wide}})
+
+	err := v1.CheckInputDefaultIn(table, v1.CurrentProfile, declaration)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fields that take a default")
+
+	declaration.Example, declaration.Default = declaration.Default, nil
+	err = v1.CheckInputExampleIn(table, v1.CurrentProfile, declaration)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fields that take a default")
+}
+
+// The work one normalization does is bounded where it is done: a literal that reaches
+// the walk without anyone having counted it first (a literal output, a stub's answer)
+// stops filling at the budget, rather than allocating without limit.
+func TestNormalizingStopsFillingAtTheWorkBudget(t *testing.T) {
+	t.Parallel()
+
+	wide := &v1.TypeDeclaration{Name: "Wide"}
+	for i := range v1.MaxRecordFields {
+		wide.Fields = append(wide.Fields, &v1.InputDeclaration{
+			Name: fmt.Sprintf("f%02d", i), Type: v1.InputDeclaration_TYPE_INT, Default: v1.NewLiteral(int64(i)),
+		})
+	}
+	table := v1.TypesOf(&v1.Workflow{DeclaredTypes: []*v1.TypeDeclaration{wide}})
+
+	var elements []any
+	for range 4000 {
+		elements = append(elements, map[string]any{})
+	}
+	list := v1.NewLiteralList(elements...).GetLiteral()
+	listOf := &v1.Type{Kind: &v1.Type_List{List: recordTypeOf("Wide")}}
+
+	got := v1.NormalizeWireValue(table, listOf, list)
+
+	filled := 0
+	for _, element := range got.GetListValue().GetValues() {
+		filled += len(element.GetMapValue().GetEntries())
+	}
+	assert.LessOrEqual(t, filled, 1<<16, "fills past the budget are not written")
+	assert.Positive(t, filled)
+}

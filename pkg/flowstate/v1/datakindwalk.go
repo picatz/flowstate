@@ -57,10 +57,12 @@ func checkDataKindAt(kind InputDeclaration_Type, literal *expr.Value, path strin
 // safe to apply twice and costs nothing for a value with no such kind. Nothing is
 // mutated, and the walk is bounded by [MaxStructureDepth] and by the value.
 func NormalizeWireValue(table TypeTable, t *Type, lit *expr.Value) *expr.Value {
-	return normalizeWire(table, t, lit, 0)
+	budget := maxDefaultFills
+
+	return normalizeWire(table, t, lit, 0, &budget)
 }
 
-func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int) *expr.Value {
+func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int, budget *int) *expr.Value {
 	if lit == nil || depth > MaxStructureDepth {
 		return lit
 	}
@@ -83,7 +85,7 @@ func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int) *expr.V
 		values := list.ListValue.GetValues()
 		var out []*expr.Value
 		for i, element := range values {
-			n := normalizeWire(table, kind.List, element, depth+1)
+			n := normalizeWire(table, kind.List, element, depth+1, budget)
 			if n != element && out == nil {
 				out = append([]*expr.Value(nil), values...)
 			}
@@ -98,7 +100,7 @@ func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int) *expr.V
 		return &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: out}}}
 
 	case *Type_Map_:
-		return normalizeEntries(lit, func(string) *Type { return kind.Map.GetValue() }, table, depth)
+		return normalizeEntries(lit, func(string) *Type { return kind.Map.GetValue() }, table, depth, budget)
 
 	case *Type_Message:
 		declared := table[kind.Message]
@@ -111,7 +113,7 @@ func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int) *expr.V
 			fields[field.GetName()] = field.DeclaredType()
 		}
 
-		return normalizeEntries(fillFieldDefaults(declared, lit), func(key string) *Type { return fields[key] }, table, depth)
+		return normalizeEntries(fillFieldDefaults(declared, lit, budget), func(key string) *Type { return fields[key] }, table, depth, budget)
 	}
 
 	return lit
@@ -119,7 +121,7 @@ func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int) *expr.V
 
 // normalizeEntries normalizes the values of a map literal, each by the type typeOf
 // gives for its key.
-func normalizeEntries(lit *expr.Value, typeOf func(key string) *Type, table TypeTable, depth int) *expr.Value {
+func normalizeEntries(lit *expr.Value, typeOf func(key string) *Type, table TypeTable, depth int, budget *int) *expr.Value {
 	m, ok := lit.GetKind().(*expr.Value_MapValue)
 	if !ok {
 		return lit
@@ -133,7 +135,7 @@ func normalizeEntries(lit *expr.Value, typeOf func(key string) *Type, table Type
 			continue
 		}
 
-		n := normalizeWire(table, typeOf(key.StringValue), entry.GetValue(), depth+1)
+		n := normalizeWire(table, typeOf(key.StringValue), entry.GetValue(), depth+1, budget)
 		if n == entry.GetValue() {
 			continue
 		}
@@ -176,10 +178,12 @@ func NormalizeInputValue(table TypeTable, declaration *InputDeclaration, value *
 // lit itself when nothing is missing, and anything that is not a map is left for the
 // shape check to refuse.
 //
+// budget is shared by the whole walk and spent one per field filled.
+//
 // A default is a literal [CheckInputDefaultIn] already held to the field's type and
 // rules when the record was declared, so nothing here judges it again; it is shared,
 // never mutated, and as bounded as the declaration that carries it.
-func fillFieldDefaults(declared *TypeDeclaration, lit *expr.Value) *expr.Value {
+func fillFieldDefaults(declared *TypeDeclaration, lit *expr.Value, budget *int) *expr.Value {
 	m, ok := lit.GetKind().(*expr.Value_MapValue)
 	if !ok {
 		return lit
@@ -196,6 +200,14 @@ func fillFieldDefaults(declared *TypeDeclaration, lit *expr.Value) *expr.Value {
 		if slices.ContainsFunc(entries, func(e *expr.MapValue_Entry) bool { return e.GetKey().GetStringValue() == field.GetName() }) {
 			continue
 		}
+
+		// The work one normalization does is bounded where it is done, whoever the
+		// caller is: past the budget a field stays as the value left it, and a
+		// caller that needs a refusal has asked [CheckDefaultFillBound] first.
+		if *budget <= 0 {
+			break
+		}
+		*budget--
 
 		if out == nil {
 			out = append([]*expr.MapValue_Entry(nil), entries...)
