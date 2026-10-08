@@ -301,8 +301,6 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable, p
 		word string
 		set  bool
 	}{
-		{"default", field.GetDefault() != nil},
-		{"example", field.GetExample() != nil},
 		{"sensitive", field.GetSensitive()},
 	} {
 		if unsupported.set {
@@ -319,6 +317,21 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable, p
 
 	if err := checkTypeResolves(field.GetValueType(), table); err != nil {
 		return fmt.Errorf("type %q field %q: %w", record, name, err)
+	}
+
+	if field.GetRequired() && field.GetDefault() != nil {
+		return fmt.Errorf("type %q field %q is `required: true` and also has a `default:`, which contradict: "+
+			"a required field is never absent, so the default can never be used; remove one", record, name)
+	}
+
+	// A default and an example are held to what an input's are: a literal of the
+	// field's type that satisfies the field's own rules, so a stale one is a defect
+	// in the file rather than a surprise at the first run that leaves the field out.
+	if err := CheckInputDefaultIn(table, profile, field); err != nil {
+		return fmt.Errorf("type %q field %q default: %w", record, name, err)
+	}
+	if err := CheckInputExampleIn(table, profile, field); err != nil {
+		return fmt.Errorf("type %q field %q %w", record, name, err)
 	}
 
 	return nil

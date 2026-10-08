@@ -175,6 +175,22 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedOutputs: held("show"),
 		},
 		{
+			// A record field's default is filled where the value is bound, so a step
+			// reads the field whether or not the caller sent it, on both drivers.
+			Name: "a record field left out takes its default",
+			Workflow: connectionWorkflow("inputs-record-default",
+				`inputs.c.retries == 3 && inputs.c.region == "eu" && inputs.c.window == duration("30s")`),
+			Inputs:          map[string]*v1.Value{"c": v1.NewLiteralMap(map[string]any{"name": "primary"})},
+			ExpectedOutputs: held("show"),
+		},
+		{
+			Name: "a supplied record field wins over its default",
+			Workflow: connectionWorkflow("inputs-record-default-overridden",
+				`inputs.c.retries == 0 && inputs.c.region == "eu"`),
+			Inputs:          map[string]*v1.Value{"c": v1.NewLiteralMap(map[string]any{"name": "primary", "retries": int64(0)})},
+			ExpectedOutputs: held("show"),
+		},
+		{
 			// The default, applied where the caller sent nothing — and applied at the
 			// submit boundary rather than where the value is read, so both drivers see
 			// a value that was already decided.
@@ -1046,4 +1062,29 @@ func packed(m proto.Message) *v1.Value {
 	}
 
 	return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: object}}}}
+}
+
+// connectionWorkflow declares the record `Connection{name (required), retries: int
+// default 3, region: string default "eu", window: duration default 30s}`, one input
+// of that type, and a pinned claim about it.
+func connectionWorkflow(name, claim string) *v1.Workflow {
+	wf := declares(name,
+		[]*v1.InputDeclaration{{
+			Name: "c", Type: v1.InputDeclaration_TYPE_STRUCT, Required: true,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Connection"}},
+		}},
+		nil,
+		pins("show", claim)...,
+	)
+	wf.DeclaredTypes = []*v1.TypeDeclaration{{
+		Name: "Connection",
+		Fields: []*v1.InputDeclaration{
+			{Name: "name", Type: v1.InputDeclaration_TYPE_STRING, Required: true},
+			{Name: "retries", Type: v1.InputDeclaration_TYPE_INT, Default: v1.NewLiteral(int64(3))},
+			{Name: "region", Type: v1.InputDeclaration_TYPE_STRING, Default: v1.NewLiteral("eu")},
+			{Name: "window", Type: v1.InputDeclaration_TYPE_DURATION, Default: v1.NewLiteral("30s")},
+		},
+	}}
+
+	return wf
 }

@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"slices"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -110,7 +111,7 @@ func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int) *expr.V
 			fields[field.GetName()] = field.DeclaredType()
 		}
 
-		return normalizeEntries(lit, func(key string) *Type { return fields[key] }, table, depth)
+		return normalizeEntries(fillFieldDefaults(declared, lit), func(key string) *Type { return fields[key] }, table, depth)
 	}
 
 	return lit
@@ -167,4 +168,46 @@ func NormalizeInputValue(table TypeTable, declaration *InputDeclaration, value *
 	}
 
 	return &Value{Kind: &Value_Literal{Literal: n}}
+}
+
+// fillFieldDefaults returns lit with each field the record declares a `default:`
+// for, and the value leaves out, set to that default, in the order the record
+// declares them so the result is the same on every run and on both drivers. It is
+// lit itself when nothing is missing, and anything that is not a map is left for the
+// shape check to refuse.
+//
+// A default is a literal [CheckInputDefaultIn] already held to the field's type and
+// rules when the record was declared, so nothing here judges it again; it is shared,
+// never mutated, and as bounded as the declaration that carries it.
+func fillFieldDefaults(declared *TypeDeclaration, lit *expr.Value) *expr.Value {
+	m, ok := lit.GetKind().(*expr.Value_MapValue)
+	if !ok {
+		return lit
+	}
+
+	entries := m.MapValue.GetEntries()
+	var out []*expr.MapValue_Entry
+	for _, field := range declared.GetFields() {
+		fallback := field.GetDefault().GetLiteral()
+		if fallback == nil {
+			continue
+		}
+
+		if slices.ContainsFunc(entries, func(e *expr.MapValue_Entry) bool { return e.GetKey().GetStringValue() == field.GetName() }) {
+			continue
+		}
+
+		if out == nil {
+			out = append([]*expr.MapValue_Entry(nil), entries...)
+		}
+		out = append(out, &expr.MapValue_Entry{
+			Key:   &expr.Value{Kind: &expr.Value_StringValue{StringValue: field.GetName()}},
+			Value: fallback,
+		})
+	}
+	if out == nil {
+		return lit
+	}
+
+	return &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: out}}}
 }
