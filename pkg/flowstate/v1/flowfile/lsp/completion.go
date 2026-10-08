@@ -1091,16 +1091,35 @@ func stepCandidate(doc *document, s *parsedStep, tasks *v1.Registry) celcomplete
 		// A `call:` produces what the callee declares under `outputs:`, read from
 		// the callee the way the compiler reads it ([callee]), so a callee that
 		// does not compile offers nothing rather than names out of a broken file.
+		//
+		// Resolved only when the cursor is after this step's own dot: every
+		// visible step candidate is built before the completer knows which
+		// qualifier is being completed, and reading and compiling each earlier
+		// call target on every request would multiply file and parse work by the
+		// number of calls in the file.
 		c.Detail = "call"
-		if called, ok := callee(doc, s.callEntry.valueText()); ok {
+		target := s.callEntry.valueText()
+		c.MemberSource = func(prefix string) ([]celcomplete.Candidate, bool) {
+			called, ok := callee(doc, target)
+			if !ok {
+				return nil, false
+			}
+			var members []celcomplete.Candidate
 			for _, declaration := range called.workflow.GetDeclaredOutputs() {
-				c.Members = append(c.Members, celcomplete.Candidate{
+				if !strings.HasPrefix(declaration.GetName(), prefix) {
+					continue
+				}
+				if len(members) == celcomplete.MaxCandidates {
+					return members, true
+				}
+				members = append(members, celcomplete.Candidate{
 					Name:   declaration.GetName(),
 					Kind:   celcomplete.KindField,
 					Detail: declaration.TypeText(),
 					Docs:   declaration.GetDescription(),
 				})
 			}
+			return members, false
 		}
 
 	case s.valueEntry != nil:

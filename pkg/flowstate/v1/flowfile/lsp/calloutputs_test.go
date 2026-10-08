@@ -77,6 +77,15 @@ steps:
 	c.open(menuURI, text)
 	assert.ElementsMatch(t, []string{"tenant", "seats"}, labels(c.complete(menuURI, cursor.Line, cursor.Character).Items))
 
+	// The prefix narrows the answer, which is resolved only for the call being
+	// completed (the source is asked after the dot, not when candidates are built).
+	narrow := "edition: v2026.4\nname: caller\nsteps:\n  - id: provision\n    call: ./callee.yaml\n  - id: use\n    log:\n      message: ${steps.provision.se|}\n"
+	text, cursor = splitCursor(t, narrow)
+	narrowPath := filepath.Join(dir, "narrow.yaml")
+	require.NoError(t, os.WriteFile(narrowPath, []byte(text), 0o644))
+	c.open("file://"+narrowPath, text)
+	assert.Equal(t, []string{"seats"}, labels(c.complete("file://"+narrowPath, cursor.Line, cursor.Character).Items))
+
 	// A callee that does not compile declares nothing this can be sure of.
 	brokenMenu := "edition: v2026.4\nname: caller\nsteps:\n  - id: provision\n    call: ./broken.yaml\n  - id: use\n    log:\n      message: ${steps.provision.|}\n"
 	text, cursor = splitCursor(t, brokenMenu)
