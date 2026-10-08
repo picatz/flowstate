@@ -188,3 +188,33 @@ func TestNoPanePaintsTheSecretAFrameWithheld(t *testing.T) {
 		assert.NotContains(t, protojson.Format(value), theSecret)
 	}
 }
+
+// TestAPaneDrawsNoControlSequenceAFrameCarried: a remote chooses the text of a
+// binding's expression (a map key can hold anything), so the row is escaped as
+// the value beside it is, and a clear-screen sequence never reaches the terminal.
+func TestAPaneDrawsNoControlSequenceAFrameCarried(t *testing.T) {
+	t.Parallel()
+
+	const hostile = "steps.fetch[\"\x1b[2J\x1b]0;owned\x07\"]"
+
+	read := flowdebug.Frame{
+		Paused:   true,
+		Snapshot: &v1.DebugSnapshot{State: v1.DebugRunState_DEBUG_RUN_STATE_HELD},
+		Scope: &v1.DebugScope{
+			Total: 1,
+			Groups: []*v1.DebugScopeGroup{{
+				Group:    "steps",
+				Bindings: []*v1.DebugBinding{{Name: "fetch", Expression: hostile}},
+			}},
+		},
+		Values: map[string]*v1.DebugValue{hostile: {Rendered: "ok"}},
+	}
+
+	frame, paused := debugpane.FromFrame(read)
+	require.True(t, paused)
+	text := drawn(t, frame)
+
+	assert.NotContains(t, text, "\x1b[2J")
+	assert.NotContains(t, text, "\x07")
+	assert.Contains(t, text, "steps.fetch", "the row vanished instead of being escaped")
+}

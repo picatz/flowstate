@@ -252,7 +252,9 @@ func FromFrame(f flowdebug.Frame) (Frame, bool) {
 				text = "(" + binding.GetError() + ")"
 			}
 			frame.Bindings = append(frame.Bindings, Binding{
-				Expression: binding.GetExpression(),
+				// The remote chose this text; a map key in it can carry a control
+				// sequence, so it is escaped as the value beside it is.
+				Expression: ui.EscapeControl(binding.GetExpression()),
 				Value:      capValue(text),
 			})
 		}
