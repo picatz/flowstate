@@ -123,3 +123,18 @@ func TestMutationRendersSurvivorsAndFailsTheFile(t *testing.T) {
 	none, _ := render(nil)
 	assert.Empty(t, none)
 }
+
+// A survivor fails the exit code, so the JUnit document must say so too: a
+// synthetic verdict, not every case green beside a red exit.
+func TestMutationVerdictsReachJUnit(t *testing.T) {
+	survived := testFileResult{report: &v1.TestReport{Mutation: &v1.MutationReport{
+		Mutants: 2, Survivors: []*v1.MutationSurvivor{{Id: "if-drop@a.if"}},
+	}}}
+	assert.Contains(t, nonCaseVerdicts(survived, false, false), "--mutate: 1 mutant(s) survived, so the file would not notice the program changing")
+
+	notRun := testFileResult{report: &v1.TestReport{Mutation: &v1.MutationReport{NotRun: "a case did not pass"}}}
+	assert.Contains(t, nonCaseVerdicts(notRun, false, false), "--mutate: not mutated: a case did not pass")
+
+	clean := testFileResult{report: &v1.TestReport{Mutation: &v1.MutationReport{Mutants: 2, Killed: 2}}}
+	assert.Empty(t, nonCaseVerdicts(clean, false, false))
+}

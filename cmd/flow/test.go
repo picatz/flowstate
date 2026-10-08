@@ -205,7 +205,7 @@ flow test -o jsonl examples/`,
 			"workflow, which is 100 when N is omitted; 0, the default, runs the authored cases only")
 	cmd.Flags().Lookup("mutate").NoOptDefVal = strconv.Itoa(flowtest.DefaultMutants)
 	cmd.Flags().String("mutant", "",
-		"replay exactly one mutant, the id a reported survivor names, instead of running them all")
+		"replay the mutant a reported survivor's id names (in each workflow of the file that has one), instead of running them all")
 
 	// The step debugger (#928 slice 1). Interactive by nature, so it is
 	// refused wherever "interactive" is not true of the run: a machine-format

@@ -157,6 +157,12 @@ func nonCaseVerdicts(r testFileResult, coverageRequired, failOnWarning bool) []s
 		reasons = append(reasons, fmt.Sprintf("--fuzz: generated inputs broke %q (fuzz seed %d)", finding.GetCase(), finding.GetSeed()))
 	}
 
+	if m := r.report.GetMutation(); m.GetNotRun() != "" {
+		reasons = append(reasons, "--mutate: not mutated: "+m.GetNotRun())
+	} else if n := len(m.GetSurvivors()); n > 0 {
+		reasons = append(reasons, fmt.Sprintf("--mutate: %d mutant(s) survived, so the file would not notice the program changing", n))
+	}
+
 	return reasons
 }
 

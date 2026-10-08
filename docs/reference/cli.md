@@ -2513,7 +2513,7 @@ flow test -o jsonl examples/
 | `--fuzz-seed <uint64>` | `uint64` | `0` | — | replay exactly one generated case, the seed a reported finding names, instead of searching |
 | `--junit <string>` | `string` | — | — | also write the results to this file as JUnit XML, for CI systems that annotate failures; failed expectations are <failure>, a case or file that could not be judged is <error> |
 | `--list` | `bool` | `false` | — | print the names of the cases that would run, one per line under their file, without running any; honours --run, and shows cases a `skip:` leaves out |
-| `--mutant <string>` | `string` | — | — | replay exactly one mutant, the id a reported survivor names, instead of running them all |
+| `--mutant <string>` | `string` | — | — | replay the mutant a reported survivor's id names (in each workflow of the file that has one), instead of running them all |
 | `--mutate <int>` | `int` | `0` | — | also run each workflow's passing cases against mutants of it (a condition negated or removed, a compensation or retry dropped, a switch arm removed) and fail when one survives, because the file would not notice the program changing; write --mutate=N to bound the mutants per workflow, which is 100 when N is omitted; 0, the default, runs the authored cases only |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--record <string>` | `string` | — | — | write the commands the session accepted to this file when it ends (end of run, `quit`, error), so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is not in it). Requires --debug where the command has one |

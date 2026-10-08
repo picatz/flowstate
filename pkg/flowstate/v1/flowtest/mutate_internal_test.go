@@ -49,7 +49,49 @@ func TestMutantsEnumerateEveryOperatorAndApplyToTheirOwnWorkflow(t *testing.T) {
 			assert.False(t, proto.Equal(wf, clone), "%s: %s changed nothing", path, mu.id)
 		}
 	}
-	for _, operator := range []string{"if-negate", "if-drop", "undo-drop", "retry-drop", "continue-flip", "switch-arm-drop"} {
+	for _, operator := range []string{"if-negate", "if-drop", "undo-drop", "retry-drop", "continue-flip", "switch-arm-drop", "switch-default-drop"} {
 		assert.True(t, seen[operator], "no shipped example holds a construct for %s", operator)
 	}
+}
+
+// Two loop bodies may each declare a step with one id; a mutant id names
+// exactly one of them, and its position is withheld rather than guessed.
+func TestMutantIDsAreUniqueWhenAStepIDRepeats(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(`
+edition: v2026.4
+name: twins
+steps:
+  - id: first
+    for_each:
+      items: ${["a"]}
+      steps:
+        - id: inner
+          if: ${item == "a"}
+          log:
+            message: one
+  - id: second
+    for_each:
+      items: ${["b"]}
+      steps:
+        - id: inner
+          if: ${item == "b"}
+          log:
+            message: two
+outputs: {}
+`))
+	require.NoError(t, err)
+
+	var ids []string
+	for _, mu := range mutants(wf) {
+		if mu.step == "inner" {
+			ids = append(ids, mu.id)
+			assert.True(t, mu.ambiguous, mu.id)
+		}
+	}
+	assert.Equal(t, []string{
+		"if-negate@inner.if", "if-drop@inner.if",
+		"if-negate@inner#2.if", "if-drop@inner#2.if",
+	}, ids)
 }

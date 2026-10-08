@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -56,6 +57,9 @@ type mutant struct {
 	step    string
 	ordinal int
 	field   string
+	// ambiguous marks a step id the workflow declares more than once, whose
+	// source position cannot be told from its twin's.
+	ambiguous bool
 	// describe is the change in words.
 	describe string
 	// apply makes the change on the node a clone of the base workflow holds at
@@ -67,18 +71,34 @@ type mutant struct {
 // the fixed operator set can make to wf.
 func mutants(wf *v1.Workflow) []mutant {
 	var out []mutant
+	// A step id may repeat across loop and switch bodies; every occurrence
+	// after the first is named `id#N` so a mutant id names exactly one.
+	declared := map[string]int{}
+	repeated := map[string]bool{}
+	v1.WalkWorkflow(wf, v1.Walk{Node: func(node *v1.Node) {
+		if declared[node.GetId()]++; declared[node.GetId()] > 1 {
+			repeated[node.GetId()] = true
+		}
+	}})
+	seen := map[string]int{}
 	ordinal := -1
 	v1.WalkWorkflow(wf, v1.Walk{Node: func(node *v1.Node) {
 		ordinal++
+		seen[node.GetId()]++
+		name := node.GetId()
+		if seen[name] > 1 {
+			name += "#" + strconv.Itoa(seen[name])
+		}
 		add := func(operator, field, describe string, apply func(*v1.Node) bool) {
 			out = append(out, mutant{
-				id:       operator + "@" + node.GetId() + "." + field,
-				operator: operator,
-				step:     node.GetId(),
-				ordinal:  ordinal,
-				field:    field,
-				describe: describe,
-				apply:    apply,
+				id:        operator + "@" + name + "." + field,
+				ambiguous: repeated[node.GetId()],
+				operator:  operator,
+				step:      node.GetId(),
+				ordinal:   ordinal,
+				field:     field,
+				describe:  describe,
+				apply:     apply,
 			})
 		}
 		step := node.GetId()
@@ -338,6 +358,9 @@ func (m *mutator) judge(ctx context.Context, group *mutationGroup, mu mutant, va
 
 // whereOf is `line` of the construct a mutant changed, or empty.
 func whereOf(identity string, positions *flowfile.Positions, mu mutant) string {
+	if mu.ambiguous {
+		return ""
+	}
 	span, ok := positions.Locate(mu.step, mu.field)
 	if !ok || !span.IsValid() {
 		return ""
