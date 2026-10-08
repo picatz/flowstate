@@ -2,6 +2,8 @@ package flowstatev1
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -434,4 +436,50 @@ func sameResolvedPlugin(want, have *ResolvedPlugin) error {
 	}
 
 	return nil
+}
+
+// RehearsalPluginCatalog is a catalog that satisfies exactly what wf requires,
+// for a rehearsal that stands in for the plugins' tasks instead of launching
+// them (`flow test --driver both`).
+//
+// Each entry sits at the floor its workflow asks for, the highest one where
+// several callees disagree, so [ResolvePlugins] pins the run and a worker
+// configured with the same catalog admits it through the real
+// [CheckPluginsAvailable] path rather than around it. The digests name the
+// rehearsal and nothing real: a run pinned to this catalog is one no deployment
+// could replay, which is the point of keeping it out of any submission path.
+func RehearsalPluginCatalog(wf *Workflow) (*PluginCatalog, error) {
+	floors := make(map[string][3]uint64)
+	err := walkEmbeddedWorkflows(wf, 0, func(wf *Workflow) error {
+		for _, requirement := range wf.GetPluginRequirements() {
+			want, ok := parsePluginVersion(requirement.GetMinimumVersion())
+			if !ok {
+				return fmt.Errorf("plugin %q has invalid minimum version %q; write it as vMAJOR.MINOR.PATCH",
+					requirement.GetName(), requirement.GetMinimumVersion())
+			}
+			if have, seen := floors[requirement.GetName()]; !seen || versionLess(have, want) {
+				floors[requirement.GetName()] = want
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	catalog := &PluginCatalog{ClaimsSchemaVersion: CurrentClaimsSchemaVersion}
+	for _, name := range slices.Sorted(maps.Keys(floors)) {
+		v := floors[name]
+		catalog.Plugins = append(catalog.Plugins, &PluginDescription{
+			Name:               name,
+			Version:            fmt.Sprintf("v%d.%d.%d", v[0], v[1], v[2]),
+			ProtocolVersion:    1,
+			TaskSchemaDigest:   "rehearsal:" + name,
+			DistributionDigest: "rehearsal:" + name,
+			ClaimsDigest:       "rehearsal:" + name,
+		})
+	}
+
+	return catalog, nil
 }

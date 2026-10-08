@@ -232,3 +232,72 @@ tests:
 	require.True(t, run.Report.GetCases()[0].GetPassed())
 	assert.Empty(t, run.Report.GetCases()[0].GetWarnings())
 }
+
+const durablePluginWorkflow = `
+edition: v2026.4
+name: plugged
+plugins:
+  acme: v1.2.0
+inputs:
+  who:
+    type: string
+    required: true
+steps:
+  - id: use
+    if: ${inputs.who != "skip"}
+    acme.greet:
+      name: ${inputs.who}
+  - id: after
+    value: ${"done"}
+`
+
+// A workflow that requires a plugin is proved across the seams like any other:
+// the plugin's task is the case's stub, so nothing is launched, and the real
+// admission check passes against a catalog that holds what the workflow asks for.
+func TestACaseRequiringAPluginIsProvedAcrossTheSeams(t *testing.T) {
+	t.Parallel()
+
+	run := runBoth(t, durablePluginWorkflow, `
+tests:
+  - name: greets through the stub
+    workflow: ./workflow.yaml
+    inputs: {who: ada}
+    stubs: [{task: acme.greet, returns: {message: hi}}]
+    expect:
+      ran: [use, after]
+  - name: the branch that skips the plugin task never needs a stub
+    workflow: ./workflow.yaml
+    inputs: {who: skip}
+    expect:
+      ran: [after]
+      skipped: [use]
+`)
+	require.Len(t, run.Report.GetCases(), 2)
+	for _, c := range run.Report.GetCases() {
+		assert.True(t, c.GetPassed(), "%s: %v %s", c.GetName(), c.GetFailures(), c.GetError())
+		assert.Empty(t, c.GetWarnings(), "%s is proved on the durable driver, not left local", c.GetName())
+	}
+}
+
+// A plugin task nobody stubbed fails the case on the local driver before the
+// durable one is asked, so the durable worker never gets to answer for it.
+func TestAPluginTaskWithNoStubFailsTheCase(t *testing.T) {
+	t.Parallel()
+
+	run := runBoth(t, durablePluginWorkflow, `
+tests:
+  - name: reaches the plugin task unstubbed
+    workflow: ./workflow.yaml
+    inputs: {who: ada}
+    expect:
+      ran: [use, after]
+`)
+	require.Len(t, run.Report.GetCases(), 1)
+	c := run.Report.GetCases()[0]
+	require.Empty(t, c.GetError(), "the case loaded and ran")
+	assert.False(t, c.GetPassed())
+	assert.NotEmpty(t, c.GetFailures())
+	for _, f := range c.GetFailures() {
+		assert.NotEqual(t, "driver", f.GetField(), "the local failure is the reported one")
+	}
+}
