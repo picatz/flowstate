@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
-import { isFlowfile, parseReports, summarize } from './flowfile'
+import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 
 const PANE = 'flowstate'
 /** The pane and the stored state keep the most recent Flowfiles only. */
@@ -19,7 +19,7 @@ const validate = async (
       timeoutMs: 20000,
     })
     const found = parseReports(ran.stdout).find(r => r.file === path)
-    if (found) return found
+    if (found) return toFileReport(found)
     return { file: path, diagnostics: [], failure: ran.stderr.trim().split('\n')[0] || 'no report' }
   } catch (err) {
     return { file: path, diagnostics: [], failure: String(err) }

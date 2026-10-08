@@ -24,6 +24,7 @@ func TestGenerated(t *testing.T) {
 		{"cmd/flow/internal/reference/mirror/DSL.md", []string{"docs/DSL.md", "go generate ./cmd/flow/internal/reference"}},
 		{"cmd/flow/internal/reference/mirror/examples/hello.yaml", []string{"go generate ./cmd/flow/internal/reference"}},
 		{"pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go", []string{"comment", "proto/", "buf generate"}},
+		{"editors/claude-code/types/flowstate.d.ts", []string{"proto/flowstate/v1/", "buf.gen.yaml", "buf generate"}},
 		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1/example.pb.go", []string{"example.proto", "buf generate", "--template"}},
 		{"pkg/flowstate/v1/plugin/examples/flowstate-plugin-example/gen/example/v1/example.doc.pb.go", []string{"example.proto", "buf generate", "--template"}},
 	}

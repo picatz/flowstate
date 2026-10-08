@@ -1,4 +1,5 @@
 import type { FileReport } from '../types'
+import type { Diagnostic, DiagnosticReport } from '../types/flowstate'
 
 /** `flow test`'s suites and fixtures are named for a loader of their own, never validated as workflows. */
 const TEST_FILE = /(\.test\.ya?ml|(^|\/)testdefaults\.ya?ml)$/
@@ -15,12 +16,25 @@ export const isFlowfile = (path: string): boolean => {
   return FLOWFILE.test(unix) && !TEST_FILE.test(unix)
 }
 
+/** What a field the CLI omitted reads as: the schema's zero values, except `code`, which reads as the "general" class. */
+const EMPTY_DIAGNOSTIC: Diagnostic = {
+  line: 0,
+  column: 0,
+  message: '',
+  step: '',
+  field: '',
+  kind: '',
+  value: '',
+  code: 'general',
+  edits: [],
+}
+
 /**
  * Reads `flow validate -o jsonl` output: one JSON object per file. A line that
  * is not that object is skipped, since the command prints its summary after.
  */
-export const parseReports = (stdout: string): FileReport[] => {
-  const reports: FileReport[] = []
+export const parseReports = (stdout: string): DiagnosticReport[] => {
+  const reports: DiagnosticReport[] = []
   for (const line of stdout.split('\n')) {
     if (!line.startsWith('{')) continue
     try {
@@ -28,11 +42,7 @@ export const parseReports = (stdout: string): FileReport[] => {
       if (typeof one.file !== 'string' || !Array.isArray(one.diagnostics)) continue
       reports.push({
         file: one.file,
-        diagnostics: one.diagnostics.map((d: any) => ({
-          line: Number(d.line) || 0,
-          column: Number(d.column) || 0,
-          message: String(d.message),
-        })),
+        diagnostics: one.diagnostics.map((d: Partial<Diagnostic>) => ({ ...EMPTY_DIAGNOSTIC, ...d })),
       })
     } catch {
       continue
@@ -40,6 +50,12 @@ export const parseReports = (stdout: string): FileReport[] => {
   }
   return reports
 }
+
+/** The part of a report the mod stores and shows. */
+export const toFileReport = (r: DiagnosticReport): FileReport => ({
+  file: r.file,
+  diagnostics: r.diagnostics.map(({ line, column, message }) => ({ line, column, message })),
+})
 
 /** What the model is told after an edit leaves a Flowfile with problems. */
 export const summarize = (r: FileReport): string => {

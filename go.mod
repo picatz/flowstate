@@ -119,5 +119,6 @@ require (
 tool (
 	connectrpc.com/connect/cmd/protoc-gen-connect-go
 	github.com/picatz/flowstate/cmd/protoc-gen-flowstate-doc
+	github.com/picatz/flowstate/cmd/protoc-gen-flowstate-ts
 	google.golang.org/protobuf/cmd/protoc-gen-go
 )

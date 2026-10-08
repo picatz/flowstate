@@ -156,6 +156,18 @@ func TestBuildPlan(t *testing.T) {
 			},
 		},
 		{
+			// The TypeScript generator and its output are checked by the
+			// same regeneration, but nothing in docs/reference/ reads them.
+			name:    "the TypeScript generator and its output fire the proto leg only",
+			changed: []string{tsGeneratorDir + "main.go", tsGeneratedFile},
+			want: plan{
+				goFiles:  []string{tsGeneratorDir + "main.go"},
+				fileDirs: []string{"cmd/protoc-gen-flowstate-ts", "editors/claude-code/types"},
+				proto:    true,
+				reasons:  map[string]string{"proto": tsGeneratorDir + "main.go"},
+			},
+		},
+		{
 			name:    "a generated comment file in protodoc fires the proto and docs legs",
 			changed: []string{"pkg/flowstate/v1/protodoc/flowstate_v1_run.doc.pb.go"},
 			want: plan{

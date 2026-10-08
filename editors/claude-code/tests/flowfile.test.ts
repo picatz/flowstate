@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { isFlowfile, parseReports, summarize } from '../hooks/flowfile'
+import { isFlowfile, parseReports, summarize, toFileReport } from '../hooks/flowfile'
 
 test('recognises Flowfiles and not test files', () => {
   expect(isFlowfile('examples/hello-world/workflow.yaml')).toBe(true)
@@ -34,8 +34,8 @@ test('parses jsonl and skips the summary lines', () => {
   const reports = parseReports(out)
   expect(reports.length).toBe(2)
   expect(reports[1].diagnostics[0].line).toBe(4)
-  expect(summarize(reports[1])).toContain('line 4: bad step')
-  expect(summarize(reports[0])).toBe('a.flow.yaml: valid')
+  expect(summarize(toFileReport(reports[1]))).toContain('line 4: bad step')
+  expect(summarize(toFileReport(reports[0]))).toBe('a.flow.yaml: valid')
 })
 
 test('ignores malformed lines', () => {
