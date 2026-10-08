@@ -214,6 +214,17 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 	if err := refuseRecordingOver(cmd, scriptPath); err != nil {
 		return err
 	}
+	// Stepping back is a rerun the run has to be set up for, and without it the
+	// session would refuse each of these and carry on from the wrong stop.
+	if mode, _ := cmd.Flags().GetString("reverse"); mode == "" {
+		for i, line := range lines {
+			if flowdebug.StepsBack(line) {
+				return refuseReplay(cmd, fmt.Errorf("%s: command %d, %q, steps back, which a replay does only "+
+					"with --reverse; add it (the workflow's tasks run again, as `flow run local --reverse` "+
+					"explains), or record a session that does not step back", scriptPath, i+1, line))
+			}
+		}
+	}
 
 	// The workflow, read here as well as inside the run.
 	//
