@@ -1037,6 +1037,7 @@ func buildEnv(libs []string) (*cel.Env, error) {
 		cel.ValidateDurationLiterals(),
 		cel.ValidateTimestampLiterals(),
 		cel.ValidateRegexLiterals(),
+		validateMapKeyKinds(),
 	))
 
 	// Always present, in every profile, rather than part of one: durations are
