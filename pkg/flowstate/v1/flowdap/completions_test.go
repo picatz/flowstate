@@ -150,7 +150,33 @@ func TestCompletionsNeedAStoppedRunAndABoundedText(t *testing.T) {
 	c.await("event", "initialized")
 	assert.Empty(t, completionTargets(t, c, 2, "steps.", 7), "before a launch there is no scope to read")
 
+	// The bound is on the text and not on what it would complete: the word at
+	// the end is one that completes, so only the limit can empty the answer.
 	held, _ := stoppedAtEntry(t)
-	long := strings.Repeat("a", 4097)
-	assert.Empty(t, completionTargets(t, held, 4, long, len(long)+1))
+	atLimit := strings.Repeat(" ", 4096-3) + "ste"
+	require.Len(t, atLimit, 4096)
+	assert.Equal(t, []string{"steps."}, labels(completionTargets(t, held, 4, atLimit, len(atLimit)+1)), "a text at the limit is answered")
+	over := " " + atLimit
+	assert.Empty(t, completionTargets(t, held, 5, over, len(over)+1), "a text over it is not")
+}
+
+func TestAZeroBasedClientCountsItsColumnsFromZero(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launched(t)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "columnsStartAt1": false})
+	c.await("response", "initialize")
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	// Column 3 is the cursor after `ste` when the first column is 0.
+	targets := completionTargets(t, c, 4, "ste + 1", 3)
+	require.Len(t, targets, 1)
+	assert.Equal(t, "steps.", targets[0]["label"])
+	assert.EqualValues(t, 0, targets[0]["start"])
+	assert.EqualValues(t, 3, targets[0]["length"])
 }
