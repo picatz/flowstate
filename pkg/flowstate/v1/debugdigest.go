@@ -28,7 +28,7 @@ func WorkflowIRDigest(workflow *Workflow) string {
 			// Where a step is written is advisory and never part of the program,
 			// so a source map bound to this digest still verifies a run whose
 			// specification carries locations.
-			WalkNodes(wf.GetSteps(), Walk{Node: func(node *Node) { node.Source = nil }})
+			clearSourceLocations(wf)
 
 			return nil
 		})
@@ -39,4 +39,29 @@ func WorkflowIRDigest(workflow *Workflow) string {
 	}
 
 	return ContentDigest(data)
+}
+
+// clearSourceLocations drops the advisory [Node.Source] from wf's steps, in
+// place.
+func clearSourceLocations(wf *Workflow) {
+	WalkNodes(wf.GetSteps(), Walk{Node: func(node *Node) { node.Source = nil }})
+}
+
+// WithoutSourceLocations returns a copy of wf with the advisory [Node.Source]
+// cleared from every step of it and of any workflow it calls, for a comparison
+// of what two specifications do: where a step is written is not part of that, so
+// the same program compiled from another file, or after a comment moved a line,
+// is the same program.
+func WithoutSourceLocations(wf *Workflow) *Workflow {
+	if wf == nil {
+		return nil
+	}
+	wf = proto.CloneOf(wf)
+	_ = walkEmbeddedWorkflows(wf, 0, func(embedded *Workflow) error {
+		clearSourceLocations(embedded)
+
+		return nil
+	})
+
+	return wf
 }

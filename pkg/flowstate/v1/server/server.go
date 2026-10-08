@@ -1859,11 +1859,13 @@ func specificationAsSubmitted(submitted, executed *v1.Workflow) bool {
 // does. A deployment-owned copy compiled from other bytes, or from none, is
 // still the program a client submitted when nothing else differs.
 func sameProgram(a, b *v1.Workflow) bool {
-	if a.GetSourceDigest() == b.GetSourceDigest() {
-		return proto.Equal(a, b)
+	a, b = v1.WithoutSourceLocations(a), v1.WithoutSourceLocations(b)
+	if a != nil {
+		a.SourceDigest = ""
 	}
-	a, b = proto.CloneOf(a), proto.CloneOf(b)
-	a.SourceDigest, b.SourceDigest = "", ""
+	if b != nil {
+		b.SourceDigest = ""
+	}
 
 	return proto.Equal(a, b)
 }
