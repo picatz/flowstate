@@ -666,3 +666,34 @@ func TestAnUnsignedAboveTheSignedRangeIsNotAnIntInAList(t *testing.T) {
 	require.NoError(t, v1.CheckInputValue("xs", declaration, list(3)))
 	require.Error(t, v1.CheckInputValue("xs", declaration, list(18446744073709551615)))
 }
+
+func TestHoldsSensitiveReachesThroughMapsListsAndStopsOnACycle(t *testing.T) {
+	t.Parallel()
+
+	secret := &v1.TypeDeclaration{Name: "Secret", Fields: []*v1.InputDeclaration{
+		{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+	}}
+	plain := &v1.TypeDeclaration{Name: "Plain", Fields: []*v1.InputDeclaration{
+		{Name: "id", Type: v1.InputDeclaration_TYPE_STRING},
+	}}
+	holder := &v1.TypeDeclaration{Name: "Holder", Fields: []*v1.InputDeclaration{
+		{Name: "by", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: &v1.Type{Kind: &v1.Type_Map_{
+			Map: &v1.Type_Map{Value: recordTypeOf("Secret")},
+		}}},
+	}}
+	loop := &v1.TypeDeclaration{Name: "Loop", Fields: []*v1.InputDeclaration{
+		{Name: "next", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: recordTypeOf("Loop")},
+	}}
+	table := v1.TypeTable{"Secret": secret, "Plain": plain, "Holder": holder, "Loop": loop}
+
+	listOf := func(name string) *v1.Type {
+		return &v1.Type{Kind: &v1.Type_List{List: recordTypeOf(name)}}
+	}
+
+	assert.True(t, table.HoldsSensitive(recordTypeOf("Secret")))
+	assert.True(t, table.HoldsSensitive(recordTypeOf("Holder")), "through a map value")
+	assert.True(t, table.HoldsSensitive(listOf("Holder")), "through a list of records")
+	assert.False(t, table.HoldsSensitive(recordTypeOf("Plain")))
+	assert.False(t, table.HoldsSensitive(listOf("Plain")))
+	assert.False(t, table.HoldsSensitive(recordTypeOf("Loop")), "a cycle ends rather than looping")
+}

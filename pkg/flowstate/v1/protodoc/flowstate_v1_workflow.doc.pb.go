@@ -660,11 +660,9 @@ func init() {
 			Leading: " Fields are the record's members in the order they were written, which is the\n" +
 				" order every report of them uses. Each name is unique within the type.\n" +
 				"\n" +
-				" `default`, `example` and `sensitive` are not carried by a field yet: a\n" +
-				" default would have to be applied inside a value, an example checked, and a\n" +
-				" sensitive field withheld wherever the record travels, and each of those is a\n" +
-				" decision that has not been made. A field that sets one is refused rather\n" +
-				" than silently not enforced.\n",
+				" A field carries what an input does, including `default`, `example` and\n" +
+				" `sensitive`. A `sensitive` field makes every input and output typed by the\n" +
+				" record sensitive whole; see the message comment.\n",
 		},
 		{
 			Name: "flowstate.v1.TypeDeclaration.must",
