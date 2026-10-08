@@ -31,6 +31,9 @@ import (
 // run past it is reported as too long to prove, never silently truncated.
 const MaxSegments = 2000
 
+// deadlockTimeout is how long a workflow goroutine may run without yielding.
+const deadlockTimeout = time.Minute
+
 // maxVirtualRun is how much virtual time one segment may span, a bound on the
 // test environment's own workflow timeout and not on the real time a case takes.
 const maxVirtualRun = 200 * 365 * 24 * time.Hour
@@ -78,7 +81,11 @@ func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runt
 		suite := &testsuite.WorkflowTestSuite{}
 		suite.SetLogger(log.NewStructuredLogger(slog.New(slog.DiscardHandler)))
 		env := suite.NewTestWorkflowEnvironment()
-		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		// The SDK's deadlock detector is a production guard that trips a workflow
+		// goroutine which does not yield for a second; a race-instrumented run on
+		// one CPU can take that long to compile a CEL expression, and nothing here
+		// is waiting on a real peer.
+		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx, DeadlockDetectionTimeout: deadlockTimeout})
 		engine.Register(env, config)
 		// A virtual century is a legitimate wait: the clock is the environment's own
 		// and skips ahead whenever the run is blocked, so only a real stall ends it.
