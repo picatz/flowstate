@@ -1,11 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -85,4 +87,107 @@ func TestGraphRefusesMoreFilesThanItReads(t *testing.T) {
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), "name a narrower directory")
 	assert.Empty(t, res.Stdout)
+}
+
+func liveRun(name string, status v1.RunResponse_Status) *v1.RunSummary {
+	return &v1.RunSummary{WorkflowId: name + "-1", Name: name, Status: status}
+}
+
+func TestGraphLiveLaysRunsOverTheFiles(t *testing.T) {
+	fake := &fakeWorkflowService{listResponses: []*v1.ListResponse{{Runs: []*v1.RunSummary{
+		liveRun("call-a-workflow", v1.RunResponse_STATUS_RUNNING),
+		liveRun("call-a-workflow", v1.RunResponse_STATUS_FAILED),
+		liveRun("billing", v1.RunResponse_STATUS_COMPLETED),
+	}}}}
+	serveFake(t, fake)
+
+	res := runFlow(t, "graph", "--live", "--filter", `status != "CANCELED"`,
+		filepath.Join("..", "..", "examples", "call-a-workflow"))
+
+	require.NoError(t, res.Err, res.Stderr)
+	assert.Equal(t, `billing
+  runs  1 COMPLETED
+call-a-workflow
+  runs  1 FAILED, 1 RUNNING
+  calls provision-tenant
+  uses  log
+provision-tenant
+  uses  log x2
+`, res.Stdout, "a workflow the server runs and no file declares is shown, and the files' edges are untouched")
+	assert.Equal(t, `status != "CANCELED"`, fake.lastListFilter, "the filter did not reach the server")
+}
+
+func TestGraphLiveWithNoFilesShowsOnlyWhatRuns(t *testing.T) {
+	fake := &fakeWorkflowService{listResponses: []*v1.ListResponse{{Runs: []*v1.RunSummary{
+		liveRun("billing", v1.RunResponse_STATUS_RUNNING),
+	}}}}
+	serveFake(t, fake)
+
+	res := runFlow(t, "graph", "--live", "-o", "json")
+	require.NoError(t, res.Err, res.Stderr)
+
+	var g v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(res.Stdout), &g))
+	require.NoError(t, v1.Validate(&g))
+	require.Len(t, g.GetOverlays(), 1)
+	assert.Equal(t, "workflow:billing", g.GetOverlays()[0].GetEntries()[0].GetNode())
+}
+
+func TestGraphLiveSaysWhenItStoppedReadingRuns(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	for i := range maxGraphRunPages {
+		fake.listResponses = append(fake.listResponses, &v1.ListResponse{
+			Runs:          []*v1.RunSummary{liveRun("billing", v1.RunResponse_STATUS_RUNNING)},
+			NextPageToken: fmt.Sprintf("page-%d", i+1),
+		})
+	}
+	serveFake(t, fake)
+
+	res := runFlow(t, "graph", "--live", "-o", "json")
+	require.NoError(t, res.Err, res.Stderr)
+
+	var g v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(res.Stdout), &g))
+	assert.True(t, g.GetPartial())
+	assert.Contains(t, g.GetNotes()[0], "the first 10 runs were counted; more exist")
+	assert.Equal(t, maxGraphRunPages, fake.listCalls, "the read must stop at its bound")
+}
+
+func TestGraphLiveRefusalsAreMadeBeforeAnyRequest(t *testing.T) {
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+
+	for name, args := range map[string][]string{
+		"no paths and no --live":     {"graph"},
+		"--filter without --live":    {"graph", "--filter", `status == "FAILED"`, "."},
+		"a filter that cannot parse": {"graph", "--live", "--filter", "stauts =="},
+	} {
+		res := runFlow(t, args...)
+		require.Error(t, res.Err, name)
+	}
+	assert.Zero(t, fake.listCalls, "a refusal that needed the server was not made up front")
+}
+
+func TestGraphLiveReportsAServerThatRefuses(t *testing.T) {
+	serveFake(t, &fakeWorkflowService{listErr: connect.NewError(connect.CodePermissionDenied, errors.New("no"))})
+
+	res := runFlow(t, "graph", "--live")
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "refused while listing runs")
+}
+
+func TestGraphLiveSaysWhenTheFilterCouldNotBeEvaluatedForSomeRuns(t *testing.T) {
+	serveFake(t, &fakeWorkflowService{listResponses: []*v1.ListResponse{
+		{Runs: []*v1.RunSummary{liveRun("billing", v1.RunResponse_STATUS_RUNNING)}, ExcludedByError: 2, NextPageToken: "p2"},
+		{ExcludedByError: 3},
+	}})
+
+	res := runFlow(t, "graph", "--live", "--filter", `labels["team"] == "x"`, "-o", "json")
+	require.NoError(t, res.Err, res.Stderr)
+
+	var g v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(res.Stdout), &g))
+	assert.True(t, g.GetPartial(), "an undercount must not read as complete")
+	assert.Contains(t, g.GetNotes()[0], "5 runs were left out because --filter could not be evaluated")
 }

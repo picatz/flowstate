@@ -42,6 +42,41 @@ message Graph {
     max_items: 100
     items: {string: {max_len: 1024}}
   }];
+
+  // Overlays are live state laid over the nodes above, one layer per kind, in
+  // kind order. They are separate from the structure so a graph built from files
+  // alone and the same graph with a running system's state differ only here.
+  repeated GraphOverlay overlays = 5 [(buf.validate.field).repeated = {max_items: 8}];
+}
+
+// GraphOverlay is one layer of live state over a graph's nodes.
+message GraphOverlay {
+  GraphOverlayKind kind = 1 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+
+  // Entries are ordered by (node, value) so two builds of the same state are the
+  // same bytes. A node absent from the layer has nothing to report for it.
+  repeated GraphOverlayEntry entries = 2 [(buf.validate.field).repeated = {max_items: 4000}];
+}
+
+// GraphOverlayKind says what a layer reports.
+enum GraphOverlayKind {
+  GRAPH_OVERLAY_KIND_UNSPECIFIED = 0;
+
+  // How many runs of a workflow are in each status. `value` is the short status
+  // name (`RUNNING`, `FAILED`), the same one a `List` filter compares.
+  GRAPH_OVERLAY_KIND_RUN_STATUS = 1;
+}
+
+// GraphOverlayEntry is one fact about one node.
+message GraphOverlayEntry {
+  // Node is the id of the node this is about, as in GraphNode.
+  string node = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  // Value is what is reported: for RUN_STATUS, a status name.
+  string value = 2 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
+
+  // Count is how many of the node's runs have this value.
+  uint32 count = 3;
 }
 
 // GraphNode is one thing in a graph.

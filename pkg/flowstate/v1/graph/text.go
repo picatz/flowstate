@@ -27,6 +27,17 @@ func Text(w io.Writer, g *v1.Graph) error {
 		labels[n.GetId()] = n.GetLabel()
 	}
 
+	// Run state, by node, in the layer's own order.
+	runs := map[string][]string{}
+	for _, layer := range g.GetOverlays() {
+		if layer.GetKind() != v1.GraphOverlayKind_GRAPH_OVERLAY_KIND_RUN_STATUS {
+			continue
+		}
+		for _, e := range layer.GetEntries() {
+			runs[e.GetNode()] = append(runs[e.GetNode()], fmt.Sprintf("%d %s", e.GetCount(), clean(e.GetValue())))
+		}
+	}
+
 	workflows := 0
 	for _, n := range g.GetNodes() {
 		if n.GetKind() != v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW {
@@ -34,6 +45,9 @@ func Text(w io.Writer, g *v1.Graph) error {
 		}
 		workflows++
 		fmt.Fprintf(&sb, "%s\n", clean(n.GetLabel()))
+		if state := runs[n.GetId()]; len(state) > 0 {
+			fmt.Fprintf(&sb, "  runs  %s\n", strings.Join(state, ", "))
+		}
 		edges := slices.Clone(out[n.GetId()])
 		// Calls first, then waits, then tasks: what a workflow depends on, then
 		// what it can be told, then what it does.

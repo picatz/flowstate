@@ -259,10 +259,11 @@ type fakeWorkflowService struct {
 	// listResponses is answered in order, so a test can describe a listing that
 	// takes several pages — including a page that comes back empty with more to
 	// find, which a bounded scan produces and a caller must not read as the end.
-	listResponses []*v1.ListResponse
-	listCalls     int
-	lastListToken string
-	listErr       error
+	listResponses  []*v1.ListResponse
+	listCalls      int
+	lastListToken  string
+	lastListFilter string
+	listErr        error
 
 	// listErrAfter makes List fail once this many calls have succeeded, which is
 	// how a test describes a walk that breaks partway rather than at the start.
@@ -350,6 +351,7 @@ func (f *fakeWorkflowService) Terminate(_ context.Context, req *connect.Request[
 // List implements [flowstatev1connect.WorkflowServiceHandler].
 func (f *fakeWorkflowService) List(_ context.Context, req *connect.Request[v1.ListRequest]) (*connect.Response[v1.ListResponse], error) {
 	f.lastListToken = req.Msg.GetPageToken()
+	f.lastListFilter = req.Msg.GetFilter()
 	f.listCalls++
 
 	if f.listErr != nil {

@@ -873,7 +873,7 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 Show how workflows, tasks and signals connect
 
 ```
-flow graph <path>... [flags]
+flow graph [path]... [flags]
 ```
 
 Read Flowfiles and show how they connect: which workflows call which, which tasks each one runs, and which signals each one waits for. A path is a Flowfile, or a directory searched for the YAML files that are Flowfiles, by shape rather than by name.
@@ -881,6 +881,8 @@ Read Flowfiles and show how they connect: which workflows call which, which task
 The graph is what the files declare, not what is running: it reads files and contacts no server. `--output json` writes the `Graph` message, the same document any other client of the graph reads, with nodes and edges in a fixed order so two runs over the same files are the same bytes.
 
 A file that does not compile is left out and named in the graph's notes, which marks the graph partial; the command still succeeds, because the rest of the graph is true. Use `flow validate` to learn what is wrong with the file.
+
+With `--live` the graph also shows what is running: how many runs each workflow has in each status, read from the server at `--address`. A workflow the server runs and no named file declares is still shown. `--filter` narrows the runs with the same CEL expression `flow list` takes. Paths are optional with `--live`.
 
 Examples:
 
@@ -893,11 +895,26 @@ flow graph examples/call-a-workflow/workflow.yaml
 
 # The same graph for a program or an agent:
 flow graph examples -o json | jq '.edges[] | select(.count > 1)'
+
+# What is running now, over what the files declare:
+flow graph examples --live
+
+# Only the failures of one workflow:
+flow graph --live --filter 'status == "FAILED" && name == "billing"'
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
+| `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
+| `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
+| `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env, login. An unknown or unusable source is an error, never anonymous |
+| `--filter <string>` | `string` | — | — | with --live, a CEL expression over runs, as `flow list --filter` takes |
+| `--live` | `bool` | `false` | — | also show the runs on the server at --address, counted by workflow and status |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--tls-ca-file <string>` | `string` | — | `FLOWSTATE_TLS_CA_FILE` | PEM CA bundle to verify the server's certificate against, in place of the system roots (overrides FLOWSTATE_TLS_CA_FILE). Unset trusts the system roots, which is what reaches a server with a certificate from a public CA; set this to reach a server whose certificate chains to a private CA instead |
+| `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
+| `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
+| `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
 
 ## `flow init`
 

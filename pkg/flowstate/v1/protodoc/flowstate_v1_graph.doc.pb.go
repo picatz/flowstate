@@ -50,6 +50,37 @@ func init() {
 			Leading: " Notes say, in plain text, why the graph is partial or what was skipped.\n",
 		},
 		{
+			Name: "flowstate.v1.Graph.overlays",
+			Leading: " Overlays are live state laid over the nodes above, one layer per kind, in\n" +
+				" kind order. They are separate from the structure so a graph built from files\n" +
+				" alone and the same graph with a running system's state differ only here.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphOverlay",
+			Leading: " GraphOverlay is one layer of live state over a graph's nodes.\n",
+		},
+		{
+			Name: "flowstate.v1.GraphOverlay.entries",
+			Leading: " Entries are ordered by (node, value) so two builds of the same state are the\n" +
+				" same bytes. A node absent from the layer has nothing to report for it.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphOverlayEntry",
+			Leading: " GraphOverlayEntry is one fact about one node.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphOverlayEntry.node",
+			Leading: " Node is the id of the node this is about, as in GraphNode.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphOverlayEntry.value",
+			Leading: " Value is what is reported: for RUN_STATUS, a status name.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphOverlayEntry.count",
+			Leading: " Count is how many of the node's runs have this value.\n",
+		},
+		{
 			Name:    "flowstate.v1.GraphNode",
 			Leading: " GraphNode is one thing in a graph.\n",
 		},
@@ -113,6 +144,15 @@ func init() {
 			Name: "flowstate.v1.GraphRef.attempt",
 			Leading: " Attempt is the attempt of the step, counting from 1, when the reference is\n" +
 				" to one.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphOverlayKind",
+			Leading: " GraphOverlayKind says what a layer reports.\n",
+		},
+		{
+			Name: "flowstate.v1.GRAPH_OVERLAY_KIND_RUN_STATUS",
+			Leading: " How many runs of a workflow are in each status. `value` is the short status\n" +
+				" name (`RUNNING`, `FAILED`), the same one a `List` filter compares.\n",
 		},
 		{
 			Name:    "flowstate.v1.GraphNodeKind",
