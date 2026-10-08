@@ -1,7 +1,8 @@
 # The entry a GitHub Linguist pull request would add to lib/linguist/languages.yml,
 # kept here so it is reviewed, tested and kept in step with the editor configs.
-# It is prepared, not submitted: Linguist asks for a language to be in use in
-# roughly two hundred repositories, which this one is not yet. See README.md.
+# It is prepared, not submitted: Linguist asks for a name to be in wide use in
+# the usage Linguist's CONTRIBUTING.md asks for (README.md has the numbers),
+# which this repository is not near.
 #
 # Linguist assigns `language_id` itself (script/update-ids), so it is absent.
 Flowfile:

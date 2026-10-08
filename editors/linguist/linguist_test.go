@@ -21,11 +21,25 @@ func TestSamplesParse(t *testing.T) {
 		t.Fatalf("no samples found (err %v)", err)
 	}
 	for _, p := range paths {
-		if !strings.HasSuffix(p, ".flow.yaml") {
-			t.Errorf("%s: a sample must use the extension the entry claims", p)
+		if !strings.HasSuffix(p, ".flow.yaml") && !strings.HasSuffix(p, ".flow.yml") {
+			t.Errorf("%s: a sample must use an extension the entry claims", p)
 		}
 		if _, _, err := flowfile.ParseFile(p); err != nil {
 			t.Errorf("%s does not parse: %v", p, err)
+		}
+	}
+}
+
+// TestEveryExtensionHasASample holds Linguist's rule that each declared
+// extension needs a sample of its own.
+func TestEveryExtensionHasASample(t *testing.T) {
+	entry := readFile(t, "languages.yml")
+	for _, ext := range []string{".flow.yaml", ".flow.yml"} {
+		if !strings.Contains(entry, `"`+ext+`"`) {
+			t.Fatalf("languages.yml does not declare %s", ext)
+		}
+		if m, _ := filepath.Glob("samples/Flowfile/*" + ext); len(m) == 0 {
+			t.Errorf("no sample for %s", ext)
 		}
 	}
 }
@@ -71,25 +85,22 @@ func TestEntryMatchesEditors(t *testing.T) {
 	}
 }
 
-// TestGrammarScopes checks that the scopes grammars.yml names are the ones the
-// bundled TextMate grammars declare.
+// TestGrammarScopes checks that grammars.yml registers the scope the bundled
+// TextMate grammar declares, and not source.cel: Linguist already vendors that
+// scope and rejects a duplicate.
 func TestGrammarScopes(t *testing.T) {
-	for file, scope := range map[string]string{
-		"../vscode/syntaxes/flowfile.tmLanguage.json": "source.flowfile",
-		"../vscode/syntaxes/cel.tmLanguage.json":      "source.cel",
-	} {
-		var g struct {
-			ScopeName string `json:"scopeName"`
-		}
-		if err := json.Unmarshal([]byte(readFile(t, file)), &g); err != nil {
-			t.Fatal(err)
-		}
-		if g.ScopeName != scope {
-			t.Errorf("%s declares %q, want %q", file, g.ScopeName, scope)
-		}
-		if !strings.Contains(readFile(t, "grammars.yml"), "- "+scope) {
-			t.Errorf("grammars.yml does not list %s", scope)
-		}
+	var g struct {
+		ScopeName string `json:"scopeName"`
+	}
+	if err := json.Unmarshal([]byte(readFile(t, "../vscode/syntaxes/flowfile.tmLanguage.json")), &g); err != nil {
+		t.Fatal(err)
+	}
+	grammars := readFile(t, "grammars.yml")
+	if !strings.Contains(grammars, "\n- "+g.ScopeName+"\n") {
+		t.Errorf("grammars.yml does not register %s", g.ScopeName)
+	}
+	if strings.Contains(grammars, "\n- source.cel") {
+		t.Error("grammars.yml registers source.cel, which Linguist already vendors")
 	}
 }
 

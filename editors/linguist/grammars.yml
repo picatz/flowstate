@@ -1,6 +1,8 @@
-# The matching lines for Linguist's grammars.yml. Both scopes come from one
-# repository: source.flowfile includes source.yaml and injects source.cel into
-# `${...}` fences and bare `must:` values.
+# The matching line for Linguist's grammars.yml. source.flowfile includes
+# source.yaml and injects source.cel into `${...}` fences and bare `must:`
+# values. Linguist already vendors a source.cel (vendor/grammars/spicedb-vscode)
+# and rejects a duplicate scope, so this repository registers only
+# source.flowfile and the injection resolves to that existing CEL grammar. The
+# repository's own source.cel stays in the VS Code extension.
 https://github.com/picatz/flowstate:
 - source.flowfile
-- source.cel

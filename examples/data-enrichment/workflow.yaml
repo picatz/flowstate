@@ -64,7 +64,7 @@ steps:
       max_parallel: 2
       steps:
         - id: lookup
-          description: Enrich one record. "flagged" simulates one the service permanently rejects, retried the same as everything else and failing every attempt, on purpose.
+          description: Enrich one record. "flagged" simulates one the service permanently rejects, rejected by the workflow's own `expect` below, which is a permanent failure and so is not retried, on purpose.
           timeout: 10s
           retry:
             attempts: 3
@@ -78,7 +78,7 @@ steps:
             # asked for, so "flagged" is rejected here, by the workflow,
             # exactly as it would be by a real service that has that record
             # marked bad. The failure this produces is permanent — the
-            # request was never wrong to make — so `retry` above `never
+            # request was never wrong to make — so `retry` above never
             # rescues it, the same way a 4xx does not get retried by default.
             expect: ${record != "flagged" && response.status_code == 200}
             method: GET
