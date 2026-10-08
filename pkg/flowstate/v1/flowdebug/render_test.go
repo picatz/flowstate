@@ -15,13 +15,20 @@ import (
 func TestAValueThatFitsALineIsItsCompactJSON(t *testing.T) {
 	t.Parallel()
 
-	for name, value := range map[string]any{
-		"scalar": "hello",
-		"number": 42,
-		"record": map[string]any{"b": 2, "a": []any{1, 2}},
-		"empty":  map[string]any{},
+	// Fixed bytes, written out by hand: the compact form is the JSON every other
+	// surface hands an author, so a change to it must be a change to this table.
+	for name, tc := range map[string]struct {
+		value any
+		want  string
+	}{
+		"scalar":  {"hello", `"hello"`},
+		"number":  {42, `42`},
+		"record":  {map[string]any{"b": 2, "a": []any{1, 2}}, `{"a":[1,2],"b":2}`},
+		"empty":   {map[string]any{}, `{}`},
+		"escaped": {"line\nbreak \"quoted\" <tag>", `"line\nbreak \"quoted\" \u003ctag\u003e"`},
+		"null":    {nil, `null`},
 	} {
-		assert.Equal(t, mustCompact(t, value), flowdebug.RenderValue(value, flowdebug.Layout{}), name)
+		assert.Equal(t, tc.want, flowdebug.RenderValue(tc.value, flowdebug.Layout{}), name)
 	}
 }
 
@@ -111,12 +118,6 @@ func TestWhatTheLayoutLeavesOutDoesNotDependOnWhatIsLeftOut(t *testing.T) {
 	assert.Equal(t, short, long)
 	assert.NotContains(t, long, "s3cr3t")
 	assert.Contains(t, long, "{… 2 keys}")
-}
-
-func mustCompact(t *testing.T, value any) string {
-	t.Helper()
-
-	return flowdebug.RenderValue(value, flowdebug.Layout{Width: 1 << 20})
 }
 
 // TestInspectLaysOutAValueThatDoesNotFitALine: at the prompt a small answer is
