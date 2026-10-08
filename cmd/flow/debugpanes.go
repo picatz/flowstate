@@ -7,6 +7,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/debugpane"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
@@ -64,6 +65,22 @@ type debugPanes struct {
 	// own goroutine reads this while the command's goroutine is still setting
 	// it up.
 	session atomic.Pointer[flowdebug.Session]
+
+	// attached is the other way to be drawn from: a target reached through the
+	// typed contract alone, as `flow debug attach` does. Exactly one of the two
+	// is set for a run.
+	attached atomic.Pointer[attachedFrames]
+
+	// painted is the revision of the last stop painted from attached, so a
+	// command that does not move the run does not repaint under its answer.
+	painted atomic.Uint64
+}
+
+// attachedFrames is what the panes read a [flowdebug.Frame] from when there is
+// no in-process session: the target, and what the caller adds to its answers.
+type attachedFrames struct {
+	target flowdebug.Target
+	opts   flowdebug.FrameOptions
 }
 
 // debugPanesFor wraps an emitter so that a stop paints the panes, where there
@@ -114,7 +131,58 @@ func (p *debugPanes) setSession(session *flowdebug.Session) {
 	p.session.Store(session)
 }
 
-// paint draws one frame.
+// setTarget installs the target the panes are drawn from when the run is not
+// in this process. Nil-safe for the same reason [debugPanes.setSession] is.
+func (p *debugPanes) setTarget(target flowdebug.Target, opts flowdebug.FrameOptions) {
+	if p == nil {
+		return
+	}
+
+	p.attached.Store(&attachedFrames{target: target, opts: opts})
+}
+
+// paintStop draws the panes for a stop an attached target reported, once per
+// revision. It does nothing for a run that is not held, on a nil receiver (no
+// console), and for a stop it has already drawn.
+func (p *debugPanes) paintStop(snapshot *v1.DebugSnapshot) {
+	if p == nil || snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+		return
+	}
+	revision := snapshot.GetRevision()
+	if revision != 0 && p.painted.Load() == revision {
+		return
+	}
+
+	// Marked only once drawn, so a read that failed is tried again at the same
+	// revision rather than skipped until the run moves.
+	if p.paint() && revision != 0 {
+		p.painted.Store(revision)
+	}
+}
+
+// frame reads the pane frame for layout from whichever source is installed.
+func (p *debugPanes) frame(layout debugpane.Layout) (debugpane.Frame, bool) {
+	if session := p.session.Load(); session != nil {
+		return debugpane.Snapshot(p.ctx, session, layout)
+	}
+
+	attached := p.attached.Load()
+	if attached == nil {
+		return debugpane.Frame{}, false
+	}
+
+	opts := attached.opts
+	opts.StepRows = debugpane.StepRows(layout)
+	opts.MaxValues = debugpane.MaxScopeEvaluations
+	read, err := flowdebug.ReadFrame(p.ctx, attached.target, opts)
+	if err != nil {
+		return debugpane.Frame{}, false
+	}
+
+	return debugpane.FromFrame(read)
+}
+
+// paint draws one frame and reports whether it drew one.
 //
 // Called from inside the session's Emit, which holds the session's output lock
 // for the length of it — deliberately, and not merely tolerably. A pane block
@@ -122,25 +190,23 @@ func (p *debugPanes) setSession(session *flowdebug.Session) {
 // through each other; serializing is what the lock is for. The cost is bounded:
 // a frame is at most [debugpane.MaxScopeEvaluations] evaluations, each bounded
 // by the run's own cost limit, and the run is held at a boundary throughout.
-func (p *debugPanes) paint() {
-	session := p.session.Load()
-	if session == nil {
-		// The first stop of a session whose construction has not finished
-		// handing itself over. Nothing to draw about, and nothing to say: the
-		// break line is already printed and the prompt is what comes next.
-		return
-	}
-
+func (p *debugPanes) paint() bool {
+	// With neither source installed this is the first stop of a session whose
+	// construction has not finished handing itself over. Nothing to draw
+	// about, and nothing to say: the break line is already printed and the
+	// prompt is what comes next.
 	layout := p.layout()
 
-	frame, paused := debugpane.Snapshot(p.ctx, session, layout)
+	frame, paused := p.frame(layout)
 	if !paused {
-		return
+		return false
 	}
 
 	if text := debugpane.Render(frame, p.theme, p.symbols, layout); text != "" {
 		_, _ = io.WriteString(p.out, text)
 	}
+
+	return true
 }
 
 // layout is the space the panes have, measured at the stop rather than at the
