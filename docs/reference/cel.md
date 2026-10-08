@@ -171,7 +171,7 @@ payload.?approved
 
 ### Filtering and transforming a list without a loop
 
-`filter` and `map` are macros — expanded when the file compiles — so a list comprehension costs nothing at evaluation time beyond the work it does. Chained, they read left to right: keep what matters, then compute what is kept. When a comprehension ranges over a map, Flowstate visits keys in ascending key order (false before true; then integers, unsigned integers, and strings by value). Those four are the only key kinds a map may have in an expression: a literal key that is a double, timestamp, duration, bytes or null is refused when the file compiles. The order is identical in local runs and Temporal replays; sort explicitly when a different business order matters.
+`filter` and `map` are macros — expanded when the file compiles — so a list comprehension costs nothing at evaluation time beyond the work it does. Chained, they read left to right: keep what matters, then compute what is kept. When a comprehension ranges over a map, Flowstate visits keys in ascending key order (false before true; then integers, unsigned integers, and strings by value). Those four are the only key kinds a map may have: a key the compiler can see is a double, timestamp, duration, bytes, null, list or map is refused when the file compiles, and any other is refused when the comprehension runs. The order is identical in local runs and Temporal replays; sort explicitly when a different business order matters.
 
 ```cel
 [1, 2, 3, 4, 5].filter(n, n % 2 == 0).map(n, n * n)

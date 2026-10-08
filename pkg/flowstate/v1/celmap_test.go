@@ -194,11 +194,19 @@ func TestMapKeysTheTraversalCannotOrderAreRefusedAtCheck(t *testing.T) {
 		`{duration('1h'): 1}`,
 		`{b'x': 1}`,
 		`{null: 1}`,
+		`{[1]: 'a'}`,
+		`{{'a': 1}: 'b'}`,
 	} {
 		_, issues := env.Compile(refused)
 		require.Error(t, issues.Err(), refused)
 		require.ErrorContains(t, issues.Err(), "map keys must be bool, int, uint or string", refused)
 	}
+
+	// A key the checker cannot type is left to the unchanged runtime refusal.
+	dynEnv, err := env.Extend(cel.Variable("d", cel.DynType))
+	require.NoError(t, err)
+	_, issues := dynEnv.Compile(`{d: 1}.map(k, k)`)
+	require.NoError(t, issues.Err())
 
 	for _, accepted := range []string{
 		`{1: 'a', 2: 'b'}.map(k, k)`,

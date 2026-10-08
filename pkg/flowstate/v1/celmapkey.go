@@ -9,7 +9,8 @@ import (
 const mapKeyValidatorName = "flowstate.map_key_kinds"
 
 // validateMapKeyKinds refuses a map literal whose key is provably a kind the
-// ordered traversal cannot sequence (#1859).
+// ordered traversal cannot sequence (#1859). The admitted kinds are an allow-list,
+// so a list, map, struct or other key is refused with the rest.
 //
 // Every comprehension that ranges over a map visits its keys in one order so
 // both drivers agree (#1359); that order is defined for bool, int, uint and
@@ -18,7 +19,7 @@ const mapKeyValidatorName = "flowstate.map_key_kinds"
 // the first map, filter or all that walked it. A literal's key type is known
 // after checking, so the refusal can be given at the key, and it covers a map
 // built inside a comprehension (items.map(i, {i.at: i})) as well as a written
-// one. A key typed dyn is left to the runtime refusal, which stays.
+// one. A key whose type the checker cannot decide (dyn, a type parameter) is left to the runtime refusal, which stays.
 func validateMapKeyKinds() cel.ASTValidator { return mapKeyValidator{} }
 
 type mapKeyValidator struct{}
@@ -34,7 +35,10 @@ func (mapKeyValidator) Validate(_ *cel.Env, _ cel.ValidatorConfig, a *ast.AST, i
 				continue
 			}
 			switch typ.Kind() {
-			case cel.DoubleKind, cel.TimestampKind, cel.DurationKind, cel.BytesKind, cel.NullTypeKind, cel.TypeKind:
+			case cel.BoolKind, cel.IntKind, cel.UintKind, cel.StringKind,
+				cel.DynKind, cel.AnyKind, cel.TypeParamKind:
+				// Orderable, or not decidable here: left to the runtime refusal.
+			default:
 				iss.ReportErrorAtID(key.ID(),
 					"map key has unsupported CEL type %s: map keys must be bool, int, uint or string", typ)
 			}
