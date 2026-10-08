@@ -818,6 +818,13 @@ console is a REPL over the held run, and hovering a name evaluates it:
 true
 ```
 
+The console completes as you type, on `.` and on demand (the `completions`
+request): `steps.` offers the steps that have finished, and `steps.flagged.`
+offers that step's outputs. A completion is a name and never a value, and it
+stops at the names an author wrote: a key inside a produced value is data, so
+`steps.flagged.value.` offers nothing, as the terminal prompt's tab does not. A
+name the redactor would change is left out rather than shown redacted.
+
 A map or list answers with a reference the variables pane expands, a page at a
 time. The pane is the same scope, grouped as `scope` groups it: `steps`, `vars`,
 `inputs`, a loop's binding, `run` and `trigger`. A very large scope is rendered

@@ -103,6 +103,14 @@ func (d *Driver) Complete(ctx context.Context, line string) (Completion, error) 
 	}
 }
 
+// CompleteExpression is [Driver.Complete] for a front whose text is an
+// expression and not a command line: a debug console that evaluates whatever is
+// typed. The names offered, and what is withheld, are the same as after `inspect
+// ` at a driver.
+func (d *Driver) CompleteExpression(ctx context.Context, expression string) (Completion, error) {
+	return d.offerExpression(ctx, expression)
+}
+
 // offerCommands offers the verbs a driver answers, spelled as a driver spells
 // them.
 func (d *Driver) offerCommands(prefix string) Completion {
