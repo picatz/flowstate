@@ -8,6 +8,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
@@ -128,4 +129,26 @@ func TestInspectLaysOutAValueThatDoesNotFitALine(t *testing.T) {
 
 	assert.Contains(t, out, "debug> 2\ndebug> ", "a scalar is one line")
 	assert.Contains(t, out, "debug> name: \"ada\"\norders:\n  [0]\n    note: \"a long note to push this past a line\"\n    qty: 2\n    sku: \"x-1\"\n  [1]\n")
+}
+
+// TestATreeIsLaidOutAfterTheRedactor: a secret nested in a value too large for a
+// line is withheld in the tree exactly as it is on one line.
+func TestATreeIsLaidOutAfterTheRedactor(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2-correct-horse"
+	var console strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{In: strings.NewReader("inspect {'user': 'ada', 'auth': {'token': '" + secret + "', 'scope': 'read'}, 'note': 'padding to push this value past one line of output width'}\ncontinue\n"), Out: &console})
+	require.NoError(t, err)
+	session.SetRedactor(func(text string) string { return strings.ReplaceAll(text, secret, "[redacted]") })
+
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, &ranSteps{}))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	_, err = v1.Run(ctx, &v1.Workflow{Name: "debugged", Steps: []*v1.Node{markStep("build")}})
+	require.NoError(t, err)
+
+	out := console.String()
+	assert.NotContains(t, out, secret)
+	assert.Contains(t, out, "auth:\n  scope: \"read\"\n  token: \"[redacted]\"\n")
 }

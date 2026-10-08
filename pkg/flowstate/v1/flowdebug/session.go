@@ -2094,28 +2094,15 @@ func nativeText(native any) string {
 	return string(encoded)
 }
 
-// refValTextWith renders an inspection's result through the same conversion
-// a `value:` step's result takes — [cel.RefValueToValue] then
-// [v1.LiteralToGo], exactly as EvalValueNode does — so what an inspection
-// prints and what the same expression would produce in the file are one
-// rendering of one value, rather than two that can drift.
+// redactedTree is the native tree an inspection renders, after both
+// redactions, and whether out could be converted. It is converted the way a
+// `value:` step's result is — [cel.RefValueToValue] then [v1.LiteralToGo],
+// exactly as EvalValueNode does — so what an inspection prints and what the
+// same expression would produce in the file are one rendering of one value.
 //
-// Redacted as a tree first, through value and then [withheldLeaves] with
-// text, for the reason [withheldLeaves] gives; the caller's pass over the
-// rendered line is the backstop behind it.
-func refValTextWith(out ref.Val, text func(string) string, value func(any) any) string {
-	native, ok := redactedTree(out, text, value)
-	if !ok {
-		return unrenderedText(out, text != nil || value != nil)
-	}
-
-	return nativeText(native)
-}
-
-// redactedTree is the native tree [refValTextWith] renders, after both
-// redactions, and whether out could be converted. A caller that lays the tree
-// out itself starts from this rather than from the text, so what it formats is
-// what the single-line rendering would have shown.
+// Redacted as a tree first, through value and then [withheldLeaves] with text,
+// for the reason [withheldLeaves] gives; the caller's pass over the rendered
+// text is the backstop behind it.
 func redactedTree(out ref.Val, text func(string) string, value func(any) any) (any, bool) {
 	native, ok := redactedNative(out, nil)
 	if !ok {
