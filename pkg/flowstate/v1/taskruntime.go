@@ -206,6 +206,18 @@ func ContextWithSecretStep(ctx context.Context, workflow, run, step string) cont
 	return ContextWithTaskRuntime(ctx, runtime)
 }
 
+// ContextWithTaskStep names the step a task is about to run for on a runtime that
+// was handed in without one, and leaves ctx alone when it carries no runtime or
+// already names a step.
+func ContextWithTaskStep(ctx context.Context, stepID string) context.Context {
+	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
+	if !ok || runtime.Step.Step != "" || stepID == "" {
+		return ctx
+	}
+
+	return ContextWithSecretStep(ctx, runtime.Step.Workflow, runtime.Step.Run, stepID)
+}
+
 // TaskStepRefFromContext reports the workflow, run, and step the currently
 // executing task was invoked for, when the engine recorded a step on the
 // context.

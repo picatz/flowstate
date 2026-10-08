@@ -625,8 +625,40 @@ sets the bound (at most 1000) and the report says when it truncated.
 `--mutant ID` replays one. Any survivor fails the command, and the report
 carries the account in `mutation` for `-o json`. `--mutate` is refused with
 `--seeds`, `--fuzz`, `--debug`, `--watch` and `--list`. Not yet covered:
-mutations inside a CEL expression, task inputs, `fail:` and signal rules, and the
-durable driver.
+mutations inside a CEL expression, task inputs, `fail:` and signal rules, and
+the durable driver (`--driver both` proves the unmutated program only).
+
+## Does the run survive being suspended: `--driver both`
+
+The local driver runs a case in one uninterrupted pass, which a durable run
+never does: it suspends, serializes its state and resumes, possibly elsewhere.
+A case that passes locally says nothing about the state a run carries across
+that seam. `flow test --driver both` closes the gap: each passing case runs
+again, in-process and with no server, on the same durable interpreter a worker
+uses, with a Continue-As-New forced between every pair of steps and the case's
+stubs bound afresh. The case fails where the drivers disagree: one finishes and
+the other does not, or a step output the continued run kept differs from the
+local one (maps compare as maps, so key order is not a disagreement).
+
+What it proves is the carried state, the step outputs, loop frames and
+variables a continued run hands to its next segment. A continued run retains
+only the outputs later steps read, so a step it dropped is not compared. It
+does not prove faults. Scripted `signals:` are replayed to the durable run at
+the same offsets from the same senders, and only those the local run accepted:
+a delivery its signal policy refused is absent, as a server would refuse it
+before the workflow saw it. A signal that arrives before its gate is carried
+across the Continue-As-New like any other. A case that injects `faults:`,
+replays a trigger delivery, requires plugins, stubs a task this build does
+not register, reads `run.local`, `run.identity`, `run.workflow_id` or `run.run_id`
+(which differ by design), or stubs a step by id in a workflow with calls or compensations
+stays on the local driver and reports `driver: local only: <why>`
+as a warning, so a green never silently skipped the proof. A stub whose `where:` cannot be
+evaluated on the durable side (it reads a loop binding an activity lacks) does
+the same. Declared run outputs are compared whole; where the workflow declares
+anything sensitive a disagreement names the step and quotes no value. A run that needs
+more than 2000 segments is reported rather than truncated. `--driver both` is
+refused with `--seeds`, `--fuzz`, `--mutate`, `--debug` and `--list`, each its
+own dimension; `--driver local` is the default.
 
 ## One fixture, many rows
 

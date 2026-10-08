@@ -105,6 +105,7 @@ func corpusSizes() map[string]int {
 		"SwitchCases":                     len(SwitchCases()),
 		"TaskOutputDepthCases":            len(TaskOutputDepthCases()),
 		"TaskOutputElementBoundCases":     len(TaskOutputElementBoundCases(standIn)),
+		"TaskOutputSchemaCases":           len(TaskOutputSchemaCases(standIn)),
 		"TaskOutputSizeBoundCases":        len(TaskOutputSizeBoundCases(standIn)),
 		"TaskPolicyCases":                 len(TaskPolicyCases()),
 		"ToleratedIterationIdentityCases": len(ToleratedIterationIdentityCases(standIn)),

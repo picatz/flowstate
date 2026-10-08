@@ -216,7 +216,7 @@ func TestAFieldRefusesWhatItDoesNotCarryYet(t *testing.T) {
 	t.Parallel()
 
 	for _, key := range []string{
-		"default: x", "example: x", "sensitive: true",
+		"sensitive: true",
 	} {
 		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
 			t.Parallel()
@@ -608,4 +608,39 @@ steps:
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "must: this.start < this.end")
 	assert.Contains(t, string(out), "must: this >= 0")
+}
+
+// A field's default is read from the file and held to the field's own rules where the
+// file loads, so a stale one is a diagnostic and not a surprise at the first run.
+func TestAFieldDefaultIsCheckedWhereTheFileLoads(t *testing.T) {
+	t.Parallel()
+
+	source := func(field string) string {
+		return typesSource(`types:
+  Order:
+    fields:
+      id:
+        type: string
+        required: true
+      status:
+        `+field+`
+`, "Order")
+	}
+
+	wf, _, err := flowfile.Parse([]byte(source("{type: enum, values: [open, paid], default: open}")))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(wf))
+
+	for name, field := range map[string]string{
+		"outside the values": "{type: enum, values: [open, paid], default: pending}",
+		"wrong type":         "{type: int, default: soon}",
+		"with required":      "{type: string, required: true, default: open}",
+	} {
+		wf, _, err := flowfile.Parse([]byte(source(field)))
+		require.NoError(t, err, name)
+
+		ds := flowfile.Validate(wf)
+		require.NotEmpty(t, ds, name)
+		assert.Contains(t, ds.Error(), `type "Order" field "status"`, name)
+	}
 }

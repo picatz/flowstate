@@ -147,8 +147,6 @@ func TestRecordDeclarationsRefuseWhatAFieldDoesNotCarry(t *testing.T) {
 	t.Parallel()
 
 	for name, mutate := range map[string]func(*v1.InputDeclaration){
-		"default":   func(f *v1.InputDeclaration) { f.Default = v1.NewLiteral("x") },
-		"example":   func(f *v1.InputDeclaration) { f.Example = v1.NewLiteral("x") },
 		"sensitive": func(f *v1.InputDeclaration) { f.Sensitive = true },
 	} {
 		t.Run(name, func(t *testing.T) {
