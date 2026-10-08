@@ -84,3 +84,23 @@ func Heading(label, note string, width int, o Options) string {
 
 	return ui.Trim(line, width)
 }
+
+// WrapWords breaks text at spaces to fit width: a sentence a screen says in
+// place of its panes, such as that the terminal is too small.
+func WrapWords(text string, width int) string {
+	var lines []string
+	line := ""
+	for word := range strings.FieldsSeq(text) {
+		switch {
+		case line == "":
+			line = word
+		case lipgloss.Width(line)+1+lipgloss.Width(word) <= width:
+			line += " " + word
+		default:
+			lines = append(lines, line)
+			line = word
+		}
+	}
+
+	return strings.Join(append(lines, line), "\n")
+}

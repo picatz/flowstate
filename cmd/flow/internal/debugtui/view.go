@@ -176,7 +176,7 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 	hits := &pane.Hits{}
 	g, err := s.geometry()
 	if err != nil {
-		return strings.Join(pane.Fit(wrapWords(err.Error(), s.Size.W), s.Size.W, s.Size.H), "\n"), hits
+		return strings.Join(pane.Fit(pane.WrapWords(err.Error(), s.Size.W), s.Size.W, s.Size.H), "\n"), hits
 	}
 
 	parts := []pane.Placed{
@@ -257,25 +257,6 @@ func (s Screen) statusBar(width int, st Style) string {
 	}
 
 	return tui.Bar{Left: s.Keys.Hints(width, st.Theme), Right: right}.View(width)
-}
-
-// wrapWords breaks text at spaces to fit width.
-func wrapWords(text string, width int) string {
-	var lines []string
-	line := ""
-	for word := range strings.FieldsSeq(text) {
-		switch {
-		case line == "":
-			line = word
-		case lipgloss.Width(line)+1+lipgloss.Width(word) <= width:
-			line += " " + word
-		default:
-			lines = append(lines, line)
-			line = word
-		}
-	}
-
-	return strings.Join(append(lines, line), "\n")
 }
 
 // HeaderView is the top line: the program, the run, and where it stands.

@@ -86,30 +86,64 @@ func runGraph(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
-	live, _ := cmd.Flags().GetBool("live")
-	filter, _ := cmd.Flags().GetString("filter")
-	if len(args) == 0 && !live {
-		return errors.New("name a Flowfile or a directory of them, or use --live to show what is running")
+	src, err := graphSourcesOf(cmd, args)
+	if err != nil {
+		return err
 	}
-	if filter != "" && !live {
-		return errors.New("--filter narrows the runs that --live reads; add --live")
-	}
-	if _, err := v1.NewRunFilter(filter); err != nil {
+	g, err := src.build(cmd)
+	if err != nil {
 		return err
 	}
 
+	surface := newSurface(cmd)
+	if format != FormatText {
+		return writeJSON(surface, format, g)
+	}
+
+	return graph.Text(surface.Out, g)
+}
+
+// graphSources is what a graph is read from: the Flowfiles under paths and, with
+// live, the runs on the server. `flow graph` reads it once; `flow explore` reads
+// it again each time it is asked to refresh.
+type graphSources struct {
+	paths  []string
+	live   bool
+	filter string
+}
+
+// graphSourcesOf reads the sources the command line names, and refuses a
+// combination that names none before anything is read or requested.
+func graphSourcesOf(cmd *cobra.Command, paths []string) (graphSources, error) {
+	live, _ := cmd.Flags().GetBool("live")
+	filter, _ := cmd.Flags().GetString("filter")
+	if len(paths) == 0 && !live {
+		return graphSources{}, errors.New("name a Flowfile or a directory of them, or use --live to show what is running")
+	}
+	if filter != "" && !live {
+		return graphSources{}, errors.New("--filter narrows the runs that --live reads; add --live")
+	}
+	if _, err := v1.NewRunFilter(filter); err != nil {
+		return graphSources{}, err
+	}
+
+	return graphSources{paths: paths, live: live, filter: filter}, nil
+}
+
+// build reads the sources into one graph.
+func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 	var files []string
-	if len(args) > 0 {
-		if files, err = collectFlowfiles(args); err != nil {
-			return err
+	if len(s.paths) > 0 {
+		var err error
+		if files, err = collectFlowfiles(s.paths); err != nil {
+			return nil, err
 		}
 	}
 
 	// Bounded before any file is parsed: a directory is another party's to fill,
 	// and parsing is the expensive part.
 	if len(files) > maxGraphFiles {
-		return fmt.Errorf("%d Flowfiles found, more than the %d one graph reads; name a narrower directory", len(files), maxGraphFiles)
+		return nil, fmt.Errorf("%d Flowfiles found, more than the %d one graph reads; name a narrower directory", len(files), maxGraphFiles)
 	}
 
 	var (
@@ -137,18 +171,11 @@ func runGraph(cmd *cobra.Command, args []string) error {
 		g.Notes = g.Notes[:min(len(g.Notes), 100)]
 	}
 
-	if live {
-		if g, err = withLiveRuns(cmd, g, filter); err != nil {
-			return err
-		}
+	if s.live {
+		return withLiveRuns(cmd, g, s.filter)
 	}
 
-	surface := newSurface(cmd)
-	if format != FormatText {
-		return writeJSON(surface, format, g)
-	}
-
-	return graph.Text(surface.Out, g)
+	return g, nil
 }
 
 // withLiveRuns lays the runs on the server over g.
