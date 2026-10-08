@@ -74,8 +74,24 @@ func TestAStubReturningWhatItsTaskCannotProduceIsRefused(t *testing.T) {
       - task: log
         returns: {}`)
 
-	assert.Contains(t, caseMessage(report), "status_code")
-	assert.Contains(t, caseMessage(report), "stub 1")
+	// Refused, not warned: no case passes and none carries a warning.
+	refusal := report.GetRefused() + strings.Join(caseErrors(report), "\n")
+	assert.Contains(t, refusal, "stub 1 for task \"http\"")
+	assert.Contains(t, refusal, "status_code")
+	for _, c := range report.GetCases() {
+		assert.False(t, c.GetPassed(), "a stub the schema refuses must not pass")
+		assert.Empty(t, c.GetWarnings())
+	}
+}
+
+// caseErrors is every case's own error.
+func caseErrors(report *v1.TestReport) []string {
+	var errs []string
+	for _, c := range report.GetCases() {
+		errs = append(errs, c.GetError())
+	}
+
+	return errs
 }
 
 // TestAStubReturningAnUndeclaredOutputWarns covers the other two repros. A name
