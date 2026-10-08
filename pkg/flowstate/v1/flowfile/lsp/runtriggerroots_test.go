@@ -3,6 +3,7 @@ package lsp
 import (
 	"testing"
 
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -26,7 +27,16 @@ func TestRunAndTriggerRootsCompleteTheirClosedFieldSets(t *testing.T) {
 	assert.Subset(t, complete("roots", ""), []string{"steps", "run", "trigger"})
 	assert.ElementsMatch(t, []string{"identity", "local", "workflow_id", "run_id", "started_at"}, complete("run", "run."))
 	assert.ElementsMatch(t, []string{"kind", "name", "principal", "delivery_id", "scheduled_at"}, complete("trigger", "trigger."))
-	assert.Contains(t, complete("identity", "run.identity."), "subject")
+	assert.ElementsMatch(t, flowfile.RunIdentityFields(), complete("identity", "run.identity."))
+
+	// A workflow var is evaluated before the run exists, and the validator refuses
+	// both roots there.
+	vars := "edition: v2026.4\nname: roots\nvars:\n  greeting: ${|}\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+	text, pos := splitCursor(t, vars)
+	c.open("file:///varsroots.yaml", text)
+	got := labels(c.complete("file:///varsroots.yaml", pos.Line, pos.Character).Items)
+	assert.NotContains(t, got, "run")
+	assert.NotContains(t, got, "trigger")
 }
 
 // TestRunAndTriggerRootsHoverWithTheirFields pins the hover half: the same
@@ -43,5 +53,9 @@ func TestRunAndTriggerRootsHoverWithTheirFields(t *testing.T) {
 	run := positionOf(t, src, "run.workflow_id", 1)
 	assert.Contains(t, hoverText(c.hover("file:///rootshover.yaml", run.Line, run.Character+1)), "Fields: `identity`, `local`, `workflow_id`, `run_id`, `started_at`.")
 	trigger := positionOf(t, src, "trigger.name", 1)
-	assert.Contains(t, hoverText(c.hover("file:///rootshover.yaml", trigger.Line, trigger.Character+1)), "`delivery_id`")
+	assert.Contains(t, hoverText(c.hover("file:///rootshover.yaml", trigger.Line, trigger.Character+1)), "Fields: `kind`, `name`, `principal`, `delivery_id`, `scheduled_at`.")
+
+	// A cursor on a field after the dot is not on the root.
+	field := positionOf(t, src, "workflow_id", 1)
+	assert.Empty(t, hoverText(c.hover("file:///rootshover.yaml", field.Line, field.Character+2)))
 }

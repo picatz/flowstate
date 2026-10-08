@@ -529,6 +529,11 @@ type refScope struct {
 	// the file compiles — which a file with a half-typed `${inputs.` often does
 	// not — and are the declared names alone when it does not.
 	inputs []celcomplete.Candidate
+
+	// documentLevel marks an expression in one of the document's own blocks (the
+	// workflow `vars:`), evaluated before the run exists: no `run`, no `trigger`.
+	// The validator refuses both there, so the menu does not offer them.
+	documentLevel bool
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -567,6 +572,7 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	}
 
 	scope.locals = append(scope.locals, declaredFunctionCandidates(doc)...)
+	scope.documentLevel = inDocumentExpression(doc, pos)
 
 	if clock {
 		// Bound by the engine for a wait's expressions and nowhere else, which is
@@ -1237,13 +1243,14 @@ func (s refScope) shared() celcomplete.Scope {
 		// with, which is the one a file being typed will be compiled by.
 		Profile: v1.CurrentProfile,
 		Locals:  s.locals,
-		Roots: []celcomplete.Candidate{
-			celcomplete.StepsRoot(s.steps),
-			// Closed sets the validator refuses an unknown field against,
-			// read from the same lists rather than spelled a third time.
+		Roots:   []celcomplete.Candidate{celcomplete.StepsRoot(s.steps)},
+	}
+	if !s.documentLevel {
+		// Closed sets the validator refuses an unknown field against, read from
+		// the same lists rather than spelled a third time.
+		shared.Roots = append(shared.Roots,
 			celcomplete.RunRoot(flowfile.RunFields(), flowfile.RunIdentityFields()),
-			celcomplete.TriggerRoot(v1.TriggerContextFields()),
-		},
+			celcomplete.TriggerRoot(v1.TriggerContextFields()))
 	}
 	if len(s.vars) > 0 {
 		shared.Roots = append(shared.Roots, celcomplete.VarsRoot(s.vars))
@@ -1652,4 +1659,24 @@ func list(items []lsp.CompletionItem) *lsp.CompletionList {
 		return strings.Compare(a.Label, b.Label)
 	})
 	return &lsp.CompletionList{IsIncomplete: false, Items: items}
+}
+
+// inDocumentExpression reports whether pos is inside one of the document's own
+// expressions, the ones [hoverDocumentExpression] answers for.
+func inDocumentExpression(doc *document, pos lsp.Position) bool {
+	if doc.parsed == nil {
+		return false
+	}
+	for _, in := range doc.parsed.expressionEntries() {
+		inside := false
+		walkValues(in.value, func(v *value) {
+			if _, _, ok := v.fenceAt(doc.index, pos); ok {
+				inside = true
+			}
+		})
+		if inside {
+			return true
+		}
+	}
+	return false
 }

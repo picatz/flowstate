@@ -425,8 +425,17 @@ func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor i
 	}
 
 	if ref.step == "" {
-		if h := hoverBareName(doc, from, ref.local, clock, shaping, ls, rng); h != nil {
-			return h
+		// `run` and `trigger` are described only on the root word: `referenceAt`
+		// reports the first segment of the whole reference, so a cursor on a field
+		// after the dot would otherwise describe and underline the root.
+		root := ref.local == v1.RunRoot || ref.local == v1.TriggerRoot
+		if !root || cursor <= ref.span[0]+len(ref.local) {
+			if root {
+				rng = v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[0]+len(ref.local))
+			}
+			if h := hoverBareName(doc, from, ref.local, clock, shaping, ls, rng); h != nil {
+				return h
+			}
 		}
 	}
 
