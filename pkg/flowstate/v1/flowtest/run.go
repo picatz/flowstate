@@ -1457,6 +1457,9 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// a run that failed.
 	result.Warnings = append(shadowedDefaultWarnings(stubs), result.Warnings...)
 
+	// A fact about the file too: what a stub returns is knowable without the run.
+	result.Warnings = append(undeclaredReturnWarnings(stubs), result.Warnings...)
+
 	return
 }
 
