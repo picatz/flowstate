@@ -299,7 +299,7 @@ func expressionMismatch(table *typeTable, stepID string, field protoreflect.Fiel
 	if table == nil {
 		return ""
 	}
-	found, ok := checkedType(table, parsed, table.before(v1.ValueSite{Step: stepID}))
+	found, ok := checkedType(table, parsed, table.before(v1.ValueSite{Step: stepID}), stepID)
 	if !ok {
 		return ""
 	}

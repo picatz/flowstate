@@ -187,7 +187,7 @@ steps:
       timeout: 1h
   - id: use
     log:
-      message: ${string(steps.each.results) + string(steps.gate.payload)}
+      message: ${json.encode(steps.each.results) + string(steps.gate.payload)}
 `
 
 	require.Empty(t, diagnose(t, src),
@@ -267,7 +267,7 @@ steps:
               message: right
   - id: use
     log:
-      message: ${string(steps.both.results)}
+      message: ${json.encode(steps.both.results)}
 `,
 			want: `step "both" has no output "results"; a parallel step's own id exposes nothing`,
 		},
@@ -375,7 +375,7 @@ steps:
             message: ${name}
   - id: use
     log:
-      message: ${string(steps.each.results)}
+      message: ${json.encode(steps.each.results)}
 `,
 		},
 		{
@@ -419,7 +419,7 @@ steps:
             message: tick
   - id: use
     log:
-      message: ${string(steps.countup.results) + string(steps.countup.state)}
+      message: ${json.encode(steps.countup.results) + string(steps.countup.state)}
 `,
 		},
 		{
@@ -437,7 +437,7 @@ steps:
             message: hi
   - id: use
     log:
-      message: ${string(steps.retry.results)}
+      message: ${json.encode(steps.retry.results)}
 `,
 		},
 	} {

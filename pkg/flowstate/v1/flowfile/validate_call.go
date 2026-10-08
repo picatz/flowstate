@@ -152,7 +152,7 @@ func checkCallArgumentType(table *typeTable, stepID, name string, value *v1.Valu
 			return nil
 		}
 
-		leaves := table.leavesFor(parsed, table.before(v1.ValueSite{Step: stepID}))
+		leaves := table.leavesFor(parsed, table.before(v1.ValueSite{Step: stepID}), stepID)
 		env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 		if err != nil {
 			// A defect in this build rather than in the file; see typeErrors,

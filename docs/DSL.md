@@ -704,9 +704,14 @@ which both drivers already enforce on the callee's answer, and a wait's `timed_o
 bool and its batch `count` an int. Each is the type the run stores, not the type the
 schema spells (the same projection `flow tasks` describes), and anything the definition
 leaves open stays `dyn`: a response's `json`, an `outputs:` the step shapes itself, an
-output with no declared `type:`, a loop's `results`. Like a `value:` step, a task, call or
-wait is typed only for positions written after it, and only when its id is unique. What a
-loop's `as:` carries is the rest of #1634.
+output with no declared `type:`. Like a `value:` step, a task, call, wait or
+loop is typed only for positions written after it, and only when its id is unique. What a
+loop's `as:` carries is typed just below.
+
+A `for_each` binds its `as:` name (`item` by default) with the element type of `items:`: over a
+`list(string)` input the item is a `string`, so `n.first_name` is refused where it is written, and
+over a `list(dyn)` it stays `dyn`. A loop's `results` is a list, so `steps.loop.results.first` is refused
+too. A `loop:`'s `state` and the fields of a record item are not typed yet.
 
 *Since written, a type of your own (slice 1):* **`types:` names a record.** A shape
 that more than one declaration repeats is declared once, under `types:`, and used by name

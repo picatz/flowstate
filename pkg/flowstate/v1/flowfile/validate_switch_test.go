@@ -492,7 +492,7 @@ name: t
 steps:
   - id: process
     for_each:
-      items: ${['bucket', 'instance']}
+      items: '${[{"kind": "bucket", "name": "a"}, {"kind": "instance", "name": "b"}]}'
       as: resource
       steps:
         - id: dispatch
