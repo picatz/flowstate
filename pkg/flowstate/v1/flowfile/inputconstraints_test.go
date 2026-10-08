@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -106,30 +107,40 @@ func TestUniqueIsRefusedWithARemedy(t *testing.T) {
 	assert.Contains(t, got, "must: this == this.distinct()")
 }
 
-// TestAnInvalidRegexInMustIsReportedAgainstAnExample is the closest this
-// grammar comes, post-pattern:, to pattern:'s own unconditional "this regex
-// will never compile" diagnostic.
-//
-// The two are not quite the same guarantee, and this test exists to record
-// the difference rather than hide it: pattern:'s regexp.Compile ran in
-// [v1.CheckInputConstraintShape], against the declaration alone, so a bad
-// regex was reported even on an input with no example and no default.
-// must:'s regex only reaches Go's regexp package inside `matches()`, which
-// CEL evaluates rather than type-checks — [v1.CompileMustExpression] parses
-// and type-checks the expression itself (proven not to regress by
-// TestAMustThatDoesNotCompileIsReported below) but does not evaluate it, so
-// an unusable regex compiles clean until something evaluates the
-// expression. `flow validate` still catches it at author time whenever the
-// input carries a literal to check the constraint against — an example, a
-// default — which is the shape every declaration in this repository's own
-// examples has: an input worth constraining is documented with one.
-func TestAnInvalidRegexInMustIsReportedAgainstAnExample(t *testing.T) {
+// TestAnInvalidRegexInMustIsReportedOnceWithoutAnExample pins that a regex
+// literal in `must:` is refused when the declaration is validated, whether or
+// not a default or example happens to evaluate it, and that a declaration
+// carrying both is still one mistake and one diagnostic (#1556).
+func TestAnInvalidRegexInMustIsReportedOnceWithoutAnExample(t *testing.T) {
+	t.Parallel()
+
+	for name, extra := range map[string]string{
+		"nothing evaluates it":  "",
+		"a default and example": "    default: anything\n    example: anything\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			got := diagnose(t, constrainedInputWorkflow(
+				"    type: string\n    must: \"this.matches('[')\"\n"+extra))
+			assert.Equal(t, 1, strings.Count(got, "invalid matches argument"), got)
+			assert.NotContains(t, got, "ERROR:")
+			assert.NotContains(t, got, "<input>")
+		})
+	}
+}
+
+// TestATypeMismatchInMustIsOneSentenceReportedOnce is the type-check half of
+// #1556: cel-go's multi-line rendering is replaced by a sentence and a column.
+func TestATypeMismatchInMustIsOneSentenceReportedOnce(t *testing.T) {
 	t.Parallel()
 
 	got := diagnose(t, constrainedInputWorkflow(
-		"    type: string\n    must: \"this.matches('[')\"\n    example: anything\n"))
-	assert.Contains(t, got, "x")
-	assert.Contains(t, got, "example")
+		"    type: string\n    must: this > 1\n    default: acme\n    example: acme\n"))
+	assert.Equal(t, 1, strings.Count(got, "found no matching overload"), got)
+	assert.Contains(t, got, "(column 6 of the expression)")
+	assert.NotContains(t, got, "ERROR:")
+	assert.NotContains(t, got, "<input>")
 }
 
 // TestAMustThatDoesNotCompileIsReported proves a must: is compiled and
