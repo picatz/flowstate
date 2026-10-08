@@ -112,3 +112,48 @@ func TestRunSubmitsACompiledSpecification(t *testing.T) {
 		assert.NotContains(t, output, "starting plugin-greeting")
 	})
 }
+
+// TestLoadCompiledSpecRefusals pins the claims loadCompiledSpec's doc makes:
+// an unknown field, an over-limit file and a specification the schema rejects
+// are each refused before anything is submitted.
+func TestLoadCompiledSpecRefusals(t *testing.T) {
+	t.Parallel()
+
+	write := func(t *testing.T, data []byte) string {
+		t.Helper()
+
+		path := filepath.Join(t.TempDir(), "spec.json")
+		require.NoError(t, os.WriteFile(path, data, 0o600))
+
+		return path
+	}
+
+	t.Run("an unknown field is not dropped", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := loadCompiledSpec(write(t, []byte(`{"name":"x","fromTheFuture":true}`)))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "not a compiled specification")
+	})
+
+	t.Run("an over-limit file is refused unread", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := loadCompiledSpec(write(t, make([]byte, maxCompiledSpecBytes+1)))
+		require.Error(t, err)
+	})
+
+	t.Run("an empty specification fails the schema", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := loadCompiledSpec(write(t, []byte(`{}`)))
+		require.Error(t, err)
+	})
+
+	t.Run("a failed spec run offers no file as a command", func(t *testing.T) {
+		t.Parallel()
+
+		assert.Empty(t, runSuggestionFile(true, "spec.json"))
+		assert.Equal(t, "flow.yaml", runSuggestionFile(false, "flow.yaml"))
+	})
+}

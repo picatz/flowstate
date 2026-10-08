@@ -1046,7 +1046,7 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason, RequestId: &requestID}))
 	if err != nil {
 		arguments, redacted := runArgumentFlags(cmd, workflow)
-		refusal := refusedStart(args[0], workflow.GetName(), arguments, redacted, server, err)
+		refusal := refusedStart(runSuggestionFile(spec, args[0]), workflow.GetName(), arguments, redacted, server, err)
 		if noServerAnswered(err) {
 			// No server answered, so nothing quotes an argument, and the
 			// remedy's own arguments are already redacted.
@@ -2618,12 +2618,18 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 // message of its own because the diagnostics have already been printed.
 var errValidationFailed = errors.New("validation failed")
 
-// loadWorkflow reads, compiles, and validates a Flowfile.
-//
-// Validation happens before execution so that a mistake is reported instead of
-// partially performed. An unknown task name, for instance, used to fail only when
-// its step was reached, by which point earlier steps had already made their
-// requests.
+// runSuggestionFile is the file a failed `flow run` may offer in a runnable
+// command: a Flowfile can be offered back as `flow run <file>` and
+// `flow run local <file>`, but a compiled specification can be neither (the
+// first needs --spec, the second reads Flowfiles), so it offers none.
+func runSuggestionFile(spec bool, path string) string {
+	if spec {
+		return ""
+	}
+
+	return path
+}
+
 // maxCompiledSpecBytes bounds a compiled specification read from disk. A
 // specification carries every expression, descriptor pin and call it resolved,
 // so it is larger than the Flowfile it came from, and the bound exists so a
@@ -2651,6 +2657,12 @@ func loadCompiledSpec(path string) (*v1.Workflow, error) {
 	return &workflow, nil
 }
 
+// loadWorkflow reads, compiles, and validates a Flowfile.
+//
+// Validation happens before execution so that a mistake is reported instead of
+// partially performed. An unknown task name, for instance, used to fail only when
+// its step was reached, by which point earlier steps had already made their
+// requests.
 func loadWorkflow(path string) (*v1.Workflow, error) {
 	// File-aware rather than reading the bytes and calling [flowfile.Unmarshal]:
 	// a `call:` step is resolved relative to this file's own directory, and only
