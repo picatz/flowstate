@@ -253,7 +253,7 @@ func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) strin
 // label is what the reader wrote (`tenant`, or `order.id` for a field reached by
 // a path) and provenance is a sentence saying where the declaration lives, empty
 // when the reader is looking at it. A sensitive declaration is described and its
-// example shown, as `flow run --help` does, and no value is ever shown because
+// example shown, as `flow run --help` does; no run-time value is shown, because
 // hover has none.
 func declarationDoc(label string, declaration *v1.InputDeclaration, provenance string) string {
 	var b strings.Builder

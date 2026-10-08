@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -79,11 +80,12 @@ func TestHoverDescribesAWorkflowVar(t *testing.T) {
 	assert.Contains(t, got, "**`vars.region`** · workflow var, declared on line 16")
 	assert.Contains(t, got, "`us-east-1`")
 
-	pos = positionOf(t, inputHoverSource, "vars.region == ", len("vars.region == "))
-	// Past the reference, nothing about the var applies.
-	if h := c.hover(uri, pos.Line, pos.Character); h != nil {
-		assert.NotContains(t, hoverText(h), "workflow var")
-	}
+	// A method on the var is the function's to describe, not the var's.
+	src := strings.Replace(inputHoverSource, `vars.region == "us-east-1"`, `vars.region.upperAscii() == "US-EAST-1"`, 1)
+	c.open("file:///var-method.yaml", src)
+	pos = positionOf(t, src, "upperAscii", 2)
+	got = hoverText(c.hover("file:///var-method.yaml", pos.Line, pos.Character))
+	assert.NotContains(t, got, "workflow var")
 }
 
 // TestCompletionOffersTheDeclaredInputs checks that `${inputs.` completes to the
@@ -114,4 +116,10 @@ steps:
 		labels = append(labels, it.Label)
 	}
 	assert.Equal(t, []string{"env"}, labels)
+
+	// A file that declares none teaches no inputs root.
+	bare := "edition: " + flowfile.CurrentEdition + "\nname: none\nsteps:\n  - id: show\n    value: ${inputs.}\n"
+	c.open("file:///no-inputs.yaml", bare)
+	pos = positionOf(t, bare, "inputs.", len("inputs."))
+	assert.Empty(t, c.complete("file:///no-inputs.yaml", pos.Line, pos.Character).Items)
 }

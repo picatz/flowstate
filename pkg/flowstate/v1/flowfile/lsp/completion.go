@@ -890,11 +890,6 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	return scope
 }
 
-// varsCandidates offers the keys of a `vars:` block.
-//
-// One function for both positions, because the block is one grammar rule written at
-// several sites — the same reason the compiler compiles it in one place. What
-// differs is only what to call it, which is what detail says.
 // declaredInputCandidates lists the file's declared inputs as names for after `inputs.`.
 func declaredInputCandidates(doc *document) []celcomplete.Candidate {
 	var top *entry
@@ -929,6 +924,11 @@ func declaredInputCandidates(doc *document) []celcomplete.Candidate {
 	return out
 }
 
+// varsCandidates offers the keys of a `vars:` block.
+//
+// One function for both positions, because the block is one grammar rule written at
+// several sites — the same reason the compiler compiles it in one place. What
+// differs is only what to call it, which is what detail says.
 func varsCandidates(vars *entry, detail string) []celcomplete.Candidate {
 	if vars == nil || vars.value == nil {
 		return nil
