@@ -671,10 +671,11 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// about the task.
 	ds = append(ds, validateTaskInputs(id, task)...)
 
-	// A literal input is type-checked against the field by validateTaskInputs; an
-	// input written as a direct reference to a name this file types — `${inputs.x}`,
-	// `${vars.x}` — is checked here, where the workflow is in hand to read the
-	// declaration from (#158). A computed expression stays unchecked, deliberately.
+	// A literal input is type-checked against the field by validateTaskInputs. An
+	// expression is checked here, where the workflow and its type table are in hand:
+	// a direct reference to a name this file types — `${inputs.x}`, `${vars.x}` — by
+	// that declaration (#158), and any other expression whose type the checker
+	// decides by that type (#1637). One it cannot type (`dyn`) stays unchecked.
 	ds = append(ds, checkExpressionInputTypes(id, task, wf, scope.types)...)
 
 	// Some inputs are evaluated by the task itself, in a scope this validator does
@@ -1450,7 +1451,7 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 		})
 	}
 
-	ds = append(ds, validateUndoInputs(id, task)...)
+	ds = append(ds, validateUndoInputs(id, task, wf, scope.types)...)
 
 	// The step's own outputs, added to a copy: this scope is for the compensation
 	// and is thrown away, so nothing after the step can reference itself by having
@@ -1476,8 +1477,8 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 // the *step's own* task and resolve to nothing or, worse, to a same-named input of
 // it — so the field is the `undo:` key, and the input's name moves into the
 // message where it is unambiguous.
-func validateUndoInputs(id string, task *v1.Task) Diagnostics {
-	inner := validateTaskInputs(id, task)
+func validateUndoInputs(id string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
+	inner := append(validateTaskInputs(id, task), checkExpressionInputTypes(id, task, wf, table)...)
 
 	ds := make(Diagnostics, 0, len(inner))
 	for _, d := range inner {

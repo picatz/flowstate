@@ -668,3 +668,37 @@ func TestComputedTaskInputIsCheckedAgainstTheFieldItFeeds(t *testing.T) {
 		})
 	}
 }
+
+// TestComputedTaskInputRefusalsCoverNullBytesAndCompensation pins the three
+// edges review found around #1637: null is a decided type, bytes are not text,
+// and a compensation's inputs run the same descriptor binding a step's do.
+func TestComputedTaskInputRefusalsCoverNullBytesAndCompensation(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct{ name, src, want string }{
+		{"null into a string field", logInput(`message: ${null}`), "expected a string, but this expression is null"},
+		{"bytes into a string field", logInput(`message: ${b"x"}`), "expected a string, but this expression is a string of bytes"},
+		{"integer into a compensation's string field", `edition: v2026.4
+name: t
+steps:
+  - id: a
+    log:
+      message: ok
+    undo:
+      log:
+        message: ${42}
+`, "expected a string, but this expression is a whole number"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(tc.src))
+			if err != nil {
+				t.Fatalf("ValidateSource() error: %v", err)
+			}
+			if !strings.Contains(ds.Error(), tc.want) {
+				t.Errorf("diagnostics = %s, want one containing %q", ds.Error(), tc.want)
+			}
+		})
+	}
+}
