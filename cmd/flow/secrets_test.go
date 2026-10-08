@@ -140,7 +140,23 @@ func TestNamespacedSecretConfigurationIsTenantScoped(t *testing.T) {
 
 func TestSecretProviderWithoutPolicyFailsClosed(t *testing.T) {
 	_, _, err := runLocal(t, narratingWorkflow, "--secret-env", "API_TOKEN")
-	require.ErrorContains(t, err, "no access policy")
+	require.ErrorContains(t, err, "scheme env")
+	require.ErrorContains(t, err, "--auth-policy")
+}
+
+// TestTheMissingPolicyRefusalNamesItsCauseAndBothRemedies is #1545: a plugin
+// that advertises a secrets capability registers a provider the operator never
+// asked for, so the refusal says which scheme is held and what to do about it.
+func TestTheMissingPolicyRefusalNamesItsCauseAndBothRemedies(t *testing.T) {
+	err := missingSecretPolicyError([]string{"example", "env"})
+	require.ErrorContains(t, err, "scheme example, env")
+	require.ErrorContains(t, err, "plugins that advertise a secrets capability")
+	require.ErrorContains(t, err, "--auth-policy")
+	require.ErrorContains(t, err, "--plugin-scheme")
+
+	none := missingSecretPolicyError(nil)
+	require.ErrorContains(t, none, "no access policy", "with no scheme to name the refusal keeps its short form")
+	require.NotContains(t, none.Error(), "plugins that advertise", "an unnamed cause must not blame plugins")
 }
 
 // TestSecretRegistryDefaultsRegisterNothing pins the fail-closed baseline every
