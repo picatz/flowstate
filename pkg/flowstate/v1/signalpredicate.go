@@ -130,12 +130,11 @@ func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),
+		// The literal check every other checker carries (see buildEnv): a
+		// `matches('[')` is refused where it is written instead of denying every
+		// delivery at run time. It replaces the coverage the retired computed
+		// `subject:` position had.
 		celrule.Literals(),
-		// The same literal check every other checker inherits from the shared
-		// profile (see buildEnv): a `matches('[')` is refused where it is
-		// written instead of denying every delivery at run time. It replaces
-		// the coverage the retired computed `subject:` position had.
-		cel.ASTValidators(cel.ValidateRegexLiterals()),
 	}
 	if withRun {
 		opts = append(opts, cel.Variable("run", cel.ObjectType(signalPolicyActorTypeName)))
