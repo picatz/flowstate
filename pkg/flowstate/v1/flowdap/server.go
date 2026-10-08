@@ -77,7 +77,6 @@ type Server struct {
 	// request arrives, and it keeps a cache.
 	completeMu   sync.Mutex
 	driver       *flowdebug.Driver
-	completerFor flowdebug.Target
 	sourceMap    *v1.DebugSourceMap
 	capabilities *v1.DebugCapabilities
 	start        func()
@@ -1576,8 +1575,10 @@ const maxCompletionText = 4096
 // list rather than an error, because an editor asks on every keystroke.
 func (s *Server) completions(ctx context.Context, request inbound) {
 	var asked struct {
-		Text   string `json:"text"`
-		Column int    `json:"column"`
+		FrameID *int   `json:"frameId"`
+		Text    string `json:"text"`
+		Line    *int   `json:"line"`
+		Column  int    `json:"column"`
 	}
 	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
 		s.fail(request, "invalid completions arguments")
@@ -1586,21 +1587,40 @@ func (s *Server) completions(ctx context.Context, request inbound) {
 	}
 	empty := completionsBody{Targets: []completionItem{}}
 
+	// A frame with no readable scope has no names to offer, as `evaluate` has
+	// nothing to read there.
 	held, _ := s.currentStop()
-	if held == nil || len(asked.Text) > maxCompletionText {
+	if held == nil || len(asked.Text) > maxCompletionText || asked.FrameID != nil && !scopedFrame(held, *asked.FrameID) {
 		s.reply(request, empty)
 
 		return
 	}
 
 	s.mu.Lock()
-	columnsFrom0 := s.columnsFrom0
+	columnsFrom0, linesFrom0 := s.columnsFrom0, s.linesFrom0
 	s.mu.Unlock()
+
+	// The console may send several lines and name the one the cursor is on;
+	// the column counts from the start of that line.
+	text := asked.Text
+	if asked.Line != nil {
+		index := *asked.Line
+		if !linesFrom0 {
+			index--
+		}
+		lines := strings.Split(text, "\n")
+		if index < 0 || index >= len(lines) {
+			s.reply(request, empty)
+
+			return
+		}
+		text = lines[index]
+	}
 	cursor := asked.Column
 	if !columnsFrom0 {
 		cursor--
 	}
-	text := asked.Text[:byteOffset(asked.Text, cursor)]
+	text = text[:byteOffset(text, cursor)]
 
 	answer, err := s.completer(s.currentTarget()).CompleteExpression(ctx, text)
 	if err != nil {
@@ -1609,8 +1629,12 @@ func (s *Server) completions(ctx context.Context, request inbound) {
 		return
 	}
 
-	// Both positions are in the UTF-16 units an editor counts in.
+	// Both positions are in the UTF-16 units an editor counts in, and `start`
+	// is in the client's column origin like the `column` it answers.
 	start := utf16Len(text[:len(text)-len(answer.Prefix)])
+	if !columnsFrom0 {
+		start++
+	}
 	body := empty
 	for _, candidate := range answer.Candidates {
 		kind := "field"
@@ -1646,13 +1670,15 @@ func utf16Len(text string) int {
 	return n
 }
 
-// completer is the driver completions are read through, kept for as long as the
-// target is the same so that its per-revision cache is.
+// completer is the driver completions are read through. A server is bound to
+// one target for its life — a second launch or attach is refused — so the
+// driver, and the per-revision cache it keeps, is made once. Targets are not
+// compared: nothing requires one to be comparable.
 func (s *Server) completer(target flowdebug.Target) *flowdebug.Driver {
 	s.completeMu.Lock()
 	defer s.completeMu.Unlock()
-	if s.completerFor != target || s.driver == nil {
-		s.driver, s.completerFor = flowdebug.NewDriver(target), target
+	if s.driver == nil {
+		s.driver = flowdebug.NewDriver(target)
 	}
 
 	return s.driver

@@ -81,14 +81,14 @@ func TestCompletionsOfferTheHeldRunsScope(t *testing.T) {
 	assert.ElementsMatch(t, []string{"start", "each"}, labels(targets), "the steps that finished are the names under steps")
 	for _, target := range targets {
 		assert.Equal(t, "field", target["type"])
-		assert.EqualValues(t, 6, target["start"], "the name replaces what follows `steps.`")
+		assert.EqualValues(t, 7, target["start"], "the name replaces what follows `steps.`, counted from 1 as the client counts")
 		assert.EqualValues(t, 0, target["length"])
 	}
 
 	targets = completionTargets(t, c, 8, "steps.e", 8)
 	require.Len(t, targets, 1)
 	assert.Equal(t, "each", targets[0]["label"])
-	assert.EqualValues(t, 6, targets[0]["start"])
+	assert.EqualValues(t, 7, targets[0]["start"])
 	assert.EqualValues(t, 1, targets[0]["length"], "the typed `e` is what the name replaces")
 
 	// A root continues, so the editor is offered it as a module.
@@ -111,7 +111,7 @@ func TestCompletionsReadOnlyTheTextBeforeTheCursor(t *testing.T) {
 	// emoji is two.
 	targets = completionTargets(t, c, 7, "\"é😀\" + steps.s", 16)
 	require.Len(t, targets, 1)
-	assert.EqualValues(t, 14, targets[0]["start"])
+	assert.EqualValues(t, 15, targets[0]["start"])
 	assert.EqualValues(t, 1, targets[0]["length"])
 
 	assert.ElementsMatch(t, []string{"run.", "steps.", "trigger."}, labels(completionTargets(t, c, 8, "steps.s", 0)),
@@ -179,4 +179,24 @@ func TestAZeroBasedClientCountsItsColumnsFromZero(t *testing.T) {
 	assert.Equal(t, "steps.", targets[0]["label"])
 	assert.EqualValues(t, 0, targets[0]["start"])
 	assert.EqualValues(t, 3, targets[0]["length"])
+}
+
+func TestCompletionsHonourTheFrameAndTheLineOfTheText(t *testing.T) {
+	t.Parallel()
+
+	c, _ := stoppedAtEntry(t)
+	continueTo(t, c, 4, "price")
+
+	c.send(6, "completions", map[string]any{"frameId": 9999, "text": "steps.s", "column": 8})
+	assert.Empty(t, body(c.await("response", "completions"))["targets"], "a frame with no scope has no names")
+
+	// The cursor is on the second line, and its column counts from that line.
+	c.send(7, "completions", map[string]any{"frameId": 1, "text": "1 +\nsteps.e", "line": 2, "column": 8})
+	targets := body(c.await("response", "completions"))["targets"].([]any)
+	require.Len(t, targets, 1)
+	assert.Equal(t, "each", targets[0].(map[string]any)["label"])
+	assert.EqualValues(t, 7, targets[0].(map[string]any)["start"])
+
+	c.send(8, "completions", map[string]any{"frameId": 1, "text": "steps.e", "line": 5, "column": 8})
+	assert.Empty(t, body(c.await("response", "completions"))["targets"], "a line the text does not have")
 }

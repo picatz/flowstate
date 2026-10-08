@@ -232,15 +232,21 @@ func (d *Driver) rootNames(ctx context.Context, revision uint64) []Candidate {
 	add(Candidate{Text: "steps.", Detail: "a scope root", Continues: true})
 
 	groups, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{Revision: revision})
-	if err != nil {
+	if err != nil || groups.GetError() != "" {
 		// Not remembered: a refusal or a failed round trip is not the stop's
 		// answer, and the next tab should ask again.
 		return out
 	}
+	whole := true
 	for _, group := range groups.GetChildren() {
 		handle := group.GetValue().GetExpression()
 		first, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{Revision: revision, Expression: handle, Limit: 1})
-		if err != nil || len(first.GetChildren()) == 0 {
+		if err != nil || first.GetError() != "" {
+			whole = false
+
+			continue
+		}
+		if len(first.GetChildren()) == 0 {
 			continue
 		}
 		member := first.GetChildren()[0]
@@ -252,7 +258,9 @@ func (d *Driver) rootNames(ctx context.Context, revision uint64) []Candidate {
 		}
 
 		all, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{Revision: revision, Expression: handle, Limit: celcomplete.MaxCandidates})
-		if err != nil {
+		if err != nil || all.GetError() != "" {
+			whole = false
+
 			continue
 		}
 		for _, child := range all.GetChildren() {
@@ -261,7 +269,11 @@ func (d *Driver) rootNames(ctx context.Context, revision uint64) []Candidate {
 	}
 	slices.SortFunc(out, func(a, b Candidate) int { return cmp.Compare(a.Text, b.Text) })
 
-	d.roots, d.rootsRevision = out, revision
+	// What a refusal left out is not the stop's answer, so a partial listing is
+	// offered but not remembered.
+	if whole {
+		d.roots, d.rootsRevision = out, revision
+	}
 
 	return out
 }
