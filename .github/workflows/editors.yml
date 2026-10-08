@@ -82,6 +82,7 @@ on:
       - 'cmd/flow/**'
       - 'editors/vscode/**'
       - 'editors/tree-sitter-cel/**'
+      - 'editors/nvim/**'
       - '.github/workflows/editors.yml'
 
 permissions:
@@ -104,6 +105,10 @@ env:
   # for this tag.
   TREE_SITTER_VERSION: v0.27.0
   TREE_SITTER_SHA256: 20a1f39ec1c45f2211492dcb8881c802b643b554bb196869a29ac3778277fa77
+  # The YAML parser the Flowfile injection queries run over, fetched by commit:
+  # git checks the object hash, so the content is the content of this revision
+  # (tree-sitter-grammars/tree-sitter-yaml, tag v0.7.2).
+  YAML_PARSER_REV: 7708026449bed86239b1cd5bce6e3c34dbca6415
 
 jobs:
   neovim:
@@ -238,3 +243,52 @@ jobs:
       # renamed node makes `tree-sitter query` fail rather than colour nothing.
       - name: Compile the highlight query
         run: tree-sitter query queries/highlights.scm test/highlight.cel > /dev/null
+
+  neovim-treesitter:
+    name: Neovim tree-sitter injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials: false — see the same note on the neovim job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Neovim
+        run: |
+          set -euo pipefail
+          url="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-x86_64.tar.gz"
+          curl --fail --silent --show-error --location --output nvim.tar.gz "$url"
+          echo "${NVIM_SHA256}  nvim.tar.gz" | sha256sum --check --strict
+          tar -xzf nvim.tar.gz
+          echo "${PWD}/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Install the tree-sitter CLI
+        run: |
+          set -euo pipefail
+          url="https://github.com/tree-sitter/tree-sitter/releases/download/${TREE_SITTER_VERSION}/tree-sitter-linux-x64.gz"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/tree-sitter.gz" "$url"
+          echo "${TREE_SITTER_SHA256}  ${RUNNER_TEMP}/tree-sitter.gz" | sha256sum --check --strict
+          gunzip --stdout "${RUNNER_TEMP}/tree-sitter.gz" > "${RUNNER_TEMP}/tree-sitter"
+          chmod +x "${RUNNER_TEMP}/tree-sitter"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      # Both parsers are compiled from source into a runtimepath directory, the
+      # layout an editor's plugin manager produces.
+      - name: Build the parsers
+        run: |
+          set -euo pipefail
+          parsers="${RUNNER_TEMP}/parsers/parser"
+          mkdir -p "$parsers" "${RUNNER_TEMP}/yaml"
+          git -C "${RUNNER_TEMP}/yaml" init --quiet
+          git -C "${RUNNER_TEMP}/yaml" fetch --quiet --depth 1 https://github.com/tree-sitter-grammars/tree-sitter-yaml "${YAML_PARSER_REV}"
+          git -C "${RUNNER_TEMP}/yaml" checkout --quiet FETCH_HEAD
+          test "$(git -C "${RUNNER_TEMP}/yaml" rev-parse HEAD)" = "${YAML_PARSER_REV}"
+          cc -shared -fPIC -O1 -I"${RUNNER_TEMP}/yaml/src" -o "$parsers/yaml.so" \
+            "${RUNNER_TEMP}/yaml/src/parser.c" "${RUNNER_TEMP}/yaml/src/scanner.c"
+          (cd editors/tree-sitter-cel && tree-sitter generate)
+          cc -shared -fPIC -O1 -Ieditors/tree-sitter-cel/src -o "$parsers/cel.so" editors/tree-sitter-cel/src/parser.c
+          echo "TS_PARSERS=${RUNNER_TEMP}/parsers" >> "$GITHUB_ENV"
+
+      - name: Check the injections in Neovim
+        run: nvim --headless -u NONE -l editors/nvim/test/ts_test.lua
