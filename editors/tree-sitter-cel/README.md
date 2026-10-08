@@ -36,8 +36,8 @@ $ tree-sitter test
   digest-verified `tree-sitter` binary, runs the corpus, and checks that the
   highlight query compiles. The injection queries are exercised by the Neovim
   job, which builds tree-sitter-yaml at a pinned revision and asserts which ranges
-  get a `cel` tree (`editors/nvim/test/ts_test.lua`). Helix and Zed wiring is
-  separate work.
+  get a `cel` tree (`editors/nvim/test/ts_test.lua`). Helix has an
+  unverified query in `editors/helix` (see `docs/EDITORS.md`); Zed has none.
 - Inside a flow mapping, YAML forbids `{` and `}` in a plain scalar, so a
   `${...}` fence in `{a: ...}` must be quoted; the injection then sees it as a
   quoted scalar.
