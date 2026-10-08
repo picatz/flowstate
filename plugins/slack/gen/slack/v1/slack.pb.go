@@ -448,6 +448,143 @@ func (x *UpdateOutputs) GetTs() string {
 	return ""
 }
 
+// RespondInputs describes an answer to an interaction through the response_url
+// Slack sent with it. The URL is the credential, scoped by Slack to the one
+// conversation the interaction happened in and valid for 30 minutes and five
+// uses, so this task takes no token. It must be the response_url of a delivery
+// the trigger verified, for example ${event.body.response_url}.
+type RespondInputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// response_url is the https://hooks.slack.com/actions/... or /commands/...
+	// address from the interaction. Any other address is refused before a request.
+	ResponseUrl string `protobuf:"bytes,1,opt,name=response_url,json=responseUrl,proto3" json:"response_url,omitempty"`
+	// how says what the answer does: "replace" (the default) swaps the message
+	// the clicked control was on, "delete" removes it, "ephemeral" shows a new
+	// message only to the person who clicked, and "in_channel" posts a new
+	// message everyone can see.
+	How string `protobuf:"bytes,2,opt,name=how,proto3" json:"how,omitempty"`
+	// text is the message, or its notification fallback beside a card or blocks,
+	// exactly as for slack.post. Not used by "delete".
+	Text string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	// card is a preset layout. Exclusive with blocks.
+	Card *v11.Card `protobuf:"bytes,4,opt,name=card,proto3" json:"card,omitempty"`
+	// blocks is native Block Kit, at most 50. Exclusive with card.
+	Blocks        []*Block `protobuf:"bytes,5,rep,name=blocks,proto3" json:"blocks,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RespondInputs) Reset() {
+	*x = RespondInputs{}
+	mi := &file_slack_v1_slack_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondInputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondInputs) ProtoMessage() {}
+
+func (x *RespondInputs) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondInputs.ProtoReflect.Descriptor instead.
+func (*RespondInputs) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *RespondInputs) GetResponseUrl() string {
+	if x != nil {
+		return x.ResponseUrl
+	}
+	return ""
+}
+
+func (x *RespondInputs) GetHow() string {
+	if x != nil {
+		return x.How
+	}
+	return ""
+}
+
+func (x *RespondInputs) GetText() string {
+	if x != nil {
+		return x.Text
+	}
+	return ""
+}
+
+func (x *RespondInputs) GetCard() *v11.Card {
+	if x != nil {
+		return x.Card
+	}
+	return nil
+}
+
+func (x *RespondInputs) GetBlocks() []*Block {
+	if x != nil {
+		return x.Blocks
+	}
+	return nil
+}
+
+// RespondOutputs reports what the answer did.
+type RespondOutputs struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// how is the action taken: replace, delete, ephemeral or in_channel.
+	How           string `protobuf:"bytes,1,opt,name=how,proto3" json:"how,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RespondOutputs) Reset() {
+	*x = RespondOutputs{}
+	mi := &file_slack_v1_slack_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RespondOutputs) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RespondOutputs) ProtoMessage() {}
+
+func (x *RespondOutputs) ProtoReflect() protoreflect.Message {
+	mi := &file_slack_v1_slack_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RespondOutputs.ProtoReflect.Descriptor instead.
+func (*RespondOutputs) Descriptor() ([]byte, []int) {
+	return file_slack_v1_slack_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *RespondOutputs) GetHow() string {
+	if x != nil {
+		return x.How
+	}
+	return ""
+}
+
 var File_slack_v1_slack_proto protoreflect.FileDescriptor
 
 const file_slack_v1_slack_proto_rawDesc = "" +
@@ -488,7 +625,17 @@ const file_slack_v1_slack_proto_rawDesc = "" +
 	"\bmetadata\x18\a \x01(\v2\x12.slack.v1.MetadataR\bmetadata\"9\n" +
 	"\rUpdateOutputs\x12\x18\n" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x0e\n" +
-	"\x02ts\x18\x02 \x01(\tR\x02tsB\x9b\x01\n" +
+	"\x02ts\x18\x02 \x01(\tR\x02ts\"\xff\x01\n" +
+	"\rRespondInputs\x12-\n" +
+	"\fresponse_url\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\x80\x04R\vresponseUrl\x12A\n" +
+	"\x03how\x18\x02 \x01(\tB/\xbaH,r*R\x00R\areplaceR\x06deleteR\tephemeralR\n" +
+	"in_channelR\x03how\x12\x1c\n" +
+	"\x04text\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\xa0\x1fR\x04text\x12+\n" +
+	"\x04card\x18\x04 \x01(\v2\x17.flowstate.chat.v1.CardR\x04card\x121\n" +
+	"\x06blocks\x18\x05 \x03(\v2\x0f.slack.v1.BlockB\b\xbaH\x05\x92\x01\x02\x102R\x06blocks\"\"\n" +
+	"\x0eRespondOutputs\x12\x10\n" +
+	"\x03how\x18\x01 \x01(\tR\x03howB\x9b\x01\n" +
 	"\fcom.slack.v1B\n" +
 	"SlackProtoP\x01Z>github.com/picatz/flowstate/plugins/slack/gen/slack/v1;slackv1\xa2\x02\x03SXX\xaa\x02\bSlack.V1\xca\x02\bSlack\\V1\xe2\x02\x14Slack\\V1\\GPBMetadata\xea\x02\tSlack::V1b\x06proto3"
 
@@ -504,33 +651,37 @@ func file_slack_v1_slack_proto_rawDescGZIP() []byte {
 	return file_slack_v1_slack_proto_rawDescData
 }
 
-var file_slack_v1_slack_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_slack_v1_slack_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_slack_v1_slack_proto_goTypes = []any{
-	(*Metadata)(nil),      // 0: slack.v1.Metadata
-	(*PostInputs)(nil),    // 1: slack.v1.PostInputs
-	(*PostOutputs)(nil),   // 2: slack.v1.PostOutputs
-	(*UpdateInputs)(nil),  // 3: slack.v1.UpdateInputs
-	(*UpdateOutputs)(nil), // 4: slack.v1.UpdateOutputs
-	nil,                   // 5: slack.v1.Metadata.EventPayloadEntry
-	(*v1.Value)(nil),      // 6: flowstate.v1.Value
-	(*v11.Card)(nil),      // 7: flowstate.chat.v1.Card
-	(*Block)(nil),         // 8: slack.v1.Block
+	(*Metadata)(nil),       // 0: slack.v1.Metadata
+	(*PostInputs)(nil),     // 1: slack.v1.PostInputs
+	(*PostOutputs)(nil),    // 2: slack.v1.PostOutputs
+	(*UpdateInputs)(nil),   // 3: slack.v1.UpdateInputs
+	(*UpdateOutputs)(nil),  // 4: slack.v1.UpdateOutputs
+	(*RespondInputs)(nil),  // 5: slack.v1.RespondInputs
+	(*RespondOutputs)(nil), // 6: slack.v1.RespondOutputs
+	nil,                    // 7: slack.v1.Metadata.EventPayloadEntry
+	(*v1.Value)(nil),       // 8: flowstate.v1.Value
+	(*v11.Card)(nil),       // 9: flowstate.chat.v1.Card
+	(*Block)(nil),          // 10: slack.v1.Block
 }
 var file_slack_v1_slack_proto_depIdxs = []int32{
-	5, // 0: slack.v1.Metadata.event_payload:type_name -> slack.v1.Metadata.EventPayloadEntry
-	6, // 1: slack.v1.PostInputs.token:type_name -> flowstate.v1.Value
-	7, // 2: slack.v1.PostInputs.card:type_name -> flowstate.chat.v1.Card
-	8, // 3: slack.v1.PostInputs.blocks:type_name -> slack.v1.Block
-	0, // 4: slack.v1.PostInputs.metadata:type_name -> slack.v1.Metadata
-	6, // 5: slack.v1.UpdateInputs.token:type_name -> flowstate.v1.Value
-	7, // 6: slack.v1.UpdateInputs.card:type_name -> flowstate.chat.v1.Card
-	8, // 7: slack.v1.UpdateInputs.blocks:type_name -> slack.v1.Block
-	0, // 8: slack.v1.UpdateInputs.metadata:type_name -> slack.v1.Metadata
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	7,  // 0: slack.v1.Metadata.event_payload:type_name -> slack.v1.Metadata.EventPayloadEntry
+	8,  // 1: slack.v1.PostInputs.token:type_name -> flowstate.v1.Value
+	9,  // 2: slack.v1.PostInputs.card:type_name -> flowstate.chat.v1.Card
+	10, // 3: slack.v1.PostInputs.blocks:type_name -> slack.v1.Block
+	0,  // 4: slack.v1.PostInputs.metadata:type_name -> slack.v1.Metadata
+	8,  // 5: slack.v1.UpdateInputs.token:type_name -> flowstate.v1.Value
+	9,  // 6: slack.v1.UpdateInputs.card:type_name -> flowstate.chat.v1.Card
+	10, // 7: slack.v1.UpdateInputs.blocks:type_name -> slack.v1.Block
+	0,  // 8: slack.v1.UpdateInputs.metadata:type_name -> slack.v1.Metadata
+	9,  // 9: slack.v1.RespondInputs.card:type_name -> flowstate.chat.v1.Card
+	10, // 10: slack.v1.RespondInputs.blocks:type_name -> slack.v1.Block
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_slack_v1_slack_proto_init() }
@@ -545,7 +696,7 @@ func file_slack_v1_slack_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_slack_v1_slack_proto_rawDesc), len(file_slack_v1_slack_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

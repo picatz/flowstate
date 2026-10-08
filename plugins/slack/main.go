@@ -36,6 +36,13 @@ func main() {
 				RequiredSecretInputs: []string{"token"},
 				Fn:                   slackUpdate,
 			},
+			{
+				Name:    "respond",
+				Summary: "Answer a Slack interaction through its response_url: replace or delete the clicked message, or show a new one to the clicker or the channel; takes no token; production runs only.",
+				Input:   &slackv1.RespondInputs{},
+				Output:  &slackv1.RespondOutputs{},
+				Fn:      slackRespond,
+			},
 		},
 		Health: checkHealth,
 	})

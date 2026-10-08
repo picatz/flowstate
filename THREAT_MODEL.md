@@ -507,8 +507,8 @@ four first-party plugins whose Go implementations open network connections also
 enforce the grant on those actual paths: Slack and GitHub through the SDK-governed
 HTTP transport, and git and vcs through the governed transport installed into
 go-git
-(`plugins/slack/post.go`, `plugins/github/client.go`, `plugins/git/clone.go`,
-`plugins/vcs/clone.go`). A worker with no operator policy grants these processes
+(`plugins/slack/post.go`, `plugins/slack/respond.go`, `plugins/github/client.go`, `plugins/git/clone.go`,
+`plugins/vcs/clone.go`). `slack.respond` also pins its destination to Slack's `hooks.slack.com` interaction paths and refuses redirects, because its address arrives in a delivery body. A worker with no operator policy grants these processes
 the same marked default its built-in HTTP task uses. This is actual enforcement
 in vetted first-party dial paths, but it remains voluntary plugin behavior, not
 plugin-process confinement. A third-party plugin can ignore the SDK and open its
