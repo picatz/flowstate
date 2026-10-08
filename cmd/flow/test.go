@@ -1396,6 +1396,9 @@ func printMutation(out io.Writer, theme ui.Theme, report *v1.TestReport) {
 		if where := survivor.GetWhere(); where != "" {
 			fmt.Fprintf(out, "       at %s\n", where)
 		}
-		fmt.Fprintf(out, "       replay: flow test --mutant %s -- %s\n", shellArg(survivor.GetId()), shellArg(report.GetFile()))
+		// A withheld survivor has no id a replay could name.
+		if survivor.GetDescription() != "" {
+			fmt.Fprintf(out, "       replay: flow test --mutant %s -- %s\n", shellArg(survivor.GetId()), shellArg(report.GetFile()))
+		}
 	}
 }

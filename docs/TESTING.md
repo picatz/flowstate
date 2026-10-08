@@ -618,7 +618,8 @@ read the survivor before adding a case.
 
 Mutants run in written order with no faults, against the cases that passed, and
 a file in which any case fails is not mutated (a red suite cannot tell a killed
-mutant from a broken test). A mutant the validator refuses is counted invalid,
+mutant from a broken test), and neither is one a `--run` selection leaves cases
+out of (a gate only an unselected case asserts would read as a survivor). A mutant the validator refuses is counted invalid,
 never killed. `--mutate` bounds the mutants per workflow at 100; `--mutate=N`
 sets the bound (at most 1000) and the report says when it truncated.
 `--mutant ID` replays one. Any survivor fails the command, and the report

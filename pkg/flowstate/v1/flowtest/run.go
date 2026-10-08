@@ -493,7 +493,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 	}
 	report.Fuzz = fuzz.report()
 	if ctx.Err() == nil && haltedAt == "" {
-		report.Mutation = mutation.run(ctx, fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout, suite.WithholdAll())
+		report.Mutation = mutation.run(ctx, fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout, suite, filtered > 0)
 	}
 
 	return out

@@ -234,14 +234,21 @@ func (m *mutator) observe(identity string, test *Test, spec *v1.Workflow, positi
 	group.cases = append(group.cases, mutationCase{test: *test, deliveryPath: deliveryPath})
 }
 
-// run judges every mutant of every observed workflow and reports. withhold
-// names no step: the suite's posture withholds every name, and a survivor's
-// description is made of them.
-func (m *mutator) run(ctx context.Context, vars fileVars, timeout time.Duration, withhold bool) *v1.MutationReport {
+// run judges every mutant of every observed workflow and reports. posture is
+// the suite's: a survivor's id and description are made of step names, which
+// are the file's own words and can spell a withheld value (#2229), so they go
+// through the same seam a case's error does; a posture that withholds every
+// name leaves the operator alone. partial says a selection left cases out.
+func (m *mutator) run(ctx context.Context, vars fileVars, timeout time.Duration, posture sensitiveInputs, partial bool) *v1.MutationReport {
 	if m == nil {
 		return nil
 	}
 	report := &v1.MutationReport{}
+	if partial {
+		report.NotRun = "--run left cases out, and a gate only an unselected case asserts would read as a survivor; run the whole file"
+
+		return report
+	}
 	if m.red {
 		report.NotRun = "a case in this file did not pass, and a red suite cannot tell a killed mutant from a broken test; fix it first"
 
@@ -269,14 +276,13 @@ func (m *mutator) run(ctx context.Context, vars fileVars, timeout time.Duration,
 				report.Killed++
 			case mutantSurvived:
 				survivor := &v1.MutationSurvivor{Workflow: group.identity}
-				if !withhold {
-					survivor.Id = mu.id
-					survivor.Operator = mu.operator
-					survivor.Description = mu.describe
-					survivor.Where = whereOf(group.identity, group.positions(), mu)
-				} else {
+				survivor.Operator = mu.operator
+				if posture.WithholdAll() {
 					survivor.Id = mu.operator
-					survivor.Operator = mu.operator
+				} else {
+					survivor.Id = redactedErrorText(mu.id, posture)
+					survivor.Description = redactedErrorText(mu.describe, posture)
+					survivor.Where = whereOf(group.identity, group.positions(), mu)
 				}
 				report.Survivors = append(report.Survivors, survivor)
 			}

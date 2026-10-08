@@ -31,6 +31,7 @@ func TestMutantsEnumerateEveryOperatorAndApplyToTheirOwnWorkflow(t *testing.T) {
 		ids := map[string]bool{}
 		for _, mu := range mutants(wf) {
 			seen[mu.operator] = true
+			assert.False(t, ids[mu.id], "%s: %s repeats", path, mu.id)
 			ids[mu.id] = true
 
 			clone := proto.Clone(wf).(*v1.Workflow)

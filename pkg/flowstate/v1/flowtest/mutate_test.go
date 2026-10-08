@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
@@ -169,4 +170,49 @@ func TestMutateIsOffByDefault(t *testing.T) {
 
 	run := runMutate(t, strongSuite, flowtest.MutateOptions{})
 	assert.Nil(t, run.Report.GetMutation())
+}
+
+// A step id can spell a value a case withholds (#2229); the survivor report is
+// made of step ids, so it goes through the same redaction the coverage does.
+func TestMutateDoesNotPrintAStepNameThatSpellsAWithheldValue(t *testing.T) {
+	t.Parallel()
+
+	path := nameSuite(t, `
+  - name: plain
+    workflow: ./workflow.yaml
+    inputs:
+      token: hunter2_stepid
+      action: run
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      failed: false
+`)
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Mutate: flowtest.MutateOptions{Max: flowtest.DefaultMutants}})
+	mutation := run.Report.GetMutation()
+	require.NotNil(t, mutation)
+	require.NotEmpty(t, mutation.GetSurvivors(), "the case asserts nothing about the gate")
+
+	encoded, err := protojson.Marshal(mutation)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), nameSecret)
+}
+
+// A selection leaves cases out, and a gate only an unselected case asserts
+// would read as a survivor: the file is not mutated.
+func TestMutateIsNotRunOverASelection(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "workflow.yaml"), mutateWorkflow)
+	path := filepath.Join(dir, "workflow.test.yaml")
+	writeFile(t, path, strongSuite)
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{
+		Mutate: flowtest.MutateOptions{Max: flowtest.DefaultMutants},
+		Select: func(name string) bool { return name == "ready" },
+	})
+	mutation := run.Report.GetMutation()
+	assert.Contains(t, mutation.GetNotRun(), "--run")
+	assert.Zero(t, mutation.GetMutants())
 }
