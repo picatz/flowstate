@@ -308,8 +308,8 @@ itself. Records are closed: a name the type does not declare, or a missing
 at submit for a value that arrives. Expressions are checked against the record,
 so `inputs.order.id + 1` is refused before the run starts and a misspelled field
 gets the nearest real one. A field's `default:` fills in where a value leaves it
-out, so a step can read it; `sensitive:` on a field is refused rather than
-ignored. See `examples/record-types/`.
+out, so a step can read it; a field marked `sensitive:` makes every input and
+output the record types sensitive whole. See `examples/record-types/`.
 
 ### Labels
 
