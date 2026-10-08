@@ -540,3 +540,65 @@ func TestDefinitionResolvesACallAgainstTheCallingFile(t *testing.T) {
 	require.Len(t, compiled.GetSteps(), 1)
 	assert.Equal(t, "the-real-one", compiled.GetSteps()[0].GetCall().GetWorkflow().GetName())
 }
+
+// A bare name or a `vars.`/`inputs.` member jumps to the key that declares it,
+// resolved the way hover reads it: a step's own var, then the blocks around it.
+func TestDefinitionFollowsVarsAndInputs(t *testing.T) {
+	t.Parallel()
+	const src = `name: names
+inputs:
+  region:
+    type: string
+vars:
+  base: https://example.com
+steps:
+  - id: web
+    vars:
+      path: /health
+    http:
+      url: ${vars.base + path}
+      headers:
+        x-region: ${inputs.region}
+  - id: later
+    log:
+      message: ${path}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///names.yaml"
+	c.open(uri, src)
+
+	for name, tc := range map[string]struct{ at, want string }{
+		"vars member":      {"base + path", "base"},
+		"vars root":        {"vars.base", "base"},
+		"a step's own var": {"path}", "path"},
+		"inputs member":    {"region}", "region"},
+		"inputs root":      {"inputs.region", "region"},
+	} {
+		off := 0
+		if name == "vars root" || name == "inputs root" {
+			off = 1
+		}
+		pos := positionOf(t, src, tc.at, off)
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1, name)
+		assert.Equal(t, tc.want, textInRange(src, got[0].Range), name)
+	}
+
+	// A var is visible to its own step, not to a later one.
+	pos := positionOf(t, src, "${path}", 2)
+	assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
+
+	// A member nothing declares goes nowhere.
+	const missing = `name: m
+steps:
+  - id: a
+    log:
+      message: ${vars.nope} ${inputs.nope}
+`
+	c.open("file:///missing.yaml", missing)
+	for _, at := range []string{"vars.nope", "inputs.nope"} {
+		pos = positionOf(t, missing, at, len(at)-1)
+		assert.Empty(t, c.definition("file:///missing.yaml", pos.Line, pos.Character), at)
+	}
+}

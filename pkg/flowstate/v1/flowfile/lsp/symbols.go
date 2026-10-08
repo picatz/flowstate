@@ -8,6 +8,7 @@ import (
 
 	"github.com/sourcegraph/go-lsp"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -158,6 +159,9 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 						return
 					}
 				}
+				if at := declaredNameAt(doc, from, ref); at != nil {
+					locations = []lsp.Location{{URI: doc.uri, Range: at.keyRange}}
+				}
 				return
 			}
 
@@ -173,6 +177,39 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 		})
 		if locations != nil {
 			return locations
+		}
+	}
+	return nil
+}
+
+// declaredNameAt is the `vars:` or `inputs:` key a bare reference names.
+//
+// Three spellings reach a declaration that is not a step or an iterator:
+//
+//   - `vars.<name>` is the workflow's own `vars:` block, and `inputs.<name>` is
+//     its `inputs:` block. Both roots resolve whether or not anything is declared,
+//     so a name with no key is answered with nothing rather than guessed at.
+//   - A bare `<name>` is a var the step itself declares, or a block around it
+//     declares: the order the engine resolves them in, and the order hover reads
+//     them in, so the two surfaces name the same declaration.
+//
+// The key is the answer, not the value: it is the word the author renames and the
+// one every other reference spells.
+func declaredNameAt(doc *document, from *parsedStep, ref reference) *entry {
+	switch ref.local {
+	case v1.VarsRoot:
+		return varEntry(doc.parsed.varsEntry, ref.member)
+	case v1.InputsRoot:
+		for _, e := range doc.parsed.entries {
+			if e.key == "inputs" {
+				return varEntry(e, ref.member)
+			}
+		}
+		return nil
+	}
+	for _, block := range append([]*parsedStep{from}, blocksAround(from)...) {
+		if e := varEntry(block.varsEntry, ref.local); e != nil {
+			return e
 		}
 	}
 	return nil
