@@ -711,7 +711,8 @@ loop's `as:` carries is typed just below.
 A `for_each` binds its `as:` name (`item` by default) with the element type of `items:`: over a
 `list(string)` input the item is a `string`, so `n.first_name` is refused where it is written, and
 over a `list(dyn)` it stays `dyn`. A loop's `results` is a list, so `steps.loop.results.first` is refused
-too. A `loop:`'s `state` and the fields of a record item are not typed yet.
+too. Over a `list(Order)` the item is an `Order`: `order.id` is typed at its leaf, `order.idd` is refused with the
+fields the record declares, and an inner loop over `order.lines` binds a `Line` the same way. A `loop:`'s `state` is not typed yet.
 
 *Since written, a type of your own (slice 1):* **`types:` names a record.** A shape
 that more than one declaration repeats is declared once, under `types:`, and used by name

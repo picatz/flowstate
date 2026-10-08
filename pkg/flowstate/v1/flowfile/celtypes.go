@@ -139,6 +139,12 @@ type loopBinding struct {
 	// are strictly outer, so it cannot meet itself.
 	typed    *cel.Type
 	resolved bool
+
+	// declared is the item's declared type when `items:` names a list of records
+	// the file declares (see [typeTable.elementDeclared]), set once
+	// declaredResolved is true.
+	declared         *v1.Type
+	declaredResolved bool
 }
 
 // stepOutputs are the typed outputs of one task, call or wait step.
@@ -254,6 +260,51 @@ func (t *typeTable) bindingsFor(step string, names []string) map[string]*cel.Typ
 	return typed
 }
 
+// elementDeclared is the declared type of one item of a loop, nil unless `items:`
+// is a plain read of a declared `list(T)`: an input, a record field, or a field of
+// an enclosing loop's record item. It is what a record item's fields are read
+// from; [typeTable.elementType] is what CEL is told.
+func (t *typeTable) elementDeclared(binding *loopBinding) *v1.Type {
+	if !binding.declaredResolved {
+		binding.declaredResolved = true
+
+		if root, fields, ok := fieldChain(binding.items.GetExpr()); ok {
+			if listed := t.chainType(binding.owner, root, fields); listed.GetList() != nil {
+				binding.declared = listed.GetList()
+			}
+		}
+	}
+
+	return binding.declared
+}
+
+// chainType is the declared type of a chain of field reads from step: rooted at
+// `inputs` (the input, then its record fields) or at the iterator of an enclosing
+// loop whose item is a record. Nil where the chain leaves what the file declares.
+func (t *typeTable) chainType(step, root string, fields []string) *v1.Type {
+	var declared *v1.Type
+	switch {
+	case root == v1.InputsRoot:
+		if len(fields) == 0 {
+			return nil
+		}
+		declared, fields = t.inputTypes[fields[0]], fields[1:]
+	default:
+		declared = t.recordIterators(step)[root]
+	}
+
+	for _, name := range fields {
+		record := t.records[declared.GetMessage()]
+		i := slices.IndexFunc(record.GetFields(), func(f *v1.InputDeclaration) bool { return f.GetName() == name })
+		if i < 0 {
+			return nil
+		}
+		declared = record.GetFields()[i].DeclaredType()
+	}
+
+	return declared
+}
+
 // elementType is the type of one item of a loop, nil when `items:` does not say.
 func (t *typeTable) elementType(binding *loopBinding) *cel.Type {
 	if !binding.resolved {
@@ -333,12 +384,12 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int, step string) 
 			add(v1.InputsRoot+"."+name, typed)
 		}
 	}
-	for _, path := range t.fieldPaths(parsed) {
+	for _, path := range t.fieldPaths(parsed, step) {
 		for i, field := range path.fields {
 			if field == nil {
 				break
 			}
-			add(v1.InputsRoot+"."+strings.Join(path.names[:i+2], "."), v1.CELType(field.DeclaredType()))
+			add(path.prefix+strings.Join(path.names[:i+2], "."), v1.CELType(field.DeclaredType()))
 		}
 	}
 	for _, ref := range rooted {

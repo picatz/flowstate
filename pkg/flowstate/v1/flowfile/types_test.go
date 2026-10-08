@@ -702,3 +702,109 @@ outputs:
 		assert.Len(t, ds, 2, "one for the argument, one for the output: %s", ds.Error())
 	}
 }
+
+// A `for_each` over a list of records binds its item as that record: a field read
+// is typed at its leaf, a misspelled one is refused with the record's fields, and
+// the item of an inner loop over a field of the outer item is typed the same way.
+func TestAForEachOverRecordsTypesTheItemsFields(t *testing.T) {
+	t.Parallel()
+
+	source := func(body string) string {
+		return `edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Line:
+    fields:
+      sku:
+        type: string
+      quantity:
+        type: int
+  Order:
+    fields:
+      id:
+        type: string
+      lines:
+        type: list(Line)
+inputs:
+  orders:
+    type: list(Order)
+    required: true
+steps:
+  - id: each
+    for_each:
+      items: ${inputs.orders}
+      as: order
+      steps:
+        - id: inner
+          for_each:
+            items: ${order.lines}
+            as: line
+            steps:
+              - id: use
+                value: ${` + body + `}
+`
+	}
+
+	for _, test := range []struct {
+		name, body, want string // empty want accepts
+	}{
+		{"a typed field of the inner item", `line.quantity + 1`, ""},
+		{"a field of the outer item", `order.id + "x"`, ""},
+		{"an int field used as a string", `line.quantity.startsWith("a")`, "no matching overload"},
+		{"a misspelled inner field", `line.skuu`, `the record Line has no field "skuu"`},
+		{"a misspelled outer field", `order.idd`, `the record Order has no field "idd"`},
+		{"an optional read is typed", `line.?sku.orValue(0)`, "no matching overload"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			wf, _, err := flowfile.Parse([]byte(source(test.body)))
+			require.NoError(t, err)
+
+			ds := flowfile.Validate(wf)
+			if test.want == "" {
+				assert.Empty(t, ds)
+				return
+			}
+			require.NotEmpty(t, ds)
+			assert.Contains(t, ds.Error(), test.want)
+		})
+	}
+}
+
+func TestAnIteratorAndARecordInputSharingANameAreCheckedSeparately(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(`edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Line:
+    fields:
+      sku:
+        type: string
+  Order:
+    fields:
+      id:
+        type: string
+inputs:
+  order:
+    type: Line
+    required: true
+  orders:
+    type: list(Order)
+    required: true
+steps:
+  - id: each
+    for_each:
+      items: ${inputs.orders}
+      as: order
+      steps:
+        - id: use
+          value: ${order.id + inputs.order.id}
+`))
+	require.NoError(t, err)
+
+	ds := flowfile.Validate(wf)
+	require.NotEmpty(t, ds)
+	assert.Contains(t, ds.Error(), `the record Line has no field "id"`)
+}
