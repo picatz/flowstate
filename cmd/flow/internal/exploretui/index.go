@@ -9,6 +9,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/pane"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/graph"
 )
 
 // maxListed bounds the names one inspector row lists, so a task that every
@@ -54,7 +55,7 @@ func NewIndex(g *v1.Graph) *Index {
 	byKind := func(label func(*v1.GraphEdge) string) func(a, b *v1.GraphEdge) int {
 		return func(a, b *v1.GraphEdge) int {
 			return cmp.Or(
-				cmp.Compare(edgeRank(a.GetKind()), edgeRank(b.GetKind())),
+				cmp.Compare(graph.EdgeRank(a.GetKind()), graph.EdgeRank(b.GetKind())),
 				cmp.Compare(label(a), label(b)),
 				cmp.Compare(a.GetFrom()+a.GetTo(), b.GetFrom()+b.GetTo()),
 			)
@@ -72,17 +73,6 @@ func NewIndex(g *v1.Graph) *Index {
 
 // Graph is the graph the index was built from.
 func (x *Index) Graph() *v1.Graph { return x.graph }
-
-func edgeRank(k v1.GraphEdgeKind) int {
-	switch k {
-	case v1.GraphEdgeKind_GRAPH_EDGE_KIND_CALL:
-		return 0
-	case v1.GraphEdgeKind_GRAPH_EDGE_KIND_WAITS:
-		return 1
-	default:
-		return 2
-	}
-}
 
 // label is the name to show for a node id; an edge to a node the graph does not
 // hold shows the id it names.

@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"charm.land/lipgloss/v2"
-
 	"github.com/picatz/flowstate/cmd/flow/internal/pane"
 	"github.com/picatz/flowstate/cmd/flow/internal/tui"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
@@ -98,7 +96,7 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 	hits := &pane.Hits{}
 	g, err := s.geometry()
 	if err != nil {
-		return strings.Join(pane.Fit(wrapWords(err.Error(), s.Size.W), s.Size.W, s.Size.H), "\n"), hits
+		return strings.Join(pane.Fit(pane.WrapWords(err.Error(), s.Size.W), s.Size.W, s.Size.H), "\n"), hits
 	}
 
 	parts := []pane.Placed{
@@ -208,23 +206,4 @@ func (s Screen) helpView(o pane.Options) string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-// wrapWords breaks text at spaces to fit width.
-func wrapWords(text string, width int) string {
-	var lines []string
-	line := ""
-	for word := range strings.FieldsSeq(text) {
-		switch {
-		case line == "":
-			line = word
-		case lipgloss.Width(line)+1+lipgloss.Width(word) <= width:
-			line += " " + word
-		default:
-			lines = append(lines, line)
-			line = word
-		}
-	}
-
-	return strings.Join(append(lines, line), "\n")
 }
