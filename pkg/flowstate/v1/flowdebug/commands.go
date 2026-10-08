@@ -182,7 +182,7 @@ var commands = []command{
 	{verb: "inspect", aliases: []string{"p"}, argument: "<expr>", completes: completesExpression, fronts: frontsAll, effect: effectRead,
 		help:       "evaluate a CEL expression against this run's scope",
 		driverHelp: "evaluate a read-only CEL expression at this stop"},
-	{verb: "expand", argument: "<expr>", completes: completesExpression, fronts: frontsLive, effect: effectRead,
+	{verb: "expand", argument: "<expr> [from <n>]", completes: completesExpression, fronts: frontsLive, effect: effectRead,
 		help: "list a map's or list's children"},
 	{verb: "scope", completes: completesNothing, fronts: frontsAll, effect: effectRead,
 		help:       "list what this run can name right now",
@@ -495,7 +495,8 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 			return false, nil
 		}
 		s.record("expand " + expression)
-		s.expand(ctx, expression)
+		expression, offset := expandPage(expression)
+		s.expand(ctx, expression, offset)
 
 		return false, nil
 
@@ -1503,15 +1504,15 @@ func (s *Session) addLogpoint(rest string) {
 // expand lists an expression's children, through the same [Session.Inspect] a
 // structured front reads, so the redactors, the page size and the wording are
 // one thing on both.
-func (s *Session) expand(ctx context.Context, expression string) {
-	answer, err := s.Inspect(ctx, &v1.DebugInspectRequest{Expression: expression, Children: true})
+func (s *Session) expand(ctx context.Context, expression string, offset int) {
+	answer, err := s.Inspect(ctx, &v1.DebugInspectRequest{Expression: expression, Children: true, Offset: int32(offset)})
 	switch {
 	case err != nil:
 		s.printfTone(ToneWarning, "cannot expand: %v\n", err)
 	case answer.GetError() != "":
 		s.emitTone(ToneWarning, answer.GetError()+"\n")
 	default:
-		s.printf("%s", formatChildren(expression, answer))
+		s.printf("%s", formatChildren(expression, offset, answer))
 	}
 }
 

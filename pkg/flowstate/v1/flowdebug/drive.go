@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -263,13 +264,15 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, errors.New("inspect needs an expression: inspect steps.build.artifact")
 		}
 
-		return d.inspect(ctx, rest, false)
+		return d.inspect(ctx, rest, false, 0)
 	case "expand":
 		if rest == "" {
 			return nil, errors.New("expand needs an expression: expand steps.build")
 		}
 
-		return d.inspect(ctx, rest, true)
+		expression, offset := expandPage(rest)
+
+		return d.inspect(ctx, expression, true, offset)
 	case "scope":
 		return d.scope(ctx)
 
@@ -671,13 +674,13 @@ func (d *Driver) formatBreakpoints(snapshot *v1.DebugSnapshot) string {
 	return b.String()
 }
 
-func (d *Driver) inspect(ctx context.Context, expression string, children bool) (*DriveResult, error) {
+func (d *Driver) inspect(ctx context.Context, expression string, children bool, offset int) (*DriveResult, error) {
 	snapshot, err := d.target.Snapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
 	answer, err := d.target.Inspect(ctx, &v1.DebugInspectRequest{
-		Revision: d.revisionAt(snapshot), Expression: expression, Children: children,
+		Revision: d.revisionAt(snapshot), Expression: expression, Children: children, Offset: int32(offset),
 	})
 	if err != nil {
 		return d.staleOr(ctx, err)
@@ -688,7 +691,7 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool) 
 	case answer.GetError() != "":
 		result.Text = answer.GetError() + "\n"
 	case children:
-		result.Text = formatChildren(expression, answer)
+		result.Text = formatChildren(expression, offset, answer)
 	default:
 		result.Text = answer.GetValue().GetRendered() + "\n"
 	}
@@ -696,18 +699,52 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool) 
 	return result, nil
 }
 
+// maxQuotedExpression is how long an expression may be for the line that says
+// how to read the next page to quote it.
+const maxQuotedExpression = 60
+
+// expandPage splits the argument of `expand` into the expression and the child
+// it starts the page at: `steps.build from 50`. The suffix is read only when it
+// is a whole number after " from "; anything else is part of the expression,
+// which the evaluator then judges.
+func expandPage(rest string) (expression string, offset int) {
+	const from = " from "
+	i := strings.LastIndex(rest, from)
+	if i < 0 {
+		return rest, 0
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(rest[i+len(from):]), 10, 32)
+	if err != nil || n < 0 {
+		return rest, 0
+	}
+
+	return strings.TrimSpace(rest[:i]), int(n)
+}
+
 // formatChildren lists an expression's children one to a line, with how many
-// the page left out. The prompt's `expand` and the driver's read the same
-// answer the same way, so a value pages identically on both.
-func formatChildren(expression string, answer *v1.DebugInspectResponse) string {
+// the page left out and how to ask for them. The prompt's `expand` and the
+// driver's read the same answer the same way, so a value pages identically on
+// both. offset is the child the page began at.
+func formatChildren(expression string, offset int, answer *v1.DebugInspectResponse) string {
 	var b strings.Builder
 	for _, child := range answer.GetChildren() {
 		fmt.Fprintf(&b, "%s  %s  %s\n", child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
 	}
-	if more := int(answer.GetTotal()) - len(answer.GetChildren()); more > 0 {
-		fmt.Fprintf(&b, "… and %d more\n", more)
+	shown := offset + len(answer.GetChildren())
+	if more := int(answer.GetTotal()) - shown; more > 0 {
+		// The expression itself when it is short enough to read back; a long one
+		// is the person's to repeat, since quoting it would bury the listing.
+		ask := "expand " + expression + " from " + strconv.Itoa(shown)
+		if len(expression) > maxQuotedExpression {
+			ask = "repeat the expand with `from " + strconv.Itoa(shown) + "`"
+		}
+		fmt.Fprintf(&b, "… and %d more (%s)\n", more, ask)
 	}
-	if b.Len() == 0 {
+	switch {
+	case b.Len() > 0:
+	case offset > 0 && answer.GetTotal() > 0:
+		fmt.Fprintf(&b, "%s has %d children; none from %d\n", expression, answer.GetTotal(), offset)
+	default:
 		fmt.Fprintf(&b, "%s has no children\n", expression)
 	}
 

@@ -172,7 +172,7 @@ nothing here is worth learning twice. `help` lists it.
 | `clear` | driver | remove every breakpoint, whoever set it |
 | `breakpoints` | prompt, driver | list them |
 | `inspect <expr>`, `p` | every front | evaluate a CEL expression against this run's scope |
-| `expand <expr>` | prompt, driver | list a map's or list's children |
+| `expand <expr> [from <n>]` | prompt, driver | list a map's or list's children |
 | `scope` | every front | list what this run can name right now |
 | `complete <partial-command>` | every front | list what could be written at the end of that text |
 | `status` | prompt, driver | where the run is, and why |
@@ -196,6 +196,10 @@ The forms a verb takes:
 - `until <step>` runs to that step without stopping in between; a run that
   completes without reaching it says so, local or durable. A `<step>` is a bare
   id or an address like `pages[2]/page`.
+- `expand <expr>` lists a map's or list's children, one level, a page at a time.
+  A page that was cut off ends with `… and N more` and the way to ask for the
+  rest: `expand <expr> from <n>` starts the page at child `n`, at the prompt and
+  over MCP alike.
 - `until <step> if <expr>` runs to that step, stopping only where the expression
   holds. The structured fronts do not take it: a typed resume names a step and
   nothing more, so the condition is refused rather than dropped, and
