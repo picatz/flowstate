@@ -401,7 +401,9 @@ queries, and Flowfile injection queries that run over the stock YAML parser and
 hand the `must:` values and whole-scalar `${...}` fences to it. It is the parser
 an editor needs to colour and fold CEL structurally; `flow lsp` supplies the
 scope-aware part. [Its README](../editors/tree-sitter-cel/README.md) says what is
-covered and what is not, and CI builds and tests it.
+covered and what is not, and CI builds and tests it. For Neovim,
+[`editors/nvim`](../editors/nvim/README.md) wires it into a `flowfile` buffer and
+CI asserts which ranges Neovim injects.
 
 ## Visual Studio Code
 
