@@ -27,6 +27,6 @@ tests:
           channel: C123DEPLOYS
           ts: "1503435956.000247"
     expect:
-      ran: [started, canary, canary_done, half, half_done, full, finished]
+      ran: [facts, deploying, started, canary, canary_done, half, half_done, full, finished]
       outputs:
         message_ts: "1503435956.000247"

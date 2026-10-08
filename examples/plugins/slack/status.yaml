@@ -26,22 +26,28 @@ inputs:
     description: version being rolled out
     example: v1.4.2
 steps:
+  # The facts every card repeats and the title of the running cards, stated once
+  # so the four cards cannot drift apart.
+  - id: facts
+    value:
+      - label: Service
+        value:
+          plain: ${inputs.service}
+      - label: Version
+        value:
+          plain: ${inputs.version}
+  - id: deploying
+    value:
+      plain: ${"Deploying " + inputs.service}
   - id: started
     slack.post:
       card:
         status:
           state: running
-          title:
-            plain: ${"Deploying " + inputs.service}
+          title: ${steps.deploying.value}
           detail:
             plain: "Starting stage 1 of 3: canary"
-          fields:
-            - label: Service
-              value:
-                plain: ${inputs.service}
-            - label: Version
-              value:
-                plain: ${inputs.version}
+          fields: ${steps.facts.value}
           progress:
             current: 0
             total: 3
@@ -59,17 +65,10 @@ steps:
       card:
         status:
           state: running
-          title:
-            plain: ${"Deploying " + inputs.service}
+          title: ${steps.deploying.value}
           detail:
             plain: "Stage 2 of 3: half of traffic"
-          fields:
-            - label: Service
-              value:
-                plain: ${inputs.service}
-            - label: Version
-              value:
-                plain: ${inputs.version}
+          fields: ${steps.facts.value}
           progress:
             current: 1
             total: 3
@@ -83,17 +82,10 @@ steps:
       card:
         status:
           state: running
-          title:
-            plain: ${"Deploying " + inputs.service}
+          title: ${steps.deploying.value}
           detail:
             plain: "Stage 3 of 3: all traffic"
-          fields:
-            - label: Service
-              value:
-                plain: ${inputs.service}
-            - label: Version
-              value:
-                plain: ${inputs.version}
+          fields: ${steps.facts.value}
           progress:
             current: 2
             total: 3
@@ -115,13 +107,7 @@ steps:
               args:
                 service: ${inputs.service}
                 version: ${inputs.version}
-          fields:
-            - label: Service
-              value:
-                plain: ${inputs.service}
-            - label: Version
-              value:
-                plain: ${inputs.version}
+          fields: ${steps.facts.value}
           progress:
             current: 3
             total: 3
