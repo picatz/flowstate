@@ -90,6 +90,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		shown    atomic.Pointer[flowdebug.Session]
 		settleAt sync.Once
 		first    atomic.Bool
+		replay   atomic.Bool
 	)
 	emit := f.Emit
 	if emit == nil {
@@ -103,7 +104,11 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			shown.Store(session)
 			// A replay that was stopped will never be asked for its verdict, and
 			// each step or rewind makes another: only the shown run's is kept.
-			results.Clear()
+			// The first shown run is the original, which may already have stored
+			// its own result.
+			if replay.Swap(true) {
+				results.Clear()
+			}
 			f.Panes.setSession(session)
 		},
 		Run: func(ctx context.Context, debugger v1.Debugger) flowtest.RunResult {
