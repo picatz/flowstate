@@ -141,8 +141,16 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 
 	// A key of the document's own shape: id, description, if, timeout, retry, and
 	// so on.
-	if k, rng, ok := dslKeyAt(step, pos); ok {
-		return dslKeyHover(k, rng)
+	//
+	// A step's range ends where its first nested step begins (see
+	// assignStepRanges), so a key the block writes after its body — a switch's
+	// `default:` beside the cases above it — sits in the last nested step's range.
+	// Its own keys are tried, then each enclosing block's: a key matches by its
+	// exact range, so an ancestor cannot answer for a position it does not hold.
+	for s := step; s != nil; s = s.parent {
+		if k, rng, ok := dslKeyAt(s, pos); ok {
+			return dslKeyHover(k, rng)
+		}
 	}
 	return nil
 }

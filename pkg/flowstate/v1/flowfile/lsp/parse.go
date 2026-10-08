@@ -925,6 +925,45 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 				}
 			}
 		}
+		// A `switch:` runs exactly one body, in the enclosing scope, and its step
+		// outputs merge into the enclosing namespace the way a parallel branch's do.
+		// The same frame shape therefore says the same thing: a body's steps are
+		// visible after the switch and not to a sibling case. The cases come first
+		// in written order and `default:` is the branch after them. Without this
+		// recursion every step under a switch was absent from the outline and from
+		// hover, completion, definition, references and rename, which read as the
+		// tool having nothing to say rather than as a wrong answer.
+		if s.switchEntry != nil {
+			// The default's branch index is fixed by the case count, not by where
+			// `default:` happens to be written, so two bodies never share a frame.
+			cases := 0
+			for _, se := range s.switchEntry.value.entries {
+				if se.key == "cases" && se.value != nil {
+					cases = len(se.value.items)
+				}
+			}
+			for _, se := range s.switchEntry.value.entries {
+				if se.value == nil {
+					continue
+				}
+				switch se.key {
+				case "cases":
+					for i, c := range se.value.items {
+						for _, ce := range c.entries {
+							if ce.key == "steps" {
+								collectSteps(ce, s, append(slices.Clip(scope), scopeFrame{block: s, branch: i}), ix, out)
+							}
+						}
+					}
+				case "default":
+					for _, de := range se.value.entries {
+						if de.key == "steps" {
+							collectSteps(de, s, append(slices.Clip(scope), scopeFrame{block: s, branch: cases}), ix, out)
+						}
+					}
+				}
+			}
+		}
 		// A `loop:` body, under the same frame shape a `for_each` body gets,
 		// because the visibility rules are the same rule: body outputs do not
 		// escape, and the body reads a binding the block declares bare. This
