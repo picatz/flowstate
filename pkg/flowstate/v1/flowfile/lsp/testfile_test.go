@@ -538,6 +538,10 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 			"opening defaults retained an overflow suite's saved-file error")
 		assert.False(t, c.hasSource(defaultsURI, overflow),
 			"the target index retained an overflow saved-file contribution")
+		opened, ok := c.lastPublishedFor(overflow)
+		require.True(t, ok)
+		require.True(t, diagnosticsHaveCode(opened.Diagnostics, codeTestDefaultsDependents),
+			"the overflow suite lost its limit warning while the live defaults buffer was open: %+v", opened.Diagnostics)
 
 		require.NoError(t, c.conn.Notify(t.Context(), "textDocument/didClose", lsp.DidCloseTextDocumentParams{
 			TextDocument: lsp.TextDocumentIdentifier{URI: defaultsURI},
@@ -547,7 +551,15 @@ func TestOpeningDefaultsRetractsAnOverflowSuitesSavedErrors(t *testing.T) {
 		published, ok = c.lastPublishedFor(defaultsURI)
 		require.True(t, ok)
 		assert.NotEmpty(t, published.Diagnostics,
-			"closing defaults did not restore the overflow suite's saved-file error")
+			"closing defaults restored no saved-file error at all")
+		// The 32 tracked suites re-run against the invalid saved file too, so the
+		// defaults URI alone would pass with the overflow suite left behind. Only
+		// the overflow suite carries the limit warning on its own URI, and only a
+		// re-run on close takes it off.
+		restored, ok := c.lastPublishedFor(overflow)
+		require.True(t, ok)
+		assert.False(t, diagnosticsHaveCode(restored.Diagnostics, codeTestDefaultsDependents),
+			"closing defaults left the overflow suite warning about a live buffer that is gone: %+v", restored.Diagnostics)
 	})
 }
 
@@ -746,4 +758,47 @@ tests:
 	assert.Equal(t, codeTestFile, d.Code)
 	assert.NotEqual(t, documentStart, d.Range,
 		"the directory's name decided where this suite's own diagnostic was anchored")
+}
+
+// TestOpeningDefaultsNeverPublishesSavedFilePositionsOntoTheLiveBuffer is #1273's
+// first defect: with a tracked dependent suite and an invalid saved file, opening
+// a corrected one-line buffer used to publish the saved file's error — a range
+// the open document does not have — before the dependents were re-run against it.
+func TestOpeningDefaultsNeverPublishesSavedFilePositionsOntoTheLiveBuffer(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		c := newClient(t)
+		c.initialize()
+		dir := t.TempDir()
+		defaultsPath := filepath.Join(dir, "testdefaults.yaml")
+		defaultsURI := lsp.DocumentURI("file://" + defaultsPath)
+		suiteURI := "file://" + filepath.Join(dir, "suite.test.yaml")
+		require.NoError(t, os.WriteFile(defaultsPath,
+			[]byte("defaults:\n  stubs:\n    - task: log\n      returns: {}\n    - returns: {}\n"), 0o600))
+
+		// Two tracked suites: re-running the first must not notify the buffer while
+		// the second still contributes its saved-file positions.
+		c.open(suiteURI, validSuite)
+		c.open("file://"+filepath.Join(dir, "second.test.yaml"), validSuite)
+		synctest.Wait()
+		saved, ok := c.lastPublishedFor(defaultsURI)
+		require.True(t, ok)
+		require.NotEmpty(t, saved.Diagnostics, "the invalid saved file drew nothing, so the reproducer proves nothing")
+
+		before := c.publishCount()
+		c.open(string(defaultsURI), "defaults: {}\n")
+		synctest.Wait()
+
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, p := range c.published[before:] {
+			if p.URI != defaultsURI {
+				continue
+			}
+			for _, d := range p.Diagnostics {
+				assert.Zero(t, d.Range.Start.Line,
+					"a publication on the one-line live buffer carried the saved file's position: %+v", d)
+			}
+		}
+	})
 }
