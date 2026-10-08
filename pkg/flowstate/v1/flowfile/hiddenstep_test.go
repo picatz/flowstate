@@ -43,6 +43,35 @@ func TestUnresolvedReferenceSaysWhereAHiddenStepLives(t *testing.T) {
   - id: after
     log: {message: "${steps.inner.result}"}
 `, "it is declared inside the body of loop \"spin\" (read its values through `steps.spin.results`)"},
+		{"forward reference inside a case", head + `  - id: pick
+    switch:
+      value: "${'a'}"
+      cases:
+        - case: a
+          steps:
+            - id: one
+              log: {message: "${steps.two.result}"}
+            - id: two
+              log: {message: x}
+`, `references step "two", which runs later`},
+		{"forward reference inside a loop body", head + `  - id: spin
+    loop:
+      until: "${true}"
+      max_iterations: 2
+      steps:
+        - id: a1
+          log: {message: "${steps.b1.result}"}
+        - id: b1
+          log: {message: x}
+`, `references step "b1", which runs later`},
+		{"forward reference inside a branch", head + `  - id: fan
+    parallel:
+      - steps:
+          - id: a1
+            log: {message: "${steps.b1.result}"}
+          - id: b1
+            log: {message: x}
+`, `references step "b1", which runs later`},
 		{"declared nowhere", head + `  - id: after
     log: {message: "${steps.nothing.result}"}
 `, `references unknown step "nothing"`},

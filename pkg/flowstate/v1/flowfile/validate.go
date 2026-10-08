@@ -2674,7 +2674,15 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 			}}
 		}
 	}
-	if where, ok := hiddenStepScope(ref, wf); ok {
+	if where, ok := hiddenStepScope(stepID, ref, wf); ok {
+		if where == "" {
+			return Diagnostics{{
+				Step: stepID, Field: inputName,
+				Message: fmt.Sprintf(
+					"references step %q, which runs later; steps can only reference steps defined before them", ref),
+				Code: v1.DiagnosticCodeUnresolvedReference,
+			}}
+		}
 		return Diagnostics{{
 			Step: stepID, Field: inputName,
 			Message: fmt.Sprintf("references step %q, which is not visible from here; it is declared %s", ref, where),
@@ -2696,7 +2704,10 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 // or for_each's body ids are reachable only through its accumulated `results`. The
 // first declaration in document order wins; ids are unique per scope, not per file,
 // so a duplicate in two branches is described by the earlier one.
-func hiddenStepScope(id string, wf *v1.Workflow) (string, bool) {
+//
+// A declaration in the very body the referencing step sits in is not hidden, it is
+// later: the answer is then the empty string, and the caller says "runs later".
+func hiddenStepScope(from, id string, wf *v1.Workflow) (string, bool) {
 	var found string
 	var walk func([]*v1.Node) bool
 	walk = func(nodes []*v1.Node) bool {
@@ -2722,7 +2733,9 @@ func hiddenStepScope(id string, wf *v1.Workflow) (string, bool) {
 			for _, body := range bodies {
 				for _, inner := range body {
 					if inner.GetId() == id {
-						found = where
+						if !stepWithin(body, from) {
+							found = where
+						}
 						return true
 					}
 				}
@@ -3756,4 +3769,9 @@ func waitOwnOutput(node *v1.Node, name string) bool {
 	}
 
 	return false
+}
+
+// stepWithin reports whether a step with this id is in nodes, at any depth.
+func stepWithin(nodes []*v1.Node, id string) bool {
+	return declaredAnywhere(id, &v1.Workflow{Steps: nodes})
 }
