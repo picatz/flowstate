@@ -872,7 +872,7 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 			continue
 		}
 		seen[s.id] = true
-		scope.steps = append(scope.steps, stepCandidate(s, doc.tasks))
+		scope.steps = append(scope.steps, stepCandidate(doc, s, doc.tasks))
 	}
 
 	// A `vars:` on an enclosing block binds for that block's whole body, so a step
@@ -1037,7 +1037,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 }
 
 // stepCandidate describes one step as a reference candidate.
-func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
+func stepCandidate(doc *document, s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 	c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: s.kind()}
 
 	switch {
@@ -1085,6 +1085,41 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 					Docs: n.Description,
 				})
 			}
+		}
+
+	case s.callEntry != nil:
+		// A `call:` produces what the callee declares under `outputs:`, read from
+		// the callee the way the compiler reads it ([callee]), so a callee that
+		// does not compile offers nothing rather than names out of a broken file.
+		//
+		// Resolved only when the cursor is after this step's own dot: every
+		// visible step candidate is built before the completer knows which
+		// qualifier is being completed, and reading and compiling each earlier
+		// call target on every request would multiply file and parse work by the
+		// number of calls in the file.
+		c.Detail = "call"
+		target := s.callEntry.valueText()
+		c.MemberSource = func(prefix string) ([]celcomplete.Candidate, bool) {
+			called, ok := callee(doc, target)
+			if !ok {
+				return nil, false
+			}
+			var members []celcomplete.Candidate
+			for _, declaration := range called.workflow.GetDeclaredOutputs() {
+				if !strings.HasPrefix(declaration.GetName(), prefix) {
+					continue
+				}
+				if len(members) == celcomplete.MaxCandidates {
+					return members, true
+				}
+				members = append(members, celcomplete.Candidate{
+					Name:   declaration.GetName(),
+					Kind:   celcomplete.KindField,
+					Detail: declaration.TypeText(),
+					Docs:   declaration.GetDescription(),
+				})
+			}
+			return members, false
 		}
 
 	case s.valueEntry != nil:
