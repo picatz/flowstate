@@ -675,13 +675,18 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// A value that does not fit a line is laid out as a tree, from the tree the
 	// redactors already walked; the backstop pass over what it writes is
 	// unchanged.
+	//
+	// Only the renderer's own shapes are a value tone: the fallback is Go's
+	// formatting, whose text ValueTokens has no grammar for.
+	tone := ToneInfo
 	var rendered string
 	if native, ok := redactedTree(out, text, value); ok {
 		rendered = RenderValue(native, Layout{})
+		tone = ToneValue
 	} else {
 		rendered = unrenderedText(out, text != nil || value != nil)
 	}
-	s.printfTone(ToneValue, "%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
+	s.printfTone(tone, "%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.

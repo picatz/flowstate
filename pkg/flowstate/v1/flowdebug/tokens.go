@@ -23,8 +23,10 @@ const (
 	// TokenLiteral is a number, `true`, `false` or `null`.
 	TokenLiteral
 
-	// TokenRedacted is a withheld value's marker, kept apart because it is the
-	// one thing in a value a reader must not mistake for data.
+	// TokenRedacted is the text of a withheld value's marker, kept apart so a
+	// reader can find it. It is recognised by its bytes: a string that spells
+	// the marker is, by construction, indistinguishable from one the redactor
+	// wrote, here and in the plain text alike.
 	TokenRedacted
 
 	// TokenElision is what a layout left out: `… 12 more keys`, `{… 7 keys}`.

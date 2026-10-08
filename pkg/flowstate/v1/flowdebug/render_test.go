@@ -153,3 +153,29 @@ func TestATreeIsLaidOutAfterTheRedactor(t *testing.T) {
 	assert.NotContains(t, out, secret)
 	assert.Contains(t, out, "auth:\n  scope: \"read\"\n  token: \"[redacted]\"\n")
 }
+
+// TestInspectIsEmittedAsAValue: the tone is what lets a terminal colour an
+// answer, so the real inspect path has to carry it.
+func TestInspectIsEmittedAsAValue(t *testing.T) {
+	t.Parallel()
+
+	tones := map[string]flowdebug.Tone{}
+	session, err := flowdebug.New(flowdebug.Options{
+		In: strings.NewReader("inspect {'a': 1}\ninspect 'true'\ncontinue\n"),
+		Emit: func(text string, tone flowdebug.Tone) {
+			if strings.Contains(text, `"a"`) || strings.Contains(text, `"true"`) {
+				tones[strings.TrimSpace(text)] = tone
+			}
+		},
+	})
+	require.NoError(t, err)
+
+	ctx := v1.NewContextWithRegistry(t.Context(), debugRegistry(t, &ranSteps{}))
+	ctx = v1.NewContextWithDebugger(ctx, session)
+	ctx = v1.NewContextWithRunObserver(ctx, session)
+	_, err = v1.Run(ctx, &v1.Workflow{Name: "debugged", Steps: []*v1.Node{markStep("build")}})
+	require.NoError(t, err)
+
+	assert.Equal(t, flowdebug.ToneValue, tones[`{"a":1}`])
+	assert.Equal(t, flowdebug.ToneValue, tones[`"true"`])
+}

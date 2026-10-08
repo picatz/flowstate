@@ -373,7 +373,7 @@ terminal: a script piped to the prompt gets the same tree. The JSON answers (`-o
 
 At a terminal the value is also coloured by what each part is: keys and `…` elisions
 recede, numbers and `true`/`false`/`null` take the accent, and the `[redacted]`
-marker takes the warning style so it cannot be read as data. Strings keep the base
+marker takes the warning style so it is easy to find (a string that spells the marker is indistinguishable from one the redactor wrote, in colour or without). Strings keep the base
 style, and the colour never changes a byte: with `NO_COLOR` or a pipe the text is
 identical. The MCP transcript labels these fragments with the tone `value`.
 
