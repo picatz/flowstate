@@ -73,7 +73,7 @@ $ flow debug replay examples/loop-accumulate/debug.script examples/loop-accumula
 Add `--record session.script` to `flow run local --debug` or `flow test --debug` and the
 commands the session accepted are written to that file when it ends (end of run, `quit` or an
 error): a mistyped command or a refused `break` is not in it, the file
-is made readable by you alone, and `flow debug replay` reaches the same stops from it.
+is made readable by you alone, and `flow debug replay` reaches the same stops from it. `flow debug attach --record` does the same for an attached durable run (without the `detach` that leaves it); a durable session's lines replay only where the verbs exist on a local run.
 
 [examples/debugging](../examples/debugging) walks one small workflow — a loop, a
 parallel block and a call — through every front, local and durable.

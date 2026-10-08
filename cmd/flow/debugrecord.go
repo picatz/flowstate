@@ -16,9 +16,9 @@ import (
 // accepted commands to, in the format `flow debug replay` reads.
 func addRecordFlag(cmd *cobra.Command) {
 	cmd.Flags().String("record", "",
-		"with --debug, write the commands the session accepted to this file when it ends (end of run, `quit`, error), "+
-			"so `flow debug replay` can reproduce the session (a mistyped command, or a `break` the run "+
-			"refused, is not in it)")
+		"write the commands the session accepted to this file when it ends (end of run, `quit`, error), "+
+			"so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is "+
+			"not in it). Requires --debug where the command has one")
 }
 
 // recordPath is `--record`'s value, refused where there is no session to
@@ -67,28 +67,57 @@ func recordSession(path string, session *flowdebug.Session, stderr io.Writer) fu
 		return func() {}
 	}
 
-	return func() {
-		var b strings.Builder
-		for _, line := range session.Script() {
-			b.WriteString(line)
-			b.WriteByte('\n')
-		}
-		if session.ScriptTruncated() {
-			b.WriteString("# the recording stopped at the script bounds; this file replays a prefix of the session\n")
-		}
-		// Owner-only: an expression typed at `inspect` can name anything in scope.
-		// Narrowed before a byte is written when the file already existed, since
-		// a write keeps an existing file's mode and the file holds typed
-		// expressions.
-		err := os.Chmod(path, 0o600)
-		if errors.Is(err, os.ErrNotExist) {
-			err = nil
-		}
-		if err == nil {
-			err = os.WriteFile(path, []byte(b.String()), 0o600)
-		}
-		if err != nil {
-			fmt.Fprintf(stderr, "could not write the recording to %s: %v\n", path, err)
-		}
+	return func() { writeRecording(path, session.Script(), session.ScriptTruncated(), stderr) }
+}
+
+// writeRecording writes lines to path as a script, one command per line.
+func writeRecording(path string, lines []string, truncated bool, stderr io.Writer) {
+	var b strings.Builder
+	for _, line := range lines {
+		b.WriteString(line)
+		b.WriteByte('\n')
 	}
+	if truncated {
+		b.WriteString("# the recording stopped at the script bounds; this file replays a prefix of the session\n")
+	}
+	// Owner-only: an expression typed at `inspect` can name anything in scope.
+	// Narrowed before a byte is written when the file already existed, since a
+	// write keeps an existing file's mode.
+	err := os.Chmod(path, 0o600)
+	if errors.Is(err, os.ErrNotExist) {
+		err = nil
+	}
+	if err == nil {
+		err = os.WriteFile(path, []byte(b.String()), 0o600)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "could not write the recording to %s: %v\n", path, err)
+	}
+}
+
+// attachRecording collects the lines an attached session's run accepted, up to
+// the bounds a script is read under.
+type attachRecording struct {
+	lines     []string
+	bytes     int
+	truncated bool
+}
+
+// add keeps one accepted line. Leaving the session — `detach`, `disconnect` —
+// is not a command the run was given, and a script that ended in one could not
+// be replayed by a verb that has neither.
+func (r *attachRecording) add(line string) {
+	switch line {
+	case "detach", "disconnect":
+		return
+	}
+	// Both bounds a script is read under, because a line may be as long as a
+	// command may be and the count alone would let a long session keep gigabytes.
+	if len(r.lines) >= flowdebug.MaxScriptCommands || r.bytes+len(line)+1 > flowdebug.MaxScriptBytes {
+		r.truncated = true
+
+		return
+	}
+	r.lines = append(r.lines, line)
+	r.bytes += len(line) + 1
 }

@@ -64,6 +64,7 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	addServerFlags(attachCmd)
 	addOutputFlag(attachCmd)
 	attachCmd.Flags().String("run-id", "", "pin the run, as the first run id of its chain; unset follows the current one")
+	addRecordFlag(attachCmd)
 	attachCmd.Flags().String("session", "", "rejoin this session instead of attaching a new one")
 	attachCmd.Flags().Duration("lease", 2*time.Minute, "how long each renewal holds the session; the engine bounds it")
 	attachCmd.Flags().String("script", "", "read commands from this file instead of the terminal")
@@ -156,6 +157,12 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	script, _ := cmd.Flags().GetString("script")
 	program, _ := cmd.Flags().GetString("program")
 	wait, _ := cmd.Flags().GetDuration("wait")
+	record, _ := cmd.Flags().GetString("record")
+	if script != "" {
+		if err := refuseRecordingOver(cmd, script); err != nil {
+			return err
+		}
+	}
 
 	var sourceMap *v1.DebugSourceMap
 	if program != "" {
@@ -190,6 +197,13 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 
 	driver := flowdebug.NewDriver(remote)
 	driver.Wait = wait
+
+	// The lines the run accepted, written however the session ends. Registered
+	// after the release above, so it runs first.
+	recording := &attachRecording{}
+	if record != "" {
+		defer func() { writeRecording(record, recording.lines, recording.truncated, surface.Err) }()
+	}
 
 	// The first stop, or the news that the run has not reached a boundary.
 	// A failure here detaches through the deferred Close: nothing has told
@@ -302,6 +316,9 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		}
 		if err := answers.add(line, result); err != nil {
 			return err
+		}
+		if notDone(result) == nil {
+			recording.add(line)
 		}
 		if line == "detach" {
 			// A detach the run did not accept leaves it held; Close sends
