@@ -164,13 +164,17 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		}
 	}
 
-	var sourceMap *v1.DebugSourceMap
+	var (
+		sourceMap *v1.DebugSourceMap
+		parsed    *v1.Workflow
+	)
 	if program != "" {
 		workflow, source, err := loadMappedWorkflow(program)
 		if err != nil {
 			return err
 		}
 		sourceMap = source.sourceMap(workflow)
+		parsed = workflow
 	}
 
 	ctx := cmd.Context()
@@ -256,6 +260,23 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	if console != nil {
 		console.SetCompleter(attachCompleter(ctx, driver))
 	}
+
+	// The panes `flow test --debug` paints, on the console and nowhere else:
+	// with none, panes is nil and nothing below it runs. The program's step
+	// list is offered only when it is the program this run executes, so a
+	// mismatched file cannot name steps the run does not have.
+	var panesOut io.Writer = surface.Out
+	if console != nil {
+		panesOut = console
+	}
+	_, panes := debugPanesFor(ctx, console, panesOut, surface.Theme, surface.Caps, func(string, flowdebug.Tone) {})
+	frames := flowdebug.FrameOptions{Program: parsed}
+	if parsed != nil && remote.SourceMapVerified() {
+		frames.SourceMap = sourceMap
+		frames.Inventory = stepList(parsed)
+	}
+	panes.setTarget(remote, frames)
+	panes.paintStop(first.Snapshot)
 	// next is one line of input. Both the end of input and an interrupt at the
 	// console end the session the same way: the run is released, because a
 	// debugger that is gone must not keep a production run held. Any other
@@ -317,6 +338,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		if err := answers.add(line, result); err != nil {
 			return err
 		}
+		panes.paintStop(result.Snapshot)
 		if notDone(result) == nil {
 			recording.add(line)
 		}

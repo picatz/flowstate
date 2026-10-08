@@ -73,7 +73,7 @@ const (
 	//
 	// It is a bound on *work*, not on knowledge: what is not evaluated is
 	// counted and reported, never silently missing.
-	MaxScopeEvaluations = 200
+	MaxScopeEvaluations = flowdebug.MaxFrameValues
 
 	// MaxValueRunes bounds one rendered value's width before the layout gets
 	// it.
@@ -194,9 +194,82 @@ type Frame struct {
 	// StepsTruncated reports that the session stopped recording what it
 	// watched, so a state above may understate what a step actually did.
 	StepsTruncated bool
+
+	// StepsNote says why Steps is empty when the frame was read from a target
+	// that names no step list, so the pane states the absence rather than
+	// drawing nothing. Empty for a frame that has a list.
+	StepsNote string
+
+	// ScopeNote says why Bindings is absent or short: inspect was refused, or
+	// the run left the stop mid-read. The pane draws it rather than a blank.
+	ScopeNote string
 }
 
-// Snapshot reads one frame from a session.
+// NoInventoryNote is what the step pane says of a target that cannot name the
+// steps a run may reach and was given no program to read them from.
+const NoInventoryNote = "no step inventory; pass --program to list the steps"
+
+// StepRows is how many step rows a pane may draw at layout, which is the window
+// a caller asks [flowdebug.ReadFrame] for.
+func StepRows(layout Layout) int { return paneRows(layout.Height) }
+
+// FromFrame is the pane's frame as a pure function of one [flowdebug.Frame].
+//
+// The second return reports whether the run is held at all, as [Snapshot]
+// does: a frame of a stop the run has left would report a position it is no
+// longer at. Nothing here reads the target, a clock, or a terminal, so the same
+// Frame draws the same bytes whichever front it was read from.
+func FromFrame(f flowdebug.Frame) (Frame, bool) {
+	if !f.Paused {
+		return Frame{}, false
+	}
+
+	frame := Frame{At: f.At, Paused: true, Held: -1, ScopeNote: ui.EscapeControl(f.ScopeNote)}
+
+	if window := f.Steps; window != nil {
+		frame.Steps = window.Steps
+		frame.StepLabels = window.Labels
+		frame.StepsBefore = window.Before
+		frame.StepsAfter = window.After
+		frame.StepsTotal = window.Total
+		frame.Held = window.Held
+		frame.StepsUnattributed = window.Unattributed
+		frame.StepsTruncated = window.Truncated || f.Partial
+	} else {
+		frame.StepsNote = NoInventoryNote
+	}
+
+	if f.Scope == nil {
+		return frame, true
+	}
+	frame.BindingsTotal = int(f.Scope.GetTotal())
+	for _, group := range f.Scope.GetGroups() {
+		for _, binding := range group.GetBindings() {
+			text := f.Values[binding.GetExpression()].GetRendered()
+			if binding.GetError() != "" {
+				// The name is real and only its value could not be produced;
+				// the reason is drawn as the row's value.
+				text = "(" + binding.GetError() + ")"
+			}
+			frame.Bindings = append(frame.Bindings, Binding{
+				Expression: binding.GetExpression(),
+				Value:      capValue(text),
+			})
+		}
+	}
+
+	return frame, true
+}
+
+// Snapshot reads one frame from a session that is in this process.
+//
+// It stays beside [FromFrame] rather than being replaced by it, for one reason
+// the Target contract cannot answer: the session announces a stop (the
+// [flowdebug.ToneBreak] a console paints on) before it publishes the stop as
+// held, so a read through [flowdebug.Target.Inspect] at that instant is refused
+// as not paused, while this reads the pause itself. A front reached through
+// the target alone — `flow debug attach` — is drawn by [FromFrame], and
+// TestAFrameReadsTheSameOnEveryFront holds the two to the same rows at a stop.
 //
 // It resolves values as well as names, because a scope pane listing names
 // alone is the `scope` command with a box drawn round it. Every value goes
@@ -454,6 +527,10 @@ func heading(label string, width int, theme ui.Theme, symbols ui.SymbolSet) stri
 // with nothing after it to say what comes next.
 func stepRows(frame Frame, theme ui.Theme, symbols ui.SymbolSet) []string {
 	if len(frame.Steps) == 0 {
+		if frame.StepsNote != "" {
+			return []string{theme.Muted.Render("  " + frame.StepsNote)}
+		}
+
 		return nil
 	}
 
@@ -561,19 +638,7 @@ func qualifiers(steps []flowdebug.Step) []string {
 // middle: at an autopsy the run is over and the first steps are where it began,
 // which is a better default than the middle of a list nothing is pointing into.
 func window(n, at, budget int) (first, last int) {
-	if budget >= n {
-		return 0, n
-	}
-	if at < 0 {
-		return 0, budget
-	}
-
-	// Centred, with the odd row going below the position: a reader looking at
-	// where a run is held is looking forward more than back.
-	first = at - (budget-1)/2
-	first = max(0, min(first, n-budget))
-
-	return first, first + budget
+	return flowdebug.StepWindowAround(n, at, budget)
 }
 
 // stepRow is one step's line: a gutter saying whether the run is held here, the
@@ -641,6 +706,9 @@ func scopeRows(frame Frame, theme ui.Theme, budget int) []string {
 			// would be the one wrong answer here.
 			return []string{theme.Muted.Render(fmt.Sprintf("  %d name(s), none rendered", frame.BindingsTotal))}
 		}
+		if frame.ScopeNote != "" {
+			return []string{theme.Muted.Render("  " + frame.ScopeNote)}
+		}
 
 		return nil
 	}
@@ -673,6 +741,9 @@ func scopeRows(frame Frame, theme ui.Theme, budget int) []string {
 		rows = append(rows, theme.Muted.Render(fmt.Sprintf(
 			"  %d more of %d (`scope` lists the names; `inspect <name>` reads one)",
 			elided, frame.BindingsTotal)))
+	}
+	if frame.ScopeNote != "" {
+		rows = append(rows, theme.Muted.Render("  "+frame.ScopeNote))
 	}
 
 	return rows
