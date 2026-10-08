@@ -65,6 +65,11 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 	domain, domainKnown := switchDomain(sw.GetValue(), enclosing, wf)
 	class, classKnown := switchValueClass(sw.GetValue().GetExpr().GetExpr(), enclosing, wf, 0)
 
+	// A discriminant read straight from a `type: bool` input has a two-value
+	// domain the file states, so exhaustiveness and an unreachable default are
+	// diagnosed over [true, false] the way they are for an enum (#1639).
+	boolInput := !domainKnown && isBoolInput(sw.GetValue().GetExpr().GetExpr(), wf)
+
 	// The case literals: computed values refused, duplicates found after
 	// flattening `case: [a, b]` lists, and — where the domain is knowable —
 	// impossible values and type mismatches. `seen` buckets every literal already
@@ -171,6 +176,8 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 							text, got, switchValueText(sw.GetValue()), class),
 						Code: v1.DiagnosticCodeTypeMismatch,
 					})
+				} else if b, isBool := lit.GetKind().(*expr.Value_BoolValue); isBool && boolInput {
+					handled[strconv.FormatBool(b.BoolValue)] = true
 				}
 				continue
 			}
@@ -211,6 +218,10 @@ func validateSwitch(id string, sw *v1.Switch, enclosing refScope, index int, wf 
 			}
 			handled[str.StringValue] = true
 		}
+	}
+
+	if boolInput {
+		domain, domainKnown = []string{"true", "false"}, true
 	}
 
 	if domainKnown {
@@ -460,6 +471,22 @@ func switchDomain(value *v1.Value, enclosing refScope, wf *v1.Workflow) ([]strin
 		return nil, false
 	}
 	return domain, true
+}
+
+// isBoolInput reports whether e is `${inputs.<name>}` for a declared `type: bool`
+// input, the one discriminant whose whole value set is a property of the file.
+func isBoolInput(e *expr.Expr, wf *v1.Workflow) bool {
+	sel := e.GetSelectExpr()
+	if sel == nil || sel.GetTestOnly() || sel.GetOperand().GetIdentExpr().GetName() != v1.InputsRoot {
+		return false
+	}
+	for _, decl := range wf.GetDeclaredInputs() {
+		if decl.GetName() == sel.GetField() {
+			return decl.GetType() == v1.InputDeclaration_TYPE_BOOL
+		}
+	}
+
+	return false
 }
 
 // switchValueClass reports the class of value a switch's discriminant always
