@@ -1237,7 +1237,13 @@ func (s refScope) shared() celcomplete.Scope {
 		// with, which is the one a file being typed will be compiled by.
 		Profile: v1.CurrentProfile,
 		Locals:  s.locals,
-		Roots:   []celcomplete.Candidate{celcomplete.StepsRoot(s.steps)},
+		Roots: []celcomplete.Candidate{
+			celcomplete.StepsRoot(s.steps),
+			// Closed sets the validator refuses an unknown field against,
+			// read from the same lists rather than spelled a third time.
+			celcomplete.RunRoot(flowfile.RunFields(), flowfile.RunIdentityFields()),
+			celcomplete.TriggerRoot(v1.TriggerContextFields()),
+		},
 	}
 	if len(s.vars) > 0 {
 		shared.Roots = append(shared.Roots, celcomplete.VarsRoot(s.vars))

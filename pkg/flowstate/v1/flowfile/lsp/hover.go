@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/sourcegraph/go-lsp"
@@ -638,7 +639,24 @@ func hoverBareName(doc *document, from *parsedStep, name string, clock, shaping 
 				"separate namespaces, so neither can hide the other.",
 			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
 	}
-	return nil
+
+	// The other two roots with a closed field set, described by the same candidate
+	// completion offers so a hover and the menu cannot give two accounts of one
+	// name.
+	var root celcomplete.Candidate
+	switch name {
+	case v1.RunRoot:
+		root = celcomplete.RunRoot(flowfile.RunFields(), flowfile.RunIdentityFields())
+	case v1.TriggerRoot:
+		root = celcomplete.TriggerRoot(v1.TriggerContextFields())
+	default:
+		return nil
+	}
+	fields := make([]string, 0, len(root.Members))
+	for _, member := range root.Members {
+		fields = append(fields, member.Name)
+	}
+	return markdownHover(fmt.Sprintf("**`%s`** — %s\n\nFields: `%s`.", root.Name, root.Docs, strings.Join(fields, "`, `")), rng)
 }
 
 // The two of the wait's three result names the schema itself declares. `payload`
