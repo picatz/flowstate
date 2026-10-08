@@ -1578,6 +1578,17 @@ message CompileResponse {
   // Report carries the diagnostics for the file, present even when empty so
   // "compiled clean" is stated rather than inferred from absence.
   DiagnosticReport report = 2;
+
+  // InputsJsonSchema is the JSON Schema (2020-12) of what a run of the workflow
+  // takes, set only when the file compiled clean: the same document
+  // `flow compile --schema inputs` prints, for a caller choosing arguments to
+  // Run. It is never stricter than binding a run's inputs and omits a sensitive
+  // declaration's default and example.
+  string inputs_json_schema = 3;
+
+  // OutputsJsonSchema is the JSON Schema (2020-12) of what a run answers with,
+  // set under the same condition as [inputs_json_schema].
+  string outputs_json_schema = 4;
 }
 
 // GetCatalogRequest asks what this deployment can execute. It has no fields.
