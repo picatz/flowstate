@@ -3,6 +3,7 @@ package flowdebug
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -67,6 +68,35 @@ func TestTheTimelineIsBoundedAndSaysWhatItDropped(t *testing.T) {
 		require.Equal(t, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, receipt.GetStatus(), receipt.GetMessage())
 		assert.Equal(t, 76, h.Position())
 	})
+}
+
+// TestTheTimelineIsBoundedInBytesToo: a run that stops again and again at a
+// large occurrence keeps no more than the byte budget, however few the points,
+// and the newest stop is still there.
+func TestTheTimelineIsBoundedInBytesToo(t *testing.T) {
+	t.Parallel()
+
+	session, err := New(Options{Controlled: true})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	// Each address is a quarter of the budget, so only a few stops fit.
+	big := strings.Repeat("a", MaxTimelineBytes/4)
+	const stops = 20
+	for i := range stops {
+		require.True(t, session.enterHeld(&v1.DebugOccurrence{Address: fmt.Sprintf("%02d%s", i, big)}, v1.DebugStopReason_DEBUG_STOP_REASON_STEP, nil, ""))
+		if i < stops-1 {
+			session.leaveHeld()
+		}
+	}
+	snapshot, err := session.Snapshot(context.Background())
+	require.NoError(t, err)
+	timeline := snapshot.GetTimeline()
+	require.NotEmpty(t, timeline.GetPoints())
+	assert.Less(t, len(timeline.GetPoints()), 5, "the budget, not the count, held the timeline")
+	assert.Equal(t, uint32(stops-len(timeline.GetPoints())), timeline.GetDropped())
+	last := timeline.GetPoints()[len(timeline.GetPoints())-1]
+	assert.True(t, strings.HasPrefix(last.GetOccurrence().GetAddress(), fmt.Sprintf("%02d", stops-1)), "the newest stop is kept")
 }
 
 func cmpOrLast(event int64, boundaries []int64) int64 {

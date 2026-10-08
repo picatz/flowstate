@@ -740,9 +740,9 @@ func (a sessionAnswer) result() *mcp.CallToolResult {
 // snapshot's observations and breakpoint definitions — so it is fitted as
 // every other answer on this surface is, dropping first what a caller can
 // most afford to lose and saying what went: the transcript's oldest fragments,
-// then the transcript, then the rendered text and the snapshot's observations,
-// and at the floor the snapshot and inspection themselves, which an observe
-// reads again. An ended case's report is the verdict, so it is kept to the
+// then the transcript, then the snapshot's timeline points, then the rendered
+// text and the snapshot's observations, and at the floor the snapshot and
+// inspection themselves, which an observe reads again. An ended case's report is the verdict, so it is kept to the
 // floor and there re-rendered within what the rest of the answer leaves it.
 func (a sessionAnswer) encode() ([]byte, error) {
 	encode := func() ([]byte, error) { return json.Marshal(a) }
@@ -771,18 +771,27 @@ func (a sessionAnswer) encode() ([]byte, error) {
 			return encode()
 		},
 		func() ([]byte, error) {
+			if points := a.snapshot.GetTimeline().GetPoints(); len(points) > 0 {
+				// The timeline goes first: it is the part of the answer that
+				// grows with the run, and a smaller answer keeps the text.
+				trimmed := proto.CloneOf(a.snapshot)
+				trimmed.Timeline.Dropped += uint32(len(points))
+				trimmed.Timeline.Points, trimmed.Timeline.Current = nil, -1
+				a.Snapshot = schemaJSON(trimmed)
+				note("The snapshot's timeline points were dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
+			}
+
+			return encode()
+		},
+		func() ([]byte, error) {
 			a.Text = ""
-			if len(a.snapshot.GetObservations()) > 0 || len(a.snapshot.GetTimeline().GetPoints()) > 0 {
+			if len(a.snapshot.GetObservations()) > 0 {
 				trimmed := proto.CloneOf(a.snapshot)
 				trimmed.ObservationsDropped += uint64(len(trimmed.GetObservations()))
 				trimmed.Observations = nil
-				if trimmed.GetTimeline() != nil {
-					trimmed.Timeline.Dropped += uint32(len(trimmed.Timeline.GetPoints()))
-					trimmed.Timeline.Points, trimmed.Timeline.Current = nil, -1
-				}
 				a.Snapshot = schemaJSON(trimmed)
 			}
-			note("The rendered text and the snapshot's observations were dropped, with any timeline points: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
+			note("The rendered text and the snapshot's observations were dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
 
 			return encode()
 		},

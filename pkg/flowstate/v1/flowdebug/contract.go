@@ -143,6 +143,7 @@ type contractState struct {
 	// timeline a snapshot carries.
 	stops        []heldStop
 	stopsDropped uint32
+	stopsBytes   int
 
 	receipts     map[string]*v1.DebugReceipt
 	receiptOrder []string
@@ -675,12 +676,16 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.contract.pauseAsked = false
 	s.contract.message = ""
 	s.bump()
-	if len(s.contract.stops) >= MaxTimelinePoints {
+	size := proto.Size(occurrence)
+	for len(s.contract.stops) > 0 &&
+		(len(s.contract.stops) >= MaxTimelinePoints || s.contract.stopsBytes+size > MaxTimelineBytes) {
+		s.contract.stopsBytes -= s.contract.stops[0].size
 		s.contract.stops = slices.Delete(s.contract.stops, 0, 1)
 		s.contract.stopsDropped++
 	}
+	s.contract.stopsBytes += size
 	s.contract.stops = append(s.contract.stops, heldStop{
-		revision: s.contract.revision, occurrence: proto.CloneOf(occurrence), reason: reason,
+		revision: s.contract.revision, occurrence: proto.CloneOf(occurrence), reason: reason, size: size,
 	})
 
 	return true

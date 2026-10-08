@@ -11,12 +11,20 @@ import (
 // oldest and says how many in [v1.DebugTimeline.Dropped].
 const MaxTimelinePoints = 1024
 
+// MaxTimelineBytes bounds what a [Session] keeps for its timeline, counted as
+// the encoded size of the occurrences it retains: a count of points alone does
+// not bound a run that stops over and over at a deeply nested occurrence. The
+// oldest stops are evicted, and counted in [v1.DebugTimeline.Dropped], until
+// both bounds hold; the newest stop is always kept.
+const MaxTimelineBytes = 1 << 20
+
 // heldStop is one stop a [Session] held, kept for its timeline. The occurrence
 // is as the engine named it; the snapshot redacts it as it does its own.
 type heldStop struct {
 	revision   uint64
 	occurrence *v1.DebugOccurrence
 	reason     v1.DebugStopReason
+	size       int
 }
 
 // errCannotTravel is what a session that was not built to be replayed from its
