@@ -121,6 +121,7 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 		// never credentials keeps meaning exactly what it meant.
 		cel.Variable("credentials", cel.BoolType),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	}, identityDecls...)...)
 	if err != nil {
 		return nil, fmt.Errorf("building request rule environment: %w", err)
@@ -135,6 +136,7 @@ func newRuleCompiler(costLimit uint64) (*ruleCompiler, error) {
 		cel.Variable("port", cel.IntType),
 		cel.Variable("ip", cel.StringType),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	}, identityDecls...)...)
 	if err != nil {
 		return nil, fmt.Errorf("building connection rule environment: %w", err)

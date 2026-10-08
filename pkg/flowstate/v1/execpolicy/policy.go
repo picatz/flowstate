@@ -400,6 +400,7 @@ func newRuleEnv() (*cel.Env, error) {
 		cel.Variable("env_keys", cel.ListType(cel.StringType)),
 		principal.Var("identity"),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	)
 }
 
