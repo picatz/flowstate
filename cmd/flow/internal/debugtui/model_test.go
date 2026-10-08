@@ -138,11 +138,11 @@ func TestTabCyclesTheFocusRing(t *testing.T) {
 
 	m := started(t, newFake())
 	var order []string
-	for range 4 {
+	for range 5 {
 		order = append(order, m.screen.Focus)
 		m = send(m, tuitest.Key("tab"))
 	}
-	assert.Equal(t, []string{"steps", "scope", "console", "steps"}, order)
+	assert.Equal(t, []string{"steps", "scope", "console", "flow", "steps"}, order)
 	assert.Equal(t, "scope", m.screen.Focus)
 
 	m = send(m, tuitest.Key("shift+tab"))

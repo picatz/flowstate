@@ -80,7 +80,7 @@ func TestEveryFrameShapeIsDrawnAndSaysWhatIsMissing(t *testing.T) {
 		"held with the program": {build: func(f *fakeTarget) *fakeTarget { return f }, program: true,
 			want: []string{"checkout", "build", "6 step(s)", "inputs"}},
 		"no program": {build: func(f *fakeTarget) *fakeTarget { return f },
-			want: []string{debugpaneNote, "inputs"}, not: []string{"6 step(s)"}},
+			want: []string{NoProgramNote, "no step inventory", "inputs"}, not: []string{"6 step(s)"}},
 		"inspect refused": {build: func(f *fakeTarget) *fakeTarget { f.denyInspect = true; return f }, program: true,
 			want: []string{"inspect is not permitted", "build"}, not: []string{"eu-west-1"}},
 		"the run is over": {build: func(f *fakeTarget) *fakeTarget { f.at = len(f.program); return f }, program: true,
@@ -100,9 +100,6 @@ func TestEveryFrameShapeIsDrawnAndSaysWhatIsMissing(t *testing.T) {
 		})
 	}
 }
-
-// debugpaneNote is the sentence the step pane gives a target with no program.
-const debugpaneNote = "no step inventory; pass --program"
 
 func TestAPartialFrameSaysEarlierStepsAreNotShown(t *testing.T) {
 	t.Parallel()

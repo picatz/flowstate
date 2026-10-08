@@ -1,20 +1,20 @@
 flow debug · release-1 · run 3f7c9a2e · held step · rev 2                 ? help
-steps ───────────────────────── → scope 4 names ────────────────────────────────
-  ○ checkout pending             ▾ inputs      {2}                              
-→ ▶ build running                    version   "2026.9.0"                       
-  ○ flaky pending                    region    "eu-west-1"                      
-  ○ gated pending                ▾ steps       {1}                              
-  ○ deploy pending              →  ▸ checkout  {artifact: checkout.tar.gz, sha: 
-  ○ notify pending               ▸ run         {1}                              
-  6 step(s)                                                                     
+flow ──────────────────────────── → scope 4 names ──────────────────────────────
+no program; pass --program         ▾ inputs      {2}                            
+                                       version   "2026.9.0"                     
+                                       region    "eu-west-1"                    
+                                   ▾ steps       {1}                            
+                                  →  ▸ checkout  {artifact: checkout.tar.gz, sha
+                                   ▸ run         {1}                            
                                                                                 
                                                                                 
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
-                                                                                
+steps ───────────────────────────                                               
+  ○ checkout pending                                                            
+→ ▶ build running                                                               
+  ○ flaky pending                                                               
+  ○ gated pending                                                               
+  ○ deploy pending                                                              
+  ○ notify pending                                                              
 console ────────────────────────────────────────────────────────────────────────
                                                                                 
                                                                                 

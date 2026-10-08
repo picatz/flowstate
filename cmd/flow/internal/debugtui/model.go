@@ -63,6 +63,11 @@ type Config struct {
 
 	// Accepted is called with each line the run took, for a recording.
 	Accepted func(line string)
+
+	// Now is the clock a double click is judged by. The screen reads no clock of
+	// its own; a screen given none never sees a double click, and a click then
+	// only selects.
+	Now func() time.Time
 }
 
 // Bounds on work the screen starts.
@@ -119,9 +124,14 @@ type (
 
 // Model is the debugger screen.
 type Model struct {
-	cfg  Config
-	ctx  context.Context
-	keys tui.Keymap
+	cfg Config
+
+	// programDigest is the digest of the program the screen was given, taken
+	// once: a frame's program is trusted only while it is the program the run
+	// reports.
+	programDigest string
+	ctx           context.Context
+	keys          tui.Keymap
 
 	screen Screen
 	ring   tui.Ring
@@ -155,18 +165,31 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		return Model{}, err
 	}
 
-	ring := tui.NewRing(paneSteps, paneScope, paneConsole)
+	ring := tui.NewRing(paneFlow, paneSteps, paneScope, paneConsole)
+	focus := paneSteps
+	if cfg.Frame.Program != nil {
+		// With a program the flow is the first thing to look at; without one it is
+		// a sentence, and keys belong to the steps.
+		focus = paneFlow
+	}
+	ring = ring.Set(focus)
+
+	var digest string
+	if cfg.Frame.Program != nil {
+		digest = v1.WorkflowIRDigest(cfg.Frame.Program)
+	}
 
 	return Model{
-		cfg:     cfg,
-		ctx:     ctx,
-		keys:    keys,
-		ring:    ring,
-		readSeq: 1,
-		reading: true,
+		cfg:           cfg,
+		programDigest: digest,
+		ctx:           ctx,
+		keys:          keys,
+		ring:          ring,
+		readSeq:       1,
+		reading:       true,
 		screen: Screen{
 			Size: cfg.Size, Tree: pane.NewTree(nil), Console: NewConsole(), Keys: keys, Verbs: cfg.Verbs,
-			Focus: ring.Current(), Pane: paneSteps, Diverged: map[uint64]bool{},
+			Focus: ring.Current(), Pane: focus, Diverged: map[uint64]bool{}, Flow: NewFlow(),
 		},
 	}, nil
 }
@@ -261,17 +284,27 @@ func (m Model) ended() bool {
 
 // read reads one frame.
 func (m Model) read(seq uint64) tea.Cmd {
-	ctx, target, opts := m.ctx, m.cfg.Target, m.cfg.Frame
+	ctx, target, opts, digest := m.ctx, m.cfg.Target, m.cfg.Frame, m.programDigest
 	opts.StepRows = stepRowsAsked
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, readTimeout)
 		defer cancel()
 		frame, err := flowdebug.ReadFrame(ctx, target, opts)
+		if err == nil && frame.Program != nil && !programIsTheRuns(digest, frame.Snapshot.GetIrDigest()) {
+			// A file that is not the program the run executes would draw steps
+			// the run does not have, and aim `until` and `break` at them.
+			frame.Program = nil
+		}
 
 		return frameMsg{seq: seq, frame: frame, err: err}
 	}
 }
+
+// programIsTheRuns reports whether a program with digest want may be drawn for
+// a run that reports digest got. A run that reports none (a local session
+// built from the program) cannot contradict it.
+func programIsTheRuns(want, got string) bool { return got == "" || got == want }
 
 // reread asks for a fresh read. One runs at a time: a run whose revisions come
 // faster than a read completes costs one more read afterwards, not one each.
@@ -307,6 +340,10 @@ func (m *Model) run(line string) tea.Cmd {
 		return nil
 	}
 	m.screen.Busy = line
+	if m.moves(line) {
+		// The run is about to be somewhere else, and the view goes with it.
+		m.screen.Flow.Follow()
+	}
 	driver, ctx := m.cfg.Driver, m.ctx
 
 	return func() tea.Msg {
@@ -337,6 +374,7 @@ func (m Model) framed(msg frameMsg) (tea.Model, tea.Cmd) {
 	m.screen.Frame, m.screen.Loaded, m.screen.Problem = msg.frame, true, ""
 	m.frameRev = msg.frame.Snapshot.GetRevision()
 	m.screen.Tree.SetRoots(ScopeNodes(msg.frame))
+	m.screen.Flow.Apply(msg.frame)
 	m.revealSelection()
 
 	var cmds []tea.Cmd

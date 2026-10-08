@@ -899,11 +899,12 @@ without the flag, so a script that gains the flag keeps its output.
 | --- | --- |
 | `s` or `space`, `n`, `f`, `c` | `step`, `next`, `finish`, `continue` |
 | `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them |
-| `tab`, `shift+tab` | focus the next or previous pane: steps, scope, console |
+| `tab`, `shift+tab` | focus the next or previous pane: flow, steps, scope, console |
 | `:` or `/` | type a command; every verb in the table above works there, with tab completion |
 | `i` | open the console on `inspect <the selected scope row>` |
 | `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane |
-| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent) |
+| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
+| `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there |
 | `?` | the help overlay: these keys, then the verbs that have no key |
 | `q` | `detach` and let the run go on unattended |
 | `ctrl+c` | leave at once and release the run, as `quit` does |
@@ -921,13 +922,43 @@ With the mouse, a click on a scope row selects it and opens or closes it (a
 focuses it, and the wheel scrolls the pane under the pointer. A click on
 anything the screen did not draw is ignored.
 
+**The flow.** When the attach was given the program (`--program`), the left
+column draws its structure as a ladder, one row per step in the order the file
+is written, with a loop, a `for_each:`, a `parallel:` group, a `switch:` and a
+`call:` boxed around the steps inside it (the box is `+`, `|` and `-` where the
+terminal cannot draw lines). The mark on each row is what the run's own
+observations say that step did: done, tolerated, failed, skipped, waiting, or
+not yet reached, and the step the run is held before carries the arrow and the
+word `held`, with the groups around it marked `running`. A mark never stands
+alone: a pending and a waiting step share a mark in ASCII, and the word is what
+tells them apart. When the run has dropped observations, a step that may have
+run before the ones kept is drawn `?`, not pending, and the heading says
+`earlier steps not shown`. Without the program the pane says `no program; pass
+--program` and draws nothing else, rather than guess a structure from what the
+run happened to report.
+
+The picture follows the held step and stays out of your way: the structure is
+built once per program, each stop only changes the marks, and the view
+re-centres on the held step until you scroll it, after which it stays where you
+put it until you ask the run to move. `up` and `down` select a step, `left` and
+`right` fold and unfold a group (a folded group shows how many steps it hides,
+and keeps its own mark only, so open it to see what failed inside), `enter` or `u` is `until` that
+step, and `B` is `break` on it, or `delete` if it already has one; a double
+click is `until` and a right click is `B`. These send the console's own lines,
+which the console shows, so a step the run's redactor withholds, or whose name
+cannot be typed on a line, is refused with a sentence and sent nowhere. The
+pane draws a program only when it is the one the run reports (the digests
+match), so a stale file gives the no-program line instead of steps the run does
+not have. It draws at most 2048 steps and calls at most eight deep; past that it says
+`N more not drawn`.
+
 The panes fold as the terminal narrows:
 
 | Columns | Layout |
 | --- | --- |
-| 120 and up | steps, scope and the selected row's detail, side by side |
-| 100 to 119 | steps beside the scope, with the detail under it |
-| 80 to 99 | steps beside the scope |
+| 120 and up | flow, steps, scope and the selected row's detail, side by side |
+| 100 to 119 | flow, steps, then the scope with the detail under it |
+| 80 to 99 | the flow over the steps, beside the scope |
 | 60 to 79 | one pane at a time under tabs (`tab` or a click switches) |
 | under 60, or under 12 rows | the screen is not drawn |
 

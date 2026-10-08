@@ -1,18 +1,18 @@
-flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
-flow ──────────────────────────── steps ─────────────────── → scope 4 names ──────────────── inspector ─────────────────
-no program; pass --program          ○ checkout pending       ▾ inputs      {2}               expressio  steps.checkout  
-                                  → ▶ build running              version   "2026.9.0"        type       map             
-                                    ○ flaky pending              region    "eu-west-1"       children   2               
-                                    ○ gated pending          ▾ steps       {1}               value      {artifact: check
-                                    ○ deploy pending        →  ▸ checkout  {artifact: checko            out.tar.gz, sha:
-                                    ○ notify pending         ▸ run         {1}                           9f2c}          
-                                    6 step(s)                                                                           
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+flow debug · release-1 · run 3f7c9a2e · held step · rev 4                                                         ? help
+→ flow 9 steps ────────────────── steps ─────────────────── scope 4 names ────────────────── inspector ─────────────────
+     ✓ fetch task "http"            no step inventory; pass •▸ inputs  {2}                   group     inputs           
+     — validate skipped task "htt                            ▸ steps   {1}                   root                       
+  ┌▾ ✓ checks parallel                                       ▸ run     {1}                   names     2                
+  │  branch 1                                                                                resolved  2                
+  │     ✓ notify task "http"                                                                                            
+  │  branch 2                                                                                                           
+  │     △ audit tolerated task "h                                                                                       
+  └──                                                                                                                   
+  ┌▾ ▶ pages running loop                                                                                               
+  │     ✓ page task "http"                                                                                              
+→ │     ▶ store held task "http"                                                                                        
+  └──                                                                                                                   
+     ○ charge task "http"                                                                                               
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -26,11 +26,11 @@ no program; pass --program          ○ checkout pending       ▾ inputs      {
                                                                                                                         
                                                                                                                         
 console ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+debug> step                                                                                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-debug>                                                                                                                  
+debug> until pages/store                                                                                                
                                                                                                                         
 s step  n next  c continue  tab focus  : console  ? help  q quit                                                        

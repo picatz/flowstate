@@ -17,6 +17,15 @@
 // in Update, and talks to the target only through commands, so a test drives a
 // model with messages and compares bytes.
 //
+// # The flow
+//
+// Given the program, the left column draws its structure as a ladder with what
+// the run has done on each step ([FlowView]). The structure is built once per
+// program and the marks come from the frame's [flowdebug.Overlay], so a stop
+// changes the picture without rebuilding it. The keys that act on a step send the
+// console's own lines (`until`, `break`, `delete`), and a step whose name the
+// session withholds is never put on one.
+//
 // # What refreshes the screen
 //
 // The screen re-reads the frame when a command finishes and when the target's

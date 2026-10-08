@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -102,6 +103,9 @@ func attachWithTUI(
 		// Refreshed by the target's own revisions, never by a clock.
 		Watch:    true,
 		Accepted: acceptInto(recording),
+		// A double click on a step of the flow is judged by this clock; the screen
+		// reads none of its own.
+		Now: time.Now,
 	})
 	if err != nil {
 		return err

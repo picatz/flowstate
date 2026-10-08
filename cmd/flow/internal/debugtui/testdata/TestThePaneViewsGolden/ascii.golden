@@ -45,9 +45,9 @@
 [1;38;2;133;131;146mMove[m
   [1;38;2;241;239;239mup k[m       move up a row
   [1;38;2;241;239;239mdown j[m     move down a row
-  [1;38;2;241;239;239menter[m      open or close the row (click does the same)
-  [1;38;2;241;239;239mright l[m    open the row
-  [1;38;2;241;239;239mleft h[m     close the row, or go to its parent
+  [1;38;2;241;239;239menter[m      open or close the row (click too); in the flow, run until it
+  [1;38;2;241;239;239mright l[m    open the row; in the flow, unfold it
+  [1;38;2;241;239;239mleft h[m     close the row, or go to its parent; in the flow, fold it
   [1;38;2;241;239;239mPgUp[m       up a page
   [1;38;2;241;239;239mPgDn[m       down a page
   [1;38;2;241;239;239mhome[m       first row
@@ -62,6 +62,10 @@
   [1;38;2;241;239;239mq[m          detach and let the run go on unattended
   [1;38;2;241;239;239mctrl+c[m     leave at once and release the run, like quit
   [1;38;2;241;239;239mctrl+d[m     leave and release the run (an empty console line)
+
+[1;38;2;133;131;146mFlow[m
+  [1;38;2;241;239;239mu[m          run until the selected flow step (double click too)
+  [1;38;2;241;239;239mB[m          toggle a breakpoint on the selected flow step (right click too)
 
 [1;38;2;133;131;146mType in the console[m
   [1;38;2;241;239;239muntil <step>[m  run to that step (an id or an address like pages[2]/page); a con

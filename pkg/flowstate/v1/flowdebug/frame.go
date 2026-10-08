@@ -59,6 +59,28 @@ type Frame struct {
 	// Partial reports that the target dropped observations, so any state
 	// derived from them understates what the run did.
 	Partial bool
+
+	// Overlay is what the snapshot's observations and held occurrence say the
+	// run did at each static site of its program, for a view of the program's
+	// structure to draw. It is derived from the snapshot alone, so every front
+	// reads the same overlay at the same stop.
+	Overlay Overlay
+
+	// Redact withholds from a program's own text, such as a step id, what the
+	// session's redactor withholds. It is set only where the session can say
+	// (a local [Session] given as [FrameOptions.Source]) and is nil elsewhere,
+	// which is the author's own program drawn as written. Use [Frame.RedactText].
+	Redact func(string) string
+}
+
+// RedactText is text with whatever the session withholds removed, or text itself
+// where the frame has no redactor.
+func (f Frame) RedactText(text string) string {
+	if f.Redact == nil {
+		return text
+	}
+
+	return f.Redact(text)
 }
 
 // StepWindow is a window onto the run's step list and what each step has done.
@@ -148,6 +170,11 @@ func ReadFrame(ctx context.Context, t Target, opts FrameOptions) (Frame, error) 
 		Program:   opts.Program,
 		SourceMap: opts.SourceMap,
 		Partial:   snapshot.GetObservationsDropped() > 0 || len(snapshot.GetObservations()) >= MaxObservations,
+		Overlay:   overlayOf(snapshot),
+	}
+	if opts.Source != nil && opts.Program != nil {
+		// An empty window is the cheap way to the redactor the session captured.
+		frame.Redact = opts.Source.Steps(0, 0).RedactText
 	}
 
 	// A caller's count is a request, not a trusted size: a negative one would
