@@ -33,6 +33,11 @@ $ tree-sitter test
 - The grammar parses CEL's syntax, not its meaning: macros such as `exists` are
   ordinary calls, and a bare `x` is an identifier whether or not it is bound.
 - CI (`.github/workflows/editors.yml`) generates the parser with a pinned,
-  digest-verified `tree-sitter` binary and runs the corpus; the queries are
-  checked to compile against the generated grammar. Wiring the queries into
-  Neovim, Helix and Zed is separate work.
+  digest-verified `tree-sitter` binary, runs the corpus, and checks that the
+  highlight query compiles. It does not load `queries-flowfile/injections.scm`,
+  which needs the YAML parser; that query was run by hand against
+  tree-sitter-yaml. A YAML-backed check, and wiring the queries into Neovim,
+  Helix and Zed, are separate work.
+- Inside a flow mapping, YAML forbids `{` and `}` in a plain scalar, so a
+  `${...}` fence in `{a: ...}` must be quoted; the injection then sees it as a
+  quoted scalar.

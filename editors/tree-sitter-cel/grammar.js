@@ -34,7 +34,7 @@ module.exports = grammar({
 
   // `a.b{` is a message type; `a.b` alone is field access. The parser forks at
   // the identifier and keeps whichever alternative survives.
-  conflicts: ($) => [[$._primary, $.type_name]],
+  conflicts: ($) => [[$._primary, $.type_name], [$.rooted_identifier, $.type_name]],
 
   rules: {
     source_file: ($) => $._expression,
@@ -112,6 +112,7 @@ module.exports = grammar({
         $.call,
         $.message,
         $.identifier,
+        $.rooted_identifier,
         $._literal,
         $.list,
         $.map,
@@ -120,6 +121,9 @@ module.exports = grammar({
 
     // A leading dot makes an identifier or call resolve from the root scope.
     call: ($) => seq(optional('.'), field('function', $.identifier), field('arguments', $.arguments)),
+
+    // `.pkg.value`: a leading dot resolves from the root scope.
+    rooted_identifier: ($) => seq('.', $.identifier),
 
     parenthesized: ($) => seq('(', $._expression, ')'),
 

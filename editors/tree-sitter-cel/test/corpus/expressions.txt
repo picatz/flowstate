@@ -331,3 +331,18 @@ a[0].size()
       (integer))
     (identifier)
     (arguments)))
+
+===========================
+rooted identifier selection
+===========================
+.pkg.value + .x
+---
+
+(source_file
+  (binary_expression
+    (field_access
+      (rooted_identifier
+        (identifier))
+      (identifier))
+    (rooted_identifier
+      (identifier))))
