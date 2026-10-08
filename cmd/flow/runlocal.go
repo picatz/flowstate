@@ -250,6 +250,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		narrate io.Writer = surface.Err
 		restore           = func() {}
 	)
+	var front *reversibleFront
+	reverse, err := reverseRequested(cmd, workflow, debugging, localSignals)
+	if err != nil {
+		return err
+	}
 	if debugging {
 		// A debugger is a reveal: the session narrates each step's values as
 		// they complete and `inspect` reaches anything in scope, so on a
@@ -268,6 +273,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
 		defer restore()
+		if reverse != "" && console == nil {
+			return errors.New("--reverse steps back at a terminal prompt, and the commands here are not coming " +
+				"from one; drop --reverse, or run it from a terminal")
+		}
 	}
 
 	ctx = v1.ContextWithLogger(ctx,
@@ -294,42 +303,66 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		emit, panes := debugPanesFor(ctx, console, narrate, surface.ErrTheme, surface.ErrCaps,
 			debugEmitter(narrate, surface.ErrTheme))
 
-		session, err := flowdebug.New(flowdebug.Options{
-			In:      cmd.InOrStdin(),
-			Console: consoleOrNil(console),
-			Out:     narrate,
-			Emit:    emit,
-			// This command holds the specification, so `break` and `until`
-			// complete over every step the run may reach rather than only the
-			// ones it has been to.
-			Steps: stepList(workflow),
-			// And the program itself, so a target or a condition is judged
-			// against where it can fire, as every other front judges it.
-			Workflow: workflow,
-			// Authorized by --reveal-sensitive, without which a program
-			// declaring sensitive values is refused above.
-			RevealSensitive: reveal,
-		})
-		if err != nil {
-			return err
-		}
-		if console != nil {
-			console.SetCompleter(session.Complete)
-		}
-		panes.setSession(session)
-		// This process is about to exit either way, so the reader parking
-		// costs nothing here — closed anyway because a session's owner closes
-		// it, and a habit that holds only where it is load-bearing is one that
-		// will be missing where it is.
-		defer func() { _ = session.Close() }()
-		// Registered last, so it runs first: the file is written while the
-		// session still holds what it accepted, on every way out.
-		defer recordSession(record, session, surface.Err)()
+		if reverse != "" {
+			front = &reversibleFront{
+				Steps:   stepList(workflow),
+				Out:     narrate,
+				Emit:    emit,
+				Prompt:  flowdebug.Prompt,
+				Console: console,
+				Panes:   panes,
+				Theme:   surface.ErrTheme,
+				// The explicit opt-in, held by every pass's session.
+				RevealSensitive: reveal,
+			}
+			if record != "" {
+				front.Record = &attachRecording{}
+				defer func() { writeRecording(record, front.Record.lines, front.Record.truncated, surface.Err) }()
+			}
+			fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+				fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			if reverse == reverseUnsafe {
+				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Warning.Render(
+					"--reverse=unsafe: stepping back runs every task again, effects included"))
+			}
+		} else {
+			session, err := flowdebug.New(flowdebug.Options{
+				In:      cmd.InOrStdin(),
+				Console: consoleOrNil(console),
+				Out:     narrate,
+				Emit:    emit,
+				// This command holds the specification, so `break` and `until`
+				// complete over every step the run may reach rather than only the
+				// ones it has been to.
+				Steps: stepList(workflow),
+				// And the program itself, so a target or a condition is judged
+				// against where it can fire, as every other front judges it.
+				Workflow: workflow,
+				// Authorized by --reveal-sensitive, without which a program
+				// declaring sensitive values is refused above.
+				RevealSensitive: reveal,
+			})
+			if err != nil {
+				return err
+			}
+			if console != nil {
+				console.SetCompleter(session.Complete)
+			}
+			panes.setSession(session)
+			// This process is about to exit either way, so the reader parking
+			// costs nothing here — closed anyway because a session's owner closes
+			// it, and a habit that holds only where it is load-bearing is one that
+			// will be missing where it is.
+			defer func() { _ = session.Close() }()
+			// Registered last, so it runs first: the file is written while the
+			// session still holds what it accepted, on every way out.
+			defer recordSession(record, session, surface.Err)()
 
-		fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
-			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
-		ctx = v1.NewContextWithDebugger(ctx, session)
-		ctx = v1.NewContextWithRunObserver(ctx, session)
+			fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+				fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			ctx = v1.NewContextWithDebugger(ctx, session)
+			ctx = v1.NewContextWithRunObserver(ctx, session)
+		}
 	}
 
 	started := time.Now()
@@ -337,7 +370,15 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// The local driver's own submit boundary, which binds the arguments and applies
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
-	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	var (
+		outputs *v1.Workflow_StepOutputs
+		runErr  error
+	)
+	if front != nil {
+		outputs, runErr = runReversibly(ctx, front, workflow, inputs, narrate, surface.ErrTheme)
+	} else {
+		outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
+	}
 	// A debugger is told the run has returned, so it can say what the run
 	// never did, an `until` it never reached, while its console still owns
 	// the line. Found on the context, as flowtest finds it.
