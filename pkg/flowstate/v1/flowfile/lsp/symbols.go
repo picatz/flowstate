@@ -160,6 +160,9 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 						return
 					}
 				}
+				if !freeNameAt(f.source, ref.span[0]) {
+					return
+				}
 				if at := declaredNameAt(doc, from, ref, ownVars(from, in)); at != nil {
 					locations = []lsp.Location{{URI: doc.uri, Range: at.keyRange}}
 				}

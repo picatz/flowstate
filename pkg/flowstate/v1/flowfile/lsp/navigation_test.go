@@ -610,6 +610,38 @@ steps:
 		assert.Equal(t, want, len(c.definition("file:///unbound.yaml", pos.Line, pos.Character)) == 1, at)
 	}
 
+	// Text in a string literal, and a name a comprehension binds over the root,
+	// are not references to the declaration.
+	const notFree = `name: nf
+inputs:
+  region:
+    type: string
+  xs:
+    type: list
+steps:
+  - id: a
+    log:
+      message: ${'inputs.region'}
+  - id: b
+    log:
+      message: ${xs.exists(inputs, inputs.region)}
+  - id: c
+    log:
+      message: ${inputs.region}
+`
+	c.open("file:///notfree.yaml", notFree)
+	for at, want := range map[string]bool{
+		"'inputs.region'}":       false,
+		"inputs, inputs.region)": false,
+		"${inputs.region}":       true,
+	} {
+		pos = positionOf(t, notFree, at, len(at)-3)
+		if at == "${inputs.region}" {
+			pos = positionOf(t, notFree, at, len("${inputs.")+1)
+		}
+		assert.Equal(t, want, len(c.definition("file:///notfree.yaml", pos.Line, pos.Character)) == 1, at)
+	}
+
 	// A member nothing declares goes nowhere.
 	const missing = `name: m
 steps:
