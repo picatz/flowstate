@@ -394,6 +394,15 @@ filetype does not have to be `flowfile`:
 :lua vim.lsp.start({ name = 'flowstate', cmd = { 'flow', 'lsp' } })
 ```
 
+## Vim
+
+`editors/vim/` is a runtime path with filetype detection, a small syntax file
+that colours `${...}` and `must:` as CEL, and an `ftplugin`. It also carries the
+`vim-lsp`, `coc.nvim` and `yegappan/lsp` snippets that start `flow lsp`; see
+[`editors/vim/README.md`](../editors/vim/README.md). Neovim does not need it —
+the section above gets semantic tokens from the server — though its runtime
+accepts the same files.
+
 ## Visual Studio Code
 
 `editors/vscode/` in this repository is a thin client over `flow lsp`, built to
