@@ -118,6 +118,12 @@ func mentionToken(path string, m *chatv1.Mention) (string, error) {
 	return "", fmt.Errorf("%s: needs `user`, `channel` or `broadcast`", path)
 }
 
+// maxExpanded bounds a template's expansion while it is built, so a small
+// template repeating a large argument fails before it allocates the product.
+// Slack's longest text is MaxSectionText characters; escaping can lengthen a
+// value several times over, so this is generous without being unbounded.
+const maxExpanded = 8 * MaxSectionText
+
 // markup expands a template. The grammar is deliberately tiny: `{name}` is an
 // argument, `{{` and `}}` are literal braces, and everything else is the
 // author's mrkdwn. Arguments are escaped, a mention token is accepted only when
@@ -179,6 +185,9 @@ func markup(path string, m *chatv1.Markup) (string, error) {
 			}
 			usedArg[name] = true
 			out.WriteString(Escape(val))
+			if out.Len() > maxExpanded {
+				return "", fmt.Errorf("%s.template: expands past %d bytes (a placeholder repeated with a large value); shorten the value or the template", path, maxExpanded)
+			}
 			i += end
 		case c == '}':
 			return "", fmt.Errorf("%s.template: '}' at offset %d closes nothing; write }} for a literal brace", path, i)
