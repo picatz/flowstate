@@ -145,7 +145,8 @@ func approval(path string, a *chatv1.Approval) ([]Block, error) {
 	// Paths name the author's fields, not the slice built here.
 	row := ActionsBlock{Type: "actions", BlockID: "fs_actions", Elements: []Element{}}
 	for i, b := range buttons {
-		bp, def := path+".extra", chatv1.Style_STYLE_UNSPECIFIED
+		var bp string
+		def := chatv1.Style_STYLE_UNSPECIFIED
 		switch i {
 		case 0:
 			bp, def = path+".approve", chatv1.Style_STYLE_PRIMARY
@@ -296,7 +297,7 @@ func logCard(path string, l *chatv1.Log) ([]Block, error) {
 	if code := l.GetCode(); code != nil && code.GetText() != "" {
 		// A fence inside the code would end the block early and let the rest be
 		// read as markup, so it is broken with a zero-width space.
-		body := strings.ReplaceAll(Escape(code.GetText()), "```", "`​``")
+		body := strings.ReplaceAll(Escape(code.GetText()), "```", "`\u200b``")
 		blocks = append(blocks, SectionBlock{Type: "section", BlockID: "fs_code", Text: &TextObject{Type: "mrkdwn", Text: "```\n" + body + "\n```", Verbatim: true}})
 	}
 	if len(l.GetContext()) > 0 {
