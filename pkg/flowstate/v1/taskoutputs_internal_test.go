@@ -54,3 +54,25 @@ func TestAStepThatShapesItsOutputsIsNotHeldToTheDeclaredNames(t *testing.T) {
 	require.NoError(t, checkDeclaredOutputs(shaped, httpDef(t), out))
 	require.Error(t, checkDeclaredOutputs(&Task{Name: "http"}, httpDef(t), out), "the same result without shaping is refused")
 }
+
+func TestAViolationInsideAReturnedValueIsAttributedToTheOutput(t *testing.T) {
+	t.Parallel()
+
+	require.Equal(t, "headers", ViolationRoot("headers[0].name"))
+	require.Equal(t, "status_code", ViolationRoot("status_code"))
+	require.Equal(t, "a", ViolationRoot("a.b.c"))
+}
+
+// TestAValueTheDecoderCannotPlaceIsLeftToTheOutputContract keeps this check from
+// refusing what a plugin's own contract accepts: a literal of the wrong kind is
+// not a rule violation, and the rest of the result is still judged.
+func TestAValueTheDecoderCannotPlaceIsLeftToTheOutputContract(t *testing.T) {
+	t.Parallel()
+
+	out := &Node_Outputs{NamedValues: map[string]*Value{"status_code": NewValue("not a number")}}
+	require.NoError(t, checkDeclaredOutputs(&Task{Name: "http"}, httpDef(t), out))
+
+	out.NamedValues["body"] = NewValue("ok")
+	out.NamedValues["status_code"] = NewValue(999)
+	require.Error(t, checkDeclaredOutputs(&Task{Name: "http"}, httpDef(t), out))
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/dynamicpb"
@@ -43,20 +44,40 @@ func checkDeclaredOutputs(t *Task, def TaskDef, out *Node_Outputs) error {
 		if field == nil || literal == nil {
 			continue
 		}
+		// A value [SetLiteralField] cannot place is not judged here. It is an
+		// input decoder, stricter than the shape a plugin's output contract
+		// accepts (non-string map keys, well-known types, a null optional, a list
+		// past its 1024-element cap), and the type of a result is that
+		// contract's question; this check answers only the schema's rules.
 		if err := SetLiteralField(message.ProtoReflect(), field, literal); err != nil {
-			return NewTaskError(t.Name, ErrorKindUpstreamUnknown, fmt.Errorf("output %q does not fit the task's declared output: %w", name, err))
+			continue
 		}
 		returned[name] = true
 	}
 
+	err := Validate(message)
+	if err == nil {
+		return nil
+	}
 	var validation *ValidationError
-	if err := Validate(message); errors.As(err, &validation) {
-		for _, violation := range validation.Violations {
-			if returned[violation.Field] {
-				return NewTaskError(t.Name, ErrorKindUpstreamUnknown, fmt.Errorf("output %s", violation.String()))
-			}
+	if !errors.As(err, &validation) {
+		// The rules could not be evaluated: never a pass by default.
+		return NewTaskError(t.Name, ErrorKindUpstreamUnknown, fmt.Errorf("the declared output could not be validated: %w", err))
+	}
+	for _, violation := range validation.Violations {
+		if returned[ViolationRoot(violation.Field)] {
+			return NewTaskError(t.Name, ErrorKindUpstreamUnknown, fmt.Errorf("output %s", violation.String()))
 		}
 	}
 
 	return nil
+}
+
+// ViolationRoot is the top-level field a violation's dotted path starts at, so a
+// rule failing inside a returned struct or list is attributed to that output.
+func ViolationRoot(path string) string {
+	root, _, _ := strings.Cut(path, ".")
+	root, _, _ = strings.Cut(root, "[")
+
+	return root
 }
