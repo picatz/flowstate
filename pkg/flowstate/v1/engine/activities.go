@@ -433,6 +433,7 @@ func observeTask(ctx context.Context, task *v1.Task, stepID string, run func(con
 		attempt = int(activity.GetInfo(ctx).Attempt)
 	}
 
+	ctx = v1.ContextWithTaskStep(ctx, stepID)
 	return v1.ObserveTaskAttempt(ctx, task, stepID, metricschema.DriverDurable, attempt,
 		func(ctx context.Context, span trace.Span) (*v1.Node_Outputs, error) {
 			if span.IsRecording() && inActivity {
