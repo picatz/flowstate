@@ -99,6 +99,7 @@ func writeRecording(path string, lines []string, truncated bool, stderr io.Write
 // the bounds a script is read under.
 type attachRecording struct {
 	lines     []string
+	bytes     int
 	truncated bool
 }
 
@@ -110,10 +111,13 @@ func (r *attachRecording) add(line string) {
 	case "detach", "disconnect":
 		return
 	}
-	if len(r.lines) >= flowdebug.MaxScriptCommands {
+	// Both bounds a script is read under, because a line may be as long as a
+	// command may be and the count alone would let a long session keep gigabytes.
+	if len(r.lines) >= flowdebug.MaxScriptCommands || r.bytes+len(line)+1 > flowdebug.MaxScriptBytes {
 		r.truncated = true
 
 		return
 	}
 	r.lines = append(r.lines, line)
+	r.bytes += len(line) + 1
 }

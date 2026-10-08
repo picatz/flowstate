@@ -3,10 +3,13 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // TestARecordedSessionReplaysToTheSameStops: what --record writes is the
@@ -92,4 +95,20 @@ func TestReplayRefusesToRecordOverItsOwnScript(t *testing.T) {
 	got, err := os.ReadFile(scriptFile)
 	require.NoError(t, err)
 	assert.Equal(t, script, string(got), "the script was written over")
+}
+
+// TestAnAttachRecordingIsBoundedInBytesAsWellAsLines: a line may be as long as a
+// command may be, so a count alone would let a long session keep gigabytes.
+func TestAnAttachRecordingIsBoundedInBytesAsWellAsLines(t *testing.T) {
+	t.Parallel()
+
+	var recording attachRecording
+	long := "inspect " + strings.Repeat("a", flowdebug.MaxCommandBytes-8)
+	for range flowdebug.MaxScriptCommands {
+		recording.add(long)
+	}
+
+	assert.True(t, recording.truncated, "no bound was reached")
+	assert.LessOrEqual(t, recording.bytes, flowdebug.MaxScriptBytes)
+	assert.Less(t, len(recording.lines), flowdebug.MaxScriptCommands, "the count was the only bound")
 }
