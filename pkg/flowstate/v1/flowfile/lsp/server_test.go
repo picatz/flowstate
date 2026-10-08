@@ -62,7 +62,8 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 
 	// Everything not implemented must stay unadvertised.
 	assert.False(t, got.WorkspaceSymbolProvider)
-	assert.Nil(t, got.SignatureHelpProvider)
+	require.NotNil(t, got.SignatureHelpProvider)
+	assert.Equal(t, []string{"(", ","}, got.SignatureHelpProvider.TriggerCharacters)
 	assert.Nil(t, got.CodeLensProvider)
 	assert.Nil(t, got.ExecuteCommandProvider)
 }
@@ -85,6 +86,7 @@ var implementedCapabilities = map[string]string{
 	"DocumentFormattingProvider": "textDocument/formatting",
 	"CodeActionProvider":         "textDocument/codeAction",
 	"SemanticTokensProvider":     "textDocument/semanticTokens/full",
+	"SignatureHelpProvider":      "textDocument/signatureHelp",
 }
 
 // TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
@@ -222,7 +224,7 @@ func TestUnknownMethodIsRejected(t *testing.T) {
 	p.send(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{}})
 	p.receive()
 
-	p.send(map[string]any{"id": 2, "method": "textDocument/signatureHelp", "params": map[string]any{}})
+	p.send(map[string]any{"id": 2, "method": "textDocument/codeLens", "params": map[string]any{}})
 	resp := p.receive()
 	rpcErr, ok := resp["error"].(map[string]any)
 	require.True(t, ok, "expected an error response, got %v", resp)

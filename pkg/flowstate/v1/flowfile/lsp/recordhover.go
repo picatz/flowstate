@@ -125,8 +125,13 @@ func declaredInput(wf *v1.Workflow, name string) *v1.InputDeclaration {
 // compiledWorkflow compiles the document the way every other answer here does, and
 // returns nil for text that does not compile.
 func compiledWorkflow(doc *document) *v1.Workflow {
+	return compiledText(doc, doc.text)
+}
+
+// compiledText is [compiledWorkflow] over text standing in for the document's.
+func compiledText(doc *document, text string) *v1.Workflow {
 	if path, ok := doc.filesystemPath(); ok {
-		wf, _, err := flowfile.ParseAt([]byte(doc.text), path)
+		wf, _, err := flowfile.ParseAt([]byte(text), path)
 		if err != nil {
 			return nil
 		}
@@ -134,7 +139,7 @@ func compiledWorkflow(doc *document) *v1.Workflow {
 		return wf
 	}
 
-	wf, err := flowfile.Unmarshal([]byte(doc.text))
+	wf, err := flowfile.Unmarshal([]byte(text))
 	if err != nil {
 		return nil
 	}
