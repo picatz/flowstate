@@ -364,3 +364,54 @@ tests:
 		require.True(t, c.GetPassed(), "%s: %s %v", c.GetName(), c.GetError(), c.GetFailures())
 	}
 }
+
+// TestCallBoundaryStubAnswerTakesTheCalleeRecordDefaults pins that a stub answers the
+// value the callee's output builder would report: a record field the stub leaves out
+// takes its default, so the caller reads the same thing under test as in a run.
+func TestCallBoundaryStubAnswerTakesTheCalleeRecordDefaults(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/callee.yaml", `
+edition: v2026.4
+name: connect
+types:
+  Connection:
+    fields:
+      name: {type: string, required: true}
+      retries: {type: int, default: 3}
+steps:
+  - id: inside
+    log:
+      message: inside
+outputs:
+  conn:
+    type: Connection
+    value: '${{"name": "primary", "retries": 5}}'
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.4
+name: caller
+steps:
+  - id: one
+    call: ./callee.yaml
+outputs:
+  retries:
+    value: ${steps.one.conn.retries}
+    type: int
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: a field the stub leaves out takes its default
+    workflow: ./workflow.yaml
+    stubs:
+      - step: one
+        returns: {conn: {name: primary}}
+    expect: {ran: [one], outputs: {retries: 3}}
+`))
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	for _, c := range report.GetCases() {
+		require.True(t, c.GetPassed(), "%s: %s %v", c.GetName(), c.GetError(), c.GetFailures())
+	}
+}
