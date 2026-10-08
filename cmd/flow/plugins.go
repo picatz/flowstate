@@ -202,10 +202,18 @@ func pluginFlagsOf(cmd *cobra.Command) (pluginFlags, error) {
 	// plugins installed, which is why discovery itself skips an absent entry.
 	if cmd.Flags().Changed("plugin-dir") {
 		for i, dir := range absolute {
-			if _, err := os.Stat(dir); errors.Is(err, fs.ErrNotExist) {
+			info, err := os.Stat(dir)
+			switch {
+			case errors.Is(err, fs.ErrNotExist):
 				return pluginFlags{}, newUsageError(fmt.Errorf(
 					"--plugin-dir %q does not exist; check the spelling, or create the directory "+
 						"(a plugin is an executable named flowstate-plugin-<name> inside it)", dirs[i]))
+			case err != nil:
+				return pluginFlags{}, fmt.Errorf("--plugin-dir %q cannot be read: %w", dirs[i], err)
+			case !info.IsDir():
+				return pluginFlags{}, newUsageError(fmt.Errorf(
+					"--plugin-dir %q is not a directory; name the directory that holds the "+
+						"flowstate-plugin-<name> executables", dirs[i]))
 			}
 		}
 	}

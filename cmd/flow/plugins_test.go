@@ -541,10 +541,28 @@ func TestAPluginDirThatDoesNotExistIsRefusedWhenNamedOnTheCommandLine(t *testing
 	_, err = pluginFlagsOf(existing)
 	require.NoError(t, err, "a directory that is there must not be refused")
 
-	ambient := &cobra.Command{Use: "ambient"}
-	addPluginFlags(ambient)
-	_, err = pluginFlagsOf(ambient)
-	require.NoError(t, err, "no --plugin-dir named is not an error")
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	require.NoError(t, os.WriteFile(file, nil, 0o600))
+	notDir := &cobra.Command{Use: "notdir"}
+	addPluginFlags(notDir)
+	require.NoError(t, notDir.Flags().Set("plugin-dir", file))
+	_, err = pluginFlagsOf(notDir)
+	require.Error(t, err, "a file named as the plugin directory would start a worker with no plugins")
+	assert.Contains(t, err.Error(), "not a directory")
+}
+
+// TestAnAmbientPluginDirThatDoesNotExistIsTolerated is the other half: the
+// environment's search path is set across hosts that do not all have plugins
+// installed, so a missing entry there is not an error. Not parallel, because
+// the environment is the input.
+func TestAnAmbientPluginDirThatDoesNotExistIsTolerated(t *testing.T) {
+	t.Setenv(pluginSearchPathEnv, filepath.Join(t.TempDir(), "absent"))
+
+	cmd := &cobra.Command{Use: "ambient"}
+	addPluginFlags(cmd)
+	flags, err := pluginFlagsOf(cmd)
+	require.NoError(t, err)
+	assert.True(t, flags.configured(), "the ambient search path should have been read, or this proves nothing")
 }
 
 // TestATaskFromASavedCatalogDoesNotClaimToHaveBeenLaunched pins the second half
