@@ -129,6 +129,13 @@ func NewHTTPServer(tb testing.TB) string {
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(http.StatusInternalServerError)
 	})
+	// A status no HTTP status can be, which the server writes and the client
+	// reads without complaint: the task's declared 100..599 is the only thing
+	// that can refuse it ([TaskOutputSchemaCases]).
+	mux.HandleFunc("/status/999", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(999)
+	})
 	mux.HandleFunc("/json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

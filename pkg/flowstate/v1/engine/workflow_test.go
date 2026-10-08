@@ -1719,6 +1719,39 @@ func TestRunWorkflowExpressionElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputSchema is the durable driver's half of #2507, pairing
+// the local run of the identical [conformance.TaskOutputSchemaCases]: the
+// refusal happens at [v1.Task.EvalInScope], which the `Task` activity reaches
+// exactly as the local driver's step attempt does.
+func TestRunWorkflowTaskOutputSchema(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.TaskOutputSchemaCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: test.Workflow})
+			require.True(t, env.IsWorkflowCompleted())
+
+			err := env.GetWorkflowError()
+			if test.ExpectFailure {
+				require.Error(t, err, "a result the declared schema refuses must fail the step")
+				require.Contains(t, err.Error(), "status_code")
+				return
+			}
+			require.NoError(t, err)
+
+			var out v1.Workflow_StepOutputs
+			require.NoError(t, env.GetWorkflowResult(&out))
+			require.True(t, test.ExpectedOutputsPredicate(&out), "unexpected outputs: %v", &out)
+		})
+	}
+}
+
 func runTaskOutputElementBoundCases(t *testing.T) {
 	baseURL := conformance.NewHTTPServer(t)
 	for _, test := range conformance.TaskOutputElementBoundCases(baseURL) {

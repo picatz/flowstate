@@ -536,7 +536,10 @@ type TestReport struct {
 	// that ran nothing.
 	Skipped []*SkippedTestCase `protobuf:"bytes,6,rep,name=skipped,proto3" json:"skipped,omitempty"`
 	// Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.
-	Fuzz          *FuzzReport `protobuf:"bytes,7,opt,name=fuzz,proto3" json:"fuzz,omitempty"`
+	Fuzz *FuzzReport `protobuf:"bytes,7,opt,name=fuzz,proto3" json:"fuzz,omitempty"`
+	// Mutation is what `flow test --mutate` found, unset when nobody asked for
+	// it.
+	Mutation      *MutationReport `protobuf:"bytes,8,opt,name=mutation,proto3" json:"mutation,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -620,6 +623,197 @@ func (x *TestReport) GetFuzz() *FuzzReport {
 	return nil
 }
 
+func (x *TestReport) GetMutation() *MutationReport {
+	if x != nil {
+		return x.Mutation
+	}
+	return nil
+}
+
+// MutationReport is what `flow test --mutate` measured about a file's tests:
+// whether they notice the program changing. Each mutant is the compiled
+// workflow with one deliberate fault (a condition negated, a compensation
+// dropped), run against the file's passing cases in written order. A mutant a
+// case fails on is killed; one every case still passes survived, which says the
+// file proves nothing about that part of the program.
+type MutationReport struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Mutants is how many mutants were run.
+	Mutants int32 `protobuf:"varint,1,opt,name=mutants,proto3" json:"mutants,omitempty"`
+	// Killed is how many a case failed on.
+	Killed int32 `protobuf:"varint,2,opt,name=killed,proto3" json:"killed,omitempty"`
+	// Invalid is how many the validator refused as a workflow. They are not
+	// counted as killed: a program that cannot run says nothing about the tests.
+	Invalid int32 `protobuf:"varint,3,opt,name=invalid,proto3" json:"invalid,omitempty"`
+	// Survivors is every mutant no case failed on, in document order.
+	Survivors []*MutationSurvivor `protobuf:"bytes,4,rep,name=survivors,proto3" json:"survivors,omitempty"`
+	// Truncated reports that the workflow had more mutants than the bound and
+	// the rest were not run.
+	Truncated bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// NotRun is why nothing was mutated, when that is so: the file's own cases
+	// did not all pass, and a red suite cannot tell a killed mutant from a
+	// broken test.
+	NotRun        string `protobuf:"bytes,6,opt,name=not_run,json=notRun,proto3" json:"not_run,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MutationReport) Reset() {
+	*x = MutationReport{}
+	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MutationReport) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MutationReport) ProtoMessage() {}
+
+func (x *MutationReport) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MutationReport.ProtoReflect.Descriptor instead.
+func (*MutationReport) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MutationReport) GetMutants() int32 {
+	if x != nil {
+		return x.Mutants
+	}
+	return 0
+}
+
+func (x *MutationReport) GetKilled() int32 {
+	if x != nil {
+		return x.Killed
+	}
+	return 0
+}
+
+func (x *MutationReport) GetInvalid() int32 {
+	if x != nil {
+		return x.Invalid
+	}
+	return 0
+}
+
+func (x *MutationReport) GetSurvivors() []*MutationSurvivor {
+	if x != nil {
+		return x.Survivors
+	}
+	return nil
+}
+
+func (x *MutationReport) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
+func (x *MutationReport) GetNotRun() string {
+	if x != nil {
+		return x.NotRun
+	}
+	return ""
+}
+
+// MutationSurvivor is one mutant the file's tests did not notice.
+type MutationSurvivor struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Id is the mutant's stable name, `operator@step.field`, so
+	// `flow test --mutant ID` replays exactly it.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Operator is the kind of change made.
+	Operator string `protobuf:"bytes,2,opt,name=operator,proto3" json:"operator,omitempty"`
+	// Description is the change in words: `if: negated on step deploy`.
+	Description string `protobuf:"bytes,3,opt,name=description,proto3" json:"description,omitempty"`
+	// Workflow is the workflow file the mutant was made in.
+	Workflow string `protobuf:"bytes,4,opt,name=workflow,proto3" json:"workflow,omitempty"`
+	// Where is the file position of the changed construct, `path:line`, empty
+	// when the workflow carries no positions.
+	Where         string `protobuf:"bytes,5,opt,name=where,proto3" json:"where,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MutationSurvivor) Reset() {
+	*x = MutationSurvivor{}
+	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MutationSurvivor) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MutationSurvivor) ProtoMessage() {}
+
+func (x *MutationSurvivor) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MutationSurvivor.ProtoReflect.Descriptor instead.
+func (*MutationSurvivor) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *MutationSurvivor) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *MutationSurvivor) GetOperator() string {
+	if x != nil {
+		return x.Operator
+	}
+	return ""
+}
+
+func (x *MutationSurvivor) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *MutationSurvivor) GetWorkflow() string {
+	if x != nil {
+		return x.Workflow
+	}
+	return ""
+}
+
+func (x *MutationSurvivor) GetWhere() string {
+	if x != nil {
+		return x.Where
+	}
+	return ""
+}
+
 // SkippedTestCase is one case a `flow test` run selected and did not run.
 type SkippedTestCase struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -634,7 +828,7 @@ type SkippedTestCase struct {
 
 func (x *SkippedTestCase) Reset() {
 	*x = SkippedTestCase{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -646,7 +840,7 @@ func (x *SkippedTestCase) String() string {
 func (*SkippedTestCase) ProtoMessage() {}
 
 func (x *SkippedTestCase) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[7]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -659,7 +853,7 @@ func (x *SkippedTestCase) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SkippedTestCase.ProtoReflect.Descriptor instead.
 func (*SkippedTestCase) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{7}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *SkippedTestCase) GetName() string {
@@ -717,7 +911,7 @@ type ScheduleExploration struct {
 
 func (x *ScheduleExploration) Reset() {
 	*x = ScheduleExploration{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -729,7 +923,7 @@ func (x *ScheduleExploration) String() string {
 func (*ScheduleExploration) ProtoMessage() {}
 
 func (x *ScheduleExploration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[8]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -742,7 +936,7 @@ func (x *ScheduleExploration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleExploration.ProtoReflect.Descriptor instead.
 func (*ScheduleExploration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ScheduleExploration) GetSchedules() int32 {
@@ -848,7 +1042,7 @@ type ScheduleDivergenceReport struct {
 
 func (x *ScheduleDivergenceReport) Reset() {
 	*x = ScheduleDivergenceReport{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -860,7 +1054,7 @@ func (x *ScheduleDivergenceReport) String() string {
 func (*ScheduleDivergenceReport) ProtoMessage() {}
 
 func (x *ScheduleDivergenceReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[9]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -873,7 +1067,7 @@ func (x *ScheduleDivergenceReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ScheduleDivergenceReport.ProtoReflect.Descriptor instead.
 func (*ScheduleDivergenceReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{9}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ScheduleDivergenceReport) GetCase() string {
@@ -988,7 +1182,7 @@ type FuzzReport struct {
 
 func (x *FuzzReport) Reset() {
 	*x = FuzzReport{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1000,7 +1194,7 @@ func (x *FuzzReport) String() string {
 func (*FuzzReport) ProtoMessage() {}
 
 func (x *FuzzReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[10]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1013,7 +1207,7 @@ func (x *FuzzReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FuzzReport.ProtoReflect.Descriptor instead.
 func (*FuzzReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{10}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *FuzzReport) GetRuns() int32 {
@@ -1086,7 +1280,7 @@ type FuzzFinding struct {
 
 func (x *FuzzFinding) Reset() {
 	*x = FuzzFinding{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1098,7 +1292,7 @@ func (x *FuzzFinding) String() string {
 func (*FuzzFinding) ProtoMessage() {}
 
 func (x *FuzzFinding) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[11]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1111,7 +1305,7 @@ func (x *FuzzFinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FuzzFinding.ProtoReflect.Descriptor instead.
 func (*FuzzFinding) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *FuzzFinding) GetCase() string {
@@ -1228,7 +1422,7 @@ type CoverageReport struct {
 
 func (x *CoverageReport) Reset() {
 	*x = CoverageReport{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1240,7 +1434,7 @@ func (x *CoverageReport) String() string {
 func (*CoverageReport) ProtoMessage() {}
 
 func (x *CoverageReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[12]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1253,7 +1447,7 @@ func (x *CoverageReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CoverageReport.ProtoReflect.Descriptor instead.
 func (*CoverageReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{12}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *CoverageReport) GetWorkflow() string {
@@ -1364,7 +1558,7 @@ type SwitchArmCoverage struct {
 
 func (x *SwitchArmCoverage) Reset() {
 	*x = SwitchArmCoverage{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[13]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1376,7 +1570,7 @@ func (x *SwitchArmCoverage) String() string {
 func (*SwitchArmCoverage) ProtoMessage() {}
 
 func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[13]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1389,7 +1583,7 @@ func (x *SwitchArmCoverage) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SwitchArmCoverage.ProtoReflect.Descriptor instead.
 func (*SwitchArmCoverage) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{13}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *SwitchArmCoverage) GetArm() string {
@@ -1454,7 +1648,7 @@ type TestReports struct {
 
 func (x *TestReports) Reset() {
 	*x = TestReports{}
-	mi := &file_flowstate_v1_reports_proto_msgTypes[14]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1466,7 +1660,7 @@ func (x *TestReports) String() string {
 func (*TestReports) ProtoMessage() {}
 
 func (x *TestReports) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_reports_proto_msgTypes[14]
+	mi := &file_flowstate_v1_reports_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1479,7 +1673,7 @@ func (x *TestReports) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TestReports.ProtoReflect.Descriptor instead.
 func (*TestReports) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{14}
+	return file_flowstate_v1_reports_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *TestReports) GetFiles() []*TestReport {
@@ -1521,7 +1715,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\bfailures\x18\x03 \x03(\v2\x18.flowstate.v1.DiagnosticR\bfailures\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x125\n" +
 	"\bduration\x18\x05 \x01(\v2\x19.google.protobuf.DurationR\bduration\x124\n" +
-	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\xd2\x02\n" +
+	"\bwarnings\x18\x06 \x03(\v2\x18.flowstate.v1.DiagnosticR\bwarnings\"\x8c\x03\n" +
 	"\n" +
 	"TestReport\x12\x1a\n" +
 	"\x04file\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04file\x12,\n" +
@@ -1530,7 +1724,21 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\bcoverage\x18\x04 \x03(\v2\x1c.flowstate.v1.CoverageReportR\bcoverage\x12?\n" +
 	"\tschedules\x18\x05 \x01(\v2!.flowstate.v1.ScheduleExplorationR\tschedules\x127\n" +
 	"\askipped\x18\x06 \x03(\v2\x1d.flowstate.v1.SkippedTestCaseR\askipped\x12,\n" +
-	"\x04fuzz\x18\a \x01(\v2\x18.flowstate.v1.FuzzReportR\x04fuzz\"E\n" +
+	"\x04fuzz\x18\a \x01(\v2\x18.flowstate.v1.FuzzReportR\x04fuzz\x128\n" +
+	"\bmutation\x18\b \x01(\v2\x1c.flowstate.v1.MutationReportR\bmutation\"\xd1\x01\n" +
+	"\x0eMutationReport\x12\x18\n" +
+	"\amutants\x18\x01 \x01(\x05R\amutants\x12\x16\n" +
+	"\x06killed\x18\x02 \x01(\x05R\x06killed\x12\x18\n" +
+	"\ainvalid\x18\x03 \x01(\x05R\ainvalid\x12<\n" +
+	"\tsurvivors\x18\x04 \x03(\v2\x1e.flowstate.v1.MutationSurvivorR\tsurvivors\x12\x1c\n" +
+	"\ttruncated\x18\x05 \x01(\bR\ttruncated\x12\x17\n" +
+	"\anot_run\x18\x06 \x01(\tR\x06notRun\"\x9a\x01\n" +
+	"\x10MutationSurvivor\x12\x16\n" +
+	"\x02id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x02id\x12\x1a\n" +
+	"\boperator\x18\x02 \x01(\tR\boperator\x12 \n" +
+	"\vdescription\x18\x03 \x01(\tR\vdescription\x12\x1a\n" +
+	"\bworkflow\x18\x04 \x01(\tR\bworkflow\x12\x14\n" +
+	"\x05where\x18\x05 \x01(\tR\x05where\"E\n" +
 	"\x0fSkippedTestCase\x12\x1a\n" +
 	"\x04name\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x04name\x12\x16\n" +
 	"\x06reason\x18\x02 \x01(\tR\x06reason\"\xee\x01\n" +
@@ -1614,7 +1822,7 @@ func file_flowstate_v1_reports_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_reports_proto_rawDescData
 }
 
-var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_flowstate_v1_reports_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*FixChange)(nil),                // 0: flowstate.v1.FixChange
 	(*FixReport)(nil),                // 1: flowstate.v1.FixReport
@@ -1623,44 +1831,48 @@ var file_flowstate_v1_reports_proto_goTypes = []any{
 	(*FmtReports)(nil),               // 4: flowstate.v1.FmtReports
 	(*TestCase)(nil),                 // 5: flowstate.v1.TestCase
 	(*TestReport)(nil),               // 6: flowstate.v1.TestReport
-	(*SkippedTestCase)(nil),          // 7: flowstate.v1.SkippedTestCase
-	(*ScheduleExploration)(nil),      // 8: flowstate.v1.ScheduleExploration
-	(*ScheduleDivergenceReport)(nil), // 9: flowstate.v1.ScheduleDivergenceReport
-	(*FuzzReport)(nil),               // 10: flowstate.v1.FuzzReport
-	(*FuzzFinding)(nil),              // 11: flowstate.v1.FuzzFinding
-	(*CoverageReport)(nil),           // 12: flowstate.v1.CoverageReport
-	(*SwitchArmCoverage)(nil),        // 13: flowstate.v1.SwitchArmCoverage
-	(*TestReports)(nil),              // 14: flowstate.v1.TestReports
-	nil,                              // 15: flowstate.v1.CoverageReport.AcceptedEntry
-	(*Diagnostic)(nil),               // 16: flowstate.v1.Diagnostic
-	(*durationpb.Duration)(nil),      // 17: google.protobuf.Duration
+	(*MutationReport)(nil),           // 7: flowstate.v1.MutationReport
+	(*MutationSurvivor)(nil),         // 8: flowstate.v1.MutationSurvivor
+	(*SkippedTestCase)(nil),          // 9: flowstate.v1.SkippedTestCase
+	(*ScheduleExploration)(nil),      // 10: flowstate.v1.ScheduleExploration
+	(*ScheduleDivergenceReport)(nil), // 11: flowstate.v1.ScheduleDivergenceReport
+	(*FuzzReport)(nil),               // 12: flowstate.v1.FuzzReport
+	(*FuzzFinding)(nil),              // 13: flowstate.v1.FuzzFinding
+	(*CoverageReport)(nil),           // 14: flowstate.v1.CoverageReport
+	(*SwitchArmCoverage)(nil),        // 15: flowstate.v1.SwitchArmCoverage
+	(*TestReports)(nil),              // 16: flowstate.v1.TestReports
+	nil,                              // 17: flowstate.v1.CoverageReport.AcceptedEntry
+	(*Diagnostic)(nil),               // 18: flowstate.v1.Diagnostic
+	(*durationpb.Duration)(nil),      // 19: google.protobuf.Duration
 }
 var file_flowstate_v1_reports_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.FixReport.changes:type_name -> flowstate.v1.FixChange
-	16, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
-	16, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
-	16, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
-	16, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
+	18, // 1: flowstate.v1.FixReport.refusals:type_name -> flowstate.v1.Diagnostic
+	18, // 2: flowstate.v1.FixReport.notes:type_name -> flowstate.v1.Diagnostic
+	18, // 3: flowstate.v1.FixReport.stale_pins:type_name -> flowstate.v1.Diagnostic
+	18, // 4: flowstate.v1.FmtReport.refusals:type_name -> flowstate.v1.Diagnostic
 	1,  // 5: flowstate.v1.FixReports.files:type_name -> flowstate.v1.FixReport
 	2,  // 6: flowstate.v1.FmtReports.files:type_name -> flowstate.v1.FmtReport
-	16, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
-	17, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
-	16, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
+	18, // 7: flowstate.v1.TestCase.failures:type_name -> flowstate.v1.Diagnostic
+	19, // 8: flowstate.v1.TestCase.duration:type_name -> google.protobuf.Duration
+	18, // 9: flowstate.v1.TestCase.warnings:type_name -> flowstate.v1.Diagnostic
 	5,  // 10: flowstate.v1.TestReport.cases:type_name -> flowstate.v1.TestCase
-	12, // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
-	8,  // 12: flowstate.v1.TestReport.schedules:type_name -> flowstate.v1.ScheduleExploration
-	7,  // 13: flowstate.v1.TestReport.skipped:type_name -> flowstate.v1.SkippedTestCase
-	10, // 14: flowstate.v1.TestReport.fuzz:type_name -> flowstate.v1.FuzzReport
-	9,  // 15: flowstate.v1.ScheduleExploration.divergence:type_name -> flowstate.v1.ScheduleDivergenceReport
-	11, // 16: flowstate.v1.FuzzReport.finding:type_name -> flowstate.v1.FuzzFinding
-	15, // 17: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
-	13, // 18: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
-	6,  // 19: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
-	20, // [20:20] is the sub-list for method output_type
-	20, // [20:20] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	14, // 11: flowstate.v1.TestReport.coverage:type_name -> flowstate.v1.CoverageReport
+	10, // 12: flowstate.v1.TestReport.schedules:type_name -> flowstate.v1.ScheduleExploration
+	9,  // 13: flowstate.v1.TestReport.skipped:type_name -> flowstate.v1.SkippedTestCase
+	12, // 14: flowstate.v1.TestReport.fuzz:type_name -> flowstate.v1.FuzzReport
+	7,  // 15: flowstate.v1.TestReport.mutation:type_name -> flowstate.v1.MutationReport
+	8,  // 16: flowstate.v1.MutationReport.survivors:type_name -> flowstate.v1.MutationSurvivor
+	11, // 17: flowstate.v1.ScheduleExploration.divergence:type_name -> flowstate.v1.ScheduleDivergenceReport
+	13, // 18: flowstate.v1.FuzzReport.finding:type_name -> flowstate.v1.FuzzFinding
+	17, // 19: flowstate.v1.CoverageReport.accepted:type_name -> flowstate.v1.CoverageReport.AcceptedEntry
+	15, // 20: flowstate.v1.CoverageReport.arms:type_name -> flowstate.v1.SwitchArmCoverage
+	6,  // 21: flowstate.v1.TestReports.files:type_name -> flowstate.v1.TestReport
+	22, // [22:22] is the sub-list for method output_type
+	22, // [22:22] is the sub-list for method input_type
+	22, // [22:22] is the sub-list for extension type_name
+	22, // [22:22] is the sub-list for extension extendee
+	0,  // [0:22] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_reports_proto_init() }
@@ -1675,7 +1887,7 @@ func file_flowstate_v1_reports_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_reports_proto_rawDesc), len(file_flowstate_v1_reports_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

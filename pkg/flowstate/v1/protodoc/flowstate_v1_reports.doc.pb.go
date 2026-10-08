@@ -246,6 +246,74 @@ func init() {
 			Leading: " Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.\n",
 		},
 		{
+			Name: "flowstate.v1.TestReport.mutation",
+			Leading: " Mutation is what `flow test --mutate` found, unset when nobody asked for\n" +
+				" it.\n",
+		},
+		{
+			Name: "flowstate.v1.MutationReport",
+			Leading: " MutationReport is what `flow test --mutate` measured about a file's tests:\n" +
+				" whether they notice the program changing. Each mutant is the compiled\n" +
+				" workflow with one deliberate fault (a condition negated, a compensation\n" +
+				" dropped), run against the file's passing cases in written order. A mutant a\n" +
+				" case fails on is killed; one every case still passes survived, which says the\n" +
+				" file proves nothing about that part of the program.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationReport.mutants",
+			Leading: " Mutants is how many mutants were run.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationReport.killed",
+			Leading: " Killed is how many a case failed on.\n",
+		},
+		{
+			Name: "flowstate.v1.MutationReport.invalid",
+			Leading: " Invalid is how many the validator refused as a workflow. They are not\n" +
+				" counted as killed: a program that cannot run says nothing about the tests.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationReport.survivors",
+			Leading: " Survivors is every mutant no case failed on, in document order.\n",
+		},
+		{
+			Name: "flowstate.v1.MutationReport.truncated",
+			Leading: " Truncated reports that the workflow had more mutants than the bound and\n" +
+				" the rest were not run.\n",
+		},
+		{
+			Name: "flowstate.v1.MutationReport.not_run",
+			Leading: " NotRun is why nothing was mutated, when that is so: the file's own cases\n" +
+				" did not all pass, and a red suite cannot tell a killed mutant from a\n" +
+				" broken test.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationSurvivor",
+			Leading: " MutationSurvivor is one mutant the file's tests did not notice.\n",
+		},
+		{
+			Name: "flowstate.v1.MutationSurvivor.id",
+			Leading: " Id is the mutant's stable name, `operator@step.field`, so\n" +
+				" `flow test --mutant ID` replays exactly it.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationSurvivor.operator",
+			Leading: " Operator is the kind of change made.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationSurvivor.description",
+			Leading: " Description is the change in words: `if: negated on step deploy`.\n",
+		},
+		{
+			Name:    "flowstate.v1.MutationSurvivor.workflow",
+			Leading: " Workflow is the workflow file the mutant was made in.\n",
+		},
+		{
+			Name: "flowstate.v1.MutationSurvivor.where",
+			Leading: " Where is the file position of the changed construct, `path:line`, empty\n" +
+				" when the workflow carries no positions.\n",
+		},
+		{
 			Name:    "flowstate.v1.SkippedTestCase",
 			Leading: " SkippedTestCase is one case a `flow test` run selected and did not run.\n",
 		},

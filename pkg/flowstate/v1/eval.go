@@ -3158,6 +3158,9 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 	// response body already gets — so it is non-retryable: the size of a
 	// task's result does not change between attempts, so retrying spends a
 	// worker's time to learn the same thing twice.
+	if err := checkDeclaredOutputs(t, def, out); err != nil {
+		return nil, err
+	}
 	if err := checkTaskOutputElementBound(t.Name, out); err != nil {
 		return nil, NewTaskError(t.Name, ErrorKindLimitExceeded, err)
 	}
