@@ -77,11 +77,15 @@ func recordSession(path string, session *flowdebug.Session, stderr io.Writer) fu
 			b.WriteString("# the recording stopped at the script bounds; this file replays a prefix of the session\n")
 		}
 		// Owner-only: an expression typed at `inspect` can name anything in scope.
-		// And narrowed when the file already existed, which keeps its old mode
-		// through a write.
-		err := os.WriteFile(path, []byte(b.String()), 0o600)
+		// Narrowed before a byte is written when the file already existed, since
+		// a write keeps an existing file's mode and the file holds typed
+		// expressions.
+		err := os.Chmod(path, 0o600)
+		if errors.Is(err, os.ErrNotExist) {
+			err = nil
+		}
 		if err == nil {
-			err = os.Chmod(path, 0o600)
+			err = os.WriteFile(path, []byte(b.String()), 0o600)
 		}
 		if err != nil {
 			fmt.Fprintf(stderr, "could not write the recording to %s: %v\n", path, err)
