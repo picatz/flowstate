@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	enums "go.temporal.io/api/enums/v1"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -96,6 +97,8 @@ func TestTimeoutFailureCarriesTheTimeoutKind(t *testing.T) {
 			"a client checking the permanent enumeration would not find this kind in it")
 		require.Contains(t, got.GetMessage(), timeoutKindText(kind),
 			"the message must still say which clock, kind=%s", kind)
+		require.True(t, proto.Equal(v1.RunTimeoutFailure(timeoutKindText(kind)), got),
+			"the durable timeout must be the shared v1.RunTimeoutFailure, not a second spelling of it, kind=%s", kind)
 	}
 }
 

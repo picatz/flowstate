@@ -1,0 +1,20 @@
+flow explore fixtures                                                           
+→ help ? or esc closes ─────────────────────────────────────────────────────────
+Move                                                                            
+  up k      move up a row                                                       
+  down j    move down a row                                                     
+  enter     open or close the row (click does the same)                         
+  right l   open the row                                                        
+  left h    close the row, or go to its parent                                  
+  PgUp      up a page                                                           
+  PgDn      down a page                                                         
+  home      first row                                                           
+  end G     last row                                                            
+                                                                                
+Screen                                                                          
+  r         read the files and the server again, keeping what is open           
+  ?         show or hide this help                                              
+  q ctrl+d  leave                                                               
+  ctrl+c    leave at once                                                       
+                                                                                
+r refresh  ? help  q quit                                                       

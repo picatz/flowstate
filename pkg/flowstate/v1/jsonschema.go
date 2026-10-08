@@ -121,6 +121,11 @@ func (b *schemaBuilder) root(title string, properties map[string]any, required [
 
 // declaration is the schema of one declared value.
 func (b *schemaBuilder) declaration(depth int, facts declarationFacts) map[string]any {
+	// A value that holds a sensitive field is sensitive whole (see
+	// [TypeTable.HoldsSensitive]), so a field typed by such a record is too even
+	// when it carries no mark of its own.
+	facts.sensitive = facts.sensitive || b.table.HoldsSensitive(facts.typed)
+
 	schema := b.typed(facts.typed, depth)
 
 	if facts.typed.GetEnum() && len(facts.values) > 0 {

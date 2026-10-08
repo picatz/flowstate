@@ -43,6 +43,13 @@ func debugTUIRefusal(in io.Reader, out io.Writer, script string, format OutputFo
 		return "a machine output format is not a screen"
 	}
 
+	return terminalRefusal(in, out, tui.Size{W: debugtui.MinWidth, H: debugtui.MinHeight})
+}
+
+// terminalRefusal is why a full-screen view of at least min cells cannot be
+// drawn on these streams, or "" when it can: both must be a terminal, and the
+// terminal large enough.
+func terminalRefusal(in io.Reader, out io.Writer, min tui.Size) string {
 	stdin, ok := in.(*os.File)
 	if !ok || !term.IsTerminal(int(stdin.Fd())) {
 		return "stdin is not a terminal"
@@ -56,9 +63,8 @@ func debugTUIRefusal(in io.Reader, out io.Writer, script string, format OutputFo
 	if err != nil || width <= 0 || height <= 0 {
 		return "the terminal's size cannot be read"
 	}
-	if width < debugtui.MinWidth || height < debugtui.MinHeight {
-		return fmt.Sprintf("the terminal is %dx%d and the screen needs at least %dx%d",
-			width, height, debugtui.MinWidth, debugtui.MinHeight)
+	if width < min.W || height < min.H {
+		return fmt.Sprintf("the terminal is %dx%d and the screen needs at least %dx%d", width, height, min.W, min.H)
 	}
 
 	return ""

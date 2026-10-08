@@ -52,7 +52,7 @@ func Text(w io.Writer, g *v1.Graph) error {
 		// Calls first, then waits, then tasks: what a workflow depends on, then
 		// what it can be told, then what it does.
 		slices.SortStableFunc(edges, func(a, b *v1.GraphEdge) int {
-			return order(a.GetKind()) - order(b.GetKind())
+			return EdgeRank(a.GetKind()) - EdgeRank(b.GetKind())
 		})
 		for _, e := range edges {
 			count := ""
@@ -77,7 +77,10 @@ func Text(w io.Writer, g *v1.Graph) error {
 	return err
 }
 
-func order(k v1.GraphEdgeKind) int {
+// EdgeRank orders edge kinds the way every renderer lists them: calls first,
+// then waits, then tasks, which is what a workflow depends on, then what it can
+// be told, then what it does.
+func EdgeRank(k v1.GraphEdgeKind) int {
 	switch k {
 	case v1.GraphEdgeKind_GRAPH_EDGE_KIND_CALL:
 		return 0

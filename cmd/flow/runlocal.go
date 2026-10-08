@@ -512,11 +512,19 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		// failureError does that work only because Temporal's wire made it
 		// necessary. Left unset for an interrupted (not failed) run — a
 		// classification would claim this driver knows why a workload it
-		// itself stopped went wrong.
+		// itself stopped went wrong. The one exception is the whole-run
+		// deadline: that the run exceeded the bound this driver itself
+		// enforced is a fact it does know, and it is the same fact, in the
+		// same field, that the durable driver reports for its own run bound
+		// (v1.RunTimeoutFailure, which that driver calls too), so a client branching on the kind sees
+		// one answer from either driver (#1310).
 		errorResponse := &v1.RunResponse_Error{Message: runErr.Error()}
-		if response.GetStatus() == v1.RunResponse_STATUS_FAILED {
+		switch response.GetStatus() {
+		case v1.RunResponse_STATUS_FAILED:
 			errorResponse.Kind = v1.ClassifyError(runErr).String()
 			errorResponse.Expression = v1.ExpressionFailureOf(runErr)
+		case v1.RunResponse_STATUS_TIMED_OUT:
+			errorResponse = v1.RunTimeoutFailure(runErr.Error())
 		}
 		response.Kind = &v1.GetResponse_Error{Error: errorResponse}
 
