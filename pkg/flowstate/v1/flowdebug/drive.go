@@ -272,7 +272,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, errors.New("expand needs an expression: expand steps.build")
 		}
 
-		expression, offset := expandPage(rest)
+		expression, offset := ExpandPage(rest)
 
 		return d.inspect(ctx, expression, true, offset)
 	case "scope":
@@ -773,11 +773,12 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool, 
 // how to read the next page to quote it.
 const maxQuotedExpression = 60
 
-// expandPage splits the argument of `expand` into the expression and the child
+// ExpandPage splits the argument of `expand` into the expression and the child
 // it starts the page at: `steps.build from 50`. The suffix is read only when it
 // is a whole number after " from "; anything else is part of the expression,
-// which the evaluator then judges.
-func expandPage(rest string) (expression string, offset int) {
+// which the evaluator then judges. A front that shows what `expand` answered
+// reads the line with this, so it agrees with the driver on which page it was.
+func ExpandPage(rest string) (expression string, offset int) {
 	const from = " from "
 	i := strings.LastIndex(rest, from)
 	if i < 0 {

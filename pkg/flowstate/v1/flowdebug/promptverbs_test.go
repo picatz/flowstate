@@ -136,3 +136,27 @@ func TestExpandOnlyReadsAFromSuffixThatIsANumber(t *testing.T) {
 	assert.NotContains(t, out, "none from", "a non-number or negative offset paged instead of reaching the evaluator:\n"+out)
 	assert.NotContains(t, out, "0  int  1", "the expression was read as a list")
 }
+
+// TestExpandPageReadsOnlyAWholeNumberAfterFrom: a front that echoes what `expand`
+// answered reads the page the way the driver does, and a suffix that is not a
+// page number belongs to the expression the evaluator then judges.
+func TestExpandPageReadsOnlyAWholeNumberAfterFrom(t *testing.T) {
+	t.Parallel()
+
+	for line, want := range map[string]struct {
+		expression string
+		offset     int
+	}{
+		"steps.build":                 {"steps.build", 0},
+		"steps.build from 50":         {"steps.build", 50},
+		"steps.build  from  50 ":      {"steps.build", 50},
+		"steps.build from -1":         {"steps.build from -1", 0},
+		"steps.build from many":       {"steps.build from many", 0},
+		"steps.build from 3.5":        {"steps.build from 3.5", 0},
+		"steps.build from 9999999999": {"steps.build from 9999999999", 0},
+	} {
+		expression, offset := flowdebug.ExpandPage(line)
+		assert.Equal(t, want.expression, expression, line)
+		assert.Equal(t, want.offset, offset, line)
+	}
+}

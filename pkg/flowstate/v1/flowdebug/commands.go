@@ -498,7 +498,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 			return false, nil
 		}
 		s.record("expand " + expression)
-		expression, offset := expandPage(expression)
+		expression, offset := ExpandPage(expression)
 		s.expand(ctx, expression, offset)
 
 		return false, nil
