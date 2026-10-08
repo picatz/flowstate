@@ -312,6 +312,8 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 				Console: console,
 				Panes:   panes,
 				Theme:   surface.ErrTheme,
+				// The explicit opt-in, held by every pass's session.
+				RevealSensitive: reveal,
 			}
 			if record != "" {
 				front.Record = &attachRecording{}

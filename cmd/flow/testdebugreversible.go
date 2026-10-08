@@ -36,6 +36,9 @@ type reversibleFront struct {
 	Steps   []flowdebug.Step
 	Program *v1.Workflow
 
+	// RevealSensitive is `--reveal-sensitive`, for every pass's session.
+	RevealSensitive bool
+
 	// Execute, when set, runs one pass of the program under the debugger it is
 	// handed instead of the case at Path. The report it returns is the pass's
 	// verdict: a case that did not pass is a run that failed. Failure words it.
@@ -118,10 +121,11 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 	}
 
 	launch := stubbedCase{
-		Program: f.Program,
-		Failure: f.Failure,
-		Steps:   f.Steps,
-		Speak:   emit,
+		Program:         f.Program,
+		RevealSensitive: f.RevealSensitive,
+		Failure:         f.Failure,
+		Steps:           f.Steps,
+		Speak:           emit,
 		Shown: func(session *flowdebug.Session) {
 			f.shown.Store(session)
 			// A replay that was stopped will never be asked for its verdict, and
@@ -246,7 +250,11 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			continue
 		}
 		if notDone(result) == nil && f.Record != nil {
-			f.Record.add(line)
+			if flowdebug.StepsBack(line) {
+				f.Record.rewound()
+			} else {
+				f.Record.add(line)
+			}
 		}
 		// The shown run narrates a forward movement itself, as it always has;
 		// repeating that from the answer would say each stop twice. A rewind is

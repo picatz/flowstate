@@ -73,6 +73,17 @@ func reverseRequested(cmd *cobra.Command, workflow *v1.Workflow, debugging bool,
 				unsafe = append(unsafe, name)
 			}
 		}
+		waits, err := v1.HasWaits(workflow)
+		if err != nil {
+			return "", err
+		}
+		if waits {
+			// A sleep is wall-clock time spent again to reach every stop after
+			// it, and a signal is delivered once.
+			return "", errors.New("--reverse runs the workflow again when it steps back, and this one has a " +
+				"`wait:` step that would be waited for again; use --reverse=unsafe if that is acceptable, " +
+				"or drop --reverse")
+		}
 		if len(unsafe) > 0 {
 			return "", fmt.Errorf("--reverse runs every task again when it steps back, and %s may act outside "+
 				"this process; use --reverse=unsafe if running them twice is acceptable, or drop --reverse",
@@ -94,18 +105,33 @@ type localOutcome struct {
 	err     error
 }
 
-// gatedWriter writes only while allowed says the pass it belongs to is shown.
-type gatedWriter struct {
-	w       io.Writer
+// gatedHandler passes records to its handler only while allowed says the pass it
+// belongs to is shown. It wraps the whole composed handler, the collector's
+// exporter included, so a pass nobody is looking at exports nothing: a record
+// leaving the process is an effect, and a replay is not meant to have any.
+type gatedHandler struct {
+	next    slog.Handler
 	allowed func() bool
 }
 
-func (g gatedWriter) Write(p []byte) (int, error) {
+func (g gatedHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	return g.allowed() && g.next.Enabled(ctx, level)
+}
+
+func (g gatedHandler) Handle(ctx context.Context, record slog.Record) error {
 	if !g.allowed() {
-		return len(p), nil
+		return nil
 	}
 
-	return g.w.Write(p)
+	return g.next.Handle(ctx, record)
+}
+
+func (g gatedHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return gatedHandler{next: g.next.WithAttrs(attrs), allowed: g.allowed}
+}
+
+func (g gatedHandler) WithGroup(name string) slog.Handler {
+	return gatedHandler{next: g.next.WithGroup(name), allowed: g.allowed}
 }
 
 // runReversibly runs the workflow under a [reversibleFront] and returns what the
@@ -136,8 +162,10 @@ func runReversibly(
 		}
 		// Only the pass the person is looking at speaks: a replay running the
 		// `log:` steps again would say each of them twice.
-		passCtx = v1.ContextWithLogger(passCtx, slog.New(telemetryLogHandler(newRunLogHandler(
-			gatedWriter{w: narrate, allowed: func() bool { return front.Speaks(debugger) }}, theme))))
+		passCtx = v1.ContextWithLogger(passCtx, slog.New(gatedHandler{
+			next:    telemetryLogHandler(newRunLogHandler(narrate, theme)),
+			allowed: func() bool { return front.Speaks(debugger) },
+		}))
 
 		// The context the caller built carries the task runtime and the logger
 		// the debugger-free path uses; this pass's own overrides sit on top.

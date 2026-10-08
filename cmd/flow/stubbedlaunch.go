@@ -19,6 +19,10 @@ type stubbedCase struct {
 	Program *v1.Workflow
 	Steps   []flowdebug.Step
 
+	// RevealSensitive is the explicit opt-in every session of the case is
+	// built with, replays included.
+	RevealSensitive bool
+
 	// Speak receives the account of the run being shown. A replay is silent
 	// until it replaces the run before it: the caller was shown that account
 	// the first time.
@@ -51,7 +55,7 @@ func (c stubbedCase) launcher(runCtx context.Context) flowdebug.Launcher {
 	return func(context.Context) (*flowdebug.Run, error) {
 		run := &stubbedRun{done: make(chan struct{}), initial: !launched.Swap(true), finish: c.Finish}
 		session, err := flowdebug.New(flowdebug.Options{
-			Controlled: true, Workflow: c.Program, Steps: c.Steps,
+			Controlled: true, Workflow: c.Program, Steps: c.Steps, RevealSensitive: c.RevealSensitive,
 			Emit: func(text string, tone flowdebug.Tone) {
 				if run.speaks() {
 					c.Speak(text, tone)

@@ -74,6 +74,7 @@ Add `--record session.script` to `flow run local --debug` or `flow test --debug`
 commands the session accepted are written to that file when it ends (end of run, `quit` or an
 error): a mistyped command or a refused `break` is not in it, the file
 is made readable by you alone, and `flow debug replay` reaches the same stops from it. `flow debug attach --record` does the same for an attached durable run (without the `detach` that leaves it); a durable session's lines replay only where the verbs exist on a local run.
+A session that steps back is recorded up to its first `back`, with a comment saying so: a script replays forward only, so what followed would reach other stops.
 
 [examples/debugging](../examples/debugging) walks one small workflow — a loop, a
 parallel block and a call — through every front, local and durable.
@@ -493,8 +494,9 @@ again**; the replay says nothing until it replaces the run before it, and a stop
 it reaches must show what the first time showed or the step is refused.
 
 Because that re-executes effects, `--reverse` is refused for a workflow with a
-task that may act outside the process. Only `log` is known not to; a plugin,
-`http` and `exec` are not, nor is a task not named here. `--reverse=unsafe` (with the equals sign; `--reverse unsafe` is a positional argument) takes
+task that may act outside the process, or a `wait:` step that would be waited
+for again. Only `log` is known not to act outside; a plugin, `http` and `exec`
+are not, nor is a task not named here. `--reverse=unsafe` (with the equals sign; `--reverse unsafe` is a positional argument) takes
 the risk and prints a warning. It also needs a terminal and `--debug`, and is
 refused with `--signal`, which is delivered once.
 

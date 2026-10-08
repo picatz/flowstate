@@ -37,6 +37,24 @@ func RequiredTaskNames(wf *Workflow) ([]string, error) {
 	return slices.Sorted(maps.Keys(required)), nil
 }
 
+// HasWaits reports whether a workflow can reach a `wait:` node, in nested
+// control flow or an inlined callee: a sleep, a moment, or a signal. It is the
+// same walk as [RequiredTaskNames], for a caller that must know whether running
+// the workflow again would cost wall-clock time or a delivery that is already
+// spent.
+func HasWaits(wf *Workflow) (bool, error) {
+	for node, err := range specNodes(wf) {
+		if err != nil {
+			return false, fmt.Errorf("collecting waits: %w", err)
+		}
+		if node.GetWait() != nil {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // ResolveTaskCapabilities records the admitting registry's decision on wf.
 // Caller-supplied state is discarded: only this control-plane operation may
 // attest that a deployment had every required task when it accepted the run.

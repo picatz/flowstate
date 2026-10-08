@@ -4,9 +4,11 @@ import (
 	"context"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func inertTask(name string) v1.TaskDef {
@@ -114,4 +116,22 @@ func TestLocalAdmissionHonorsPinnedTaskCapabilities(t *testing.T) {
 			require.Nil(t, out)
 		})
 	}
+}
+
+func TestHasWaitsFindsAWaitInNestedControlFlow(t *testing.T) {
+	plain := &v1.Workflow{Name: "plain", Steps: []*v1.Node{
+		{Id: "one", Kind: &v1.Node_Task{Task: &v1.Task{Name: "test.one"}}},
+	}}
+	waits, err := v1.HasWaits(plain)
+	require.NoError(t, err)
+	require.False(t, waits)
+
+	nested := &v1.Workflow{Name: "nested", Steps: []*v1.Node{
+		{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: []*v1.Node{
+			{Id: "nap", Kind: &v1.Node_Wait{Wait: &v1.Wait{Kind: &v1.Wait_Duration{Duration: durationpb.New(time.Minute)}}}},
+		}}}},
+	}}
+	waits, err = v1.HasWaits(nested)
+	require.NoError(t, err)
+	require.True(t, waits, "a wait inside a for_each body was not found")
 }
