@@ -74,8 +74,10 @@ func (s *FlowstateServer) ResumeRun(
 		// A deployment-trusted specification is what [FlowstateServer.Run]
 		// substitutes for whatever a caller submits under its name, so that its
 		// `manual:` policy and steps bind. A patch would carry caller-written
-		// steps past that substitution, so a trusted workflow cannot be patched.
-		if _, trusted, err := s.trustedWorkflow(caller.GetPrincipal().GetNamespace(), patch); err != nil {
+		// steps past that substitution, so a trusted workflow cannot be patched. The
+		// lookup keys on the origin run's recorded workflow and namespace, never on the
+		// patch, whose name the caller chooses.
+		if _, trusted, err := s.trustedWorkflow(state.GetIdentity().GetPrincipal().GetNamespace(), state.GetWorkflow()); err != nil {
 			return nil, err
 		} else if trusted {
 			return nil, s.auditDeny(ctx, "ResumeRun", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, execution.GetWorkflowId(),
