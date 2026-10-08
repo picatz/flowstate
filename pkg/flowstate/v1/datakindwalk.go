@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"math"
 	"slices"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -76,6 +77,17 @@ func normalizeWire(table TypeTable, t *Type, lit *expr.Value, depth int, budget 
 	}
 
 	switch kind := t.GetKind().(type) {
+	case *Type_Scalar_:
+		// A value declared `int` is held as an int: YAML and `uint(...)` can both mint
+		// an unsigned that [inputTypeOf] reads as an int, and CEL will not add to
+		// one. Narrowed here, once, wherever it fits, so what a reader sees is the
+		// type the declaration promised (the type checker relies on it for a call's
+		// `int` output). One above the signed range has no int to become and is left.
+		if unsigned, isUnsigned := lit.GetKind().(*expr.Value_Uint64Value); isUnsigned &&
+			kind.Scalar == Type_SCALAR_INT && unsigned.Uint64Value <= math.MaxInt64 {
+			return &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: int64(unsigned.Uint64Value)}}
+		}
+
 	case *Type_List:
 		list, ok := lit.GetKind().(*expr.Value_ListValue)
 		if !ok {
