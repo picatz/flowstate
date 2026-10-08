@@ -736,6 +736,10 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 
 		if schemes := p.GetSecretSchemes(); len(schemes) > 0 {
 			fmt.Fprintf(out, "  secrets: %s\n", strings.Join(schemes, ", "))
+			// Launching it registers a secret provider, and a process holding one
+			// refuses to run without an access policy (#1545); said here so the
+			// requirement is visible before the refusal is.
+			fmt.Fprintf(out, "  %s\n", theme.Muted.Render("launching it needs --auth-policy with a secrets section on a verb that runs tasks"))
 		}
 
 		for _, task := range p.GetTasks() {
