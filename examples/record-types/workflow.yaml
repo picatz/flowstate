@@ -14,8 +14,10 @@
 # A field also carries the length and item bounds an input does (`min_len:`,
 # `max_len:`, `min_items:`, `max_items:`) and a `must:` over `this`, the field's value,
 # checked by the same functions. A `must:` on the type is the rule across fields, with
-# `this` the whole record. A field does not yet carry `default:` or `sensitive:`;
-# `flow validate` says so rather than ignoring them.
+# `this` the whole record. A field with a `default:` is filled in where a value leaves it
+# out, so `inputs.order.status` is always there to read; a field marked `required:` has
+# none. A field does not yet carry `sensitive:`; `flow validate` says so rather than
+# ignoring it.
 #
 #   flow run local examples/record-types/workflow.yaml \
 #       --input-file examples/record-types/inputs.json
@@ -45,10 +47,10 @@ types:
         values:
           - open
           - paid
-        required: true
+        default: open
       lines:
         type: list(Line)
-        required: true
+        default: []
         max_items: 20
       note:
         type: string

@@ -438,6 +438,13 @@ jobs:
         if: matrix.lane == 'rest'
         run: go run ./cmd/flow test --coverage-required examples/
 
+      # The same cases again on the durable interpreter with a Continue-As-New
+      # between every pair of steps (#1598): a value that does not survive being
+      # serialized and resumed fails here, which the local driver cannot see.
+      - name: Example workflows agree across the local and durable drivers
+        if: matrix.lane == 'rest'
+        run: go run ./cmd/flow test --driver both examples/
+
       # `flow breaking` is `buf breaking` one level up: a workflow's declared
       # inputs and outputs are a contract, and composition vendors a callee at
       # compile time (#172), so an interface break strikes the callee author's

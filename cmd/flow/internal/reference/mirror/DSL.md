@@ -742,8 +742,18 @@ submit and on completion for a value that arrives, on both drivers through one f
 type that refers to itself, directly or through others, is refused, because a value of a
 recursive record has no bound until the type has one; so is a name nobody declared. At run
 time a record is a map keyed by field name, so an older reader sees what it sees for a
-`struct`. Beyond the shape, those bounds and `must:` nothing is carried yet: a field that sets `default:`, `example:`
-or `sensitive:` is refused with that reason rather than parsed and silently not enforced.
+`struct`. A field's `default:` is the value a record takes where it leaves the field out: it is filled in
+where the value is bound (a run's input, a call's argument, an output), at any depth and in a list
+too, so `inputs.order.status` is there to read whether or not the caller sent it, and a supplied
+value, including a zero one, always wins. A default is held when the type is declared to what
+an input's is (the field's type, its `values:`, `min_len:`, `max_len:`, `min_items:`, `max_items:`
+and `must:`), and a field marked `required:` cannot have one, since a required field is never
+absent. A type whose defaults expand past 4096 entries once a value leaves every field out (a
+default that is a record whose fields default to records) is refused where it is declared, and a
+submitted value that would fill more than 65536 defaults is refused before it is filled.
+`example:` is held the same way and never bound. A record an expression builds mid-run is its own: defaults apply at the boundaries a value
+crosses, not inside an expression. Beyond that nothing more is carried yet: a field that sets
+`sensitive:` is refused with that reason rather than parsed and silently not enforced.
 
 *Slice 2:* an expression reading a field is checked against the record. `inputs.order.id` is a
 `string` wherever an expression is checked, so `inputs.order.id + 1` and an `if:` that reads a

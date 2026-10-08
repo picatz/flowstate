@@ -209,6 +209,60 @@ message TestReport {
 
   // Fuzz is what `flow test --fuzz` found, unset when nobody asked for it.
   FuzzReport fuzz = 7;
+
+  // Mutation is what `flow test --mutate` found, unset when nobody asked for
+  // it.
+  MutationReport mutation = 8;
+}
+
+// MutationReport is what `flow test --mutate` measured about a file's tests:
+// whether they notice the program changing. Each mutant is the compiled
+// workflow with one deliberate fault (a condition negated, a compensation
+// dropped), run against the file's passing cases in written order. A mutant a
+// case fails on is killed; one every case still passes survived, which says the
+// file proves nothing about that part of the program.
+message MutationReport {
+  // Mutants is how many mutants were run.
+  int32 mutants = 1;
+
+  // Killed is how many a case failed on.
+  int32 killed = 2;
+
+  // Invalid is how many the validator refused as a workflow. They are not
+  // counted as killed: a program that cannot run says nothing about the tests.
+  int32 invalid = 3;
+
+  // Survivors is every mutant no case failed on, in document order.
+  repeated MutationSurvivor survivors = 4;
+
+  // Truncated reports that the workflow had more mutants than the bound and
+  // the rest were not run.
+  bool truncated = 5;
+
+  // NotRun is why nothing was mutated, when that is so: the file's own cases
+  // did not all pass, and a red suite cannot tell a killed mutant from a
+  // broken test.
+  string not_run = 6;
+}
+
+// MutationSurvivor is one mutant the file's tests did not notice.
+message MutationSurvivor {
+  // Id is the mutant's stable name, `operator@step.field`, so
+  // `flow test --mutant ID` replays exactly it.
+  string id = 1 [(buf.validate.field).required = true];
+
+  // Operator is the kind of change made.
+  string operator = 2;
+
+  // Description is the change in words: `if: negated on step deploy`.
+  string description = 3;
+
+  // Workflow is the workflow file the mutant was made in.
+  string workflow = 4;
+
+  // Where is the file position of the changed construct, `path:line`, empty
+  // when the workflow carries no positions.
+  string where = 5;
 }
 
 // SkippedTestCase is one case a `flow test` run selected and did not run.

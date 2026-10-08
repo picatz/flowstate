@@ -74,6 +74,16 @@ type RunOptions struct {
 	// caller's, and a run does one or the other.
 	Fuzz FuzzOptions
 
+	// Mutate additionally runs each workflow's passing cases against mutants
+	// of it ([MutateOptions]): whether the file would notice the program
+	// changing.
+	Mutate MutateOptions
+
+	// Durable additionally runs each passing case on the durable interpreter
+	// with a Continue-As-New forced between every pair of steps, and fails the
+	// case where the two drivers disagree. Nil runs the local driver alone.
+	Durable DurableRunner
+
 	// Select filters which cases run, by name; nil runs every case. A case
 	// filtered out is not run, not reported, and counted in
 	// [RunResult.Filtered] — the number a caller's own output must surface,
@@ -312,6 +322,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		observeUnrun(test)
 	}
 	fuzz := newFuzzer(opts.Fuzz)
+	mutation := newMutator(opts.Mutate)
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -404,7 +415,11 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 					ctx, stop = caseContextWithin(ctx, caseTimeout)
 					defer stop()
 				}
-				result, spec, transcript, account, shown, err := runCase(ctx, &test, l.deliveryPath, l.load,
+				caseCtx := ctx
+				if reported && opts.Debugger == nil {
+					caseCtx = contextWithDurable(ctx, opts.Durable)
+				}
+				result, spec, transcript, account, shown, err := runCase(caseCtx, &test, l.deliveryPath, l.load,
 					!opts.skipTranscript && reported,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 				if reported {
@@ -449,6 +464,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
+		mutation.observe(identity, &test, spec, l.positions, l.deliveryPath, result)
 		if opts.FailFast && (!result.GetPassed() || schedules.divergence != nil) {
 			// The verdict's own name, redacted under the case's posture, so the
 			// reason later cases carry cannot spell a value this one withholds.
@@ -485,6 +501,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Schedules = out.Schedules.Report()
 	}
 	report.Fuzz = fuzz.report()
+	if ctx.Err() == nil && haltedAt == "" {
+		report.Mutation = mutation.run(ctx, fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout, suite, filtered > 0)
+	}
+
 	return out
 }
 
@@ -885,6 +905,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// makes stubbing a plugin task's name actually usable rather than merely
 	// advertised. Only task-form stubs can name a missing task; a step-form
 	// stub names a step whose task the compiler already knows.
+	unregistered := unregisteredTasks(stubTaskNames(compiled))
 	restore := swapRegistry(stubTaskNames(compiled))
 	// Released once the case has its own registry, and on any exit before: the
 	// process-wide one is held for compilation and for building [caseRegistry]
@@ -1072,6 +1093,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 	ctx = v1.NewContextWithRegistry(ctx, registry)
+	var durableRegistry *v1.Registry
+	durableUnanswered := &unstubbedTasks{}
+	durableSkipped := ""
+	if durableFrom(base) != nil && v1.SchedulerFromContext(base) == v1.WrittenOrder {
+		if durableSkipped = durableIneligible(test, workflow, compiled, unregistered); durableSkipped == "" {
+			durableRegistry, err = freshCaseRegistry(test, workflow, boundaries, durableUnanswered)
+			if err != nil {
+				caseError("%s", err)
+				return
+			}
+		}
+	}
 	releaseRegistry()
 
 	inputs := v1.NewNamedValues(test.Inputs)
@@ -1407,6 +1440,27 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if faults != nil {
 		result.Failures = append(result.Failures, faults.unreached()...)
 	}
+	if durableRegistry != nil && len(result.Failures) == 0 && v1.DebuggerFromContext(ctx) == nil {
+		dctx := v1.NewContextWithRegistry(base, durableRegistry)
+		// Named for the workflow it serves, as the local driver names it, which is
+		// what a `step:` stub matches the step it answers by.
+		durableRuntime := runtime
+		durableRuntime.Step.Workflow = workflow.GetName()
+		dctx = v1.ContextWithTaskRuntime(dctx, durableRuntime)
+		dctx = v1.NewContextWithTrigger(dctx, trigger)
+		disagreements, localOnly := durableDisagreements(dctx, durableFrom(base), DurableRequest{
+			Workflow: workflow,
+			Inputs:   inputs,
+			Start:    test.StartTime(),
+			Runtime:  durableRuntime,
+			Signals:  durableSignals(test.Signals, outcomes),
+		}, durableUnanswered, outputs, runErr, sensitive)
+		result.Failures = append(result.Failures, disagreements...)
+		durableSkipped = localOnly
+	}
+	if durableSkipped != "" {
+		result.Warnings = append(result.Warnings, &v1.Diagnostic{Field: durableFailureField, Message: "local only: " + durableSkipped})
+	}
 	result.Passed = len(result.Failures) == 0
 
 	// The autopsy (#1072 decision 4's follow-on): a failing case under a
@@ -1444,7 +1498,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// that never reached a run at all (result.Error set) returns above and
 	// never gets here.
 	if runErr == nil {
-		result.Warnings = unusedStubWarnings(stubs)
+		result.Warnings = append(result.Warnings, append(unusedStubWarnings(stubs), undeliveredSignalWarnings(test.Signals, outcomes)...)...)
 	}
 
 	// Whatever the run's verdict, and ahead of the idle-stub account above:
@@ -1600,6 +1654,10 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 type unstubbedTasks struct {
 	mu sync.Mutex
 
+	// matcherErrors counts `where:` evaluations that errored rather than
+	// answered false.
+	matcherErrors int
+
 	// seen holds one entry per task-and-step pair, because a warning that
 	// names only the task cannot be acted on when two steps run it and one of
 	// them is stubbed by `step:`. The step is the engine's own
@@ -1627,6 +1685,12 @@ type unstubbedAt struct {
 }
 
 // record notes one invocation of a task no stub was declared for.
+func (u *unstubbedTasks) recordMatcherError() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.matcherErrors++
+}
+
 func (u *unstubbedTasks) record(ctx context.Context, name string) {
 	u.at(ctx, name, false)
 }
@@ -1787,6 +1851,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 	}
 
 	type job struct {
+		idx     int
 		name    string
 		at      time.Duration
 		payload map[string]any
@@ -1843,7 +1908,7 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 		}
 		turnDone := make(chan struct{})
 		jobs = append(jobs, job{
-			name: s.Name, at: at, payload: s.Payload,
+			idx: n, name: s.Name, at: at, payload: s.Payload,
 			sender:        scriptedSender(s.Sender, s.DeliveryID),
 			senderSubject: subject,
 			drop:          dropped[n],
@@ -1944,6 +2009,9 @@ func scriptSignals(runFinished <-chan struct{}, clock *v1.VirtualClock, signals 
 			deliver := func() error {
 				err := signals.DeliverFrom(j.name, &v1.Node_Outputs{NamedValues: v1.NewNamedValues(j.payload)}, j.sender)
 				outcomes.note(j.name, err)
+				if err == nil {
+					outcomes.noteAccepted(j.idx)
+				}
 
 				return err
 			}
@@ -3003,4 +3071,24 @@ func compensatedSteps(runErr error) []string {
 	}
 
 	return out
+}
+
+// freshCaseRegistry is [caseRegistry] over stubs bound anew from the case, for a
+// second run of it: the first run has spent whatever its stubs count.
+func freshCaseRegistry(test *Test, workflow *v1.Workflow, boundaries map[string]*v1.Workflow, unanswered *unstubbedTasks) (*v1.Registry, error) {
+	compiled, err := compileStubs(test.Stubs)
+	if err != nil {
+		return nil, err
+	}
+	stubs, err := bindStubs(compiled, workflow)
+	if err != nil {
+		return nil, err
+	}
+	for name, callee := range boundaries {
+		if stub, ok := stubs[name]; ok {
+			stub.callee = callee
+		}
+	}
+
+	return caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow, unanswered)
 }

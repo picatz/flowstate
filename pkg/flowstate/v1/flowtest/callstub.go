@@ -181,8 +181,9 @@ func walkOwnNodes(nodes []*v1.Node, visit func(*v1.Node)) {
 // declared outputs the way the real call would: each value must have its
 // output's declared type and satisfy its `must:`. [checkCallReturns] has
 // already settled which names are present, so this is the half that needs the
-// values, which an expression-valued `returns:` only has at the invocation.
-func checkCallAnswer(profile string, callee *v1.Workflow, returns map[string]any) error {
+// values, which an expression-valued `returns:` only has at the invocation. It
+// answers the values the caller reads, with a record's defaults filled in.
+func checkCallAnswer(profile string, callee *v1.Workflow, returns map[string]any) (map[string]*v1.Value, error) {
 	table := v1.TypesOf(callee)
 	values := v1.NewNamedValues(returns)
 	for _, decl := range callee.GetDeclaredOutputs() {
@@ -191,15 +192,22 @@ func checkCallAnswer(profile string, callee *v1.Workflow, returns map[string]any
 			continue
 		}
 		if err := v1.CheckOutputValueIn(table, decl, value); err != nil {
-			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
+			return nil, fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
 		}
+		// The callee's answer is what its output builder reports, so a field the
+		// stub leaves out takes its default here as it would there, and the rules
+		// below judge the value the caller would read.
+		if lit := value.GetLiteral(); lit != nil {
+			value = &v1.Value{Kind: &v1.Value_Literal{Literal: v1.NormalizeWireValue(table, decl.DeclaredType(), lit)}}
+		}
+		values[decl.GetName()] = value
 		if err := v1.CheckOutputConstraint(profile, decl, value); err != nil {
-			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
+			return nil, fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
 		}
 		if err := v1.CheckRecordRules(table, profile, "output", decl.GetName(), decl.GetSensitive(), decl.DeclaredType(), value); err != nil {
-			return fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
+			return nil, fmt.Errorf("returns does not satisfy callee %q: %w", callee.GetName(), err)
 		}
 	}
 
-	return nil
+	return values, nil
 }

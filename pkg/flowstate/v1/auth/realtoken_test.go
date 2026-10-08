@@ -99,6 +99,15 @@ func TestRealCITokenVerifies(t *testing.T) {
 			},
 			Role:      "deployer",
 			Namespace: "ci",
+			// A principal carries only the claims its entry names (#2431), so
+			// every claim asserted on below is named here, as a deployment's
+			// policy would name the ones it pins.
+			CarryClaims: []auth.CarryClaim{
+				{Claim: "repository", Type: auth.ClaimTypeString},
+				{Claim: "ref", Type: auth.ClaimTypeString},
+				{Claim: "job_workflow_ref", Type: auth.ClaimTypeString},
+				{Claim: "runner_environment", Type: auth.ClaimTypeString},
+			},
 			// Minted seconds ago by this test. Ten minutes is slack for a slow
 			// runner and clock drift, not a lifetime an operator would grant.
 			MaxTokenAge: 10 * time.Minute,

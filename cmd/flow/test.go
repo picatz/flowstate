@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,6 +21,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest/durable"
 )
 
 // `flow test` is the third verb on the local driver's substrate (#155):
@@ -196,6 +199,21 @@ flow test -o jsonl examples/`,
 	cmd.Flags().Uint64("fuzz-seed", 0,
 		"replay exactly one generated case, the seed a reported finding names, instead of searching")
 
+	cmd.Flags().Int("mutate", 0,
+		"also run each workflow's passing cases against mutants of it (a condition negated or removed, "+
+			"a compensation or retry dropped, a switch arm removed) and fail when one survives, because the "+
+			"file would not notice the program changing; write --mutate=N to bound the mutants per "+
+			"workflow, which is 100 when N is omitted; 0, the default, runs the authored cases only")
+	cmd.Flags().Lookup("mutate").NoOptDefVal = strconv.Itoa(flowtest.DefaultMutants)
+	cmd.Flags().String("mutant", "",
+		"replay the mutant a reported survivor's id names (in each workflow of the file that has one), instead of running them all")
+
+	cmd.Flags().String("driver", driverLocal,
+		"which driver proves each case: local (the default), or both, which also runs each passing case on the "+
+			"durable interpreter, in-process, with a Continue-As-New between every pair of steps, and fails "+
+			"where the two disagree; a case with faults, a trigger delivery, plugins, stub tasks this build "+
+			"does not register, or a workflow reading run.local, run.identity or the run's address stays local and says so")
+
 	// The step debugger (#928 slice 1). Interactive by nature, so it is
 	// refused wherever "interactive" is not true of the run: a machine-format
 	// run whose document a prompt would corrupt, a seeded exploration that
@@ -322,6 +340,14 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	mutateOpts, err := mutateOptions(cmd, budget, fuzzOpts)
+	if err != nil {
+		return err
+	}
+	durableRunner, err := driverOption(cmd, budget, fuzzOpts, mutateOpts)
+	if err != nil {
+		return err
+	}
 
 	// The filter (#929 slice 1). Refusals before anything runs, both fail
 	// closed: a pattern that does not compile selects nothing knowable, and
@@ -370,6 +396,8 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			{"--fail-fast", failFast},
 			{"--seeds", cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed")},
 			{"--fuzz", cmd.Flags().Changed("fuzz") || cmd.Flags().Changed("fuzz-seed")},
+			{"--mutate", mutateOpts.Max > 0 || mutateOpts.Only != ""},
+			{"--driver", durableRunner != nil},
 			{"--coverage-required", coverageRequired},
 		} {
 			if other.set {
@@ -450,6 +478,8 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		runOptions := flowtest.RunOptions{
 			Budget:      budget,
 			Fuzz:        fuzzOpts,
+			Mutate:      mutateOpts,
+			Durable:     durableRunner,
 			Select:      selectCase,
 			CaseTimeout: timeout,
 			FailFast:    failFast,
@@ -493,6 +523,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			printCoverage(surface.Out, surface.Theme, report, coverage, coverageRequired)
 			printSchedules(surface.Out, surface.Theme, report, schedules)
 			printFuzz(surface.Out, surface.Theme, report)
+			printMutation(surface.Out, surface.Theme, report)
 			printFiltered(surface.Out, surface.Theme, report, runPattern, run.Filtered)
 			printSkipped(surface.Out, surface.Theme, report, run.Skipped)
 		} else {
@@ -507,6 +538,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			// person-facing half, not the only copy.
 			printSchedules(surface.Err, surface.ErrTheme, report, schedules)
 			printFuzz(surface.Err, surface.ErrTheme, report)
+			printMutation(surface.Err, surface.ErrTheme, report)
 			// The filter's honesty line goes to stderr for the same reason:
 			// the cases the document carries are only the selected ones, and
 			// somebody reading the log must be able to see that the file held
@@ -543,6 +575,11 @@ func runTest(cmd *cobra.Command, paths []string) error {
 				"or every generated case errored before the run")
 			anyFailed = true
 		}
+	}
+	if mutateOpts.Only != "" && !mutantFound(results) {
+		fmt.Fprintf(surface.Err, "--mutant %s names no mutant of any workflow these files test; "+
+			"the id is the one a survivor of `flow test --mutate` reports\n", mutateOpts.Only)
+		anyFailed = true
 	}
 	if machine {
 		if err := writeTestResults(surface, format, results); err != nil {
@@ -793,6 +830,12 @@ func (r testFileResult) failed(coverageRequired, failOnWarning bool) bool {
 	// for the schedule space to be explored is already the opt-in, and a case
 	// whose observables move with the schedule is a finding, not a statistic.
 	if r.report.GetFuzz().GetFinding() != nil || r.fuzzJudgedNothing() {
+		return true
+	}
+
+	// A survivor is the finding `--mutate` exists to make, and a file it could
+	// not mutate because a case failed has been reported as failing already.
+	if m := r.report.GetMutation(); len(m.GetSurvivors()) > 0 || m.GetNotRun() != "" {
 		return true
 	}
 
@@ -1293,4 +1336,119 @@ func collectTestFiles(paths []string) ([]string, error) {
 		return nil, errors.New("no *.test.yaml files found in the paths given")
 	}
 	return out, nil
+}
+
+// mutateOptions reads `--mutate` and `--mutant`. Mutation judges the written-
+// order run of each case; it is a dimension of its own, so it is refused beside
+// the others rather than multiplied by them.
+func mutateOptions(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOptions) (flowtest.MutateOptions, error) {
+	n, _ := cmd.Flags().GetInt("mutate")
+	only, _ := cmd.Flags().GetString("mutant")
+	switch {
+	case n < 0:
+		return flowtest.MutateOptions{}, fmt.Errorf("--mutate %d is not a count of mutants; write a non-negative integer", n)
+	case n > flowtest.MaxMutants:
+		return flowtest.MutateOptions{}, fmt.Errorf("--mutate %d is above the %d mutants this command will run per workflow; "+
+			"every mutant runs the file's cases again", n, flowtest.MaxMutants)
+	case n > 0 && only != "":
+		return flowtest.MutateOptions{}, errors.New("--mutant replays one mutant and --mutate runs many; pass one or the other")
+	case n == 0 && only == "":
+		return flowtest.MutateOptions{}, nil
+	case cmd.Flags().Changed("debug"):
+		return flowtest.MutateOptions{}, errors.New("--mutate cannot be combined with --debug: a debug session stops one case, " +
+			"and mutation runs every case against many programs")
+	case budget.Schedules > 0 || budget.Pinned != nil:
+		return flowtest.MutateOptions{}, errors.New("--mutate runs each case in written order and --seeds explores schedules; " +
+			"run them separately so a finding names one cause")
+	case fuzz.Runs > 0 || fuzz.Pinned:
+		return flowtest.MutateOptions{}, errors.New("--mutate changes the program and --fuzz changes the inputs; " +
+			"run them separately so a finding names one cause")
+	case cmd.Flags().Changed("watch"):
+		return flowtest.MutateOptions{}, errors.New("--mutate cannot be combined with --watch: every save would rerun every mutant")
+	}
+
+	return flowtest.MutateOptions{Max: n, Only: only}, nil
+}
+
+// The values `--driver` takes.
+const (
+	driverLocal = "local"
+	driverBoth  = "both"
+)
+
+// driverOption reads `--driver`. The durable proof judges the written-order run
+// of each case, so like mutation it is a dimension of its own and is refused
+// beside the others rather than multiplied by them. It returns nil for the
+// local driver alone.
+func driverOption(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOptions, mutate flowtest.MutateOptions) (flowtest.DurableRunner, error) {
+	driver, _ := cmd.Flags().GetString("driver")
+	switch driver {
+	case driverLocal:
+		return nil, nil
+	case driverBoth:
+	default:
+		return nil, fmt.Errorf("--driver %q is not a driver; write %s or %s", driver, driverLocal, driverBoth)
+	}
+
+	switch {
+	case cmd.Flags().Changed("debug"):
+		return nil, errors.New("--driver both cannot be combined with --debug: a debug session stops one case on the local driver")
+	case budget.Schedules > 0 || budget.Pinned != nil || cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed"):
+		return nil, errors.New("--driver both runs each case in written order and --seeds explores schedules; " +
+			"run them separately so a finding names one cause")
+	case fuzz.Runs > 0 || fuzz.Pinned:
+		return nil, errors.New("--driver both proves the authored cases and --fuzz generates others; " +
+			"run them separately so a finding names one cause")
+	case mutate.Max > 0 || mutate.Only != "":
+		return nil, errors.New("--driver both proves the program as written and --mutate changes it; " +
+			"run them separately so a finding names one cause")
+	}
+
+	return durable.Runner, nil
+}
+
+// mutantFound reports that some file's report ran the mutant `--mutant` named.
+func mutantFound(results []testFileResult) bool {
+	for _, r := range results {
+		if r.report.GetMutation().GetMutants() > 0 {
+			return true
+		}
+	}
+
+	return false
+}
+
+// printMutation renders what mutation testing found for one file: nothing when
+// nobody asked, one summary line when every mutant was noticed, and each
+// survivor with the command that replays it when one was not.
+func printMutation(out io.Writer, theme ui.Theme, report *v1.TestReport) {
+	mutation := report.GetMutation()
+	if mutation == nil {
+		return
+	}
+	file := theme.Muted.Render(report.GetFile())
+	if mutation.GetNotRun() != "" {
+		fmt.Fprintf(out, "%s  %s\n", file, theme.Danger.Render("not mutated: "+mutation.GetNotRun()))
+
+		return
+	}
+	summary := fmt.Sprintf("%s: %d killed, %d survived", count(int(mutation.GetMutants()), "mutant", "mutants"),
+		mutation.GetKilled(), len(mutation.GetSurvivors()))
+	if n := mutation.GetInvalid(); n > 0 {
+		summary += fmt.Sprintf(", %d invalid (not a workflow the validator accepts)", n)
+	}
+	if mutation.GetTruncated() {
+		summary += "; " + theme.Warning.Render("more mutants exist than this run's bound, so the rest were not run")
+	}
+	fmt.Fprintf(out, "%s  %s\n", file, summary)
+	for _, survivor := range mutation.GetSurvivors() {
+		fmt.Fprintf(out, "%s  %s\n", file, theme.Danger.Render("survived: "+cmp.Or(survivor.GetDescription(), survivor.GetOperator())))
+		if where := survivor.GetWhere(); where != "" {
+			fmt.Fprintf(out, "       at %s\n", where)
+		}
+		// A withheld survivor has no id a replay could name.
+		if survivor.GetDescription() != "" {
+			fmt.Fprintf(out, "       replay: flow test --mutant %s -- %s\n", shellArg(survivor.GetId()), shellArg(report.GetFile()))
+		}
+	}
 }

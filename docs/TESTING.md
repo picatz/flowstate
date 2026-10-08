@@ -590,6 +590,76 @@ A `--fuzz` run in which no file judged a generated case fails, since it verified
 nothing. Not yet covered: stub answers drawn from output descriptors,
 structural input types, and shrinking.
 
+### Would the file notice the program changing: `--mutate`
+
+A green test file can prove nothing. `flow test --mutate` measures that: it
+compiles each workflow once, makes one deliberate fault in a copy (a *mutant*),
+and runs the file's cases against it. A mutant a case fails on is *killed*; one
+every case still passes *survived*, and the survivor is the part of the program
+the file does not check.
+
+The operators are fixed and each is one field edit on the compiled workflow:
+`if-negate` and `if-drop` (a step's `if:` negated or removed), `undo-drop` (a
+compensation removed), `retry-drop`, `continue-flip` (`continue_on_error:`
+flipped), `switch-arm-drop` and `switch-default-drop`. Each survivor prints what
+changed, where, and a replay command:
+
+```text
+survived: `if:` removed from step on_ready
+       at workflow.yaml:13
+       replay: flow test --mutant if-drop@on_ready.if -- workflow.test.yaml
+```
+
+That example is the instructive one: a file whose only case takes the `ready`
+branch cannot tell the gate from its absence, so the fix is a second case that
+takes the other branch and asserts `on_ready` was skipped. A survivor can also be
+an equivalent mutant (a change no test could observe); there is no allow-list, so
+read the survivor before adding a case.
+
+Mutants run in written order with no faults, against the cases that passed, and
+a file in which any case fails is not mutated (a red suite cannot tell a killed
+mutant from a broken test), and neither is one a `--run` selection leaves cases
+out of (a gate only an unselected case asserts would read as a survivor). A mutant the validator refuses is counted invalid,
+never killed. `--mutate` bounds the mutants per workflow at 100; `--mutate=N`
+sets the bound (at most 1000) and the report says when it truncated.
+`--mutant ID` replays one. Any survivor fails the command, and the report
+carries the account in `mutation` for `-o json`. `--mutate` is refused with
+`--seeds`, `--fuzz`, `--debug`, `--watch` and `--list`. Not yet covered:
+mutations inside a CEL expression, task inputs, `fail:` and signal rules, and
+the durable driver (`--driver both` proves the unmutated program only).
+
+## Does the run survive being suspended: `--driver both`
+
+The local driver runs a case in one uninterrupted pass, which a durable run
+never does: it suspends, serializes its state and resumes, possibly elsewhere.
+A case that passes locally says nothing about the state a run carries across
+that seam. `flow test --driver both` closes the gap: each passing case runs
+again, in-process and with no server, on the same durable interpreter a worker
+uses, with a Continue-As-New forced between every pair of steps and the case's
+stubs bound afresh. The case fails where the drivers disagree: one finishes and
+the other does not, or a step output the continued run kept differs from the
+local one (maps compare as maps, so key order is not a disagreement).
+
+What it proves is the carried state, the step outputs, loop frames and
+variables a continued run hands to its next segment. A continued run retains
+only the outputs later steps read, so a step it dropped is not compared. It
+does not prove faults. Scripted `signals:` are replayed to the durable run at
+the same offsets from the same senders, and only those the local run accepted:
+a delivery its signal policy refused is absent, as a server would refuse it
+before the workflow saw it. A signal that arrives before its gate is carried
+across the Continue-As-New like any other. A case that injects `faults:`,
+replays a trigger delivery, requires plugins, stubs a task this build does
+not register, reads `run.local`, `run.identity`, `run.workflow_id` or `run.run_id`
+(which differ by design), or stubs a step by id in a workflow with calls or compensations
+stays on the local driver and reports `driver: local only: <why>`
+as a warning, so a green never silently skipped the proof. A stub whose `where:` cannot be
+evaluated on the durable side (it reads a loop binding an activity lacks) does
+the same. Declared run outputs are compared whole; where the workflow declares
+anything sensitive a disagreement names the step and quotes no value. A run that needs
+more than 2000 segments is reported rather than truncated. `--driver both` is
+refused with `--seeds`, `--fuzz`, `--mutate`, `--debug` and `--list`, each its
+own dimension; `--driver local` is the default.
+
 ## One fixture, many rows
 
 Cases that differ in one or two values can share an entry and list their
