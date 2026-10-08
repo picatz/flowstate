@@ -580,3 +580,17 @@ func cacheKeyFor(names []string, leaves map[string]*cel.Type) string {
 
 	return key.String()
 }
+
+// IteratorType is the type the checker gives the item a `for_each` binds as name in
+// the expressions of the step with the given id, spelled as CEL spells it, and false
+// where it gives none. It reads the same table [Validate] judges the body with, so
+// a hover cannot say something the diagnostics disagree with.
+func IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
+	bound := newTypeTable(wf).bindingsFor(step, []string{name})
+	typed, ok := bound[name]
+	if !ok {
+		return "", false
+	}
+
+	return typed.String(), true
+}

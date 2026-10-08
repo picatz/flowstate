@@ -909,6 +909,9 @@ steps:
 			}
 			require.NotEmpty(t, ds)
 			require.Contains(t, ds.Error(), test.want)
+			// Both occurrences, so the outer iterator is still typed one loop down.
+			require.Contains(t, ds.Error(), `step "x"`)
+			require.Contains(t, ds.Error(), `step "y"`)
 		})
 	}
 }

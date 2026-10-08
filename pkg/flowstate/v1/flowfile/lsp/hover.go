@@ -416,7 +416,7 @@ func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor i
 	}
 
 	if ref.step == "" {
-		if h := hoverBareName(from, ref.local, clock, shaping, ls, rng); h != nil {
+		if h := hoverBareName(doc, from, ref.local, clock, shaping, ls, rng); h != nil {
 			return h
 		}
 	}
@@ -540,7 +540,7 @@ const varsKeyword = "vars"
 // answer to `${now}` written in a task input is not this documentation — it is the
 // validator's diagnostic saying the name is not bound there, and describing it as
 // though it were would contradict a squiggle the author is looking at.
-func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopScope, rng lsp.Range) *lsp.Hover {
+func hoverBareName(doc *document, from *parsedStep, name string, clock, shaping bool, ls loopScope, rng lsp.Range) *lsp.Hover {
 	if clock && name == v1.NowIdentifier {
 		return markdownHover(nowDoc(), rng)
 	}
@@ -576,11 +576,20 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopSc
 		if loop.loopEntry != nil {
 			return markdownHover(loopStateDoc(name, loop), rng)
 		}
+		// What `items:` says an element is, when the checker knows: the same table
+		// the validator judges the body with.
+		typeSentence := "Its type is whatever the loop's `items` expression yields an element of. "
+		if wf := compiledWorkflow(doc); wf != nil {
+			if typed, ok := flowfile.IteratorType(wf, from.id, name); ok {
+				typeSentence = fmt.Sprintf("Its type is `%s`, the element type of the loop's `items` expression. ", typed)
+			}
+		}
+
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — the current item of the `%s` loop.\n\n"+
-				"Its type is whatever the loop's `items` expression yields an element of. "+
+				"%s"+
 				"The loop reports every iteration through `${%s.%s.%s}`; body outputs do "+
-				"not escape it.", name, loop.id, v1.StepsRoot, loop.id, loopResultsOutput), rng)
+				"not escape it.", name, loop.id, typeSentence, v1.StepsRoot, loop.id, loopResultsOutput), rng)
 	}
 
 	// A `vars:` key, the step's own first and then any block enclosing it — the

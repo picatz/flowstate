@@ -1235,6 +1235,7 @@ edition: v2026.4
 	require.NotNil(t, got, "no hover on a loop iterator")
 	assert.Contains(t, hoverText(got), "current item of the `repeat` loop")
 	assert.Contains(t, hoverText(got), "do not escape")
+	assert.Contains(t, hoverText(got), "Its type is `string`", "an item of a list of strings is a string")
 
 	// The loop that binds it is the only declaration to jump to.
 	def := c.definition(uri, pos.Line, pos.Character)
