@@ -2,6 +2,7 @@ package debugtui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -27,6 +28,9 @@ const (
 	panePrefix = "pane:"
 )
 
+// contentPanes are the panes a folded layout can show one at a time.
+var contentPanes = []string{paneFlow, paneSource, paneSteps, paneScope}
+
 // Screen limits. The screen is not drawn in a terminal smaller than these, and
 // `flow debug attach --tui` refuses to start in one.
 const (
@@ -40,27 +44,30 @@ const (
 const minBody = 3
 
 // grid is how the screen folds as the terminal narrows. The flow is the leftmost
-// column wherever there is room for a ladder: three further columns with the
-// selected name's detail on the right, the detail folded under the scope, the
-// detail dropped and the flow stacked over the steps, and below 80 columns one
-// pane at a time under tabs.
+// column wherever there is room for a ladder, and the source sits beside it:
+// four columns with the selected name's detail under the scope, three with the
+// steps over the scope, two with the flow over the steps and the source over the
+// scope, and below 80 columns one pane at a time under tabs. Every layout but the
+// last draws every pane the focus ring visits.
 var grid = tui.Grid{
 	Min: tui.Size{W: MinWidth, H: minBody},
 	Rules: []tui.Rule{
-		{MinWidth: 120, Root: tui.Divide(pane.Split{Percent: 28, Gap: 1},
+		{MinWidth: 120, Root: tui.Divide(pane.Split{Percent: 24, Gap: 1},
 			tui.Leaf(paneFlow),
-			tui.Divide(pane.Split{Percent: 30, Gap: 1},
-				tui.Leaf(paneSteps),
-				tui.Divide(pane.Split{Percent: 55, Gap: 1}, tui.Leaf(paneScope), tui.Leaf(paneInspector))))},
-		{MinWidth: 100, Root: tui.Divide(pane.Split{Percent: 34, Gap: 1},
+			tui.Divide(pane.Split{Percent: 38, Gap: 1},
+				tui.Leaf(paneSource),
+				tui.Divide(pane.Split{Percent: 40, Gap: 1},
+					tui.Leaf(paneSteps),
+					tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneScope), tui.Leaf(paneInspector)))))},
+		{MinWidth: 100, Root: tui.Divide(pane.Split{Percent: 30, Gap: 1},
 			tui.Leaf(paneFlow),
-			tui.Divide(pane.Split{Percent: 40, Gap: 1},
-				tui.Leaf(paneSteps),
-				tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneScope), tui.Leaf(paneInspector))))},
-		{MinWidth: 80, Root: tui.Divide(pane.Split{Percent: 42, Gap: 1},
-			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneFlow), tui.Leaf(paneSteps)),
-			tui.Leaf(paneScope))},
-		{MinWidth: MinWidth, Tabs: []string{paneFlow, paneSteps, paneScope}},
+			tui.Divide(pane.Split{Percent: 45, Gap: 1},
+				tui.Leaf(paneSource),
+				tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 40}, tui.Leaf(paneSteps), tui.Leaf(paneScope))))},
+		{MinWidth: 80, Root: tui.Divide(pane.Split{Percent: 40, Gap: 1},
+			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 55}, tui.Leaf(paneFlow), tui.Leaf(paneSteps)),
+			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneSource), tui.Leaf(paneScope)))},
+		{MinWidth: MinWidth, Tabs: []string{paneFlow, paneSource, paneSteps, paneScope}},
 	},
 }
 
@@ -89,13 +96,17 @@ type Screen struct {
 	// selected.
 	Flow *Flow
 
+	// Source is the source pane's documents and state; nil holds no document.
+	Source *Source
+
 	Console Console
 	Toast   tui.Toast
 	Keys    tui.Keymap
 	Verbs   []flowdebug.Verb
 
 	// Focus is the focused member of the ring, and Pane the content pane a
-	// tabbed layout shows (the last of flow, steps and scope that was focused).
+	// tabbed layout shows (the last of flow, source, steps and scope that was
+	// focused).
 	Focus string
 	Pane  string
 	Help  bool
@@ -160,7 +171,7 @@ func (s Screen) geometry() (geometry, error) {
 	g.status = pane.Rect{X: 0, Y: h - 1, W: w, H: 1}
 
 	shown := s.Pane
-	if shown != paneFlow && shown != paneSteps && shown != paneScope {
+	if !slices.Contains(contentPanes, shown) {
 		shown = paneSteps
 	}
 	var err error
@@ -210,6 +221,8 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		switch cell.Pane {
 		case paneFlow:
 			text = FlowView(s.Flow, s.Frame, s.Loaded, o)
+		case paneSource:
+			text = SourceView(s.Source, s.Frame, s.Loaded, o)
 		case paneSteps:
 			text = StepsView(s.Frame, s.Loaded, s.StepScroll, o)
 		case paneScope:

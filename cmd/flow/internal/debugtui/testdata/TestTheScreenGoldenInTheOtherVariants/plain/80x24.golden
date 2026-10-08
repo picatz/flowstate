@@ -1,20 +1,20 @@
 flow debug · release-1 · run 3f7c9a2e · held step · rev 2                 ? help
-flow ──────────────────────────── → scope 4 names ──────────────────────────────
-no program; pass --program         ▾ inputs      {2}                            
-                                       version   "2026.9.0"                     
-                                       region    "eu-west-1"                    
-                                   ▾ steps       {1}                            
-                                  →  ▸ checkout  {artifact: checkout.tar.gz, sha
-                                   ▸ run         {1}                            
+flow ────────────────────────── source addresses only ──────────────────────────
+no program; pass --program        No source: pass --program <Flowfile> to see   
+                                  its lines; showing the step's address.        
+                                                                                
+                                  held at build                                 
                                                                                 
                                                                                 
-steps ───────────────────────────                                               
-  ○ checkout pending                                                            
-→ ▶ build running                                                               
-  ○ flaky pending                                                               
-  ○ gated pending                                                               
-  ○ deploy pending                                                              
-  ○ notify pending                                                              
+                                                                                
+steps ─────────────────────────                                                 
+  ○ checkout pending            → scope 4 names ────────────────────────────────
+→ ▶ build running                ▾ inputs      {2}                              
+  ○ flaky pending                    version   "2026.9.0"                       
+  ○ gated pending                    region    "eu-west-1"                      
+  ○ deploy pending               ▾ steps       {1}                              
+  ○ notify pending              →  ▸ checkout  {artifact: checkout.tar.gz, sha: 
+  6 step(s)                      ▸ run         {1}                              
 console ────────────────────────────────────────────────────────────────────────
                                                                                 
                                                                                 

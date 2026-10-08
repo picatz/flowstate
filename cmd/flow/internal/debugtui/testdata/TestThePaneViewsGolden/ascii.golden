@@ -65,7 +65,7 @@
 
 [1;38;2;133;131;146mFlow[m
   [1;38;2;241;239;239mu[m          run until the selected flow step (double click too)
-  [1;38;2;241;239;239mB[m          toggle a breakpoint on the selected flow step (right click too)
+  [1;38;2;241;239;239mB[m          toggle a breakpoint on the selected flow step (right click too), or
 
 [1;38;2;133;131;146mType in the console[m
   [1;38;2;241;239;239muntil <step>[m  run to that step (an id or an address like pages[2]/page); a con

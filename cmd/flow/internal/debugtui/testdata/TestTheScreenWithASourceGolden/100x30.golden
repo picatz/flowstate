@@ -1,0 +1,30 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                     ? help
+→ flow 4 steps ────────────── source main.yaml:8 ──────────── steps ────────────────────────────────
+     ○ fetch task "log"           1 edition: v2026.4            ○ fetch pending                     
+→    ▶ charge held task "log"     2 name: main                  ○ charge pending                    
+  ┌▾ ○ nested call "child"        3 # fetch, charge, then ha…   ○ nested pending                    
+  │     ○ greet task "log"        4 steps:                      ○ d pending                         
+  └──                             5   - id: fetch               ○ e pending                         
+                                  6     log:                    ○ f pending                         
+                                  7       message: fetching     6 step(s)                           
+                              ▶   8   - id: charge            scope 4 names ────────────────────────
+                              │   9     log:                  •▸ inputs  {2}                        
+                              │  10       message: ${"chargi…  ▸ steps   {1}                        
+                                 11   - id: nested             ▸ run     {1}                        
+                                 12     call: ./child.yaml                                          
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+                                                                                                    
+console ────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                    
+                                                                                                    
+                                                                                                    
+debug>                                                                                              
+                                                                                                    
+s step  n next  c continue  tab focus  : console  ? help  q quit                                    

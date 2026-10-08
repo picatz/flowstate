@@ -571,6 +571,46 @@ func (d *Driver) addBreakpoint(ctx context.Context, rest string) (*DriveResult, 
 	}), d.failureMode, target)
 }
 
+// BreakLine sets a stopping breakpoint on a source line, where the target
+// resolves it through the source map it holds: the `break` of a front that has
+// the lines of a Flowfile in front of it and no step to name. It is the same
+// replacement `break` makes, adopting the breakpoints other clients set before
+// it adds one, so it is not a verb of the command table; a line it set is
+// removed by `delete` under the id it is reported with ([LineBreakpointID]).
+func (d *Driver) BreakLine(ctx context.Context, uri string, line uint32) (*DriveResult, error) {
+	if d.detached {
+		return nil, errors.New("this session was detached; attach again to debug the run")
+	}
+	id := LineBreakpointID(uri, line)
+	if err := d.adopt(ctx, id); err != nil {
+		return nil, err
+	}
+
+	return d.replace(ctx, append(d.withoutID(id), &v1.DebugBreakpoint{
+		Id: id, Line: &v1.DebugSourceLine{Uri: uri, Line: line},
+	}), d.failureMode, id)
+}
+
+// LineBreakpointID is the id [Driver.BreakLine] gives a breakpoint on a line: a
+// word a command line can carry, naming the document by its file name, with a
+// digest of the whole name when two documents share one, so `delete` takes it
+// as it is printed.
+func LineBreakpointID(uri string, line uint32) string {
+	name := strings.Map(func(r rune) rune {
+		if r > ' ' && r < 0x7f && r != ':' {
+			return r
+		}
+
+		return '_'
+	}, SourceName(uri))
+	if len(name) > 48 {
+		name = name[len(name)-48:]
+	}
+	digest := strings.TrimPrefix(v1.ContentDigest([]byte(sourcePath(uri))), "sha256:")
+
+	return fmt.Sprintf("line:%s.%s:%d", name, digest[:6], line)
+}
+
 // withoutID is the current set less the breakpoint whose id is id. A line
 // replaces only the breakpoint it owns — `break build` the one under id
 // `build`, `log build` the one under `log build` — so a breakpoint another
@@ -655,7 +695,8 @@ func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1
 	for i, state := range response.GetBreakpoints() {
 		name, label := state.GetId(), state.GetId()
 		if i < len(set) {
-			name, label = set[i].GetStep(), breakpointLabel(set[i])
+			label = breakpointLabel(set[i])
+			name = cmp.Or(set[i].GetStep(), label)
 		}
 		if state.GetVerified() {
 			fmt.Fprintf(&b, "breakpoint at %s\n", label)

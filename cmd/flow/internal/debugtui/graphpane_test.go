@@ -559,7 +559,7 @@ func TestTheHeldStepIsKeptInViewAndTheViewIsNotTakenBackFromAScroll(t *testing.T
 	m := flowModel(t, f, program, func(c *Config) { c.Size = tui.Size{W: 100, H: 22}; c.Frame.Inventory = nil })
 	heldRow := regexp.MustCompile(`\bs\d\d\b.* held\b`)
 	heldLine := func(m Model) string {
-		for _, l := range lines(view(m)) {
+		for _, l := range paneLines(t, m, paneFlow) {
 			if heldRow.MatchString(l) {
 				return l
 			}
@@ -670,7 +670,7 @@ func TestArrowsMoveTheSelectionAndLeftAndRightFoldAGroup(t *testing.T) {
 	m = send(m, tuitest.Key("left"))
 	assert.True(t, m.screen.Flow.Folded["pages"])
 	var pagesLine string
-	for _, l := range lines(view(m)) {
+	for _, l := range paneLines(t, m, paneFlow) {
 		if strings.Contains(l, "pages") {
 			pagesLine = l
 		}

@@ -1,6 +1,7 @@
 package debugtui
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 
@@ -15,7 +16,7 @@ import (
 func (m *Model) setFocus(name string) {
 	m.ring = m.ring.Set(name)
 	m.screen.Focus = m.ring.Current()
-	if name == paneFlow || name == paneSteps || name == paneScope {
+	if slices.Contains(contentPanes, name) {
 		m.screen.Pane = name
 	}
 }
@@ -154,6 +155,10 @@ func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 	case bindUntil:
 		return m.flowUntil()
 	case bindBreak:
+		if m.screen.Focus == paneSource {
+			return m.sourceBreak(m.screen.Source.Selected)
+		}
+
 		return m.flowBreak()
 	case bindHelp:
 		m.screen.Help = true
@@ -202,6 +207,9 @@ func (m Model) navigate(name string) (tea.Model, tea.Cmd) {
 	switch m.screen.Focus {
 	case paneFlow:
 		return m.navigateFlow(name)
+
+	case paneSource:
+		return m.navigateSource(name)
 
 	case paneSteps:
 		step := map[string]int{bindUp: -1, bindDown: 1, bindPageUp: -m.stepRows(), bindPageDown: m.stepRows()}[name]
@@ -349,6 +357,12 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		// A right click means something only on a step.
 		return m, nil
 	}
+	if id, ok := strings.CutPrefix(hit.ID, gutterPrefix); ok {
+		return m.clickSource(id, true)
+	}
+	if id, ok := strings.CutPrefix(hit.ID, sourcePrefix); ok {
+		return m.clickSource(id, false)
+	}
 
 	switch hit.Kind {
 	case pane.KindTab:
@@ -415,6 +429,10 @@ func (m Model) wheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		m.scrollHelp(delta)
 	case strings.HasPrefix(hit.ID, scopePrefix), hit.ID == panePrefix+paneScope:
 		m.screen.Tree.Scroll(delta, max(1, m.scopeRows()))
+	case strings.HasPrefix(hit.ID, sourcePrefix), strings.HasPrefix(hit.ID, gutterPrefix), hit.ID == panePrefix+paneSource:
+		if rows := m.sourceRows(); rows > 0 && m.screen.Loaded {
+			m.screen.Source.scrollBy(m.screen.Frame, rows, delta)
+		}
 	case hit.ID == panePrefix+paneSteps:
 		m.scrollSteps(delta)
 	case strings.HasPrefix(hit.ID, flowPrefix), strings.HasPrefix(hit.ID, foldPrefix), hit.ID == panePrefix+paneFlow:

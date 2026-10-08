@@ -899,12 +899,12 @@ without the flag, so a script that gains the flag keeps its output.
 | --- | --- |
 | `s` or `space`, `n`, `f`, `c` | `step`, `next`, `finish`, `continue` |
 | `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them |
-| `tab`, `shift+tab` | focus the next or previous pane: flow, steps, scope, console |
+| `tab`, `shift+tab` | focus the next or previous pane: flow, source, steps, scope, console |
 | `:` or `/` | type a command; every verb in the table above works there, with tab completion |
 | `i` | open the console on `inspect <the selected scope row>` |
-| `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane |
+| `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane; in the source, the selected line |
 | `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
-| `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there |
+| `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there (in the source, `B` is the breakpoint on the selected line) |
 | `?` | the help overlay: these keys, then the verbs that have no key |
 | `q` | `detach` and let the run go on unattended |
 | `ctrl+c` | leave at once and release the run, as `quit` does |
@@ -919,8 +919,9 @@ the next key, and changes nothing. Only one command runs at a time.
 
 With the mouse, a click on a scope row selects it and opens or closes it (a
 `… N more` row loads the next page), a click on a pane's heading or a tab
-focuses it, and the wheel scrolls the pane under the pointer. A click on
-anything the screen did not draw is ignored.
+focuses it, and the wheel scrolls the pane under the pointer. A click on a
+source line selects it, and a click on its number arms a breakpoint on that line
+or clears the one there. A click on anything the screen did not draw is ignored.
 
 **The flow.** When the attach was given the program (`--program`), the left
 column draws its structure as a ladder, one row per step in the order the file
@@ -952,13 +953,41 @@ match), so a stale file gives the no-program line instead of steps the run does
 not have. It draws at most 2048 steps and calls at most eight deep; past that it says
 `N more not drawn`.
 
+**The source.** Beside the flow, the pane shows the Flowfile the run was
+started from (`--program`), with a line-number gutter. The lines of the step the
+run is held before are marked: the first with the run mark, the rest of its range
+with a rail, and a line that carries an armed breakpoint with a bullet. When the
+held step is in a file it `call:`s, the pane shows that file and its name is in
+the heading, and it goes back when the run does. A line comes from the source map
+the compiler made of the file, and the pane draws it only when both hold: the map
+is of the program the run executes (the digests match, as for the flow), and the
+file's bytes are the ones the map was made from (a file saved since, even only to
+move a line, is not). Otherwise the pane shows the held step's address and one
+sentence saying why it does not show lines, never a line that could mark the
+wrong step, and a click or `B` on the source says the same and sends nothing.
+
+Like the flow, the view centres on the held lines and the selection follows them
+until you scroll (the wheel, or `up` and `down` with the source focused), after
+which it stays where you put it until you ask the run to move. A click on a
+line's text selects it; a click on its number, or `B` on the selected line, arms a
+breakpoint on that line (the same breakpoint `flow dap`'s `setBreakpoints`
+sets, named `line:<file>.<id>:<n>` in `breakpoints`) or, where one is armed there,
+deletes it with `delete`. A line no step is written on, and a front that does
+not answer `break`, are refused with a toast. The console echoes `break
+<file>:<n>`; that spelling is not a command you can type, so it is not recorded
+by `--record`. The pane holds at most 32 files of 1 MiB and 20,000 lines each,
+cuts a line at 1,000 characters and clips it to the pane with an ellipsis, expands
+tabs to four columns, and writes any control character in the text as an escape
+(`\x1b`) instead of sending it to the terminal. Comment lines are muted and `${…}`
+expressions are accented; nothing else is highlighted.
+
 The panes fold as the terminal narrows:
 
 | Columns | Layout |
 | --- | --- |
-| 120 and up | flow, steps, scope and the selected row's detail, side by side |
-| 100 to 119 | flow, steps, then the scope with the detail under it |
-| 80 to 99 | the flow over the steps, beside the scope |
+| 120 and up | flow, source, steps, and scope with the selected row's detail under it, side by side |
+| 100 to 119 | flow, source, then the steps over the scope |
+| 80 to 99 | the flow over the steps, beside the source over the scope |
 | 60 to 79 | one pane at a time under tabs (`tab` or a click switches) |
 | under 60, or under 12 rows | the screen is not drawn |
 

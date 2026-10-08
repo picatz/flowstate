@@ -65,7 +65,7 @@ Screen
 
 Flow
   u          run until the selected flow step (double click too)
-  B          toggle a breakpoint on the selected flow step (right click too)
+  B          toggle a breakpoint on the selected flow step (right click too), or
 
 Type in the console
   until <step>  run to that step (an id or an address like pages[2]/page); a con

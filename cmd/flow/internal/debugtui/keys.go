@@ -114,7 +114,7 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 	}
 	if offered("break") {
 		bindings = append(bindings, tui.Binding{Name: bindBreak, Keys: []string{"B"},
-			Help: "toggle a breakpoint on the selected flow step (right click too)", Group: "Flow"})
+			Help: "toggle a breakpoint on the selected flow step (right click too), or on the selected source line (click its number too)", Group: "Flow"})
 	}
 	bindings = append(bindings,
 		tui.Binding{Name: bindHelp, Keys: []string{"?"}, Help: "show or hide this help", Group: "Screen", Hint: true, Short: "help"},
