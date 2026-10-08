@@ -776,3 +776,45 @@ steps:
 	ds = mustValidate(t, call(typed, "      shards: ${inputs.count}\n      region: ${inputs.tenant}"))
 	require.Empty(t, ds, "a matching int and a string bound to an enum must pass: %v", ds)
 }
+
+// A callee's declared `int` output reaches the caller as an int, like every other
+// declared type: arithmetic on it checks, and a method an int does not have is
+// refused where it is written.
+func TestACallsIntOutputIsTypedInTheCaller(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+steps:
+  - id: a
+    log:
+      message: hi
+outputs:
+  count:
+    value: ${3}
+    type: int
+`)
+
+	caller := func(condition string) string {
+		return `edition: v2026.4
+name: caller
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: use
+    if: ${` + condition + `}
+    log:
+      message: hi
+`
+	}
+
+	good, err := flowfile.ValidateSourceAt([]byte(caller(`steps.c.count + 1 > 3`)), dir+"/caller.yaml")
+	require.NoError(t, err)
+	require.Empty(t, good)
+
+	bad, err := flowfile.ValidateSourceAt([]byte(caller(`steps.c.count.size() > 0`)), dir+"/caller.yaml")
+	require.NoError(t, err)
+	require.NotEmpty(t, bad)
+	require.Contains(t, bad.Error(), "no matching overload")
+}

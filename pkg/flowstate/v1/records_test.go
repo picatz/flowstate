@@ -630,3 +630,43 @@ func TestEvalRunOutputsWithCostChargesRecordRules(t *testing.T) {
 		})
 	}
 }
+
+// The largest-int bound holds inside a record too, in a field and in a list, not
+// only at the top of a value, and the refusal never prints the number.
+func TestAnUnsignedAboveTheSignedRangeIsNotAnIntInsideARecord(t *testing.T) {
+	t.Parallel()
+
+	huge := &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: 18446744073709551615}}
+	fits := &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: 3}}
+
+	line := func(quantity *expr.Value) *expr.Value {
+		return mapLit(recordStr("sku"), recordStr("kb"), recordStr("quantity"), quantity)
+	}
+	order := func(quantity *expr.Value) *expr.Value {
+		return mapLit(recordStr("id"), recordStr("o-1"), recordStr("lines"),
+			&expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{line(quantity)}}}})
+	}
+
+	require.NoError(t, bindOrder(t, order(fits)))
+
+	err := bindOrder(t, order(huge))
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "18446744073709551615")
+}
+
+func TestAnUnsignedAboveTheSignedRangeIsNotAnIntInAList(t *testing.T) {
+	t.Parallel()
+
+	declaration := &v1.InputDeclaration{
+		Name: "xs", Type: v1.InputDeclaration_TYPE_LIST,
+		ValueType: &v1.Type{Kind: &v1.Type_List{List: v1.TypeOfLegacy(v1.InputDeclaration_TYPE_INT)}},
+	}
+	list := func(n uint64) *v1.Value {
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+			Values: []*expr.Value{{Kind: &expr.Value_Uint64Value{Uint64Value: n}}},
+		}}}}}
+	}
+
+	require.NoError(t, v1.CheckInputValue("xs", declaration, list(3)))
+	require.Error(t, v1.CheckInputValue("xs", declaration, list(18446744073709551615)))
+}

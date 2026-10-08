@@ -368,3 +368,48 @@ func TestAComputedOutputIsHeldAsTheKindItDeclares(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "2026-01-01T00:00:00Z", got)
 }
+
+// A value declared `int` is held as an int. An unsigned that fits narrows to one,
+// in a list and a record too; one above the signed range has no int to become and
+// is left alone rather than wrapped.
+func TestAnUnsignedThatFitsAnIntIsNarrowedWhereAnIntIsDeclared(t *testing.T) {
+	t.Parallel()
+
+	uintValue := func(n uint64) *expr.Value { return &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: n}} }
+
+	intType := v1.TypeOfLegacy(v1.InputDeclaration_TYPE_INT)
+	got := v1.NormalizeWireValue(nil, intType, uintValue(3))
+	assert.Equal(t, int64(3), got.GetInt64Value())
+
+	got = v1.NormalizeWireValue(nil, intType, uintValue(math.MaxInt64))
+	assert.Equal(t, int64(math.MaxInt64), got.GetInt64Value())
+
+	got = v1.NormalizeWireValue(nil, intType, uintValue(math.MaxInt64+1))
+	assert.Equal(t, uint64(math.MaxInt64+1), got.GetUint64Value(), "no int holds it, so it is left")
+
+	list := &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{uintValue(1), uintValue(2)}}}}
+	got = v1.NormalizeWireValue(nil, &v1.Type{Kind: &v1.Type_List{List: intType}}, list)
+	assert.Equal(t, int64(2), got.GetListValue().GetValues()[1].GetInt64Value())
+
+	got = v1.NormalizeWireValue(nil, v1.TypeOfLegacy(v1.InputDeclaration_TYPE_FLOAT), uintValue(3))
+	assert.Equal(t, uint64(3), got.GetUint64Value(), "only an int declaration narrows")
+}
+
+// An unsigned above the signed range is not an int, so a declaration of `int` refuses
+// it rather than hold a value that arithmetic cannot add to; the largest int itself
+// is fine, and the refusal never prints the value.
+func TestAnUnsignedAboveTheSignedRangeIsNotAnInt(t *testing.T) {
+	t.Parallel()
+
+	output := &v1.OutputDeclaration{Name: "n", Type: v1.InputDeclaration_TYPE_INT}
+	value := func(n uint64) *v1.Value {
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: n}}}}
+	}
+
+	require.NoError(t, v1.CheckOutputValue(output, value(math.MaxInt64)))
+
+	err := v1.CheckOutputValue(output, value(math.MaxUint64))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "above the largest int")
+	assert.NotContains(t, err.Error(), "18446744073709551615")
+}

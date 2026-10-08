@@ -676,9 +676,11 @@ steps:
 	assert.Contains(t, ds.Error(), "no matching overload")
 }
 
-// A callee that declares `int` may store a `uint`, which the declaration check
-// accepts as an int, so the caller's checker must not hold the output to `int`.
-func TestAnIntCallOutputIsNotHeldToIntArithmetic(t *testing.T) {
+// A callee that declares `int` may compute a `uint`, which the declaration check
+// accepts as an int. The callee's output admission narrows it to the int it
+// declared (see [v1.NormalizeWireValue]), so the caller's checker holds the output
+// to `int`: signed arithmetic checks and unsigned arithmetic is refused.
+func TestAnIntCallOutputIsHeldToIntArithmetic(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
@@ -698,7 +700,7 @@ steps:
   - id: c
     call: ./callee.yaml
   - id: m
-    value: ${steps.c.u + 1u}
+    value: ${steps.c.u + 1}
 `)
 
 	ds, err := flowfile.ValidateSourceFile(caller)
@@ -706,4 +708,17 @@ steps:
 	for _, d := range ds {
 		assert.NotEqual(t, v1.DiagnosticCodeTypeMismatch, d.Code, "%v", d)
 	}
+
+	unsigned := writeFile(t, dir, "unsigned.yaml", `edition: v2026.4
+name: unsigned
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: m
+    value: ${steps.c.u + 1u}
+`)
+	ds, err = flowfile.ValidateSourceFile(unsigned)
+	require.NoError(t, err)
+	require.NotEmpty(t, ds)
+	assert.Contains(t, ds.Error(), "no matching overload")
 }

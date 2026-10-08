@@ -154,6 +154,10 @@ func (table TypeTable) checkField(r valueRendering, field *InputDeclaration, val
 		return fmt.Errorf("%s%s, but the field is declared %s", literalKindName(value), atPath(path), fieldTypeName(field))
 	}
 
+	if declared == InputDeclaration_TYPE_INT && aboveLargestInt(value) {
+		return fmt.Errorf("a value above the largest int%s, but the field is declared %s", atPath(path), fieldTypeName(field))
+	}
+
 	if declared == InputDeclaration_TYPE_FLOAT {
 		if spelling, nonFinite := nonFiniteSpelling(value.GetDoubleValue()); nonFinite {
 			return fmt.Errorf("%s%s, which is not a finite number", spelling, atPath(path))
