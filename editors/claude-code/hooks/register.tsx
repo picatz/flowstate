@@ -13,7 +13,7 @@ const validate = async (
   path: string,
 ): Promise<FileReport> => {
   try {
-    const ran = await $.process.run([flow, 'validate', '-o', 'jsonl', path], {
+    const ran = await $.process.run([flow, 'validate', '-o', 'jsonl', '--', path], {
       timeoutMs: 20000,
     })
     const found = parseReports(ran.stdout).find(r => r.file === path)

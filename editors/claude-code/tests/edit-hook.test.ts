@@ -20,7 +20,7 @@ test('an edit that breaks a Flowfile tells the model what is wrong', async ($, o
 
   const ran = await $.tool.call({ tool: 'Edit', file_path: 'a.flow.yaml', old_string: 'x', new_string: 'y' })
 
-  expect(seen[0]).toEqual(['flow', 'validate', '-o', 'jsonl', 'a.flow.yaml'])
+  expect(seen[0]).toEqual(['flow', 'validate', '-o', 'jsonl', '--', 'a.flow.yaml'])
   expect((ran.context ?? []).join('\n')).toContain('line 4: unknown task')
 })
 
