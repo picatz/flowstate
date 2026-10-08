@@ -286,7 +286,7 @@ func ParseShorthand(s string) (*v1.GraphRef, error) {
 		return nil, errors.New("a literal @ inside an id must be written %40")
 	}
 	if strings.Contains(attempt, ":") || strings.Contains(attempt, "@") || strings.Contains(attempt, "!") {
-		return nil, errors.New("the attempt must be a number after a single !")
+		return nil, errors.New("the attempt must be a number after a single bang")
 	}
 
 	unescape := func(v, what string) (string, error) {

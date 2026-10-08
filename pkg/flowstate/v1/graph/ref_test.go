@@ -136,7 +136,7 @@ func TestParseRefRefusesMalformedText(t *testing.T) {
 		{"step without run", "w:s", "step needs a run_id"},
 		{"stray at", "w@r@x", "literal @"},
 		{"attempt nan", "w@r:s!x", "not a number"},
-		{"double bang", "w@r:s!1!2", "single !"},
+		{"double bang", "w@r:s!1!2", "single bang"},
 		{"bad escape", "w%zz", "not valid percent-encoding"},
 		{"too long", strings.Repeat("a", graph.MaxRefBytes+1), "over the limit"},
 	} {
