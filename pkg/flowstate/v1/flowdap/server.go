@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -70,7 +71,12 @@ type Server struct {
 	out    sync.Mutex
 	hungUp atomic.Bool
 
-	target       flowdebug.Target
+	target flowdebug.Target
+
+	// completeMu guards driver: the completer is one value read by whichever
+	// request arrives, and it keeps a cache.
+	completeMu   sync.Mutex
+	driver       *flowdebug.Driver
 	sourceMap    *v1.DebugSourceMap
 	capabilities *v1.DebugCapabilities
 	start        func()
@@ -530,6 +536,9 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	case "evaluate":
 		s.evaluate(ctx, request)
 
+	case "completions":
+		s.completions(ctx, request)
+
 	case "pause":
 		s.pause(ctx, request)
 
@@ -640,11 +649,15 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportsHitConditionalBreakpoints: caps.GetHitConditions(),
 		SupportsLogPoints:                 caps.GetLogpoints(),
 		SupportsEvaluateForHovers:         caps.GetInspect(),
+		SupportsCompletionsRequest:        caps.GetInspect(),
 		SupportsTerminateRequest:          terminable || caps.GetTerminate(),
 		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
 		SupportsDelayedStackTraceLoading:  true,
 		SupportsStepBack:                  (caps.GetReverse() || caps.GetHistory()) && s.canStepBack(),
 		ExceptionBreakpointFilters:        []exceptionFilter{},
+	}
+	if body.SupportsCompletionsRequest {
+		body.CompletionTriggerCharacters = []string{"."}
 	}
 	if caps.GetFailureBreakpoints() {
 		body.ExceptionBreakpointFilters = []exceptionFilter{
@@ -1547,6 +1560,128 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 		body.VariablesReference = s.issue(revision, asked.Expression)
 	}
 	s.reply(request, body)
+}
+
+// maxCompletionText bounds the text a `completions` request is answered for: an
+// expression typed at a console, not a document.
+const maxCompletionText = 4096
+
+// completions answers the names an expression may continue with at the cursor.
+//
+// It offers the same names, and withholds the same ones, as `evaluate` would
+// answer for the text before it: it asks the target to inspect scope, and reads
+// only the names from what comes back. A run that is not stopped, or a target
+// that refuses the inspection, has nothing to offer, and says so with an empty
+// list rather than an error, because an editor asks on every keystroke.
+func (s *Server) completions(ctx context.Context, request inbound) {
+	var asked struct {
+		FrameID *int   `json:"frameId"`
+		Text    string `json:"text"`
+		Line    *int   `json:"line"`
+		Column  int    `json:"column"`
+	}
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+		s.fail(request, "invalid completions arguments")
+
+		return
+	}
+	empty := completionsBody{Targets: []completionItem{}}
+
+	// A frame with no readable scope has no names to offer, as `evaluate` has
+	// nothing to read there.
+	held, _ := s.currentStop()
+	if held == nil || len(asked.Text) > maxCompletionText || asked.FrameID != nil && !scopedFrame(held, *asked.FrameID) {
+		s.reply(request, empty)
+
+		return
+	}
+
+	s.mu.Lock()
+	columnsFrom0, linesFrom0 := s.columnsFrom0, s.linesFrom0
+	s.mu.Unlock()
+
+	// The console may send several lines and name the one the cursor is on;
+	// the column counts from the start of that line.
+	text := asked.Text
+	if asked.Line != nil {
+		index := *asked.Line
+		if !linesFrom0 {
+			index--
+		}
+		lines := strings.Split(text, "\n")
+		if index < 0 || index >= len(lines) {
+			s.reply(request, empty)
+
+			return
+		}
+		text = lines[index]
+	}
+	cursor := asked.Column
+	if !columnsFrom0 {
+		cursor--
+	}
+	text = text[:byteOffset(text, cursor)]
+
+	answer, err := s.completer(s.currentTarget()).CompleteExpression(ctx, text)
+	if err != nil {
+		s.reply(request, empty)
+
+		return
+	}
+
+	// Both positions are in the UTF-16 units an editor counts in, and `start`
+	// is in the client's column origin like the `column` it answers.
+	start := utf16Len(text[:len(text)-len(answer.Prefix)])
+	if !columnsFrom0 {
+		start++
+	}
+	body := empty
+	for _, candidate := range answer.Candidates {
+		kind := "field"
+		if candidate.Continues {
+			kind = "module"
+		}
+		body.Targets = append(body.Targets, completionItem{
+			Label: candidate.Text, Text: candidate.Text, Type: kind, Start: start, Length: utf16Len(answer.Prefix),
+		})
+	}
+	s.reply(request, body)
+}
+
+// byteOffset is the index in text of the given UTF-16 offset, clamped to the
+// text and never inside a character.
+func byteOffset(text string, units int) int {
+	for i, r := range text {
+		if units <= 0 {
+			return i
+		}
+		units -= utf16.RuneLen(r)
+	}
+
+	return len(text)
+}
+
+func utf16Len(text string) int {
+	n := 0
+	for _, r := range text {
+		n += utf16.RuneLen(r)
+	}
+
+	return n
+}
+
+// completer is the driver completions are read through. A server is bound to
+// one target for its life — a second launch or attach is refused — so the
+// driver, and the per-revision cache it keeps, is made once. Targets are not
+// compared: nothing requires one to be comparable.
+func (s *Server) completer(target flowdebug.Target) *flowdebug.Driver {
+	s.completeMu.Lock()
+	defer s.completeMu.Unlock()
+	if s.driver == nil {
+		s.driver = flowdebug.NewDriver(target)
+	}
+
+	return s.driver
 }
 
 // errInvalidBreakpoints is the one text a malformed breakpoint request is
