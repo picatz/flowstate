@@ -80,13 +80,23 @@ func validateDeclaredInputs(wf *v1.Workflow, profile string) Diagnostics {
 		}
 
 		// A `must:` that does not compile fails the same way for the declaration, its
-		// default and its example, so it is reported once, on the declaration.
+		// default and its example, so it is reported once, on the declaration, whatever
+		// else is wrong with the declaration's other constraints.
 		defaults := validateInputDefault(table, profile, declaration, field)
 		shape := validateInputConstraintShape(profile, declaration, field)
 		examples := validateInputExample(table, profile, declaration, field)
-		if mustErr, ok := errors.AsType[*v1.MustCompileError](v1.CheckInputConstraintShape(profile, declaration)); ok {
-			defaults = withoutMessagesContaining(defaults, mustErr.Error())
-			examples = withoutMessagesContaining(examples, mustErr.Error())
+		if declaration.Must != nil {
+			if _, err := v1.CompileMustExpression(profile, declaration.GetMust(), declaration.GetType()); err != nil {
+				if mustErr, ok := errors.AsType[*v1.MustCompileError](err); ok {
+					defaults = withoutMessagesContaining(defaults, mustErr.Error())
+					examples = withoutMessagesContaining(examples, mustErr.Error())
+					for i := range shape {
+						if strings.Contains(shape[i].Message, mustErr.Error()) {
+							shape[i].Code = v1.DiagnosticCodeTypeMismatch
+						}
+					}
+				}
+			}
 		}
 		ds = append(ds, defaults...)
 		ds = append(ds, shape...)

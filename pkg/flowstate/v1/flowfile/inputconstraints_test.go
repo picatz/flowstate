@@ -6,6 +6,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // This file is the author-time half of the constraint system: everything the
@@ -265,4 +268,39 @@ steps:
 	require.NotEmpty(t, ds, "an argument violating the callee's must: was accepted")
 	assert.Contains(t, ds.Error(), "region")
 	assert.Contains(t, ds.Error(), "must satisfy")
+}
+
+// TestAMustCompileErrorIsATypeMismatchReportedOnceBesideOtherShapeErrors pins
+// that the dedupe does not depend on the declaration's other constraints being
+// valid, and that the diagnostic carries the stable code.
+func TestAMustCompileErrorIsATypeMismatchReportedOnceBesideOtherShapeErrors(t *testing.T) {
+	t.Parallel()
+
+	for name, test := range map[string]struct {
+		extra string
+		want  int
+	}{
+		"alone": {want: 1},
+		// The earlier shape error is the declaration's one diagnostic; the must:
+		// failure waits behind it rather than being repeated on the default and example.
+		"beside an earlier shape error": {extra: "    min_items: 1\n", want: 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			src := constrainedInputWorkflow(
+				"    type: string\n" + test.extra + "    must: this > 1\n    default: acme\n    example: acme\n")
+			ds, err := flowfile.ValidateSource([]byte(src))
+			require.NoError(t, err)
+
+			var reports int
+			for _, d := range ds {
+				if strings.Contains(d.Message, "found no matching overload") {
+					reports++
+					assert.Equal(t, v1.DiagnosticCodeTypeMismatch, d.Code, d.Message)
+				}
+			}
+			assert.Equal(t, test.want, reports)
+		})
+	}
 }

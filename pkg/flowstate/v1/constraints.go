@@ -250,7 +250,12 @@ func mustIssues(iss *cel.Issues) error {
 	errs := iss.Errors()
 	problems := make([]string, 0, len(errs))
 	for _, e := range errs {
-		problems = append(problems, fmt.Sprintf("%s (column %d of the expression)", e.Message, e.Location.Column()+1))
+		where := fmt.Sprintf("column %d", e.Location.Column()+1)
+		if line := e.Location.Line(); line > 1 {
+			// A block-scalar `must:` spans lines, and cel-go's column restarts on each.
+			where = fmt.Sprintf("line %d, %s", line, where)
+		}
+		problems = append(problems, fmt.Sprintf("%s (%s of the expression)", e.Message, where))
 	}
 	return &MustCompileError{Problems: problems}
 }
