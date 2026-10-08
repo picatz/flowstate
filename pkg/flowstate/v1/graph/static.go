@@ -218,18 +218,13 @@ func (b *builder) workflow(wf *v1.Workflow, depth int) {
 	}
 }
 
-// sameProgram reports whether a and b are the same program: equal in
-// everything [v1.CanonicalDigest] keeps, and in the digest of the file each was
-// read from, which names bytes rather than a program. A callee inlined by a
+// withoutSourceDigest returns a copy of wf without the digest of the file it
+// was read from, which names bytes rather than a program: a callee inlined by a
 // `call:` and the file it was read from differ in exactly that field.
 //
-// The digest is cleared here, on clones, rather than in the canonical form: a
-// stored checkpoint's spec hash is a canonical digest, and changing what that
-// covers would refuse every checkpoint written before the change.
-func sameProgram(a, b *v1.Workflow) bool {
-	return v1.CanonicalDigest(withoutSourceDigest(a)) == v1.CanonicalDigest(withoutSourceDigest(b))
-}
-
+// It is cleared here, on a clone, rather than in the canonical form: a stored
+// checkpoint's spec hash is a canonical digest, and changing what that covers
+// would refuse every checkpoint written before the change.
 func withoutSourceDigest(wf *v1.Workflow) *v1.Workflow {
 	clone := proto.CloneOf(wf)
 	clone.SourceDigest = ""
