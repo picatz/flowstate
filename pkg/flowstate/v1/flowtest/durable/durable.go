@@ -24,6 +24,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -130,6 +131,24 @@ func Run(ctx context.Context, req Request) (*Result, error) {
 	config, err := engine.NewTaskRuntimeConfig(runtime.Store, runtime.Policy, runtime.Broker)
 	if err != nil {
 		return nil, err
+	}
+	// A workflow that requires plugins is pinned against, and admitted by, a
+	// catalog that holds exactly what it requires: the plugins' tasks are the
+	// case's stubs, answered through the registry on ctx as on the local driver,
+	// so there is no plugin to launch. The production worker's refusal of an
+	// unpinned run or of a plugin it does not have is untouched; the admission
+	// that runs is the real one, against this catalog.
+	catalog, err := v1.RehearsalPluginCatalog(wf)
+	if err != nil {
+		return nil, err
+	}
+	if len(catalog.GetPlugins()) > 0 {
+		wf = proto.Clone(wf).(*v1.Workflow)
+		if err := v1.ResolvePlugins(wf, catalog); err != nil {
+			return nil, err
+		}
+		state.Workflow = wf
+		config = config.WithPluginCatalog(catalog)
 	}
 
 	for segment := 1; ; segment++ {

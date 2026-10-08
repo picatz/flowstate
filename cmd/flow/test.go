@@ -211,8 +211,8 @@ flow test -o jsonl examples/`,
 	cmd.Flags().String("driver", driverLocal,
 		"which driver proves each case: local (the default), or both, which also runs each passing case on the "+
 			"durable interpreter, in-process, with a Continue-As-New between every pair of steps, and fails "+
-			"where the two disagree; a case with faults, a trigger delivery, plugins, stub tasks this build "+
-			"does not register, or a workflow reading run.local, run.identity or the run's address stays local and says so")
+			"where the two disagree; a case with faults, a trigger delivery, "+
+			"or a workflow reading run.local, run.identity or the run's address stays local and says so")
 
 	// The step debugger (#928 slice 1). Interactive by nature, so it is
 	// refused wherever "interactive" is not true of the run: a machine-format

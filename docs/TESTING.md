@@ -647,9 +647,11 @@ does not prove faults. Scripted `signals:` are replayed to the durable run at
 the same offsets from the same senders, and only those the local run accepted:
 a delivery its signal policy refused is absent, as a server would refuse it
 before the workflow saw it. A signal that arrives before its gate is carried
-across the Continue-As-New like any other. A case that injects `faults:`,
-replays a trigger delivery, requires plugins, stubs a task this build does
-not register, reads `run.local`, `run.identity`, `run.workflow_id` or `run.run_id`
+across the Continue-As-New like any other. A workflow that requires plugins is
+pinned to, and admitted against, a catalog holding exactly what it requires:
+the plugins' tasks are the case's stubs, answered as on the local driver, and a
+plugin task with no stub fails the case on both drivers alike. A case that injects `faults:`,
+replays a trigger delivery, reads `run.local`, `run.identity`, `run.workflow_id` or `run.run_id`
 (which differ by design), or stubs a step by id in a workflow with calls or compensations
 stays on the local driver and reports `driver: local only: <why>`
 as a warning, so a green never silently skipped the proof. A stub whose `where:` cannot be
