@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { isFlowfile, parseReports, summarize } from './flowfile'
+import { isFlowfile, parseReports, summarize } from '../hooks/flowfile'
 
 test('recognises Flowfiles and not test files', () => {
   expect(isFlowfile('examples/hello-world/workflow.yaml')).toBe(true)

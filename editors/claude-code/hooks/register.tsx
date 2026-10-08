@@ -9,10 +9,11 @@ const reports = atom({ plugin: 'flowstate', key: 'reports' } as const, [])
 
 const validate = async (
   $: Engine,
+  flow: string,
   path: string,
 ): Promise<FileReport> => {
   try {
-    const ran = await $.process.run(['flow', 'validate', '-o', 'jsonl', path], {
+    const ran = await $.process.run([flow, 'validate', '-o', 'jsonl', path], {
       timeoutMs: 20000,
     })
     const found = parseReports(ran.stdout).find(r => r.file === path)
@@ -23,7 +24,10 @@ const validate = async (
   }
 }
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const flow = typeof options.flowBinary === 'string' && options.flowBinary ? options.flowBinary : 'flow'
+  const isEnabled = options.validateOnEdit !== false
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'flowstate',
@@ -40,11 +44,11 @@ export const register: Register = on => {
   for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
     on('tool.call', { tool }, async ($, e, next) => {
       const ran = await next(e)
-      if (ran.deny !== undefined || ran.isError === true || !isFlowfile(e.file_path)) {
+      if (ran.deny !== undefined || ran.isError === true || !isEnabled || !isFlowfile(e.file_path)) {
         return ran
       }
 
-      const report = await validate($, e.file_path)
+      const report = await validate($, flow, e.file_path)
       await update($, reports, list => [
         ...list.filter(r => r.file !== report.file),
         report,

@@ -1,7 +1,23 @@
 {
   "name": "flowstate",
   "version": "0.1.0",
-  "author": { "name": "picatz" },
+  "author": {
+    "name": "picatz"
+  },
   "description": "Write, test, and debug Flowstate Flowfiles from Claude Code: the flow MCP server, authoring skills, and a live validation pane.",
-  "types": "./types/index.d.ts"
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "flowBinary": {
+      "type": "string",
+      "title": "flow binary",
+      "description": "The flow executable the mod runs to validate Flowfiles.",
+      "default": "flow"
+    },
+    "validateOnEdit": {
+      "type": "boolean",
+      "title": "Validate after edits",
+      "description": "Run flow validate after Claude edits a Flowfile and tell the model what is wrong.",
+      "default": true
+    }
+  }
 }
