@@ -547,3 +547,14 @@ func (s *scriptedTarget) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.
 }
 
 func (s *scriptedTarget) Close() error { return nil }
+
+func TestMovesForwardIsTheForwardVerbsOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{"step", "s", "continue", "c", "until second", "  step  "} {
+		assert.True(t, flowdebug.MovesForward(line), line)
+	}
+	for _, line := range []string{"back", "reverse-continue", "rc", "status", "inspect steps", "break x", "frobnicate", ""} {
+		assert.False(t, flowdebug.MovesForward(line), line)
+	}
+}
