@@ -32,6 +32,8 @@
           "**/workflow.yaml",
           "**/workflow.yml",
           "**/workflows/*.yaml",
+          "**/*.flow.yaml",
+          "**/*.flow.yml",
           "**/*.test.yaml",
           "**/*.test.yml",
           "**/testdefaults.yaml"
