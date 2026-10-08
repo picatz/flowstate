@@ -908,7 +908,7 @@ func declaredInputCandidates(doc *document) []celcomplete.Candidate {
 		if e.key == "" {
 			continue
 		}
-		c := celcomplete.Candidate{Name: e.key, Kind: celcomplete.KindValue, Detail: "an input declared by the workflow"}
+		c := celcomplete.Candidate{Name: e.key, Kind: celcomplete.KindValue, Detail: writtenInputDetail(e)}
 		if wf != nil {
 			if d := declaredInput(wf, e.key); d != nil {
 				c.Detail = v1.TypeString(d.DeclaredType())
@@ -922,6 +922,30 @@ func declaredInputCandidates(doc *document) []celcomplete.Candidate {
 	}
 
 	return out
+}
+
+// writtenInputDetail summarizes an input from the keys the author wrote under it,
+// for the moment the file does not compile (a half-typed `${inputs.` is such a
+// moment) and the compiled declaration is unavailable.
+func writtenInputDetail(e *entry) string {
+	var kind string
+	var required bool
+	for _, field := range nestedEntries(e) {
+		switch field.key {
+		case "type":
+			kind = field.valueText()
+		case "required":
+			required = field.valueText() == "true"
+		}
+	}
+	if kind == "" {
+		return "an input declared by the workflow"
+	}
+	if required {
+		kind += " (required)"
+	}
+
+	return kind
 }
 
 // varsCandidates offers the keys of a `vars:` block.

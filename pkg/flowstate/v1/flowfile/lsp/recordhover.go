@@ -76,13 +76,16 @@ func hoverInputPath(doc *document, v *value, f fence, cursor int) *lsp.Hover {
 
 	rng := v.fenceSpanOrWhole(doc.index, f, start, end)
 
-	return markdownHover(inputPathDoc(strings.Join(segments[1:upto+1], "."), declaration, parent, table), rng)
+	return markdownHover(inputPathDoc(strings.Join(segments[1:upto+1], "."), declaration, parent, table, declaredOnLine(doc, segments[1], parent)), rng)
 }
 
 // inputPathDoc renders one declaration reached by a path: the input itself, or a
 // field of the record that holds it.
-func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.TypeDeclaration, table v1.TypeTable) string {
-	var provenance string
+//
+// line is the sentence naming where a top-level input is declared, empty for a
+// field, which names its record instead.
+func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.TypeDeclaration, table v1.TypeTable, line string) string {
+	provenance := line
 	if parent != nil {
 		provenance = fmt.Sprintf("A field of the record `%s`.", parent.GetName())
 	}
@@ -184,7 +187,7 @@ func hoverInputDeclaration(doc *document, pos lsp.Position) *lsp.Hover {
 				return nil
 			}
 
-			return markdownHover(inputPathDoc(in.key, declaration, nil, v1.TypesOf(wf)), in.keyRange)
+			return markdownHover(inputPathDoc(in.key, declaration, nil, v1.TypesOf(wf), declaredOnLine(doc, in.key, nil)), in.keyRange)
 		}
 	}
 
@@ -220,4 +223,26 @@ func hoverVarPath(doc *document, v *value, f fence, cursor int) *lsp.Hover {
 	}
 
 	return nil
+}
+
+// declaredOnLine names the line a top-level input's key is written on, as the
+// same-file counterpart of the path a callee's input is attributed to. Empty for
+// a record field, whose provenance is its record, and for a name the document
+// does not spell under `inputs:`.
+func declaredOnLine(doc *document, name string, parent *v1.TypeDeclaration) string {
+	if parent != nil {
+		return ""
+	}
+	for _, top := range doc.parsed.entries {
+		if top.key != "inputs" {
+			continue
+		}
+		for _, in := range nestedEntries(top) {
+			if in.key == name {
+				return fmt.Sprintf("Declared on line %d.", in.keyRange.Start.Line+1)
+			}
+		}
+	}
+
+	return ""
 }

@@ -55,6 +55,7 @@ func TestHoverDescribesADeclaredInputWhereverItIsMet(t *testing.T) {
 	fromDeclaration := hover("  env:", len("  e"))
 	assert.Equal(t, fromReference, fromDeclaration, "the declaration and a use of it say one thing")
 	assert.Contains(t, fromDeclaration, "**`env`** · `enum` · required")
+	assert.Contains(t, fromDeclaration, "Declared on line 4.", "a reference says where to find the declaration")
 	assert.Contains(t, fromDeclaration, "Where to deploy.")
 	assert.Contains(t, fromDeclaration, "One of `staging`, `production`.")
 	assert.Contains(t, fromDeclaration, "Example: `\"staging\"`.")
@@ -111,11 +112,10 @@ steps:
 	c.open(uri, src)
 
 	pos := positionOf(t, src, "inputs.", len("inputs."))
-	var labels []string
-	for _, it := range c.complete(uri, pos.Line, pos.Character).Items {
-		labels = append(labels, it.Label)
-	}
-	assert.Equal(t, []string{"env"}, labels)
+	items := c.complete(uri, pos.Line, pos.Character).Items
+	require.Len(t, items, 1)
+	assert.Equal(t, "env", items[0].Label)
+	assert.Equal(t, "enum (required)", items[0].Detail, "the half-typed expression does not compile, so the detail is read from what was written")
 
 	// A file that declares none teaches no inputs root.
 	bare := "edition: " + flowfile.CurrentEdition + "\nname: none\nsteps:\n  - id: show\n    value: ${inputs.}\n"
