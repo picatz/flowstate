@@ -207,6 +207,7 @@ flow test -o jsonl examples/`,
 			"refused with `--output json` and with `--seeds`. With `--seed N` it steps through "+
 			"that seed's own run — the faults it injects and the order it chose — which is how "+
 			"a reported violation is opened in the debugger")
+	addRecordFlag(cmd)
 
 	return cmd
 }
@@ -390,6 +391,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	// word "interactive" stops being true of the run, and a session that
 	// attached anyway would be a prompt nobody is answering.
 	debugging, _ := cmd.Flags().GetBool("debug")
+	record, err := recordPath(cmd)
+	if err != nil {
+		return err
+	}
 	var session *flowdebug.Session
 	restoreTerminal := func() {}
 	if debugging {
@@ -408,6 +413,9 @@ func runTest(cmd *cobra.Command, paths []string) error {
 		// (`flow mcp serve`) is served by the same habit rather than a
 		// different one.
 		defer func() { _ = session.Close() }()
+		// Last registered, first run: the file is written while the session
+		// still holds what it accepted, on every way out of this function.
+		defer recordSession(record, session, surface.Err)()
 	}
 
 	started := time.Now()

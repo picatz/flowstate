@@ -240,6 +240,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
 	debugging, _ := cmd.Flags().GetBool("debug")
+	record, err := recordPath(cmd)
+	if err != nil {
+		return err
+	}
 
 	var (
 		console *debugConsole
@@ -318,6 +322,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// it, and a habit that holds only where it is load-bearing is one that
 		// will be missing where it is.
 		defer func() { _ = session.Close() }()
+		// Registered last, so it runs first: the file is written while the
+		// session still holds what it accepted, on every way out.
+		defer recordSession(record, session, surface.Err)()
 
 		fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
 			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
