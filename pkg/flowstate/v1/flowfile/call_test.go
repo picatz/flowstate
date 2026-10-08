@@ -726,3 +726,53 @@ steps:
 
 	require.Contains(t, mustValidate(t, caller).Error(), `with.hosts is declared list(string) by workflow "callee", but this expression always produces int`)
 }
+
+// TestCallBindingOfATypedInputIsCheckedAgainstTheCalleesDeclaration is the first
+// half of #1554: a bare `${inputs.<name>}` is typed by its declaration, so
+// binding a string input to a callee's int input is a diagnostic at the call
+// rather than a refusal when the run reaches it.
+func TestCallBindingOfATypedInputIsCheckedAgainstTheCalleesDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+inputs:
+  shards:
+    type: int
+    required: true
+  region:
+    type: enum
+    values: [east, west]
+    required: true
+steps:
+  - id: noop
+    log:
+      message: hi
+`)
+	call := func(inputs, with string) string {
+		return writeFile(t, dir, "caller.yaml", `edition: v2026.4
+name: caller
+inputs:
+`+inputs+`
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+`+with+`
+`)
+	}
+
+	const typed = `  tenant:
+    type: string
+    default: acme
+  count:
+    type: int
+    default: 3
+`
+
+	ds := mustValidate(t, call(typed, "      shards: ${inputs.tenant}\n      region: east"))
+	require.NotEmpty(t, ds, "a string input bound to an int input was accepted")
+	require.Contains(t, ds.Error(), `with.shards is declared int by workflow "callee", but this expression always produces string`)
+
+	ds = mustValidate(t, call(typed, "      shards: ${inputs.count}\n      region: ${inputs.tenant}"))
+	require.Empty(t, ds, "a matching int and a string bound to an enum must pass: %v", ds)
+}

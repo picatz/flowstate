@@ -756,3 +756,35 @@ steps:
 		assert.Empty(t, ds, "%s with case %s must validate: %v", c.value, c.caze, ds)
 	}
 }
+
+// TestEnumOutputValuesMustCoverTheExpressionsDomain is the second half of #1554:
+// an enum output whose `values:` omits a value its expression can produce is a
+// validate-time refusal, not a failure after every step has run.
+func TestEnumOutputValuesMustCoverTheExpressionsDomain(t *testing.T) {
+	t.Parallel()
+
+	const file = `edition: v2026.4
+name: t
+inputs:
+  tenant:
+    type: string
+    default: acme
+steps:
+  - id: outcome
+    value: '${inputs.tenant == "acme" ? "approved" : "lapsed"}'
+outputs:
+  outcome:
+    value: ${steps.outcome.value}
+    type: enum
+    values: [%s]
+`
+
+	ds := validateSwitchSrc(t, fmt.Sprintf(file, "approved, rejected"))
+	require.NotEmpty(t, ds, "an enum missing a producible value was accepted")
+	text := diagnosticMessages(ds)
+	assert.Contains(t, text, `can produce "lapsed"`)
+	assert.Contains(t, text, `"approved", "rejected"`)
+
+	assert.Empty(t, validateSwitchSrc(t, fmt.Sprintf(file, "approved, lapsed")), "a covering values list must validate")
+	assert.Empty(t, validateSwitchSrc(t, fmt.Sprintf(file, "approved, lapsed, rejected")), "extra values are allowed")
+}

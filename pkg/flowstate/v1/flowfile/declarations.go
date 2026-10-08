@@ -3,6 +3,7 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/types"
@@ -302,6 +303,9 @@ func validateDeclaredOutputs(wf *v1.Workflow, profile string, scope refScope, in
 		if d := checkOutputValueType(wf, scope.types, declaration, field); d != nil {
 			ds = append(ds, *d)
 		}
+		if d := checkOutputEnumDomain(wf, scope, declaration, field); d != nil {
+			ds = append(ds, *d)
+		}
 	}
 
 	return ds
@@ -442,6 +446,48 @@ func checkOutputValueType(wf *v1.Workflow, table *typeTable, declaration *v1.Out
 		}
 
 		return nil
+	}
+}
+
+// checkOutputEnumDomain refuses an enum output whose `values:` omits a value
+// its expression can produce, where that is a property of the file (#1554).
+//
+// The domain is the one `switch:` already infers for a discriminant
+// ([switchDomain]): conditionals over string literals, a declared enum input.
+// Without this the omission surfaced only after every step had run, as the
+// completion check [v1.CheckOutputValue] refusing the value the run produced.
+// An expression whose domain is open stays silent, as it does for a switch.
+func checkOutputEnumDomain(wf *v1.Workflow, scope refScope, declaration *v1.OutputDeclaration, field string) *Diagnostic {
+	if declaration.GetType() != v1.InputDeclaration_TYPE_ENUM || len(declaration.GetValues()) == 0 {
+		return nil
+	}
+	value := declaration.GetValue()
+	if _, isExpr := value.GetKind().(*v1.Value_Expr); !isExpr {
+		return nil
+	}
+
+	domain, known := switchDomain(value, scope, wf)
+	if !known {
+		return nil
+	}
+
+	var missing []string
+	for _, produced := range domain {
+		if !slices.Contains(declaration.GetValues(), produced) {
+			missing = append(missing, produced)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+
+	return &Diagnostic{
+		Field: field, Value: declaration.GetName(),
+		Code: v1.DiagnosticCodeTypeMismatch,
+		Message: fmt.Sprintf(
+			"output %q is declared an enum of %s, but this expression can produce %s; "+
+				"add the missing values, or change the expression",
+			declaration.GetName(), quotedList(declaration.GetValues()), quotedList(missing)),
 	}
 }
 
