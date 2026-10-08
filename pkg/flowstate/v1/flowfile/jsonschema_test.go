@@ -236,3 +236,37 @@ steps:
 	assert.Contains(t, description, "How long to wait.")
 	assert.Contains(t, description, "90m")
 }
+
+func TestAJSONSchemaTreatsAFieldTypedByASensitiveRecordAsSensitive(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		Name: "nested",
+		DeclaredTypes: []*v1.TypeDeclaration{
+			{Name: "Credentials", Fields: []*v1.InputDeclaration{
+				{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+			}},
+			{Name: "Holder", Fields: []*v1.InputDeclaration{
+				{
+					Name: "credentials", Type: v1.InputDeclaration_TYPE_STRUCT,
+					ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Credentials"}},
+					Default:   v1.NewLiteralMap(map[string]any{"token": "hunter2"}),
+					Example:   v1.NewLiteralMap(map[string]any{"token": "hunter3"}),
+				},
+			}},
+		},
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name: "holder", Sensitive: true, Type: v1.InputDeclaration_TYPE_STRUCT,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Holder"}},
+		}},
+	}
+
+	encoded, err := json.Marshal(v1.InputsJSONSchema(wf))
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "hunter", "a default inside a sensitive record reached the schema")
+
+	var decoded map[string]any
+	require.NoError(t, json.Unmarshal(encoded, &decoded))
+	credentials := at(t, decoded, "$defs", "Holder", "properties", "credentials")
+	assert.Equal(t, true, at(t, credentials, "x-flowstate-sensitive"))
+}

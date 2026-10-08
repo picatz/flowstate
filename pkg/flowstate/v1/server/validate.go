@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"connectrpc.com/connect"
@@ -147,6 +148,15 @@ func (s *FlowstateServer) Compile(
 	response := &v1.CompileResponse{Report: diagnostics.Report(file.GetName())}
 	if len(diagnostics) == 0 {
 		response.Workflow = workflow
+
+		// The contract beside the specification, so a caller that compiled to
+		// choose arguments does not have to read declarations to learn them.
+		if inputs, err := json.Marshal(v1.InputsJSONSchema(workflow)); err == nil {
+			response.InputsJsonSchema = string(inputs)
+		}
+		if outputs, err := json.Marshal(v1.OutputsJSONSchema(workflow)); err == nil {
+			response.OutputsJsonSchema = string(outputs)
+		}
 	}
 
 	return connect.NewResponse(response), nil

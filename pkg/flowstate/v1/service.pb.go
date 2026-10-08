@@ -2822,9 +2822,18 @@ type CompileResponse struct {
 	Workflow *Workflow `protobuf:"bytes,1,opt,name=workflow,proto3" json:"workflow,omitempty"`
 	// Report carries the diagnostics for the file, present even when empty so
 	// "compiled clean" is stated rather than inferred from absence.
-	Report        *DiagnosticReport `protobuf:"bytes,2,opt,name=report,proto3" json:"report,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Report *DiagnosticReport `protobuf:"bytes,2,opt,name=report,proto3" json:"report,omitempty"`
+	// InputsJsonSchema is the JSON Schema (2020-12) of what a run of the workflow
+	// takes, set only when the file compiled clean: the same document
+	// `flow compile --schema inputs` prints, for a caller choosing arguments to
+	// Run. It is never stricter than binding a run's inputs and omits a sensitive
+	// declaration's default and example.
+	InputsJsonSchema string `protobuf:"bytes,3,opt,name=inputs_json_schema,json=inputsJsonSchema,proto3" json:"inputs_json_schema,omitempty"`
+	// OutputsJsonSchema is the JSON Schema (2020-12) of what a run answers with,
+	// set under the same condition as [inputs_json_schema].
+	OutputsJsonSchema string `protobuf:"bytes,4,opt,name=outputs_json_schema,json=outputsJsonSchema,proto3" json:"outputs_json_schema,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CompileResponse) Reset() {
@@ -2869,6 +2878,20 @@ func (x *CompileResponse) GetReport() *DiagnosticReport {
 		return x.Report
 	}
 	return nil
+}
+
+func (x *CompileResponse) GetInputsJsonSchema() string {
+	if x != nil {
+		return x.InputsJsonSchema
+	}
+	return ""
+}
+
+func (x *CompileResponse) GetOutputsJsonSchema() string {
+	if x != nil {
+		return x.OutputsJsonSchema
+	}
+	return ""
 }
 
 // GetCatalogRequest asks what this deployment can execute. It has no fields.
@@ -3453,10 +3476,12 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x14sensitive_disclosure\x18\a \x01(\x0e2!.flowstate.v1.SensitiveDisclosureB\x04\xe2A\x01\x03R\x13sensitiveDisclosure\"J\n" +
 	"\x0eCompileRequest\x128\n" +
 	"\x04file\x18\x01 \x01(\v2\x18.flowstate.v1.SourceFileB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04file\"}\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04file\"\xdb\x01\n" +
 	"\x0fCompileResponse\x122\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowR\bworkflow\x126\n" +
-	"\x06report\x18\x02 \x01(\v2\x1e.flowstate.v1.DiagnosticReportR\x06report\"\x13\n" +
+	"\x06report\x18\x02 \x01(\v2\x1e.flowstate.v1.DiagnosticReportR\x06report\x12,\n" +
+	"\x12inputs_json_schema\x18\x03 \x01(\tR\x10inputsJsonSchema\x12.\n" +
+	"\x13outputs_json_schema\x18\x04 \x01(\tR\x11outputsJsonSchema\"\x13\n" +
 	"\x11GetCatalogRequest\"\x80\x01\n" +
 	"\x12GetCatalogResponse\x123\n" +
 	"\acatalog\x18\x01 \x01(\v2\x19.flowstate.v1.TaskCatalogR\acatalog\x125\n" +
