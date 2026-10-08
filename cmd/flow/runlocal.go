@@ -384,8 +384,15 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// person reads is covered — the wrapper's own frame included — and so
 		// the loopback remedy is resolved off the original chain before that
 		// chain is dropped. See [redactFailureError].
-		return redactFailureError(
-			wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr)), sensitive)
+		failure := fmt.Errorf("error running workflow locally: %w", runErr)
+		// An expression failure shows where it broke, compiler style. Added
+		// before the redaction below, so the excerpt is scrubbed with the rest
+		// of the sentence it quotes.
+		if excerpt := v1.ExpressionFailureOf(runErr).Excerpt("    "); excerpt != "" {
+			failure = fmt.Errorf("%w\n%s", failure, excerpt)
+		}
+
+		return redactFailureError(wrapLoopbackDenial(cmd, failure), sensitive)
 	}
 
 	// The same word `flow get` uses for the same outcome, through the same pill, on

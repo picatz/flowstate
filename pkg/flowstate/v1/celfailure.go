@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/common/ast"
@@ -115,6 +116,7 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 	work.detail.OperandTypes = names[:min(len(names), maxFailureOperands)]
 	work.detail.Subexpression = subexpr
 	work.detail.Offset = offsetOf(parsed, node)
+	work.detail.Caret = callCaret(parsed, call, subexpr)
 
 	return fmt.Sprintf("%s applied to (%s) in `%s`", what, strings.Join(names, ", "), subexpr)
 }
@@ -132,6 +134,7 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 	work.detail.Selected = textbound.Cut(selection.GetField(), maxFailureFieldBytes)
 	work.detail.Subexpression = subexpr
 	work.detail.Offset = offsetOf(parsed, node)
+	work.detail.Caret = selectCaret(selection.GetField(), subexpr)
 
 	if !stepsMapOperand(selection.GetOperand()) {
 		return text
@@ -432,4 +435,82 @@ func offsetOf(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) *int32 {
 	}
 
 	return &offset
+}
+
+// callCaret is the character index of a call's operator or name within subexpr,
+// the text unparseNode made of the call, or nil when subexpr does not place it
+// exactly.
+//
+// Exact rather than searched: the unparser parenthesizes by precedence, so the
+// operands' own renderings are put back together and compared to subexpr, and a
+// mismatch (parentheses added, text cut) yields no caret instead of one under a
+// neighbouring character.
+func callCaret(parsed *v1alpha1.ParsedExpr, call *v1alpha1.Expr_Call, subexpr string) *int32 {
+	args := call.GetArgs()
+	render := func(node *v1alpha1.Expr) string { return unparseNode(parsed, node) }
+
+	var prefix string
+	switch symbol, _ := operators.FindReverse(call.GetFunction()); {
+	case call.GetFunction() == operators.Conditional && len(args) == 3:
+		prefix = render(args[0])
+		if subexpr != prefix+" ? "+render(args[1])+" : "+render(args[2]) {
+			return nil
+		}
+		return caretAt(subexpr, len(prefix)+1)
+	case call.GetFunction() == operators.Index && len(args) == 2:
+		prefix = render(args[0])
+		if subexpr != prefix+"["+render(args[1])+"]" {
+			return nil
+		}
+		return caretAt(subexpr, len(prefix))
+	case symbol != "" && len(args) == 2 && call.GetTarget() == nil:
+		prefix = render(args[0])
+		if subexpr != prefix+" "+symbol+" "+render(args[1]) {
+			return nil
+		}
+		return caretAt(subexpr, len(prefix)+1)
+	case call.GetTarget() != nil:
+		prefix = render(call.GetTarget()) + "."
+		if !strings.HasPrefix(subexpr, prefix+call.GetFunction()+"(") {
+			return nil
+		}
+		return caretAt(subexpr, len(prefix))
+	case symbol == "" && strings.HasPrefix(subexpr, call.GetFunction()+"("):
+		return caretAt(subexpr, 0)
+	}
+
+	return nil
+}
+
+// selectCaret is the character index of the selected name within subexpr, or nil
+// when subexpr (a cut or backtick-quoted rendering) does not end in `.field`.
+func selectCaret(field, subexpr string) *int32 {
+	if field == "" || !strings.HasSuffix(subexpr, "."+field) {
+		return nil
+	}
+
+	return caretAt(subexpr, len(subexpr)-len(field))
+}
+
+// caretAt converts a byte index in text to a character index, or nil when the
+// index is out of range.
+func caretAt(text string, index int) *int32 {
+	if index < 0 || index >= len(text) {
+		return nil
+	}
+	column := int32(utf8.RuneCountInString(text[:index]))
+
+	return &column
+}
+
+// Excerpt renders the failing subexpression with a caret under the operator or
+// selected name, indented by indent, or "" when the failure carries no caret.
+// It is built from the structured account alone, so every driver and every
+// surface that holds an [ExpressionFailure] draws the same two lines.
+func (f *ExpressionFailure) Excerpt(indent string) string {
+	if f == nil || f.Caret == nil || f.GetSubexpression() == "" {
+		return ""
+	}
+
+	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
 }

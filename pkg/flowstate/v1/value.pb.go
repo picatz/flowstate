@@ -513,7 +513,13 @@ type ExpressionFailure struct {
 	// a character offset from its start, so a consumer can point at it when
 	// `subexpression` repeats elsewhere in the expression. Unset when the
 	// expression carries no position for the node.
-	Offset        *int32 `protobuf:"varint,6,opt,name=offset,proto3,oneof" json:"offset,omitempty"`
+	Offset *int32 `protobuf:"varint,6,opt,name=offset,proto3,oneof" json:"offset,omitempty"`
+	// Caret is the character index within `subexpression` of the operator or the
+	// selected name, so `subexpression` with a `^` under that column shows the
+	// failure the way a compiler does. Unset when the subexpression was cut or its
+	// text does not place the operator exactly, because a caret under the wrong
+	// character is worse than none.
+	Caret         *int32 `protobuf:"varint,7,opt,name=caret,proto3,oneof" json:"caret,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -586,6 +592,13 @@ func (x *ExpressionFailure) GetCandidates() []string {
 func (x *ExpressionFailure) GetOffset() int32 {
 	if x != nil && x.Offset != nil {
 		return *x.Offset
+	}
+	return 0
+}
+
+func (x *ExpressionFailure) GetCaret() int32 {
+	if x != nil && x.Caret != nil {
+		return *x.Caret
 	}
 	return 0
 }
@@ -895,7 +908,7 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"\tTYPE_EXPR\x10\a\x12\x0e\n" +
 	"\n" +
 	"TYPE_ERROR\x10\bB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\x99\x02\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xc7\x02\n" +
 	"\x11ExpressionFailure\x12$\n" +
 	"\boperator\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\boperator\x12-\n" +
 	"\roperand_types\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\foperandTypes\x12.\n" +
@@ -904,8 +917,10 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"\n" +
 	"candidates\x18\x05 \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\n" +
 	"candidates\x12$\n" +
-	"\x06offset\x18\x06 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x00R\x06offset\x88\x01\x01B\t\n" +
-	"\a_offsetB\xa9\x01\n" +
+	"\x06offset\x18\x06 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x00R\x06offset\x88\x01\x01\x12\"\n" +
+	"\x05caret\x18\a \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x01R\x05caret\x88\x01\x01B\t\n" +
+	"\a_offsetB\b\n" +
+	"\x06_caretB\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"ValueProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

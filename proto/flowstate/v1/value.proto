@@ -263,4 +263,11 @@ message ExpressionFailure {
   // `subexpression` repeats elsewhere in the expression. Unset when the
   // expression carries no position for the node.
   optional int32 offset = 6 [(buf.validate.field).int32.gte = 0];
+
+  // Caret is the character index within `subexpression` of the operator or the
+  // selected name, so `subexpression` with a `^` under that column shows the
+  // failure the way a compiler does. Unset when the subexpression was cut or its
+  // text does not place the operator exactly, because a caret under the wrong
+  // character is worse than none.
+  optional int32 caret = 7 [(buf.validate.field).int32.gte = 0];
 }

@@ -7,6 +7,7 @@ import (
 	"github.com/google/cel-go/cel"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // TestARuntimeExpressionFailureNamesWhatFailed pins #1551: the sentence a failed
@@ -279,4 +280,42 @@ func TestAWithheldFailureDropsItsStructuredAccount(t *testing.T) {
 
 	unchanged := RedactGetResponseFailures(failing(), SensitiveValues{})
 	assert.NotNil(t, unchanged.GetError().GetExpression(), "no sensitive value declared, so nothing is dropped")
+}
+
+// TestAnExpressionFailureDrawsACaretUnderItsOperator pins the two-line excerpt a
+// person reads: the failing subexpression and a caret under the operator, the
+// method name, or the selected key, and no caret at all where the unparsed text
+// does not place it exactly.
+func TestAnExpressionFailureDrawsACaretUnderItsOperator(t *testing.T) {
+	t.Parallel()
+
+	activation := map[string]any{
+		"steps":  map[string]any{"n": map[string]any{"value": int64(2)}},
+		"inputs": map[string]any{"s": "text", "m": map[string]any{"k": "v"}},
+	}
+
+	for _, tc := range []struct {
+		name, expression, want string
+	}{
+		{"binary", `steps.n.value + "x"`, "steps.n.value + \"x\"\n              ^"},
+		{"select", `steps.n.valu`, "steps.n.valu\n        ^"},
+		{"method", `inputs.s.startsWith(1)`, "inputs.s.startsWith(1)\n         ^"},
+		{"ternary", `inputs.s ? 1 : 2`, "inputs.s ? 1 : 2\n         ^"},
+		{"index", `inputs.m[1]`, "inputs.m[1]\n        ^"},
+		// The unparser adds parentheses here, so the operands' own renderings
+		// do not reassemble into the subexpression and no caret is drawn.
+		{"parenthesized", `(1 + 2) * "x"`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := evalInProfile(t, tc.expression, activation)
+			detail := ExpressionFailureOf(err)
+			require.NotNil(t, detail)
+			assert.Equal(t, tc.want, detail.Excerpt(""))
+		})
+	}
+
+	assert.Empty(t, (*ExpressionFailure)(nil).Excerpt(""))
+	assert.Equal(t, "  a\n   ^", (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(1)}).Excerpt("  "))
 }

@@ -97,8 +97,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		}
 
 		if failure := msg.GetError(); failure != nil {
-			return fmt.Errorf("run %s ended %s: %s",
-				workflowID, strings.ToLower(statusLabel(msg.GetStatus())), failure.GetMessage())
+			return runEndedError(workflowID, msg, failure)
 		}
 
 		return nil
@@ -168,8 +167,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// the way a shell reader expects. The query itself succeeded; what is being
 	// reported is the workload's outcome, which is what was asked about.
 	if failure := msg.GetError(); failure != nil {
-		return fmt.Errorf("run %s ended %s: %s",
-			workflowID, strings.ToLower(statusLabel(msg.GetStatus())), failure.GetMessage())
+		return runEndedError(workflowID, msg, failure)
 	}
 
 	return nil
@@ -463,4 +461,19 @@ func pendingActivityLines(msg *v1.GetResponse, now time.Time) []string {
 	}
 
 	return lines
+}
+
+// runEndedError is the error `flow get` returns for a run that did not complete:
+// the status and the message, and, for an expression failure that carries one,
+// the excerpt with its caret beneath. The excerpt is built from the structured
+// account, which the server has already dropped wherever the message is
+// redacted or withheld, so it cannot show what the message does not.
+func runEndedError(workflowID string, msg *v1.GetResponse, failure *v1.RunResponse_Error) error {
+	err := fmt.Errorf("run %s ended %s: %s",
+		workflowID, strings.ToLower(statusLabel(msg.GetStatus())), failure.GetMessage())
+	if excerpt := failure.GetExpression().Excerpt("    "); excerpt != "" {
+		return fmt.Errorf("%w\n%s", err, excerpt)
+	}
+
+	return err
 }
