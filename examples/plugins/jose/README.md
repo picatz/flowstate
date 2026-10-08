@@ -28,12 +28,11 @@ and its `plugins:` block, against the plugins it launched itself.
 `--insecure-no-auth` makes this a rehearsal: every caller is anonymous, which is
 only right on a machine nobody else can reach.
 
-`flow run` refuses this file today (#1548): it checks the file against its own
-build's task registry, takes no `--plugin-dir`, and so reports `jose.verify` as
-a task nothing registered before the server sees it. Until that is fixed,
-`flow run local` with the worker's `--plugin-dir` and `--plugin-env` runs it in
-one process, and an agent host running `flow mcp --plugin-dir ./plugins`
-submits it to this server with `flowstate_compile` then `flowstate_run`.
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow plugins --plugin-dir ./plugins --output json`.
 
 ## The two test cases
 

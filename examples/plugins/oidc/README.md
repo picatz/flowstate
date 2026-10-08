@@ -27,9 +27,8 @@ section, which is also what decides whether this run may resolve
 `oidc:billing-api`; [`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is
 a rehearsal policy that allows every reference. The server takes `--plugin-dir`
 too, because the file declares `plugins:` and the server resolves that block
-against the plugins it launched itself. `flow run` accepts this file, where it
-refuses the other plugin examples today (#1548), because no step here names a
-plugin task.
+against the plugins it launched itself. No step here names a plugin task, so
+`flow run` needs nothing from the server's catalog to accept it.
 
 ## `bearer:`, not a concatenated header
 
