@@ -58,6 +58,7 @@
   [1;38;2;241;239;239mshift+tab[m  focus the previous pane
   [1;38;2;241;239;239m: /[m        type a command; every verb below works there
   [1;38;2;241;239;239mi[m          inspect the selected scope row in the console
+  [1;38;2;241;239;239mw[m          watch the selected scope row: it is read again at every stop and tr
   [1;38;2;241;239;239m?[m          show or hide this help
   [1;38;2;241;239;239mq[m          detach and let the run go on unattended
   [1;38;2;241;239;239mctrl+c[m     leave at once and release the run, like quit
@@ -83,4 +84,6 @@
   [1;38;2;241;239;239mbacktrace[m  the step and every container around it
   [1;38;2;241;239;239mdetach[m  clear breakpoints and let the run go on unattended
   [1;38;2;241;239;239mhelp[m  this list
+  [1;38;2;241;239;239mwatch <expr>[m  show an expression in the scope pane at every stop and after eve
+  [1;38;2;241;239;239munwatch <n|expr>[m  stop watching the nth watch, or the one spelled so
 

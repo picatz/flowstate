@@ -1,5 +1,5 @@
 [1;38;2;241;239;239mflow debug[m[2;38;2;133;131;146m · release-1 · run 3f7c9a2e · held step · rev 2[m                                     [2;38;2;133;131;146m? help[m
-[38;2;107;80;255m→ help[m [2;38;2;133;131;146m1-26 of 51, up/down scrolls, ? or esc closes[m [2;38;2;133;131;146m────────────────────────────────────────────────[m
+[38;2;107;80;255m→ help[m [2;38;2;133;131;146m1-26 of 54, up/down scrolls, ? or esc closes[m [2;38;2;133;131;146m────────────────────────────────────────────────[m
 [1;38;2;133;131;146mRun the program[m                                                                                     
   [1;38;2;241;239;239ms space[m    run to the next step anywhere, including inside this one                               
   [1;38;2;241;239;239mn[m          run this step whole; stop at the next step at this level or above                      

@@ -43,6 +43,7 @@ const (
 	bindFocusPrev  = "focus-prev"
 	bindConsole    = "console"
 	bindInspect    = "inspect-selected"
+	bindWatch      = "watch-selected"
 	bindUntil      = "flow-until"
 	bindBreak      = "flow-break"
 	bindHelp       = "help"
@@ -107,6 +108,10 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 	if offered("inspect") {
 		bindings = append(bindings, tui.Binding{Name: bindInspect, Keys: []string{"i"},
 			Help: "inspect the selected scope row in the console", Group: "Screen"})
+	}
+	if offered("inspect") {
+		bindings = append(bindings, tui.Binding{Name: bindWatch, Keys: []string{"w"},
+			Help: "watch the selected scope row: it is read again at every stop and travel (at most 16; `unwatch` in the console removes one)", Group: "Screen"})
 	}
 	if offered("until") {
 		bindings = append(bindings, tui.Binding{Name: bindUntil, Keys: []string{"u"},

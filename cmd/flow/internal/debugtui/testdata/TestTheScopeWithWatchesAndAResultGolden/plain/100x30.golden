@@ -1,0 +1,30 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                     ? help
+flow ──────────────────────── source addresses only ───────── steps ────────────────────────────────
+no program; pass --program      No source: pass --program       ○ checkout pending                  
+                                <Flowfile> to see its lines;  → ▶ build running                     
+                                showing the step's address.     ○ flaky pending                     
+                                                                ○ gated pending                     
+                                held at build                   ○ deploy pending                    
+                                                                ○ notify pending                    
+                                                                6 step(s)                           
+                                                              → scope 5 names ──────────────────────
+                                                               ▸ inputs           {2}               
+                                                               ▸ steps            {2}               
+                                                               ▸ run              {1}               
+                                                               ▾ watches          {3}               
+                                                                   stop           1                 
+                                                                   inputs.region  "eu-west-1"       
+                                                                   nosuch.name    (no such name: nos
+                                                               ▾ result           {1}               
+                                                              →  ▾ steps.list     [30 items]        
+                                                                     [0]          0                 
+                                                                     [1]          1                 
+                                                                     [2]          2                 
+timeline 0 [1]                                                                                      
+console ────────────────────────────────────────────────────────────────────────────────────────────
+[27]  int  27                                                                                       
+[28]  int  28                                                                                       
+[29]  int  29                                                                                       
+debug>                                                                                              
+                                                                                                    
+s step  n next  c continue  tab focus  : console  ? help  q quit                                    

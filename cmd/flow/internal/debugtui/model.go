@@ -109,6 +109,10 @@ type (
 		seq   uint64
 		frame flowdebug.Frame
 		err   error
+
+		// watches are the answers to the screen's watches at the frame's stop,
+		// read by the same command as the frame so the two are of one stop.
+		watches []watchResult
 	}
 	doneMsg struct {
 		line   string
@@ -118,6 +122,12 @@ type (
 		// unscripted is a command with no spelling a script could replay, such as
 		// a breakpoint on a line: it is shown in the console and never recorded.
 		unscripted bool
+
+		// fill is the request an expansion started from the tree answers, and
+		// fillRev the stop it was asked at: its children belong under that row of
+		// that stop's tree and nowhere else.
+		fill    *pane.Request
+		fillRev uint64
 	}
 	watchMsg struct {
 		after uint64
@@ -302,6 +312,7 @@ func (m Model) ended() bool {
 func (m Model) read(seq uint64) tea.Cmd {
 	ctx, target, opts, digest := m.ctx, m.cfg.Target, m.cfg.Frame, m.programDigest
 	opts.StepRows = stepRowsAsked
+	watches := watchExprs(m.screen.Watches)
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, readTimeout)
@@ -318,7 +329,12 @@ func (m Model) read(seq uint64) tea.Cmd {
 			frame.SourceMap = nil
 		}
 
-		return frameMsg{seq: seq, frame: frame, err: err}
+		msg := frameMsg{seq: seq, frame: frame, err: err}
+		if err == nil && len(watches) > 0 {
+			msg.watches = evaluateWatches(ctx, target, frame, watches)
+		}
+
+		return msg
 	}
 }
 
@@ -405,8 +421,14 @@ func (m Model) framed(msg frameMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.screen.Frame, m.screen.Loaded, m.screen.Problem = msg.frame, true, ""
+	if msg.frame.Snapshot.GetRevision() != m.frameRev {
+		// An inspection is of the stop it was asked at; at another it is a value
+		// of the past drawn as if it were the run's.
+		m.screen.Result = nil
+	}
 	m.frameRev = msg.frame.Snapshot.GetRevision()
-	m.screen.Tree.SetRoots(ScopeNodes(msg.frame))
+	m.applyWatches(msg.watches)
+	m.syncTree()
 	m.screen.Flow.Apply(msg.frame)
 	m.screen.Source.Apply(msg.frame)
 	m.revealSelection()
@@ -478,6 +500,19 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 	result := msg.result
 	m.screen.Console.Say(result.Text)
 
+	if msg.fill != nil {
+		// An expansion moves nothing, so there is nothing to read again; a read
+		// would also replace the tree this page is about to join.
+		if reason := result.Inspect.GetError(); reason != "" {
+			m.toast(ui.ToneWarning, "cannot load more: "+reason)
+		} else if result.Inspect != nil && msg.fillRev == m.frameRev {
+			m.fill(*msg.fill, result.Inspect)
+		}
+
+		return m, nil
+	}
+	m.inspected(msg.line, result)
+
 	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
 		if point, ok := gotoPoint(msg.line); ok && receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED {
 			// Nothing moved. The point is marked, and the run's own words say
@@ -534,6 +569,7 @@ func (m Model) paged(msg pageMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.screen.Tree.Fill(msg.req.Parent, msg.req.Offset, msg.nodes, msg.total)
+	m.keepResult(msg.req.Parent)
 
 	return m, nil
 }
@@ -551,15 +587,17 @@ func (m Model) completed(msg completeMsg) (tea.Model, tea.Cmd) {
 	msg.answer.Candidates = slices.DeleteFunc(slices.Clone(msg.answer.Candidates), func(c flowdebug.Candidate) bool {
 		return len(c.Text) > flowdebug.MaxCommandBytes
 	})
-	line, offers := applyCompletion(msg.line, msg.answer)
+	line, _ := applyCompletion(msg.line, msg.answer)
 	// A candidate is the target's text: one with a control character, or one
 	// that would outgrow a command, is not put on the line.
 	if strings.ContainsFunc(line, unicode.IsControl) || len(line) > flowdebug.MaxCommandBytes {
 		line = msg.line
 	}
 	m.screen.Console.Text = line
-	if len(offers) > 0 {
-		m.screen.Console.Say(strings.Join(offers, "  "))
+	// Several offers are chosen between in the menu, which replaces the word the
+	// line now ends in.
+	if base := strings.TrimSuffix(msg.line, msg.answer.Prefix); base+msg.answer.Prefix == msg.line {
+		m.screen.Console.OpenMenu(base, msg.answer.Candidates, msg.answer.Truncated)
 	}
 
 	return m, nil
@@ -615,8 +653,8 @@ const pageSize = 50
 // the screen last read: the run having moved since is the target's to say, and
 // the page is then not appended to a tree of another stop.
 func (m Model) pageCmd(req pane.Request) tea.Cmd {
-	expression := req.Parent
-	if group, ok := strings.CutPrefix(expression, "g:"); ok {
+	expression := expressionOf(req.Parent)
+	if group, ok := strings.CutPrefix(req.Parent, "g:"); ok {
 		expression = "@scope:" + group
 	}
 	target, ctx, revision := m.cfg.Target, m.ctx, m.frameRev
@@ -633,30 +671,62 @@ func (m Model) pageCmd(req pane.Request) tea.Cmd {
 		if reason := answer.GetError(); reason != "" {
 			return pageMsg{rev: revision, req: req, err: errors.New(reason)}
 		}
-		nodes := make([]pane.Node, 0, len(answer.GetChildren()))
-		for _, child := range answer.GetChildren() {
-			value := child.GetValue()
-			nodes = append(nodes, pane.Node{
-				ID:    value.GetExpression(),
-				Label: child.GetName(),
-				Value: cutValue(value.GetRendered()),
-				Total: int(value.GetChildren()),
-			})
-		}
+		nodes := childNodes(answer, req.Parent)
 
 		return pageMsg{rev: revision, req: req, nodes: nodes, total: int(answer.GetTotal())}
 	}
 }
 
-// completeCmd asks the driver what could be written at the end of line.
+// completeCmd asks the driver what could be written at the end of line. The
+// words of the screen's own (`watch`, `unwatch`) are completed here: `watch`
+// takes an expression, which the completer offers the names for as it does after
+// `inspect`, and `unwatch` takes one of the watches.
 func (m Model) completeCmd(line string) tea.Cmd {
-	driver, ctx := m.cfg.Driver, m.ctx
+	driver, ctx, watches := m.cfg.Driver, m.ctx, watchExprs(m.screen.Watches)
+	canWatch := m.canWatch()
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, completeTimeout)
 		defer cancel()
-		answer, err := driver.Complete(ctx, line)
+
+		var answer flowdebug.Completion
+		var err error
+		switch trimmed := strings.TrimLeft(line, " \t"); {
+		case !canWatch:
+			answer, err = driver.Complete(ctx, line)
+		case strings.HasPrefix(trimmed, "watch "):
+			answer, err = driver.CompleteExpression(ctx, strings.TrimPrefix(trimmed, "watch "))
+		case strings.HasPrefix(trimmed, "unwatch "):
+			prefix := strings.TrimPrefix(trimmed, "unwatch ")
+			answer.Prefix = prefix
+			for _, expr := range watches {
+				if strings.HasPrefix(expr, prefix) {
+					answer.Candidates = append(answer.Candidates, flowdebug.Candidate{Text: expr, Detail: "a watch"})
+				}
+			}
+		default:
+			answer, err = driver.Complete(ctx, line)
+			if !strings.ContainsAny(trimmed, " \t") {
+				answer.Candidates = append(answer.Candidates, clientVerbs(trimmed)...)
+				answer.Prefix = trimmed
+			}
+		}
 
 		return completeMsg{line: line, answer: answer, err: err}
 	}
+}
+
+// clientVerbs are the verbs the screen answers itself that begin with prefix.
+func clientVerbs(prefix string) []flowdebug.Candidate {
+	var out []flowdebug.Candidate
+	for _, verb := range [...]struct{ name, help string }{
+		{"watch", "show an expression at every stop"},
+		{"unwatch", "stop showing a watch"},
+	} {
+		if strings.HasPrefix(verb.name, prefix) {
+			out = append(out, flowdebug.Candidate{Text: verb.name, Detail: verb.help})
+		}
+	}
+
+	return out
 }
