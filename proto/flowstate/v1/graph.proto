@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// Graph is how the things Flowstate runs connect, as data any front end can draw.
+//
+// It is a schema type rather than a rendering because a graph has several
+// readers that must agree on what is connected to what: the `flow graph`
+// command prints it, an agent reads the same document as JSON, and a TUI, a web
+// canvas or an editor lays it out. A graph each of them derived for itself is a
+// graph that disagrees with the others about whether two workflows are linked.
+//
+// This message is the structure only. Position, drawing and live state are
+// separate layers over the same node ids, so a layout or an overlay can be added
+// or replaced without changing what the graph says.
+//
+// # Bounds
+//
+// A graph is built from files and runs another party controls, so its size is
+// bounded where it is spent: nodes and edges are capped, and a build that
+// reaches a cap sets `partial` and says so in `notes` rather than
+// returning a silently smaller graph.
+message Graph {
+  // Nodes are the things in the graph, ordered by id so two builds of the same
+  // input are the same bytes.
+  repeated GraphNode nodes = 1 [(buf.validate.field).repeated = {max_items: 1000}];
+
+  // Edges connect nodes by id, ordered by (from, to, kind). Two relations of the
+  // same kind between the same nodes are one edge with a count.
+  repeated GraphEdge edges = 2 [(buf.validate.field).repeated = {max_items: 4000}];
+
+  // Partial is true when the graph is missing something it was asked for: an
+  // input that did not compile, or a bound that was reached. Never silent.
+  bool partial = 3;
+
+  // Notes say, in plain text, why the graph is partial or what was skipped.
+  repeated string notes = 4 [(buf.validate.field).repeated = {
+    max_items: 100
+    items: {string: {max_len: 1024}}
+  }];
+}
+
+// GraphNode is one thing in a graph.
+message GraphNode {
+  // Id is unique in the graph and stable across builds: the kind, a colon and
+  // the name, as in `workflow:deploy`.
+  string id = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  GraphNodeKind kind = 2 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+
+  // Label is the name to show, as the author wrote it. It is author-controlled
+  // text, so a renderer must treat it as untrusted.
+  string label = 3 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// GraphNodeKind says what a node stands for.
+enum GraphNodeKind {
+  GRAPH_NODE_KIND_UNSPECIFIED = 0;
+
+  // A workflow, by its declared name.
+  GRAPH_NODE_KIND_WORKFLOW = 1;
+
+  // A task a workflow runs, by its registered name.
+  GRAPH_NODE_KIND_TASK = 2;
+
+  // A signal channel a workflow waits on, by name.
+  GRAPH_NODE_KIND_SIGNAL = 3;
+}
+
+// GraphEdge is one relation between two nodes.
+message GraphEdge {
+  string from = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+  string to = 2 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  GraphEdgeKind kind = 3 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+
+  // Count is how many times the relation was found: three `http` steps in one
+  // workflow are one USES edge with count 3.
+  uint32 count = 4;
+}
+
+// GraphEdgeKind says how two nodes are related.
+enum GraphEdgeKind {
+  GRAPH_EDGE_KIND_UNSPECIFIED = 0;
+
+  // A workflow calls another with a `call:` step.
+  GRAPH_EDGE_KIND_CALL = 1;
+
+  // A workflow runs a task.
+  GRAPH_EDGE_KIND_USES = 2;
+
+  // A workflow waits for a signal.
+  GRAPH_EDGE_KIND_WAITS = 3;
+}

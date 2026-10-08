@@ -3840,6 +3840,12 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	compileCmd.GroupID = "workflow"
 	rootCmd.AddCommand(compileCmd)
 
+	// The same files read as a whole rather than one at a time: how a directory of
+	// workflows connects, where `compile` shows what one file becomes.
+	graphCmd := newGraphCommand()
+	graphCmd.GroupID = "workflow"
+	rootCmd.AddCommand(graphCmd)
+
 	// Beside `validate` and `test`, the other two commands that read a Flowfile
 	// without running it. `buf breaking` guards the proto contract; this guards
 	// the contract one level up, a workflow's declared inputs and outputs, in the

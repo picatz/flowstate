@@ -867,6 +867,37 @@ flow get flowstate-workflow-3f7c --run-id 0198f1e2-...
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
 
+## `flow graph`
+
+Show how workflows, tasks and signals connect
+
+```
+flow graph <path>... [flags]
+```
+
+Read Flowfiles and show how they connect: which workflows call which, which tasks each one runs, and which signals each one waits for. A path is a Flowfile, or a directory searched for the YAML files that are Flowfiles, by shape rather than by name.
+
+The graph is what the files declare, not what is running: it reads files and contacts no server. `--output json` writes the `Graph` message, the same document any other client of the graph reads, with nodes and edges in a fixed order so two runs over the same files are the same bytes.
+
+A file that does not compile is left out and named in the graph's notes, which marks the graph partial; the command still succeeds, because the rest of the graph is true. Use `flow validate` to learn what is wrong with the file.
+
+Examples:
+
+```sh
+# How the examples connect:
+flow graph examples
+
+# One workflow and the workflows it calls:
+flow graph examples/call-a-workflow/workflow.yaml
+
+# The same graph for a program or an agent:
+flow graph examples -o json | jq '.edges[] | select(.count > 1)'
+```
+
+| Flag | Type | Default | Environment | Description |
+|---|---|---|---|---|
+| `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+
 ## `flow init`
 
 Scaffold a workflow and its tests in a directory
