@@ -296,3 +296,36 @@ func TestDebugHistoryReadsAPointAndListsThePoints(t *testing.T) {
 	res = runFlow(t, "debug", "history", "order-1", "--address", srv.URL)
 	require.Error(t, res.Err, "a read without the run it is for was sent")
 }
+
+// TestDebugAttachRecordsWhatTheRunAccepted: the file holds the lines the run
+// took, in order, without the ones that leave the session or fail.
+func TestDebugAttachRecordsWhatTheRunAccepted(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(heldRun{}))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "in.script")
+	recording := filepath.Join(dir, "out.script")
+	require.NoError(t, os.WriteFile(script, []byte("status\nbreakpoints\ndisconnect\n"), 0o600))
+
+	res := runFlow(t, "debug", "attach", "w", "--session", "held-1", "--script", script,
+		"--address", srv.URL, "--record", recording)
+	require.NoError(t, res.Err)
+
+	got, err := os.ReadFile(recording)
+	require.NoError(t, err)
+	assert.Equal(t, "status\nbreakpoints\n", string(got))
+
+	// A line that fails ends a scripted attach, and the recording still holds
+	// what ran before it and not the line itself.
+	require.NoError(t, os.WriteFile(script, []byte("status\nfrobnicate\nbreakpoints\n"), 0o600))
+	res = runFlow(t, "debug", "attach", "w", "--session", "held-1", "--script", script,
+		"--address", srv.URL, "--record", recording)
+	require.Error(t, res.Err)
+
+	got, err = os.ReadFile(recording)
+	require.NoError(t, err)
+	assert.Equal(t, "status\n", string(got))
+}
