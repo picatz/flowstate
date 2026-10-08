@@ -2150,7 +2150,6 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 		return names
 	}
 	topNames := candidates(top)
-	allNames := candidates(all)
 
 	// The two sets a name can be real in without being claimable here. Both
 	// used to fall through to the did-you-mean below, which told an author to
@@ -2226,58 +2225,35 @@ func checkExpectationNames(want *Expectation, spec *v1.Workflow) error {
 			return err
 		}
 	}
-	// A `call:` registers its callee's own `undo:` steps onto this run's
-	// stack under the callee's step ids (see examples/progressive-rollout,
-	// whose cases name `record` and `shift` — steps of shift-traffic.yaml,
-	// not of the caller), and this checker deliberately never loads a callee,
-	// the same line [stepTasks] draws. So a workflow with a `call:` anywhere
-	// leaves `compensated:` unchecked rather than refusing a name it cannot
-	// see: a false diagnostic is worse than a missing one, the
-	// ResolvableInputs abstention CLAUDE.md's diagnostics rule names.
-	if !containsCallStep(spec.GetSteps()) {
-		for _, step := range want.Compensated {
-			if all[step] {
-				continue
-			}
-			if suggestion, ok := nearest.Name(step, allNames); ok {
-				return fmt.Errorf("expect.compensated names unknown step %q; did you mean %q?", step, suggestion)
-			}
-			return fmt.Errorf("expect.compensated names unknown step %q, which this workflow has no step for", step)
+	// A `call:` registers its callee's own `undo:` steps onto this run's stack
+	// under the callee's step ids (see examples/progressive-rollout, whose cases
+	// name `record` and `shift` — steps of shift-traffic.yaml, not of the
+	// caller). The compiler embeds every callee, so those ids are knowable
+	// without running anything: a name is real when this workflow or any
+	// callee it reaches declares it (#1446).
+	var known map[string]bool
+	for _, step := range want.Compensated {
+		if all[step] {
+			continue
 		}
+		// Built on the first miss, as the sets above are: every passing case
+		// names ids the workflow itself declares.
+		if known == nil {
+			known = maps.Clone(all)
+			for id := range calleeSteps(spec) {
+				known[id] = true
+			}
+		}
+		if known[step] {
+			continue
+		}
+		if suggestion, ok := nearest.Name(step, candidates(known)); ok {
+			return fmt.Errorf("expect.compensated names unknown step %q; did you mean %q?", step, suggestion)
+		}
+		return fmt.Errorf("expect.compensated names unknown step %q, which neither this workflow nor a workflow it calls has a step for", step)
 	}
 
 	return checkInvocationNames(want.Invocations, spec)
-}
-
-// containsCallStep reports whether any step at any depth is a `call:` — the
-// one node kind whose compensations run under step ids this package never
-// compiles. See [checkExpectationNames].
-func containsCallStep(nodes []*v1.Node) bool {
-	for _, node := range nodes {
-		switch kind := node.GetKind().(type) {
-		case *v1.Node_Call:
-			return true
-		case *v1.Node_Parallel:
-			for _, branch := range kind.Parallel.GetBranches() {
-				if containsCallStep(branch.GetSteps()) {
-					return true
-				}
-			}
-		case *v1.Node_Switch:
-			if slices.ContainsFunc(v1.SwitchBodies(kind.Switch), containsCallStep) {
-				return true
-			}
-		case *v1.Node_ForEach:
-			if containsCallStep(kind.ForEach.GetBody()) {
-				return true
-			}
-		case *v1.Node_Loop:
-			if containsCallStep(kind.Loop.GetBody()) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // parallelContainers records the id of every `parallel:` step at any depth.
