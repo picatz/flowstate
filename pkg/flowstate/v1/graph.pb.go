@@ -22,6 +22,55 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// GraphOverlayKind says what a layer reports.
+type GraphOverlayKind int32
+
+const (
+	GraphOverlayKind_GRAPH_OVERLAY_KIND_UNSPECIFIED GraphOverlayKind = 0
+	// How many runs of a workflow are in each status. `value` is the short status
+	// name (`RUNNING`, `FAILED`), the same one a `List` filter compares.
+	GraphOverlayKind_GRAPH_OVERLAY_KIND_RUN_STATUS GraphOverlayKind = 1
+)
+
+// Enum value maps for GraphOverlayKind.
+var (
+	GraphOverlayKind_name = map[int32]string{
+		0: "GRAPH_OVERLAY_KIND_UNSPECIFIED",
+		1: "GRAPH_OVERLAY_KIND_RUN_STATUS",
+	}
+	GraphOverlayKind_value = map[string]int32{
+		"GRAPH_OVERLAY_KIND_UNSPECIFIED": 0,
+		"GRAPH_OVERLAY_KIND_RUN_STATUS":  1,
+	}
+)
+
+func (x GraphOverlayKind) Enum() *GraphOverlayKind {
+	p := new(GraphOverlayKind)
+	*p = x
+	return p
+}
+
+func (x GraphOverlayKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (GraphOverlayKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_flowstate_v1_graph_proto_enumTypes[0].Descriptor()
+}
+
+func (GraphOverlayKind) Type() protoreflect.EnumType {
+	return &file_flowstate_v1_graph_proto_enumTypes[0]
+}
+
+func (x GraphOverlayKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use GraphOverlayKind.Descriptor instead.
+func (GraphOverlayKind) EnumDescriptor() ([]byte, []int) {
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{0}
+}
+
 // GraphNodeKind says what a node stands for.
 type GraphNodeKind int32
 
@@ -62,11 +111,11 @@ func (x GraphNodeKind) String() string {
 }
 
 func (GraphNodeKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_graph_proto_enumTypes[0].Descriptor()
+	return file_flowstate_v1_graph_proto_enumTypes[1].Descriptor()
 }
 
 func (GraphNodeKind) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_graph_proto_enumTypes[0]
+	return &file_flowstate_v1_graph_proto_enumTypes[1]
 }
 
 func (x GraphNodeKind) Number() protoreflect.EnumNumber {
@@ -75,7 +124,7 @@ func (x GraphNodeKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use GraphNodeKind.Descriptor instead.
 func (GraphNodeKind) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{0}
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{1}
 }
 
 // GraphEdgeKind says how two nodes are related.
@@ -118,11 +167,11 @@ func (x GraphEdgeKind) String() string {
 }
 
 func (GraphEdgeKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_flowstate_v1_graph_proto_enumTypes[1].Descriptor()
+	return file_flowstate_v1_graph_proto_enumTypes[2].Descriptor()
 }
 
 func (GraphEdgeKind) Type() protoreflect.EnumType {
-	return &file_flowstate_v1_graph_proto_enumTypes[1]
+	return &file_flowstate_v1_graph_proto_enumTypes[2]
 }
 
 func (x GraphEdgeKind) Number() protoreflect.EnumNumber {
@@ -131,7 +180,7 @@ func (x GraphEdgeKind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use GraphEdgeKind.Descriptor instead.
 func (GraphEdgeKind) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{2}
 }
 
 // Graph is how the things Flowstate runs connect, as data any front end can draw.
@@ -164,7 +213,11 @@ type Graph struct {
 	// input that did not compile, or a bound that was reached. Never silent.
 	Partial bool `protobuf:"varint,3,opt,name=partial,proto3" json:"partial,omitempty"`
 	// Notes say, in plain text, why the graph is partial or what was skipped.
-	Notes         []string `protobuf:"bytes,4,rep,name=notes,proto3" json:"notes,omitempty"`
+	Notes []string `protobuf:"bytes,4,rep,name=notes,proto3" json:"notes,omitempty"`
+	// Overlays are live state laid over the nodes above, one layer per kind, in
+	// kind order. They are separate from the structure so a graph built from files
+	// alone and the same graph with a running system's state differ only here.
+	Overlays      []*GraphOverlay `protobuf:"bytes,5,rep,name=overlays,proto3" json:"overlays,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -227,6 +280,132 @@ func (x *Graph) GetNotes() []string {
 	return nil
 }
 
+func (x *Graph) GetOverlays() []*GraphOverlay {
+	if x != nil {
+		return x.Overlays
+	}
+	return nil
+}
+
+// GraphOverlay is one layer of live state over a graph's nodes.
+type GraphOverlay struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Kind  GraphOverlayKind       `protobuf:"varint,1,opt,name=kind,proto3,enum=flowstate.v1.GraphOverlayKind" json:"kind,omitempty"`
+	// Entries are ordered by (node, value) so two builds of the same state are the
+	// same bytes. A node absent from the layer has nothing to report for it.
+	Entries       []*GraphOverlayEntry `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GraphOverlay) Reset() {
+	*x = GraphOverlay{}
+	mi := &file_flowstate_v1_graph_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GraphOverlay) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GraphOverlay) ProtoMessage() {}
+
+func (x *GraphOverlay) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_graph_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GraphOverlay.ProtoReflect.Descriptor instead.
+func (*GraphOverlay) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *GraphOverlay) GetKind() GraphOverlayKind {
+	if x != nil {
+		return x.Kind
+	}
+	return GraphOverlayKind_GRAPH_OVERLAY_KIND_UNSPECIFIED
+}
+
+func (x *GraphOverlay) GetEntries() []*GraphOverlayEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+// GraphOverlayEntry is one fact about one node.
+type GraphOverlayEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Node is the id of the node this is about, as in GraphNode.
+	Node string `protobuf:"bytes,1,opt,name=node,proto3" json:"node,omitempty"`
+	// Value is what is reported: for RUN_STATUS, a status name.
+	Value string `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	// Count is how many of the node's runs have this value.
+	Count         uint32 `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GraphOverlayEntry) Reset() {
+	*x = GraphOverlayEntry{}
+	mi := &file_flowstate_v1_graph_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GraphOverlayEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GraphOverlayEntry) ProtoMessage() {}
+
+func (x *GraphOverlayEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_graph_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GraphOverlayEntry.ProtoReflect.Descriptor instead.
+func (*GraphOverlayEntry) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *GraphOverlayEntry) GetNode() string {
+	if x != nil {
+		return x.Node
+	}
+	return ""
+}
+
+func (x *GraphOverlayEntry) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+func (x *GraphOverlayEntry) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
 // GraphNode is one thing in a graph.
 type GraphNode struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -243,7 +422,7 @@ type GraphNode struct {
 
 func (x *GraphNode) Reset() {
 	*x = GraphNode{}
-	mi := &file_flowstate_v1_graph_proto_msgTypes[1]
+	mi := &file_flowstate_v1_graph_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -255,7 +434,7 @@ func (x *GraphNode) String() string {
 func (*GraphNode) ProtoMessage() {}
 
 func (x *GraphNode) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_graph_proto_msgTypes[1]
+	mi := &file_flowstate_v1_graph_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -268,7 +447,7 @@ func (x *GraphNode) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GraphNode.ProtoReflect.Descriptor instead.
 func (*GraphNode) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *GraphNode) GetId() string {
@@ -307,7 +486,7 @@ type GraphEdge struct {
 
 func (x *GraphEdge) Reset() {
 	*x = GraphEdge{}
-	mi := &file_flowstate_v1_graph_proto_msgTypes[2]
+	mi := &file_flowstate_v1_graph_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -319,7 +498,7 @@ func (x *GraphEdge) String() string {
 func (*GraphEdge) ProtoMessage() {}
 
 func (x *GraphEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_graph_proto_msgTypes[2]
+	mi := &file_flowstate_v1_graph_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -332,7 +511,7 @@ func (x *GraphEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GraphEdge.ProtoReflect.Descriptor instead.
 func (*GraphEdge) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GraphEdge) GetFrom() string {
@@ -400,7 +579,7 @@ type GraphRef struct {
 
 func (x *GraphRef) Reset() {
 	*x = GraphRef{}
-	mi := &file_flowstate_v1_graph_proto_msgTypes[3]
+	mi := &file_flowstate_v1_graph_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -412,7 +591,7 @@ func (x *GraphRef) String() string {
 func (*GraphRef) ProtoMessage() {}
 
 func (x *GraphRef) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_graph_proto_msgTypes[3]
+	mi := &file_flowstate_v1_graph_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -425,7 +604,7 @@ func (x *GraphRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GraphRef.ProtoReflect.Descriptor instead.
 func (*GraphRef) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GraphRef) GetWorkflowName() string {
@@ -467,12 +646,22 @@ var File_flowstate_v1_graph_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/graph.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xbc\x01\n" +
+	"\x18flowstate/v1/graph.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xfe\x01\n" +
 	"\x05Graph\x128\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x17.flowstate.v1.GraphNodeB\t\xbaH\x06\x92\x01\x03\x10\xe8\aR\x05nodes\x128\n" +
 	"\x05edges\x18\x02 \x03(\v2\x17.flowstate.v1.GraphEdgeB\t\xbaH\x06\x92\x01\x03\x10\xa0\x1fR\x05edges\x12\x18\n" +
 	"\apartial\x18\x03 \x01(\bR\apartial\x12%\n" +
-	"\x05notes\x18\x04 \x03(\tB\x0f\xbaH\f\x92\x01\t\x10d\"\x05r\x03\x18\x80\bR\x05notes\"\x84\x01\n" +
+	"\x05notes\x18\x04 \x03(\tB\x0f\xbaH\f\x92\x01\t\x10d\"\x05r\x03\x18\x80\bR\x05notes\x12@\n" +
+	"\boverlays\x18\x05 \x03(\v2\x1a.flowstate.v1.GraphOverlayB\b\xbaH\x05\x92\x01\x02\x10\bR\boverlays\"\x94\x01\n" +
+	"\fGraphOverlay\x12>\n" +
+	"\x04kind\x18\x01 \x01(\x0e2\x1e.flowstate.v1.GraphOverlayKindB\n" +
+	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12D\n" +
+	"\aentries\x18\x02 \x03(\v2\x1f.flowstate.v1.GraphOverlayEntryB\t\xbaH\x06\x92\x01\x03\x10\xa0\x1fR\aentries\"j\n" +
+	"\x11GraphOverlayEntry\x12\x1e\n" +
+	"\x04node\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x04node\x12\x1f\n" +
+	"\x05value\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x05value\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\rR\x05count\"\x84\x01\n" +
 	"\tGraphNode\x12\x1a\n" +
 	"\x02id\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x02id\x12;\n" +
@@ -499,7 +688,10 @@ const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\x0egraph_ref.step\x12\x13step needs a run_id\x1a$this.step == '' || this.run_id != ''\x1aP\n" +
 	"\x11graph_ref.attempt\x12\x14attempt needs a step\x1a%!has(this.attempt) || this.step != ''B\n" +
 	"\n" +
-	"\b_attempt*\x84\x01\n" +
+	"\b_attempt*Y\n" +
+	"\x10GraphOverlayKind\x12\"\n" +
+	"\x1eGRAPH_OVERLAY_KIND_UNSPECIFIED\x10\x00\x12!\n" +
+	"\x1dGRAPH_OVERLAY_KIND_RUN_STATUS\x10\x01*\x84\x01\n" +
 	"\rGraphNodeKind\x12\x1f\n" +
 	"\x1bGRAPH_NODE_KIND_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18GRAPH_NODE_KIND_WORKFLOW\x10\x01\x12\x18\n" +
@@ -525,26 +717,32 @@ func file_flowstate_v1_graph_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_graph_proto_rawDescData
 }
 
-var file_flowstate_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_flowstate_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_flowstate_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_flowstate_v1_graph_proto_goTypes = []any{
-	(GraphNodeKind)(0), // 0: flowstate.v1.GraphNodeKind
-	(GraphEdgeKind)(0), // 1: flowstate.v1.GraphEdgeKind
-	(*Graph)(nil),      // 2: flowstate.v1.Graph
-	(*GraphNode)(nil),  // 3: flowstate.v1.GraphNode
-	(*GraphEdge)(nil),  // 4: flowstate.v1.GraphEdge
-	(*GraphRef)(nil),   // 5: flowstate.v1.GraphRef
+	(GraphOverlayKind)(0),     // 0: flowstate.v1.GraphOverlayKind
+	(GraphNodeKind)(0),        // 1: flowstate.v1.GraphNodeKind
+	(GraphEdgeKind)(0),        // 2: flowstate.v1.GraphEdgeKind
+	(*Graph)(nil),             // 3: flowstate.v1.Graph
+	(*GraphOverlay)(nil),      // 4: flowstate.v1.GraphOverlay
+	(*GraphOverlayEntry)(nil), // 5: flowstate.v1.GraphOverlayEntry
+	(*GraphNode)(nil),         // 6: flowstate.v1.GraphNode
+	(*GraphEdge)(nil),         // 7: flowstate.v1.GraphEdge
+	(*GraphRef)(nil),          // 8: flowstate.v1.GraphRef
 }
 var file_flowstate_v1_graph_proto_depIdxs = []int32{
-	3, // 0: flowstate.v1.Graph.nodes:type_name -> flowstate.v1.GraphNode
-	4, // 1: flowstate.v1.Graph.edges:type_name -> flowstate.v1.GraphEdge
-	0, // 2: flowstate.v1.GraphNode.kind:type_name -> flowstate.v1.GraphNodeKind
-	1, // 3: flowstate.v1.GraphEdge.kind:type_name -> flowstate.v1.GraphEdgeKind
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	6, // 0: flowstate.v1.Graph.nodes:type_name -> flowstate.v1.GraphNode
+	7, // 1: flowstate.v1.Graph.edges:type_name -> flowstate.v1.GraphEdge
+	4, // 2: flowstate.v1.Graph.overlays:type_name -> flowstate.v1.GraphOverlay
+	0, // 3: flowstate.v1.GraphOverlay.kind:type_name -> flowstate.v1.GraphOverlayKind
+	5, // 4: flowstate.v1.GraphOverlay.entries:type_name -> flowstate.v1.GraphOverlayEntry
+	1, // 5: flowstate.v1.GraphNode.kind:type_name -> flowstate.v1.GraphNodeKind
+	2, // 6: flowstate.v1.GraphEdge.kind:type_name -> flowstate.v1.GraphEdgeKind
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_graph_proto_init() }
@@ -552,14 +750,14 @@ func file_flowstate_v1_graph_proto_init() {
 	if File_flowstate_v1_graph_proto != nil {
 		return
 	}
-	file_flowstate_v1_graph_proto_msgTypes[3].OneofWrappers = []any{}
+	file_flowstate_v1_graph_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_graph_proto_rawDesc), len(file_flowstate_v1_graph_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   4,
+			NumEnums:      3,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
