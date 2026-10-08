@@ -3,14 +3,16 @@
 Post and update Slack messages from a durable workflow: a sentence, a
 vendor-neutral **card**, or native **Block Kit**, with the safety properties a
 workflow that handles untrusted values needs. Outbound only: this plugin sends
-messages and never receives Slack interactions (see [Roadmap](#roadmap)).
+messages and never receives Slack interactions itself; a click arrives through a
+verified `slack` webhook trigger and is answered with `slack.respond` (see [Roadmap](#roadmap)).
 
 | Task | Slack method | Inputs (beyond `token`) | Outputs | If the answer is lost |
 | --- | --- | --- | --- | --- |
 | `slack.post` | `chat.postMessage`, or `chat.postEphemeral` when `to_user` is set | `channel`, `idempotency_key`, one of `text` / `card` / `blocks`, `thread_ts`, `reply_broadcast`, `to_user`, `metadata` | `channel`, `ts` (ephemeral: `message_ts`) | unknown outcome, **never retried**: the message may exist |
 | `slack.update` | `chat.update` | `channel`, `ts`, one of `text` / `card` / `blocks`, `metadata` | `channel`, `ts` | **retryable**: the same content on the same message is the same state |
+| `slack.respond` | the interaction's `response_url` | `response_url`, `how` (`replace` default, `delete`, `ephemeral`, `in_channel`), one of `text` / `card` / `blocks` | `how` | `replace` and `delete` are **retryable**; the two new-message forms are unknown outcomes, **never retried** |
 
-Both require the host-attested production mode, so `flow run local` cannot send
+All require the host-attested production mode, so `flow run local` cannot send
 a real message while pretending to be a preview.
 
 ## A message in 30 seconds
@@ -225,6 +227,7 @@ Feed these to the operator egress `rate:` bucket for `slack.com`.
 | --- | --- |
 | `slack.post`, `slack.update` | `chat:write`; add `chat:write.public` to post to public channels the bot has not joined |
 | `slack.post` with `to_user` | `chat:write` (the user must be in the channel) |
+| `slack.respond` | none: the `response_url` Slack sends with an interaction is the credential, good for 30 minutes and five uses, and the task takes no token |
 
 Bot tokens (`xoxb-`) only.
 
@@ -234,6 +237,11 @@ Bot tokens (`xoxb-`) only.
 receive `${secret('provider:name')}`, resolve it under the run namespace, and
 scrub the resolved value from plugin errors and outputs. A literal is refused
 before plugin invocation, and a resolved credential is capped at 4 KiB.
+
+`slack.respond` posts only to `https://hooks.slack.com/actions/...` or `/commands/...`,
+checked before the egress policy is consulted, and never follows a redirect: the address
+arrives inside a delivery, so it is another party's input and is not trusted to name a host.
+The egress policy must also admit `hooks.slack.com` (see the example policy).
 
 Credential release is not destination authorization. The host forwards the exact
 bounded bytes it already parsed from `--egress-policy` as an immutable
@@ -286,7 +294,7 @@ the diff is what operators will see in Slack.
 
 ## Roadmap
 
-Not here yet: delete, react, `response_url` replies, modals and inputs, lookups,
+Not here yet: delete (the Web API one), react, modals and inputs, lookups,
 file upload, scheduled messages, and receiving interactions (a button press
 arrives through a verified `slack` webhook trigger and the `signal:` bridge;
 Slack is notification, not authority, until the clicker-identity mapping lands).
