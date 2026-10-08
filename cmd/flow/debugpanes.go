@@ -148,11 +148,16 @@ func (p *debugPanes) paintStop(snapshot *v1.DebugSnapshot) {
 	if p == nil || snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_HELD {
 		return
 	}
-	if revision := snapshot.GetRevision(); revision != 0 && p.painted.Swap(revision) == revision {
+	revision := snapshot.GetRevision()
+	if revision != 0 && p.painted.Load() == revision {
 		return
 	}
 
-	p.paint()
+	// Marked only once drawn, so a read that failed is tried again at the same
+	// revision rather than skipped until the run moves.
+	if p.paint() && revision != 0 {
+		p.painted.Store(revision)
+	}
 }
 
 // frame reads the pane frame for layout from whichever source is installed.
@@ -177,7 +182,7 @@ func (p *debugPanes) frame(layout debugpane.Layout) (debugpane.Frame, bool) {
 	return debugpane.FromFrame(read)
 }
 
-// paint draws one frame.
+// paint draws one frame and reports whether it drew one.
 //
 // Called from inside the session's Emit, which holds the session's output lock
 // for the length of it — deliberately, and not merely tolerably. A pane block
@@ -185,7 +190,7 @@ func (p *debugPanes) frame(layout debugpane.Layout) (debugpane.Frame, bool) {
 // through each other; serializing is what the lock is for. The cost is bounded:
 // a frame is at most [debugpane.MaxScopeEvaluations] evaluations, each bounded
 // by the run's own cost limit, and the run is held at a boundary throughout.
-func (p *debugPanes) paint() {
+func (p *debugPanes) paint() bool {
 	// With neither source installed this is the first stop of a session whose
 	// construction has not finished handing itself over. Nothing to draw
 	// about, and nothing to say: the break line is already printed and the
@@ -194,12 +199,14 @@ func (p *debugPanes) paint() {
 
 	frame, paused := p.frame(layout)
 	if !paused {
-		return
+		return false
 	}
 
 	if text := debugpane.Render(frame, p.theme, p.symbols, layout); text != "" {
 		_, _ = io.WriteString(p.out, text)
 	}
+
+	return true
 }
 
 // layout is the space the panes have, measured at the stop rather than at the

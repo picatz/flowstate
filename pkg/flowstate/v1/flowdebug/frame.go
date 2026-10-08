@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -149,7 +150,9 @@ func ReadFrame(ctx context.Context, t Target, opts FrameOptions) (Frame, error) 
 		Partial:   snapshot.GetObservationsDropped() > 0 || len(snapshot.GetObservations()) >= MaxObservations,
 	}
 
-	rows := min(cmp.Or(opts.StepRows, defaultFrameStepRows), MaxFrameStepRows)
+	// A caller's count is a request, not a trusted size: a negative one would
+	// reverse the window and panic the slice built from it.
+	rows := max(1, min(cmp.Or(opts.StepRows, defaultFrameStepRows), MaxFrameStepRows))
 
 	switch {
 	case opts.Source != nil:
@@ -179,6 +182,11 @@ func ReadFrame(ctx context.Context, t Target, opts FrameOptions) (Frame, error) 
 	default:
 		frame.Paused = snapshot.GetState() == v1.DebugRunState_DEBUG_RUN_STATE_HELD
 		frame.At = positionOfOccurrence(snapshot.GetOccurrence())
+		if snapshot.GetReason() == v1.DebugStopReason_DEBUG_STOP_REASON_AUTOPSY {
+			// The occurrence is the last step the run executed, not one it is
+			// held before: an autopsy has no held row.
+			frame.At = Position{Autopsy: true}
+		}
 		if !frame.Paused {
 			return frame, nil
 		}
@@ -273,21 +281,46 @@ func inventoryWindow(order []Step, snapshot *v1.DebugSnapshot, at Position, rows
 
 	index := positionIn(order, at.Workflow, at.Step)
 	first, last := StepWindowAround(len(order), index, rows)
+
+	// The steps the held one sits inside (a loop, a parallel group, a call) are
+	// running too, though the run has not finished them.
+	var enclosing map[string]bool
+	if path := snapshot.GetOccurrence().GetSite().GetPath(); len(path) > 1 && !at.Autopsy {
+		enclosing = make(map[string]bool, len(path)-1)
+		for _, id := range path[:len(path)-1] {
+			enclosing[id] = true
+		}
+	}
+
+	// Observations are redacted by the target; an id the program does not
+	// declare may be a step whose name redaction changed, so its outcome cannot
+	// be attributed. Say the rows may understate rather than draw them pending.
+	truncated := false
+	for id := range seen {
+		if declared[id] == 0 {
+			truncated = true
+		}
+	}
+	if !at.Autopsy && at.Step != "" && index < 0 {
+		truncated = true
+	}
 	window := &StepWindow{
 		Steps: make([]Step, 0, last-first), Before: first, After: len(order) - last,
-		Total: len(order), Unattributed: unattributed, Held: -1,
+		Total: len(order), Unattributed: unattributed, Held: -1, Truncated: truncated,
 	}
 	for i, step := range order[first:last] {
 		step.State = seen[step.ID]
 		if declared[step.ID] > 1 {
 			step.State = StepPending
-			if first+i == index {
-				step.State = StepRunning
-			}
+		}
+		if enclosing[step.ID] && declared[step.ID] == 1 && step.State == StepPending {
+			step.State = StepRunning
 		}
 		if first+i == index {
 			window.Held = i
-			if step.State == StepPending {
+			// A second pass over a loop body is held before a step an earlier
+			// pass finished; the earlier outcome is not this arrival's.
+			if step.State != StepFailed {
 				step.State = StepRunning
 			}
 		}
@@ -335,15 +368,15 @@ func readScope(ctx context.Context, t Target, frame *Frame, budget int) {
 		case errors.Is(err, ErrStaleRevision):
 			frame.ScopeNote = "the run moved before its scope could be read"
 		case connect.CodeOf(err) == connect.CodePermissionDenied:
-			frame.ScopeNote = "inspect is not permitted: " + err.Error()
+			frame.ScopeNote = "inspect is not permitted: " + diagnostic(err.Error())
 		default:
-			frame.ScopeNote = "scope unavailable: " + err.Error()
+			frame.ScopeNote = "scope unavailable: " + diagnostic(err.Error())
 		}
 
 		return
 	}
 	if reason := roots.GetError(); reason != "" {
-		frame.ScopeNote = "inspect is not permitted: " + reason
+		frame.ScopeNote = "inspect is not permitted: " + diagnostic(reason)
 
 		return
 	}
@@ -351,7 +384,9 @@ func readScope(ctx context.Context, t Target, frame *Frame, budget int) {
 	frame.Scope = &v1.DebugScope{}
 	frame.Values = make(map[string]*v1.DebugValue)
 	remaining := budget
-	for _, root := range roots.GetChildren() {
+	// The groups a session has are a handful; a peer that lists more is not
+	// given a listing call each.
+	for _, root := range roots.GetChildren()[:min(len(roots.GetChildren()), maxFrameGroups)] {
 		group := &v1.DebugScopeGroup{Group: root.GetName(), Total: root.GetValue().GetChildren()}
 		frame.Scope.Groups = append(frame.Scope.Groups, group)
 		frame.Scope.Total += group.Total
@@ -366,7 +401,7 @@ func readScope(ctx context.Context, t Target, frame *Frame, budget int) {
 			err = errors.New(names.GetError())
 		}
 		if err != nil {
-			frame.ScopeNote = "scope incomplete: " + err.Error()
+			frame.ScopeNote = "scope incomplete: " + diagnostic(err.Error())
 
 			continue
 		}
@@ -385,3 +420,12 @@ func readScope(ctx context.Context, t Target, frame *Frame, budget int) {
 		}
 	}
 }
+
+// maxDiagnosticBytes bounds the text of a target's refusal that a Frame keeps:
+// it is drawn on one row, and a peer chooses its length.
+const maxDiagnosticBytes = 256
+
+// maxFrameGroups bounds the scope groups one [ReadFrame] lists.
+const maxFrameGroups = 32
+
+func diagnostic(text string) string { return textbound.Truncate(text, maxDiagnosticBytes) }

@@ -127,3 +127,47 @@ func TestAnAttachConsolePaintsThePanesOncePerStop(t *testing.T) {
 	assert.Contains(t, painted.String(), "deploy")
 	assert.NotContains(t, painted.String(), debugpane.NoInventoryNote)
 }
+
+// flakyTarget fails its first Snapshot and answers the held stop afterwards.
+type flakyTarget struct {
+	scopedTarget
+
+	failures *int
+}
+
+func (f flakyTarget) Snapshot(ctx context.Context) (*v1.DebugSnapshot, error) {
+	if *f.failures > 0 {
+		*f.failures--
+
+		return nil, context.DeadlineExceeded
+	}
+
+	return f.scopedTarget.Snapshot(ctx)
+}
+
+// TestAFailedReadOfAStopIsTriedAgain: the revision is remembered only once the
+// panes were drawn, so a transient failure does not hide a stop until the run
+// moves.
+func TestAFailedReadOfAStopIsTriedAgain(t *testing.T) {
+	pty := aTerminal(t)
+	surface := ui.Plain(io.Discard, io.Discard)
+
+	console, restore, ok := attachDebugConsole(pty, pty, surface.Theme)
+	require.True(t, ok, "the fixture did not attach a console, so this proves nothing")
+	t.Cleanup(restore)
+
+	var painted strings.Builder
+	_, panes := debugPanesFor(t.Context(), console, &painted, surface.Theme,
+		ui.Capabilities{Width: 80, Height: 24}, func(string, flowdebug.Tone) {})
+	require.NotNil(t, panes)
+
+	held := heldSnapshot(7, v1.DebugRunState_DEBUG_RUN_STATE_HELD)
+	failures := 1
+	panes.setTarget(flakyTarget{scopedTarget: scopedTarget{snapshot: held}, failures: &failures}, flowdebug.FrameOptions{})
+
+	panes.paintStop(held)
+	require.Empty(t, painted.String(), "a failed read drew something")
+
+	panes.paintStop(held)
+	assert.Contains(t, painted.String(), "scope ", "the stop stayed unpainted after the read recovered")
+}
