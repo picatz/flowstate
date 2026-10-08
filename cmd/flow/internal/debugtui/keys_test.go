@@ -224,3 +224,34 @@ func TestScopeNodesAreTheFramesScope(t *testing.T) {
 	tree.Select("inputs.region")
 	assert.Equal(t, "inputs.region", SelectedExpression(tree))
 }
+
+// TestAHostileNameIsNotPutOnTheInputLine: the scope tree's names are the
+// target's text. `i` copies the selected one into the console, so one with a
+// control character is refused, and the console draws what it holds escaped.
+func TestAHostileNameIsNotPutOnTheInputLine(t *testing.T) {
+	t.Parallel()
+
+	const hostile = "steps.x[\"\x1b[2J\x1b]0;owned\x07\"]"
+
+	m := started(t, newFake())
+	m.screen.Tree = pane.NewTree([]pane.Node{{ID: "g:steps", Label: "steps", Children: []pane.Node{{ID: hostile, Label: "x"}}}})
+	m.screen.Tree.Toggle("g:steps")
+	m.screen.Tree.Select(hostile)
+	require.Equal(t, hostile, SelectedExpression(m.screen.Tree), "the fixture did not select the hostile name")
+
+	m = send(m, tuitest.Key("i"))
+	assert.Empty(t, m.screen.Console.Text, "a name with a control character reached the input line")
+	assert.Contains(t, m.screen.Toast.Text(), "control character")
+
+	// Whatever else puts text there, the draw escapes it.
+	c := Console{Text: "inspect " + hostile}
+	drawn := ConsoleView(c, "", pane.Options{Width: 80, Height: 4})
+	assert.NotContains(t, drawn, "\x1b")
+	assert.NotContains(t, drawn, "\x07")
+	assert.Contains(t, drawn, "steps.x")
+
+	// A typed or pasted control character is dropped, C1 included.
+	c = Console{}
+	c.Insert("a\u009bb\x1bc")
+	assert.Equal(t, "abc", c.Text)
+}

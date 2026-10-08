@@ -2,6 +2,7 @@ package debugtui
 
 import (
 	"strings"
+	"unicode"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -103,6 +104,13 @@ func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 		expression := SelectedExpression(m.screen.Tree)
 		if expression == "" {
 			m.toast(ui.ToneWarning, "select a name in the scope first")
+
+			break
+		}
+		if strings.ContainsFunc(expression, unicode.IsControl) {
+			// The expression is the target's text; a control character in it
+			// is not something to put on an input line.
+			m.toast(ui.ToneWarning, "that name has a control character; type it to inspect it")
 
 			break
 		}

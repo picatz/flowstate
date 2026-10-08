@@ -2,6 +2,7 @@ package debugtui
 
 import (
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/pane"
@@ -40,7 +41,7 @@ func NewConsole() Console { return Console{browse: -1} }
 // Insert appends typed text, up to the longest command a target accepts.
 func (c *Console) Insert(text string) {
 	text = strings.Map(func(r rune) rune {
-		if r < ' ' || r == 0x7f {
+		if unicode.IsControl(r) {
 			return -1
 		}
 
@@ -157,7 +158,7 @@ func ConsoleView(c Console, busy string, o pane.Options) string {
 	}
 
 	prompt := o.Theme.Muted.Render(Prompt)
-	text := c.Text
+	text := ui.EscapeControl(c.Text)
 	cursor := ""
 	if o.Focused {
 		cursor = "_"
