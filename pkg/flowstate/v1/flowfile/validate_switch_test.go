@@ -824,3 +824,47 @@ outputs:
 	assert.Contains(t, text, "… and ")
 	assert.Less(t, len(text), 2000, "the message spelled out every value")
 }
+
+// TestSwitchOverABoolInputHasATwoValueDomain is the last half of #1639: a switch
+// reading a `type: bool` input is exhaustive over [true, false], so a missing
+// arm without a `default:` and a `default:` beside both arms are diagnosed as
+// they are for an enum.
+func TestSwitchOverABoolInputHasATwoValueDomain(t *testing.T) {
+	t.Parallel()
+
+	const head = `edition: v2026.4
+name: t
+inputs:
+  verbose:
+    type: bool
+steps:
+  - id: pick
+    switch:
+      value: ${inputs.verbose}
+      cases:
+`
+	const arm = `        - case: %s
+          steps: []
+`
+	const dflt = `      default:
+        steps: []
+`
+	cases := func(values ...string) string {
+		var b strings.Builder
+		b.WriteString(head)
+		for _, v := range values {
+			fmt.Fprintf(&b, arm, v)
+		}
+		return b.String()
+	}
+
+	ds := validateSwitchSrc(t, cases("true"))
+	assert.Contains(t, diagnosticMessages(ds), `cases do not handle "false"`)
+
+	ds = validateSwitchSrc(t, cases("true", "false")+dflt)
+	assert.Contains(t, diagnosticMessages(ds), "`default:` can never run")
+
+	assert.Empty(t, validateSwitchSrc(t, cases("true", "false")))
+	assert.Empty(t, validateSwitchSrc(t, cases("true")+dflt))
+	assert.Empty(t, validateSwitchSrc(t, cases("[true, false]")))
+}
