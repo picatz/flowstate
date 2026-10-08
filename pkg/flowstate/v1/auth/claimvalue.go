@@ -140,6 +140,14 @@ func cloneClaim(value any) any {
 	}
 }
 
+// ClaimsError is why [WorkloadIdentity.WithWireClaims] refused part of the claim
+// set it was given, or nil when it read every claim. It is the claims half of
+// [WorkloadIdentity.Validate], for a caller that has no subject to validate (a
+// policy test case may declare nobody) but must not let a refused claim vanish.
+func (w WorkloadIdentity) ClaimsError() error {
+	return w.unreadable
+}
+
 // WithWireClaims returns the identity with its claims read from the wire form of
 // a claim set (flowstate.v1.Principal's `claims`).
 //

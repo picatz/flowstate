@@ -2,6 +2,7 @@ package embed
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -298,5 +299,74 @@ func TestTasksInstall_RestoresAPreexistingTask(t *testing.T) {
 	if after.Summary != before.Summary {
 		t.Errorf("Unregister/restore did not put back the original log task: got summary %q, want %q",
 			after.Summary, before.Summary)
+	}
+}
+
+// TestTaskFnClassifiedErrors proves the failure vocabulary an embedded task
+// has: InvalidInput is reported as such and runs exactly once, where a plain
+// error would be retried under the default policy and reported as Internal
+// (#1557).
+func TestTaskFnClassifiedErrors(t *testing.T) {
+	const taskName = "classified_error_task"
+
+	for _, tc := range []struct {
+		name     string
+		wrap     func(error) error
+		wantKind v1.ErrorKind
+	}{
+		{"InvalidInput", InvalidInput, v1.ErrorKindInvalidInput},
+		// An inner classification stands: wrapping must neither re-label a
+		// permanent failure nor make it retryable.
+		{"Unavailable over UpstreamUnknown", func(err error) error {
+			return Unavailable(v1.NewTaskError("", v1.ErrorKindUpstreamUnknown, err))
+		}, v1.ErrorKindUpstreamUnknown},
+		{"InvalidInput over PolicyDenied", func(err error) error {
+			return InvalidInput(v1.NewTaskError("", v1.ErrorKindPolicyDenied, err))
+		}, v1.ErrorKindPolicyDenied},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attempts := 0
+			tasks := NewTasks()
+			err := tasks.Register(Task{Name: taskName, Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+				attempts++
+				return nil, tc.wrap(errors.New("name is required"))
+			}})
+			if err != nil {
+				t.Fatalf("Register: %v", err)
+			}
+			uninstall, err := tasks.Install()
+			if err != nil {
+				t.Fatalf("Install: %v", err)
+			}
+			defer uninstall()
+
+			workflow, err := flowfile.Unmarshal(echoWorkflowSource(taskName))
+			if err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			_, err = RunLocal(context.Background(), workflow, RunOptions{Tasks: tasks})
+			if err == nil {
+				t.Fatal("RunLocal: expected the task's failure")
+			}
+			if got := v1.ClassifyError(err); got != tc.wantKind {
+				t.Errorf("ClassifyError = %q, want %q (err: %v)", got, tc.wantKind, err)
+			}
+			if attempts != 1 {
+				t.Errorf("task ran %d times, want 1: a classified permanent failure is not retried", attempts)
+			}
+		})
+	}
+}
+
+// TestUnavailableClassifiesAsUpstream pins the kind Unavailable reports. It is
+// asserted on the error, not through a run: the default policy retries it, so
+// a run would hold for the backoff to prove what ClassifyError already says.
+func TestUnavailableClassifiesAsUpstream(t *testing.T) {
+	err := Unavailable(errors.New("connection reset"))
+	if got := v1.ClassifyError(err); got != v1.ErrorKindUpstream {
+		t.Errorf("ClassifyError = %q, want %q", got, v1.ErrorKindUpstream)
+	}
+	if !v1.RetryPermitted(err) {
+		t.Error("an Unavailable failure must be retryable")
 	}
 }

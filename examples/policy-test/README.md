@@ -10,7 +10,7 @@ flow policy test examples/task-shape-policy/task-policy.yaml examples/policy-tes
 ```
 
 Each cases file names the policy surface once (`egress`, `task` or `exec`) and
-lists cases: who asks (`identity`), what is asked (`request`), and what the
+lists cases: who asks (`principal`), what is asked (`request`), and what the
 policy must say (`expect: allow` or `deny`). A denial can name the rule that must
 make it with `rule:`, the deny rule's source text or, for a denial no deny rule
 made, the reason (`allow rules`, `scheme`, `port`, `address`, `rule error`).

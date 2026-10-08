@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"cmp"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -175,18 +176,27 @@ func NewLocalWorkloadIdentity(subject, issuer, namespace, deployment string, cla
 // Caller renders the identity as the [principal.Caller] every policy surface
 // binds as `identity`: egress, exec, task shape, secret access and credential
 // assumption all read the same value, so a clause about the caller means one
-// thing wherever it is written. Namespace is the raw attested value, never
+// thing wherever it is written.
+//
+// An identity whose claims were refused ([WorkloadIdentity.WithWireClaims])
+// renders [principal.RefusedClaims], so every rule that reads a claim errors and
+// denies; a claim silently missing would let a rule that tests absence permit. Namespace is the raw attested value, never
 // [defaultComponent]: that substitution belongs to a minted subject, and a
 // `deny: identity.namespace == "_default"` rule must match the same unnamespaced
 // caller on every surface.
 func (w WorkloadIdentity) Caller() principal.Caller {
+	claims := principal.NewClaims(w.Claims)
+	if w.unreadable != nil {
+		claims = principal.RefusedClaims(w.Claims, w.unreadable)
+	}
+
 	return principal.Caller{
 		Issuer:    w.Issuer,
 		Subject:   w.Subject,
 		Namespace: w.Namespace,
 		Kind:      w.Kind,
 		Principal: principal.Qualified(w.Issuer, w.Subject),
-		Claims:    principal.NewClaims(w.Claims),
+		Claims:    claims,
 		Actions:   w.Actions,
 		Actors:    w.Actors,
 	}.Normalized()
@@ -431,6 +441,12 @@ func (w WorkloadIdentity) SubjectFor(ref StepRef) (string, error) {
 		switch {
 		case component == "":
 			return "", fmt.Errorf("%w: %s is required to name a workload", ErrInvalidIdentity, names[i])
+		case i >= 2 && component == anyComponent:
+			// A subject reduced to a coarser level spells the dropped
+			// components this way, so a workflow or step with the name would
+			// collide with it on every minting path, not only a levelled one.
+			return "", fmt.Errorf("%w: %q is reserved for subjects reduced to a coarser level and cannot name a %s",
+				ErrInvalidIdentity, anyComponent, names[i])
 		case strings.ContainsAny(component, subjectSeparator+":"):
 			// Otherwise one component could spell out several, and a subject
 			// could be made to look like a different workload's.
@@ -444,6 +460,94 @@ func (w WorkloadIdentity) SubjectFor(ref StepRef) (string, error) {
 	}
 
 	return subjectPrefix + strings.Join(components, subjectSeparator), nil
+}
+
+// anyComponent stands in for a subject component a [SubjectLevel] drops, so a
+// level-reduced subject keeps the arity of the full one and a prefix or
+// StringLike pattern written for the full shape still lines up with it:
+//
+//	flowstate:acme/prod/deploy/_any        workflow level
+//	flowstate:acme/prod/_any/_any          deployment level
+//
+// It begins with an underscore for the reason [defaultComponent] does, and
+// [WorkloadIdentity.SubjectAt] refuses a real workflow or step of this name,
+// so a workload can never name itself into a coarser subject than the one its
+// target asked for.
+const anyComponent = "_any"
+
+// A SubjectLevel is how much of a workload's position the assertion subject a
+// federation target receives names. It exists because relying parties differ in
+// what they can match: Azure federated identity credentials compare the subject
+// as an exact string with an application quota in the tens, and GCP's
+// `google.subject` is length-limited, so a per-step subject does not fit either,
+// while an AWS trust policy matches prefixes and wants the finest grain it can
+// get.
+//
+// The level changes the subject a relying party reads and nothing Flowstate
+// decides: the assumption policy still evaluates the workload's real step, so a
+// coarser subject never widens what is allowed, only what the relying party can
+// tell apart.
+type SubjectLevel string
+
+const (
+	// SubjectLevelStep names the whole position, which is the default and the
+	// subject [WorkloadIdentity.SubjectFor] returns.
+	SubjectLevelStep SubjectLevel = "step"
+
+	// SubjectLevelWorkflow drops the step: every step of one workflow in one
+	// deployment shares a subject.
+	SubjectLevelWorkflow SubjectLevel = "workflow"
+
+	// SubjectLevelDeployment drops the workflow and the step: every workflow of
+	// one deployment shares a subject.
+	SubjectLevelDeployment SubjectLevel = "deployment"
+)
+
+// Valid reports whether the level is one of the three spellings. The zero
+// value is not valid here; a target that names no level is [SubjectLevelStep],
+// and [SubjectLevel.OrDefault] says so.
+func (l SubjectLevel) Valid() bool {
+	switch l {
+	case SubjectLevelStep, SubjectLevelWorkflow, SubjectLevelDeployment:
+		return true
+	}
+	return false
+}
+
+// OrDefault returns [SubjectLevelStep] for the unset level.
+func (l SubjectLevel) OrDefault() SubjectLevel { return cmp.Or(l, SubjectLevelStep) }
+
+// SubjectAt returns the subject [WorkloadIdentity.SubjectFor] would, reduced to
+// level: components below it are [anyComponent]. A level that is not one of the
+// three is refused, never read as the default, so a misspelling cannot silently
+// widen or narrow a trust grant.
+//
+// A workflow or step literally named "_any" is refused by [WorkloadIdentity.SubjectFor]
+// whatever the level, since it would be indistinguishable from a dropped component.
+func (w WorkloadIdentity) SubjectAt(ref StepRef, level SubjectLevel) (string, error) {
+	level = level.OrDefault()
+	if !level.Valid() {
+		return "", fmt.Errorf("%w: subject level %q is not one of step, workflow, deployment",
+			ErrInvalidIdentity, textbound.Truncate(string(level), 32))
+	}
+
+	subject, err := w.SubjectFor(ref)
+	if err != nil || level == SubjectLevelStep {
+		return subject, err
+	}
+
+	// SubjectFor validated every component and fixed the arity, so the dropped
+	// components are the last of a split on the separator.
+	parts := strings.Split(subject, subjectSeparator)
+	dropped := 1
+	if level == SubjectLevelDeployment {
+		dropped = 2
+	}
+	for i := len(parts) - dropped; i < len(parts); i++ {
+		parts[i] = anyComponent
+	}
+
+	return strings.Join(parts, subjectSeparator), nil
 }
 
 // orDefault substitutes the placeholder for an unset subject component.

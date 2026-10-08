@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"fmt"
+	"github.com/google/cel-go/common/types"
 	"strings"
 	"testing"
 
@@ -215,12 +216,195 @@ func TestVarDependenciesStopAtWholeFileEdgeBound(t *testing.T) {
 		"big[1]": {path: varPath{{key: "big"}, {index: 1, list: true}}},
 		"big[2]": {path: varPath{{key: "big"}, {index: 2, list: true}}},
 	}
-	remaining := 2
-	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, &remaining)
+	budget := &depBudget{edges: 2, scans: 100}
+	deps, withinBound := dependenciesFor([]varPath{{{key: "big"}}}, nodes, budget)
 
 	assert.False(t, withinBound)
 	assert.Nil(t, deps)
-	assert.Zero(t, remaining)
+	assert.Zero(t, budget.edges)
+}
+
+// TestVarDependencyScansAreSpentByReadsThatMatchNothing pins #1353: a read
+// naming no leaf retains no edge, so only the scan budget can refuse it.
+func TestVarDependencyScansAreSpentByReadsThatMatchNothing(t *testing.T) {
+	t.Parallel()
+
+	nodes := map[string]varNode{}
+	for i := range 10 {
+		nodes[fmt.Sprintf("t[%d]", i)] = varNode{path: varPath{{key: "t"}, {index: i, list: true}}}
+	}
+	miss := varPath{{key: "other"}}
+	budget := &depBudget{edges: 1000, scans: 25}
+
+	// Two walks of ten nodes fit in 25; the third does not.
+	for range 2 {
+		deps, within := dependenciesFor([]varPath{miss}, nodes, budget)
+		require.True(t, within)
+		require.Empty(t, deps)
+	}
+	deps, within := dependenciesFor([]varPath{miss}, nodes, budget)
+	assert.False(t, within)
+	assert.Nil(t, deps)
+	assert.Equal(t, 1000, budget.edges, "a miss retains no edge")
+}
+
+// TestAFileOfNonMatchingReadsIsRefused is the load-level form of #1353: a
+// computed var reading paths that name no leaf retains no edge, so only the
+// scan budget can refuse the file. A small limit stands in for the production
+// one, which costs seconds of scanning to reach.
+func TestAFileOfNonMatchingReadsIsRefused(t *testing.T) {
+	t.Parallel()
+
+	file := &File{
+		Vars:      map[string]any{"t": []any{1, 2, 3}, "a": "${size([vars.t.x, vars.t.y])}"},
+		scanLimit: 7,
+	}
+	p := newProblems(nil)
+
+	assert.Nil(t, file.declareVars(p))
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars exceed the dependency budget")
+
+	// The same file within its limit declares: the bound, not the shape, refuses.
+	file.scanLimit = 8
+	p = newProblems(nil)
+	assert.NotNil(t, file.declareVars(p))
+	assert.Nil(t, p.err())
+}
+
+// TestTheScanBudgetCoversTheWidestOrdinaryFile pins the budget's legitimate
+// side by arithmetic rather than by spending it: one 20,000-leaf table and
+// the 199 computed vars that fit beside it, each making four reads, with the
+// computed leaves counted as nodes too (Copilot, #2452).
+func TestTheScanBudgetCoversTheWidestOrdinaryFile(t *testing.T) {
+	t.Parallel()
+
+	const tableLeaves = 20_000
+	assert.GreaterOrEqual(t, maxVarDependencyScans, (MaxVarsPerFile-1)*4*(tableLeaves+MaxVarsPerFile-1))
+}
+
+// TestAChainOfWholeValueReadsIsRefusedByWhatItCopies pins #1317: each link
+// reads the previous var whole, so the dependency graph is one edge per link
+// and every edge and scan bound admits it, while each link copies the table.
+// A small limit stands in for the production one, which costs a table of
+// hundreds of thousands of leaves to reach.
+func TestAChainOfWholeValueReadsIsRefusedByWhatItCopies(t *testing.T) {
+	t.Parallel()
+
+	build := func(links int) *File {
+		vars := map[string]any{"t": []any{1, 2, 3, 4}}
+		prev := "t"
+		for i := range links {
+			name := fmt.Sprintf("c%02d", i)
+			vars[name] = "${vars." + prev + "}"
+			prev = name
+		}
+
+		return &File{Vars: vars, nodeLimit: 15}
+	}
+
+	// A copy of the four-leaf table is five values; three fit in fifteen and the
+	// fourth does not.
+	p := newProblems(nil)
+	build(3).evaluateVars(p, nil)
+	assert.Nil(t, p.err(), "a chain within the limit loads")
+
+	p = newProblems(nil)
+	build(4).evaluateVars(p, nil)
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 15 values")
+}
+
+// TestNestedContainersCountAgainstTheMaterializationBudget pins Copilot's
+// finding on #2456: three scalar leaves under three five-deep one-entry maps
+// are 3 leaves and 19 values, and it is the values the conversion allocates. A
+// leaf-only count admits this copy under a limit of 15; counting containers
+// refuses it.
+func TestNestedContainersCountAgainstTheMaterializationBudget(t *testing.T) {
+	t.Parallel()
+
+	deep := func() any {
+		return map[string]any{"a": map[string]any{"a": map[string]any{"a": map[string]any{"a": map[string]any{"a": 1}}}}}
+	}
+	file := &File{
+		Vars:      map[string]any{"t": []any{deep(), deep(), deep()}, "c": "${vars.t}"},
+		nodeLimit: 15,
+	}
+	p := newProblems(nil)
+	file.evaluateVars(p, nil)
+
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 15 values")
+}
+
+func TestBoundedNodesRefusesAValueDeeperThanAnyVarMayHold(t *testing.T) {
+	t.Parallel()
+
+	var v any = 1
+	for range v1.MaxStructureDepth + 2 {
+		v = []any{v}
+	}
+	_, ok := boundedNodes(types.DefaultTypeAdapter.NativeToValue(v), 1<<20)
+
+	assert.False(t, ok)
+}
+
+func TestBoundedNodesCountsEveryValueIncludingContainers(t *testing.T) {
+	t.Parallel()
+
+	count := func(v any) int {
+		n, ok := boundedNodes(types.DefaultTypeAdapter.NativeToValue(v), 1000)
+		require.True(t, ok)
+
+		return n
+	}
+	assert.Equal(t, 1, count(1))
+	assert.Equal(t, 1, count(map[string]any{}))
+	assert.Equal(t, 1, count([]any{}))
+	// A container is a value of its own: the map, the list, two ints and a string.
+	assert.Equal(t, 5, count(map[string]any{"a": []any{1, 2}, "b": "x"}))
+}
+
+// TestBoundedNodesStopsAtTheLimit pins the reviewer's finding on #2456: one
+// expression naming a large table many times builds far more than the budget
+// in a single evaluation, so the count has to stop walking at the limit rather
+// than sizing the whole value. A thousand references to a hundred-leaf table is
+// a hundred thousand leaves; a limit of 250 must cost about 250 of them.
+func TestBoundedNodesStopsAtTheLimit(t *testing.T) {
+	t.Parallel()
+
+	table := make([]any, 100)
+	for i := range table {
+		table[i] = i
+	}
+	fan := make([]any, 1000)
+	for i := range fan {
+		fan[i] = table
+	}
+
+	n, ok := boundedNodes(types.DefaultTypeAdapter.NativeToValue(fan), 250)
+
+	assert.False(t, ok)
+	assert.LessOrEqual(t, n, 251, "the walk must stop at the limit, not size the whole value")
+}
+
+// TestOneExpressionNamingATableManyTimesIsRefused is the load-level form: a
+// single var, so no chain for a per-link count to catch.
+func TestOneExpressionNamingATableManyTimesIsRefused(t *testing.T) {
+	t.Parallel()
+
+	file := &File{
+		Vars: map[string]any{
+			"t":   []any{1, 2, 3, 4},
+			"big": "${[vars.t, vars.t, vars.t, vars.t]}",
+		},
+		nodeLimit: 12,
+	}
+	p := newProblems(nil)
+	file.evaluateVars(p, nil)
+
+	require.Error(t, p.err())
+	assert.Contains(t, p.err().Error(), "computed vars produce more than 12 values")
 }
 
 func TestDeclareVarsCountsComputedLeavesBeforeBuildingGraph(t *testing.T) {
@@ -283,7 +467,7 @@ func TestQuadraticSharedTableFanOutIsRefused(t *testing.T) {
 	_, err := LoadSource(sharedTableSource(20_000, 100))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(),
-		fmt.Sprintf("computed vars have more than %d dependency edges", maxVarDependencyEdges))
+		"computed vars exceed the dependency budget")
 }
 
 // TestEverySiteRecognisesBothSpellings is the audit. `vars.token` and

@@ -17,7 +17,7 @@ import (
 // what to write.
 func RequiredSecretInputMessage(taskName, input string) string {
 	return fmt.Sprintf(
-		"task %q requires input %q to be a whole secret reference such as ${secret('env:NAME')}, never a literal",
+		"task %q requires input %q to be a whole secret reference such as ${secret('env:NAME')} or credential reference such as ${credential('target')}, never a literal",
 		taskName, input)
 }
 
@@ -102,7 +102,7 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 		if !supplied {
 			continue
 		}
-		if value.GetSecretRef() != nil {
+		if value.GetSecretRef() != nil || value.GetCredentialRef() != nil {
 			continue
 		}
 		step := fmt.Sprintf("step %q", stepID)

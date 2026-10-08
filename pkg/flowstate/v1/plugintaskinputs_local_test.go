@@ -37,6 +37,7 @@ func TestPluginTaskInputsLocal(t *testing.T) {
 	for _, test := range conformance.PluginTaskInputCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
+			conformance.RequireNoExchange(t, test)
 		})
 	}
 }

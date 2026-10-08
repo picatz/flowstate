@@ -213,6 +213,29 @@ func delegatedWorkloadIdentity(actors ...*v1.Actor) *v1.WorkloadIdentity {
 	}}
 }
 
+// refusedClaimsRule is the rule an operator writes to exclude a class of caller
+// by a claim: it admits the tenant and anyone *not* carrying `contractors`.
+const refusedClaimsRule = `identity.namespace == "team-a" && !("contractors" in identity.claims)`
+
+// refusedClaimsDenyRule is the same exclusion as a deny rule.
+const refusedClaimsDenyRule = `"contractors" in identity.claims`
+
+// refusedClaimsIdentity is a team-a agent whose `contractors` claim nests past
+// [auth.MaxCarriedClaimDepth], so the identity refuses it. A rule that only
+// tests that claim's absence must not read the refusal as "not a contractor";
+// every surface denies instead (#2426).
+func refusedClaimsIdentity() *v1.WorkloadIdentity {
+	deep := any("contractor")
+	for range auth.MaxCarriedClaimDepth + 1 {
+		deep = []any{deep}
+	}
+
+	identity := carrierWorkloadIdentity(v1.PrincipalKind_PRINCIPAL_KIND_AGENT, "dev")
+	identity.Principal.Claims["contractors"] = auth.ClaimsToStruct(map[string]any{"contractors": deep})["contractors"]
+
+	return identity
+}
+
 // carrierWorkloadIdentity is the wire form of the same caller: a principal of
 // the given kind in team-a, admitted by [carrierEntry], for the surfaces whose
 // cases carry a [v1.WorkloadIdentity].

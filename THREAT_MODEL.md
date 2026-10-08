@@ -197,7 +197,16 @@ at most four segments), and a group list is refused whole, never trimmed, when
 the IdP signals an overage (`_claim_names`, `hasgroups`) or it is over a bound: a
 rule over membership would otherwise decide on a membership the caller does not
 have, in the direction that grants or in the one that fails to deny. The public
-reason names neither the entry nor the claim; the server's error does. Limits:
+reason names neither the entry nor the claim; the server's error does. The same
+holds after admission: an identity whose carried claims are over a bound (depth,
+value count, or more than 32 claims) when read back from a run or plugin binds
+its `claims` as a CEL error value (`principal.Caller.Bind`), so any expression
+that touches them errors, including `==` and `!=` in either operand order, `in`,
+`size`, indexing and comprehensions, and every surface denies. A rule that only
+tests a claim's absence (`!("contractors" in identity.claims)`) does not permit
+against a set missing the claim. The refusal sits on the bound value and not on
+a map-like carrier, because CEL equality dispatches on the left operand and `!=`
+reads a non-true answer as true. Limits:
 `group_map` is an allowlist, so a deny rule on a group the map does not list
 never matches, and an IdP that sends no overage marker for a list it cut gives
 Flowstate nothing to refuse on. `flow validate --auth-policy` is advisory and

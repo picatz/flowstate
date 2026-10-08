@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/identity.proto";
 
 option go_package = "flowstatev1";
 
@@ -44,6 +45,11 @@ message PolicyTestSuite {
 
 // PolicyTestCase is one request put to the policy, and what the policy must say.
 message PolicyTestCase {
+  // The identity a case was made as is its `principal` now, the one message
+  // every other surface carries.
+  reserved 2;
+  reserved "identity";
+
   // Name labels the case in the output. Unique across the file (checked by the
   // reader), at most 128 characters, and free of control characters (C0, DEL and
   // C1) and Unicode format characters (category Cf), since it is printed.
@@ -53,9 +59,16 @@ message PolicyTestCase {
     pattern: "^[^\\x00-\\x1f\\x7f-\\x{9f}\\p{Cf}]+$"
   }];
 
-  // Identity is who the request is made as. Absent is no attested caller, which
-  // a rule that scopes by tenant declines to match.
-  PolicyTestIdentity identity = 2;
+  // Principal is who the request is made as: the [Principal] a run records, a
+  // trust policy entry assigns and every policy surface reads as
+  // `identity.<field>`, so a case can say its `kind`, a list or nested claim
+  // (`groups`), the `actions` it was granted and the `actors` acting for it, and
+  // a rule reads them exactly as it would on a worker. A subject and an issuer
+  // travel together or not at all, and `issuer_entry` is refused: it names a
+  // trust policy entry, which a case has none of. Absent is no attested caller,
+  // which a rule that scopes by tenant declines to match. Nothing here is
+  // attested, so a case never gains authority its principal does not carry.
+  Principal principal = 6;
 
   // Request is what is asked of the policy; which fields it may carry depends
   // on the suite's surface, and one that carries another surface's is refused.
@@ -72,19 +85,6 @@ message PolicyTestCase {
   // category: `scheme`, `port`, `address`, `executable`, `argv`, `dir`, `env`).
   // A policy that denies for a different reason fails the case.
   string rule = 5 [(buf.validate.field).string.max_len = 4096];
-}
-
-// PolicyTestIdentity is the identity a case is made as: the fields every policy
-// surface reads as `identity.<field>`.
-message PolicyTestIdentity {
-  string subject = 1 [(buf.validate.field).string.max_len = 1024];
-  string issuer = 2 [(buf.validate.field).string.max_len = 1024];
-  string namespace = 3 [(buf.validate.field).string.max_len = 1024];
-  map<string, string> claims = 4 [(buf.validate.field).map = {
-    max_pairs: 64
-    keys: {string: {max_len: 256}}
-    values: {string: {max_len: 4096}}
-  }];
 }
 
 // PolicyTestRequest is the request a case puts to the policy.

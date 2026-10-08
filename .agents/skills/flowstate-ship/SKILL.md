@@ -15,7 +15,9 @@ the current branch when empty).
 
 1. **Final head.** Finish every edit, push, and record the full 40-character
    head SHA on the pull request before requesting review. Any later push
-   restarts from here.
+   restarts from here. Before every push to an open pull request, run
+   `go run ./tools/mergecheck`; a push without its `clean against origin/main`
+   line is unverified, and conflicting paths are resolved first.
 2. **Independent review on that head.** One provider-neutral AI
    code-and-security review, and it is the evidence. On Claude Code, delegate
    to the `flowstate-reviewer` subagent with the PR number or base/head; its

@@ -28,6 +28,7 @@ package principal
 
 import (
 	"reflect"
+	"sync"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/ext"
@@ -122,6 +123,11 @@ func (c Caller) Normalized() Caller {
 // `sender.identity` and a run's `run.identity`. It has the same keys as the CEL
 // type's fields, so one rendering serves every surface; the zero Caller renders
 // every string empty, claims, actions and actors empty, and delegated false.
+//
+// Refused claims render as a CEL error value, not as the map of what was
+// readable, so an expression that reads `claims` at all fails closed (see
+// [Caller.Bind]). The map is for expression evaluation; [Claims.Map] is the
+// diagnostic view of what was read.
 func (c Caller) Map() map[string]any {
 	c = c.Normalized()
 
@@ -130,18 +136,81 @@ func (c Caller) Map() map[string]any {
 		actors[i] = map[string]any{"issuer": actor.Issuer, "subject": actor.Subject}
 	}
 
+	var claims any = c.Claims.Map()
+	if c.Claims.Refused() != nil {
+		claims = c.Claims.refusal()
+	}
+
 	return map[string]any{
 		"issuer":    c.Issuer,
 		"subject":   c.Subject,
 		"namespace": c.Namespace,
 		"kind":      c.Kind,
 		"principal": c.Principal,
-		"claims":    c.Claims.Map(),
+		"claims":    claims,
 		"actions":   c.Actions,
 		"actors":    actors,
 		"delegated": c.Delegated,
 	}
 }
+
+// Bind is the value an activation binds for a variable declared with [Var] (or
+// holds in the field of a native type that declares a [Caller]). A normal caller
+// binds as itself. A caller whose claims were refused binds as a struct of
+// Caller's layout whose `claims` field holds a CEL error value.
+//
+// The refusal has to happen here and not in [Claims]: a field typed Claims can
+// only hold the carrier, and a carrier is a map to every other operand, so
+// `{} == identity.claims` dispatches to the other operand's Equal (which reports
+// a size mismatch as false) and `identity.claims != {}` turns the carrier's
+// error into true. cel-go reads a declared field by its index in the bound
+// value, so the stand-in's error value is what `identity.claims` evaluates to,
+// before any operator sees it: `==` and `!=` in either order, `in`, `size`,
+// indexing, `has` and comprehensions over the claims all evaluate to an error
+// and the rule denies. Nothing but a field read can use the stand-in (it is not
+// a registered type, so adapting it whole is an error too). A map is not a
+// substitute: bound to an object-typed variable it reads every field as null.
+//
+// The carrier still errors on every read it serves, as a second line for a
+// [Caller] bound without Bind.
+func (c Caller) Bind() any {
+	if c.Claims.Refused() == nil {
+		return c
+	}
+
+	src := reflect.ValueOf(c)
+	out := reflect.New(refusedCallerType()).Elem()
+	for i := range out.NumField() {
+		if src.Type().Field(i).Type == claimsGoType {
+			out.Field(i).Set(reflect.ValueOf(c.Claims.refusal()))
+
+			continue
+		}
+		out.Field(i).Set(src.Field(i))
+	}
+
+	return out.Interface()
+}
+
+var claimsGoType = reflect.TypeFor[Claims]()
+
+// refusedCallerType is [Caller]'s layout with the claims field typed `any`, so
+// it can hold a CEL error value where a Caller holds the carrier. It is derived
+// from Caller, field for field and tag for tag, so a field added to Caller
+// reaches it with no second list.
+var refusedCallerType = sync.OnceValue(func() reflect.Type {
+	t := reflect.TypeFor[Caller]()
+	fields := make([]reflect.StructField, t.NumField())
+	for i := range fields {
+		f := t.Field(i)
+		fields[i] = reflect.StructField{Name: f.Name, Type: f.Type, Tag: f.Tag}
+		if f.Type == claimsGoType {
+			fields[i].Type = reflect.TypeFor[any]()
+		}
+	}
+
+	return reflect.StructOf(fields)
+})
 
 // NativeTypeArgs is the argument list a CEL environment hands to
 // [ext.NativeTypes] to bind a [Caller]: the `cel` struct-tag option, then the

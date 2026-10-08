@@ -33,6 +33,7 @@ Two limits, so nobody relies on more:
 ```go
 import (
 	"context"
+	"errors"
 	"log"
 
 	"github.com/picatz/flowstate/pkg/flowstate/embed"
@@ -53,6 +54,12 @@ tasks.Register(embed.Task{
 	Name: "greet",
 	Fn: func(_ context.Context, inputs map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
 		name := inputs["name"].GetLiteral().GetStringValue()
+		if name == "" {
+			// A failure the caller caused: classified, reported as
+			// InvalidInput, and not retried. A plain error here would be
+			// retried five times and reported as Internal.
+			return nil, embed.InvalidInput(errors.New("name is required"))
+		}
 		return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(map[string]any{
 			"message": "hello, " + name,
 		})}, nil

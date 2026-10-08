@@ -37,7 +37,8 @@ func EvalRunOutputs(ctx context.Context, wf *Workflow, scope *Scope) (*RunOutput
 }
 
 // EvalRunOutputsWithCost is [EvalRunOutputs] plus the deterministic CEL cost of
-// every declared output's expression. Literal outputs cost zero.
+// every declared output's expression, its `must:` predicate, and its record
+// rules. A literal output with none of those costs zero.
 //
 // A run's own outputs are evaluated once, at its end, and need no accounting.
 // A *call's* do not: [CallOutputs] reaches this function once per `call:` step,
@@ -91,10 +92,14 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			if lit := value.GetLiteral(); lit != nil {
 				value = &Value{Kind: &Value_Literal{Literal: NormalizeWireValue(table, declaration.DeclaredType(), lit)}}
 			}
-			if err := CheckOutputConstraint(scope.GetProfile(), declaration, value); err != nil {
+			cost, err := CheckOutputConstraintWithCost(ctx, scope.GetProfile(), declaration, value)
+			spent += cost
+			if err != nil {
 				return nil, spent, err
 			}
-			if err := CheckRecordRules(table, scope.GetProfile(), "output", name, declaration.GetSensitive(), declaration.DeclaredType(), value); err != nil {
+			cost, err = CheckRecordRulesWithCost(ctx, table, scope.GetProfile(), "output", name, declaration.GetSensitive(), declaration.DeclaredType(), value)
+			spent += cost
+			if err != nil {
 				return nil, spent, err
 			}
 
@@ -128,7 +133,9 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 		// output see the declared type; see [NormalizeWireValue].
 		computed = &Value{Kind: &Value_Literal{Literal: NormalizeWireValue(table, declaration.DeclaredType(), literal)}}
 
-		if err := CheckOutputConstraint(scope.GetProfile(), declaration, computed); err != nil {
+		cost, err = CheckOutputConstraintWithCost(ctx, scope.GetProfile(), declaration, computed)
+		spent += cost
+		if err != nil {
 			// A workflow claiming a `must:` on its own answer has that answer
 			// checked before it is reported — the same rule a submitted input
 			// gets, pointed the other way: a run that cannot produce a value
@@ -136,7 +143,9 @@ func EvalRunOutputsWithCost(ctx context.Context, wf *Workflow, scope *Scope) (*R
 			// function's own doc comment.
 			return nil, spent, err
 		}
-		if err := CheckRecordRules(table, scope.GetProfile(), "output", name, declaration.GetSensitive(), declaration.DeclaredType(), computed); err != nil {
+		cost, err = CheckRecordRulesWithCost(ctx, table, scope.GetProfile(), "output", name, declaration.GetSensitive(), declaration.DeclaredType(), computed)
+		spent += cost
+		if err != nil {
 			return nil, spent, err
 		}
 

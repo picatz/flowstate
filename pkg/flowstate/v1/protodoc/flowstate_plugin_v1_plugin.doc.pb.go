@@ -148,6 +148,14 @@ func init() {
 				" is what tells the host it may resolve one into this input rather than\n" +
 				" refusing it.\n" +
 				"\n" +
+				" The same grant covers a credential reference, `${credential('target')}`:\n" +
+				" the worker mints the credential for the step through the deployment's\n" +
+				" federation broker and assumption policy, and the plugin receives the\n" +
+				" bearer token as the string a stored secret would have been. Only a bearer\n" +
+				" token can be delivered as a single string, so a target that mints an AWS\n" +
+				" session is refused here. A credential reference in an input not named here\n" +
+				" is refused, like a secret reference.\n" +
+				"\n" +
 				" # Why the host resolves rather than the plugin\n" +
 				"\n" +
 				" A plugin can already resolve references under a scheme *it* provides — see\n" +

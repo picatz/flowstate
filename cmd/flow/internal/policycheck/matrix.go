@@ -298,14 +298,7 @@ func readMatrix(data []byte, into *v1.PolicyCheckMatrix) error {
 	}
 
 	respell := func(identity *structpb.Value) {
-		who := identity.GetStructValue().GetFields()["principal"].GetStructValue().GetFields()
-		name, ok := who["kind"].GetKind().(*structpb.Value_StringValue)
-		if !ok {
-			return
-		}
-		if kind := v1.PrincipalKindNamed(name.StringValue); kind != v1.PrincipalKind_PRINCIPAL_KIND_UNSPECIFIED {
-			who["kind"] = structpb.NewStringValue(kind.String())
-		}
+		v1.RespellPrincipalKind(identity.GetStructValue().GetFields()["principal"])
 	}
 
 	for _, row := range doc.GetFields()["identities"].GetListValue().GetValues() {

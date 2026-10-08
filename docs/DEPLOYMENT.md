@@ -852,6 +852,17 @@ deny on a group has to map that group. The name `groups` is reserved for
 The names `act` and `may_act` are reserved the same way, because they are RFC 8693
 delegation claims: carry such a claim under another name with `as`.
 
+A claim set that a run or plugin hands back over the carried-claim bounds (a
+claim nested deeper than four levels or holding more than 512 values, or more than
+32 claims) is refused, not trimmed, and the refusal travels with the identity:
+every policy rule that touches `identity.claims`, on egress, exec, task shape,
+secret, assumption and signal surfaces, is an evaluation error and denies,
+whatever it does with them: a membership or absence test, a comparison with `==`
+or `!=` in either order, `size`, or a comprehension. That includes a rule that
+only tests absence, such as `!("contractors" in identity.claims)`,
+which would otherwise read the dropped claim as missing and permit. Rules that
+read no claim are unchanged.
+
 A group list is never trimmed. At most 64 groups of 256 bytes are carried, and a
 token that exceeds that, or carries an overage indicator (Entra's
 `_claim_names.groups` and `hasgroups`, or `groups_truncated` from a gateway that
@@ -1536,6 +1547,15 @@ Flowstate spells one (lowercase letters, digits and dashes, no leading dash). A
 namespace not listed has no issuer, no key and no URL: a worker for it does not
 start, and the server answers 404 for it, the same 404 it gives a path that is not
 a tenant at all, so the response does not say which tenants exist.
+
+A relying party that matches the subject exactly, or bounds its length, cannot take a
+subject per step: an Azure federated identity credential holds one exact subject and an
+application has few of them, and a GCP `google.subject` is length-limited. A target
+therefore says how much of the position its assertion names with `subject_level: step`,
+`workflow` or `deployment` (`flowstate:acme/prod/deploy-service/_any`,
+`flowstate:acme/prod/_any/_any`), validated when the policy loads. It changes only what
+the relying party reads: the assumption rules still decide per step. See
+[Secrets and credentials](SECRETS.md#subject-level) for the table and the Azure shape.
 
 Each tenant's key is its own, and each process holds only what it needs:
 

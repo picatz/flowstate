@@ -1,6 +1,7 @@
 package flowfile_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -317,14 +318,28 @@ steps:
 // accepts a well-formed reference and refuses a malformed one at the line, rather
 // than reporting ok and failing at run time.
 func TestCredentialReferenceValidates(t *testing.T) {
+	// A credential is minted for a task's declared secret input, so the task it
+	// is written on has to declare one; see
+	// TestCredentialReferenceIsAcceptedOnlyWhereATaskTakesASecret for the refusal.
+	const task = "test_credential_validates_probe"
+	if err := v1.DefaultRegistry().Register(v1.TaskDef{
+		Name:         task,
+		Inputs:       (&v1.Task_Log_Inputs{}).ProtoReflect().Descriptor(),
+		SecretInputs: []string{"message"},
+		Fn: func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) {
+			return nil, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register() error: %v", err)
+	}
+	t.Cleanup(func() { v1.DefaultRegistry().Unregister(task) })
+
 	good := []byte(`edition: v2026.4
 name: uses-a-credential
 steps:
   - id: notify
-    http:
-      method: POST
-      url: https://api.example.com/events
-      body: ${credential('anthropic')}
+    ` + task + `:
+      message: ${credential('anthropic')}
 `)
 	ds, err := flowfile.ValidateSource(good)
 	if err != nil {

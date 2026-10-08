@@ -37,16 +37,42 @@ import (
 // produces no diagnostic. That matters more here than coverage does: a validator
 // that reports a mistake the author did not make teaches them to stop reading it.
 
+// credentialPlacement reports a credential reference written in an input the
+// task did not declare in secret_inputs. A credential reference is minted for a
+// task's declared secret input and nowhere else, so an input that is not one
+// refuses it here rather than at the step that would have been handed a name it
+// cannot use.
+func credentialPlacement(stepID string, def v1.TaskDef, task *v1.Task, name string) (Diagnostic, bool) {
+	if task.GetInputs()[name].GetCredentialRef() == nil || slices.Contains(def.SecretInputs, name) {
+		return Diagnostic{}, false
+	}
+	message := fmt.Sprintf("task %q does not accept a credential reference in input %q", def.Name, name)
+	if len(def.SecretInputs) > 0 {
+		message += fmt.Sprintf("; it accepts one in %s", strings.Join(slices.Sorted(slices.Values(def.SecretInputs)), ", "))
+	}
+	return Diagnostic{Step: stepID, Field: name, Message: message}, true
+}
+
 // validateTaskInputs reports what the task's own schema says is wrong with its
 // inputs: a name it does not declare, a required one left out, and a literal
 // whose type the field cannot hold.
 func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	def, known := v1.LookupTask(task.GetName())
-	if !known || def.Inputs == nil {
-		// An unknown task is reported on its own, and a task whose shape is not
-		// expressed as a message — a plugin declaring no input descriptor — has
-		// nothing to check against.
+	if !known {
+		// An unknown task is reported on its own.
 		return nil
+	}
+	if def.Inputs == nil {
+		// A task whose shape is not expressed as a message — a plugin declaring
+		// no input descriptor — has nothing to type-check against, but it still
+		// cannot declare secret_inputs, so a credential reference is refused.
+		var ds Diagnostics
+		for _, name := range sortedInputNames(task.GetInputs()) {
+			if d, bad := credentialPlacement(stepID, def, task, name); bad {
+				ds = append(ds, d)
+			}
+		}
+		return ds
 	}
 
 	var ds Diagnostics
@@ -116,8 +142,12 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		if field == nil {
 			continue
 		}
+		if d, bad := credentialPlacement(stepID, def, task, name); bad {
+			ds = append(ds, d)
+			continue
+		}
 		if slices.Contains(def.RequiredSecretInputs, name) {
-			if task.GetInputs()[name].GetSecretRef() == nil {
+			if value := task.GetInputs()[name]; value.GetSecretRef() == nil && value.GetCredentialRef() == nil {
 				ds = append(ds, Diagnostic{
 					Step:    stepID,
 					Field:   name,

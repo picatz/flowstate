@@ -1536,7 +1536,7 @@ configured in the one trust policy, not in a Flowfile. Pass the same policy
 | Direction | The deployment configures | A Flowfile sees |
 | --- | --- | --- |
 | **Inbound**: who may reach Flowstate | `issuers:`, each `kind: oidc` (the default) or `kind: mtls`. An `oidc` entry takes `audiences`, claim rules, a tenant fixed or read from `namespace_claim`, and the claims and groups policy may read (`carry_claims`, `groups_claim`, `group_map`). An `mtls` entry takes `client_ca_file` and `subject_from` and a fixed tenant, and refuses `audiences` and `namespace_claim`. Either may assign `principal_kind:` `human`, `workload` or `agent`, which a token cannot choose for itself | `run.identity` with `principal`, `subject`, `issuer`, `namespace`, `kind`, `claims`, and `sender.identity` the same, except that a wait's sender carries no `claims`. [Who may act](#who-may-act-on-a-run) |
-| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
+| **Outbound**: what a workload may become | `federation:` with `targets:` (`token_exchange`, `client_credentials`, `gcp`, `aws`, `assertion`, each with an optional `subject_level` of `step`, `workflow` or `deployment`) and `allow`/`deny` rules over `target`, `audience` and `workload` | `credential:` on a task such as `http`, and `${credential('target')}` on a plugin task's declared secret input. [Secrets and credentials](SECRETS.md#short-lived-credentials-instead-of-stored-ones) |
 
 Three rules hold in both directions:
 
@@ -1591,15 +1591,19 @@ where references are allowed and how a deployment resolves them.
 
 `${credential('target')}` names a federation target in the deployment's trust
 policy (`federation: targets:`) where `${secret(...)}` would name a stored
-secret. The worker running the step exchanges its own workload identity for a
+secret. A plugin task takes one in an input its manifest lists in `secret_inputs`,
+and receives the credential's bearer token as it would a stored secret. The worker running the step exchanges its own workload identity for a
 short-lived credential at the moment the task needs one, so no key is stored
 anywhere. It is a reference like a secret and held to the same rules, and
 fewer places: it has to be the whole value of a task input, never an entry
 nested in a list or a mapping. It is refused in `vars:`, in a call's `with:`, in
 anything the workflow evaluates itself, and combined with text. The target is
 written out, not computed. A task that does not accept a credential in an input
-refuses one there, and a target the deployment does not federate is refused when
-the workflow is validated or submitted, not when the step runs.
+refuses one there, when the workflow is validated and again when the step runs, and
+a target the deployment does not federate is refused when the workflow is validated
+or submitted, not when the step runs. Which part of the workload's position the
+relying party sees in the assertion is the target's `subject_level`, the
+deployment's choice, not the Flowfile's ([Subject level](SECRETS.md#subject-level)).
 
 ### Sensitive values
 

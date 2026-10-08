@@ -56,6 +56,8 @@ env:
   VHS_VERSION: v0.11.0
   TTYD_VERSION: 1.7.7
   TTYD_SHA256: 8a217c968aba172e0dbf3f34447218dc015bc4d5e59bf51db2f2cd12b7be4f55
+  FFMPEG_VERSION: b6.1.1
+  FFMPEG_SHA256: e7e7fb30477f717e6f55f9180a70386c62677ef8a4d4d1a5d948f4098aa3eb99
 
 # Only the newest commit on a branch is worth testing. Pushing three times in a
 # minute otherwise runs three full matrices and the first two answer questions
@@ -951,8 +953,19 @@ jobs:
 
       # vhs refuses to start without ffmpeg, even for a text recording, so this
       # is a hard dependency rather than one only the GIF path needs.
+      #
+      # A pinned static binary rather than the runner's apt mirror, which
+      # stalls: an unbounded `apt-get update` once held this job for its whole
+      # 15-minute limit, and a bounded one still failed every head for over an
+      # hour (#2454). Fetched from the release host the ttyd step already
+      # uses, with a checksum because no package manager verifies it.
       - name: Install ffmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        timeout-minutes: 5
+        run: |
+          curl -fsSL --retry 3 --connect-timeout 20 --max-time 120 -o /tmp/ffmpeg "https://github.com/eugeneware/ffmpeg-static/releases/download/${FFMPEG_VERSION}/ffmpeg-linux-x64"
+          echo "${FFMPEG_SHA256}  /tmp/ffmpeg" | sha256sum -c -
+          sudo install -m 0755 /tmp/ffmpeg /usr/local/bin/ffmpeg
+          ffmpeg -version | head -1
 
       # ttyd is the terminal vhs drives. Upstream ships a static binary per
       # release; pinned by version for the same reason everything else here is,
