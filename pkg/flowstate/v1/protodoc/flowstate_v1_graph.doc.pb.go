@@ -27,7 +27,7 @@ func init() {
 				"\n" +
 				" A graph is built from files and runs another party controls, so its size is\n" +
 				" bounded where it is spent: nodes and edges are capped, and a build that\n" +
-				" reaches a cap sets [Graph.partial] and says so in [Graph.notes] rather than\n" +
+				" reaches a cap sets `partial` and says so in `notes` rather than\n" +
 				" returning a silently smaller graph.\n",
 		},
 		{

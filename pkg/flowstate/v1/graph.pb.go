@@ -150,7 +150,7 @@ func (GraphEdgeKind) EnumDescriptor() ([]byte, []int) {
 //
 // A graph is built from files and runs another party controls, so its size is
 // bounded where it is spent: nodes and edges are capped, and a build that
-// reaches a cap sets [Graph.partial] and says so in [Graph.notes] rather than
+// reaches a cap sets `partial` and says so in `notes` rather than
 // returning a silently smaller graph.
 type Graph struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
