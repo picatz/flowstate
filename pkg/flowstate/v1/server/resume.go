@@ -7,6 +7,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"google.golang.org/protobuf/proto"
 
@@ -170,7 +171,14 @@ func (s *FlowstateServer) ResumeRun(
 		return nil, err
 	}
 
-	options.WorkflowExecutionErrorWhenAlreadyStarted = req.Msg.RequestId != nil
+	if req.Msg.RequestId != nil {
+		// A request id names one resume forever, as it does on Run: a retry
+		// that arrives after the resumed run finished must find that run, not
+		// start a second one that repeats the suffix's effects.
+		options.WorkflowExecutionErrorWhenAlreadyStarted = true
+		options.WorkflowIDConflictPolicy = enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL
+		options.WorkflowIDReusePolicy = enums.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
+	}
 	run, err := startClient.ExecuteWorkflow(ctx, options, engine.Run, next)
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &already) {

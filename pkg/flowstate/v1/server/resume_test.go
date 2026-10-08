@@ -122,6 +122,26 @@ func TestResumeRunStartsAnOrdinaryRunFromACheckpoint(t *testing.T) {
 		assert.NotEqual(t, first.GetWorkflowId(), fork.GetWorkflowId(), "a different id is an intentional fork")
 	})
 
+	t.Run("a request id still finds the run once it has finished", func(t *testing.T) {
+		t.Parallel()
+
+		ask := func() *v1.ResumeRunResponse {
+			resumed, err := fixture.teamA.ResumeRun(t.Context(), connect.NewRequest(&v1.ResumeRunRequest{
+				WorkflowId: origin,
+				RequestId:  proto.String("retry-after-finish"),
+			}))
+			require.NoError(t, err)
+			return resumed.Msg
+		}
+		first := ask()
+		waitUntilParkedAtTheGate(t, fixture.temporal, first.GetWorkflowId())
+		require.NoError(t, fixture.temporal.TerminateWorkflow(t.Context(), first.GetWorkflowId(), first.GetRunId(), "finished"))
+
+		again := ask()
+		assert.True(t, again.GetReused(), "a lost response then a finished run must not start a second run")
+		assert.Equal(t, first.GetRunId(), again.GetRunId())
+	})
+
 	t.Run("an entity-addressed run cannot be resumed", func(t *testing.T) {
 		t.Parallel()
 
