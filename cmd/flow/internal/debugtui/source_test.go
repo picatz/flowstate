@@ -835,7 +835,7 @@ func TestEscapeControlAgreesWithTheSanitizer(t *testing.T) {
 func TestTheLineBoundHoldsForWhatACharacterBecomes(t *testing.T) {
 	t.Parallel()
 
-	for name, tail := range map[string]string{"control": "\x1b", "tab": "\t", "bidi": "‮", "plain": "z"} {
+	for name, tail := range map[string]string{"control": "\x1b", "tab": "\t", "bidi": "\u202e", "plain": "z"} {
 		got, cut := sanitizeLine(strings.Repeat("a", MaxSourceLineRunes-1) + tail + "tail")
 		assert.LessOrEqual(t, len([]rune(got)), MaxSourceLineRunes, name)
 		assert.True(t, cut, name)
