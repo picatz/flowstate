@@ -161,9 +161,10 @@ func withLiveRuns(cmd *cobra.Command, g *v1.Graph, filter string) (*v1.Graph, er
 	client := newWorkflowServiceClient(server)
 
 	var (
-		runs  []*v1.RunSummary
-		token string
-		more  bool
+		runs     []*v1.RunSummary
+		token    string
+		more     bool
+		excluded uint32
 	)
 	for range maxGraphRunPages {
 		request := &v1.ListRequest{PageSize: 1000, PageToken: token, Filter: filter}
@@ -178,6 +179,7 @@ func withLiveRuns(cmd *cobra.Command, g *v1.Graph, filter string) (*v1.Graph, er
 			return nil, fmt.Errorf("the server could not evaluate --filter: %s", d)
 		}
 		runs = append(runs, response.Msg.GetRuns()...)
+		excluded += response.Msg.GetExcludedByError()
 
 		previous := token
 		token = response.Msg.GetNextPageToken()
@@ -193,6 +195,13 @@ func withLiveRuns(cmd *cobra.Command, g *v1.Graph, filter string) (*v1.Graph, er
 	}
 
 	out := graph.WithRuns(g, runs)
+	// Runs the filter could not be evaluated for are left out of the listing and
+	// only counted, so a count that ignored them would read as complete.
+	if excluded > 0 {
+		out.Partial = true
+		out.Notes = slices.Insert(out.Notes, 0, fmt.Sprintf("%d runs were left out because --filter could not be evaluated for them", excluded))
+		out.Notes = out.Notes[:min(len(out.Notes), 100)]
+	}
 	if more {
 		out.Partial = true
 		// First, so the bound is the note a full list does not cut.

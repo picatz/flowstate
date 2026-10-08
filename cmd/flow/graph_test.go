@@ -176,3 +176,18 @@ func TestGraphLiveReportsAServerThatRefuses(t *testing.T) {
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), "refused while listing runs")
 }
+
+func TestGraphLiveSaysWhenTheFilterCouldNotBeEvaluatedForSomeRuns(t *testing.T) {
+	serveFake(t, &fakeWorkflowService{listResponses: []*v1.ListResponse{
+		{Runs: []*v1.RunSummary{liveRun("billing", v1.RunResponse_STATUS_RUNNING)}, ExcludedByError: 2, NextPageToken: "p2"},
+		{ExcludedByError: 3},
+	}})
+
+	res := runFlow(t, "graph", "--live", "--filter", `labels["team"] == "x"`, "-o", "json")
+	require.NoError(t, res.Err, res.Stderr)
+
+	var g v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(res.Stdout), &g))
+	assert.True(t, g.GetPartial(), "an undercount must not read as complete")
+	assert.Contains(t, g.GetNotes()[0], "5 runs were left out because --filter could not be evaluated")
+}
