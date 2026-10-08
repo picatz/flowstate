@@ -254,6 +254,17 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return hoverAt(doc, params.Position), nil
 
+	case "textDocument/signatureHelp":
+		var params lsp.TextDocumentPositionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return nil, nil
+		}
+		return signatureHelpAt(doc, params.Position), nil
+
 	case "textDocument/completion":
 		var params lsp.CompletionParams
 		if err := decode(req, &params); err != nil {
@@ -516,7 +527,8 @@ func capabilities() serverCapabilities {
 				Save:      &lsp.SaveOptions{IncludeText: true},
 			},
 		},
-		HoverProvider: true,
+		HoverProvider:         true,
+		SignatureHelpProvider: &lsp.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 		CompletionProvider: &lsp.CompletionOptions{
 			// Enough to open completion at each place a Flowfile has something
 			// to offer: after a key's colon, inside ${...}, after a step id's
