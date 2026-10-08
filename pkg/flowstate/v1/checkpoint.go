@@ -16,7 +16,10 @@ const CheckpointVersion = 1
 // rewrites history" without parsing a message.
 var (
 	// ErrCheckpointTampered reports a checkpoint whose recorded digest or
-	// position does not match the state it carries.
+	// position does not match the workflow it carries. It is a consistency
+	// check, not authentication: the digest is unkeyed and covers only the
+	// workflow, so a consumer that accepts checkpoints from an untrusted party
+	// must authenticate the source itself.
 	ErrCheckpointTampered = errors.New("flowstate: checkpoint does not match its state")
 
 	// ErrCheckpointUnsupported reports a position this contract does not yet
@@ -132,6 +135,12 @@ func (cp *Checkpoint) Resume(build string, patch *Workflow) (*RunState, error) {
 			return nil, fmt.Errorf("%w: step %d (%q) differs", ErrCheckpointPatch, i, executed.GetId())
 		}
 	}
+	if !proto.Equal(withoutSteps(state.GetWorkflow()), withoutSteps(patch)) {
+		return nil, fmt.Errorf("%w: only the steps may change; the profile, vars, declared inputs and every other workflow field are fixed", ErrCheckpointPatch)
+	}
+	if issues := StepIDIssues(patch); len(issues) > 0 {
+		return nil, fmt.Errorf("%w: patched workflow has step id problems: %s", ErrCheckpointPatch, issues[0])
+	}
 	state.Workflow = proto.Clone(patch).(*Workflow)
 	if err := Validate(state); err != nil {
 		return nil, fmt.Errorf("patched workflow: %w", err)
@@ -141,6 +150,16 @@ func (cp *Checkpoint) Resume(build string, patch *Workflow) (*RunState, error) {
 	}
 
 	return state, nil
+}
+
+// withoutSteps is workflow with its steps cleared: everything a patch must
+// leave alone. The profile pins the CEL vocabulary the carried values were
+// computed under, and vars and declared inputs define the carried state.
+func withoutSteps(workflow *Workflow) *Workflow {
+	out := proto.Clone(workflow).(*Workflow)
+	out.Steps = nil
+
+	return out
 }
 
 // checkpointPosition is the index of the next top-level step: the outermost

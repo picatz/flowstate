@@ -62,6 +62,21 @@ func TestCheckpointResumeAcceptsPatchAfterPosition(t *testing.T) {
 	require.True(t, proto.Equal(state.GetInputs()["who"], got.GetInputs()["who"]))
 }
 
+func TestCheckpointAtEndAndLegacyCursor(t *testing.T) {
+	t.Parallel()
+
+	state, _ := checkpointFixture(t)
+	state.Frames = nil
+	state.NextStep = 3
+
+	cp, err := v1.NewCheckpoint(state, "build-1", &v1.CheckpointOrigin{Run: &v1.RunAddress{WorkflowId: "wf"}})
+	require.NoError(t, err, "the end of the steps, with the legacy cursor and no origin step, is a legal point")
+
+	got, err := cp.Resume("build-1", nil)
+	require.NoError(t, err)
+	require.True(t, proto.Equal(state, got))
+}
+
 func TestCheckpointRefusals(t *testing.T) {
 	t.Parallel()
 
@@ -161,11 +176,46 @@ func TestCheckpointRefusals(t *testing.T) {
 		require.NoError(t, err)
 
 		patch := proto.Clone(state.GetWorkflow()).(*v1.Workflow)
-		patch.Name = ""
 		patch.Steps[2] = &v1.Node{Id: "c"}
 		_, err = cp.Resume("build-1", patch)
 		require.Error(t, err)
 		require.Contains(t, err.Error(), "patched workflow")
+	})
+
+	t.Run("patch changes a workflow field other than the steps", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		cp, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.NoError(t, err)
+
+		patch := proto.Clone(state.GetWorkflow()).(*v1.Workflow)
+		patch.Name = "renamed"
+		_, err = cp.Resume("build-1", patch)
+		require.ErrorIs(t, err, v1.ErrCheckpointPatch)
+	})
+
+	t.Run("patch reuses an executed step id", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		cp, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.NoError(t, err)
+
+		patch := proto.Clone(state.GetWorkflow()).(*v1.Workflow)
+		patch.Steps[2] = step("a")
+		_, err = cp.Resume("build-1", patch)
+		require.ErrorIs(t, err, v1.ErrCheckpointPatch)
+	})
+
+	t.Run("oversize patched state", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		cp, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.NoError(t, err)
+
+		patch := proto.Clone(state.GetWorkflow()).(*v1.Workflow)
+		patch.Steps[2] = &v1.Node{Id: "c", Kind: &v1.Node_Value{Value: v1.NewLiteral(strings.Repeat("x", v1.MaxRunStateBytes+1))}}
+		_, err = cp.Resume("build-1", patch)
+		require.Error(t, err)
 	})
 
 	t.Run("unknown version", func(t *testing.T) {

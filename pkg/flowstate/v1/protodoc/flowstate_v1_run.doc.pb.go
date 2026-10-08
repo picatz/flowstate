@@ -1272,8 +1272,10 @@ func init() {
 		{
 			Name: "flowstate.v1.Checkpoint.spec_hash",
 			Leading: " SpecHash is the canonical digest ([CanonicalDigest]) of state.workflow when\n" +
-				" the checkpoint was taken. A resume recomputes it, so a state edited after it\n" +
-				" was emitted is refused rather than trusted.\n",
+				" the checkpoint was taken. A resume recomputes it, so a workflow edited\n" +
+				" without updating it is refused. It is a consistency check, not\n" +
+				" authentication: it is unkeyed and covers only the workflow, so whoever\n" +
+				" accepts a checkpoint from an untrusted source must authenticate it.\n",
 		},
 		{
 			Name: "flowstate.v1.Checkpoint.interpreter_build",

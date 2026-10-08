@@ -1159,8 +1159,10 @@ message Checkpoint {
   ];
 
   // SpecHash is the canonical digest ([CanonicalDigest]) of state.workflow when
-  // the checkpoint was taken. A resume recomputes it, so a state edited after it
-  // was emitted is refused rather than trusted.
+  // the checkpoint was taken. A resume recomputes it, so a workflow edited
+  // without updating it is refused. It is a consistency check, not
+  // authentication: it is unkeyed and covers only the workflow, so whoever
+  // accepts a checkpoint from an untrusted source must authenticate it.
   string spec_hash = 3 [(buf.validate.field).string = {min_len: 1, max_len: 128}];
 
   // InterpreterBuild names the interpreter that emitted the checkpoint. A resume

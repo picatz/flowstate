@@ -2459,8 +2459,10 @@ type Checkpoint struct {
 	// origin run was executing at the point.
 	State *RunState `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
 	// SpecHash is the canonical digest ([CanonicalDigest]) of state.workflow when
-	// the checkpoint was taken. A resume recomputes it, so a state edited after it
-	// was emitted is refused rather than trusted.
+	// the checkpoint was taken. A resume recomputes it, so a workflow edited
+	// without updating it is refused. It is a consistency check, not
+	// authentication: it is unkeyed and covers only the workflow, so whoever
+	// accepts a checkpoint from an untrusted source must authenticate it.
 	SpecHash string `protobuf:"bytes,3,opt,name=spec_hash,json=specHash,proto3" json:"spec_hash,omitempty"`
 	// InterpreterBuild names the interpreter that emitted the checkpoint. A resume
 	// by a different build is refused: the carried state means what the emitting
