@@ -28,6 +28,7 @@ import (
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
 // MaxSegments bounds how many segments one run may chain. Each is a full
@@ -50,6 +51,25 @@ type Result struct {
 	// Segments is how many workflow executions the run took; one means it never
 	// continued as new.
 	Segments int
+}
+
+// Runner is the [flowtest.DurableRunner] that `flow test --driver both` hands
+// the harness: it carries a request's scripted signals into [Run] and returns
+// what the harness compares.
+func Runner(ctx context.Context, req flowtest.DurableRequest) (flowtest.DurableResult, error) {
+	signals := make([]Signal, 0, len(req.Signals))
+	for _, s := range req.Signals {
+		signals = append(signals, Signal{Name: s.Name, Offset: s.At, Payload: s.Payload, Sender: s.Sender})
+	}
+
+	res, err := Run(ctx, Request{
+		Workflow: req.Workflow, Inputs: req.Inputs, Start: req.Start, Runtime: req.Runtime, Signals: signals,
+	})
+	if res == nil {
+		return flowtest.DurableResult{}, err
+	}
+
+	return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
 }
 
 // Signal is one signal to deliver to the run, Offset after it began.

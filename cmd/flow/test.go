@@ -2,7 +2,6 @@ package main
 
 import (
 	"cmp"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1405,20 +1404,7 @@ func driverOption(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOptio
 			"run them separately so a finding names one cause")
 	}
 
-	return func(ctx context.Context, req flowtest.DurableRequest) (flowtest.DurableResult, error) {
-		signals := make([]durable.Signal, 0, len(req.Signals))
-		for _, s := range req.Signals {
-			signals = append(signals, durable.Signal{Name: s.Name, Offset: s.At, Payload: s.Payload, Sender: s.Sender})
-		}
-		res, err := durable.Run(ctx, durable.Request{
-			Workflow: req.Workflow, Inputs: req.Inputs, Start: req.Start, Runtime: req.Runtime, Signals: signals,
-		})
-		if res == nil {
-			return flowtest.DurableResult{}, err
-		}
-
-		return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
-	}, nil
+	return durable.Runner, nil
 }
 
 // mutantFound reports that some file's report ran the mutant `--mutant` named.

@@ -13,22 +13,6 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest/durable"
 )
 
-// durableRunner is what `flow test --driver both` hands the harness.
-func durableRunner(ctx context.Context, req flowtest.DurableRequest) (flowtest.DurableResult, error) {
-	signals := make([]durable.Signal, 0, len(req.Signals))
-	for _, s := range req.Signals {
-		signals = append(signals, durable.Signal{Name: s.Name, Offset: s.At, Payload: s.Payload, Sender: s.Sender})
-	}
-	res, err := durable.Run(ctx, durable.Request{
-		Workflow: req.Workflow, Inputs: req.Inputs, Start: req.Start, Runtime: req.Runtime, Signals: signals,
-	})
-	if res == nil {
-		return flowtest.DurableResult{}, err
-	}
-
-	return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
-}
-
 func runBoth(t *testing.T, workflow, tests string) *flowtest.RunResult {
 	t.Helper()
 
@@ -36,7 +20,7 @@ func runBoth(t *testing.T, workflow, tests string) *flowtest.RunResult {
 	writeFile(t, filepath.Join(dir, "workflow.yaml"), workflow)
 	path := filepath.Join(dir, "workflow.test.yaml")
 	writeFile(t, path, tests)
-	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Durable: durableRunner})
+	run := flowtest.RunPath(t.Context(), path, flowtest.RunOptions{Durable: durable.Runner})
 
 	return &run
 }
@@ -85,7 +69,7 @@ func TestADriverDisagreementFailsTheCaseAtTheValueThatDiffers(t *testing.T) {
 	t.Parallel()
 
 	tamper := func(ctx context.Context, req flowtest.DurableRequest) (flowtest.DurableResult, error) {
-		res, err := durableRunner(ctx, req)
+		res, err := durable.Runner(ctx, req)
 		for _, outputs := range res.Outputs.GetStepValues() {
 			for name := range outputs.GetNamedValues() {
 				outputs.NamedValues[name] = v1.NewLiteral("tampered")
