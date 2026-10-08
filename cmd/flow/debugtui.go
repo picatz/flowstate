@@ -77,7 +77,11 @@ func terminalRefusal(in io.Reader, out io.Writer, min tui.Size) string {
 // that is gone must not keep a production run held.
 //
 // The program is offered for step names only when it is the program this run
-// executes, so a mismatched file cannot name steps the run does not have.
+// executes, so a mismatched file cannot name steps the run does not have. The
+// same goes for lines: the source map is given to the screen only when the run
+// matches it, and the files' texts are given either way, so a mismatch is
+// answered with the file's name and the reason rather than a pane that says
+// nothing.
 func attachWithTUI(
 	ctx context.Context,
 	cmd *cobra.Command,
@@ -85,6 +89,7 @@ func attachWithTUI(
 	driver *flowdebug.Driver,
 	parsed *v1.Workflow,
 	sourceMap *v1.DebugSourceMap,
+	documents []debugtui.Document,
 	surface *ui.UI,
 	recording *attachRecording,
 	workflowID string,
@@ -104,11 +109,16 @@ func attachWithTUI(
 		Target: remote,
 		Driver: driver,
 		Frame:  frames,
-		Style:  debugtui.Style{Theme: surface.Theme, Symbols: surface.Caps.Symbols()},
-		Size:   tui.Size{W: width, H: height},
+		// The screen shows a text only where the verified map records its digest.
+		Documents: documents,
+		Style:     debugtui.Style{Theme: surface.Theme, Symbols: surface.Caps.Symbols()},
+		Size:      tui.Size{W: width, H: height},
 		// Refreshed by the target's own revisions, never by a clock.
 		Watch:    true,
 		Accepted: acceptInto(recording),
+		// A line breakpoint has no line a script could replay, so the recording is
+		// the prefix before it, as it is before a step back.
+		Unscripted: recording.rewound,
 		// A double click on a step of the flow is judged by this clock; the screen
 		// reads none of its own.
 		Now: time.Now,

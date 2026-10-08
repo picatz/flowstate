@@ -1712,6 +1712,13 @@ func (s *Session) siteAtLine(line *v1.DebugSourceLine) (*v1.DebugSite, *v1.Debug
 	return siteAtLine(sourceMap, line)
 }
 
+// SiteAtLine resolves a source line through a verified source map to the
+// innermost site whose span contains it, or says why it cannot: the answer a
+// target gives a line breakpoint, for a client that wants it before it asks.
+func SiteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.DebugSite, *v1.DebugSourceLocation, string) {
+	return siteAtLine(sourceMap, line)
+}
+
 // siteAtLine resolves a source line through a source map to the innermost site
 // whose span contains it, or says why it cannot.
 func siteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.DebugSite, *v1.DebugSourceLocation, string) {

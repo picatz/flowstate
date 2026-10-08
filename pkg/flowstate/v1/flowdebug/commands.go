@@ -1020,6 +1020,9 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // this, so one breakpoint reads the same on each.
 func breakpointLabel(definition *v1.DebugBreakpoint) string {
 	label := definition.GetStep()
+	if line := definition.GetLine(); label == "" && line != nil {
+		label = fmt.Sprintf("%s:%d", SourceName(line.GetUri()), line.GetLine())
+	}
 	if hit := strings.TrimSpace(definition.GetHitCondition()); hit != "" {
 		label += " hit " + hit
 	}

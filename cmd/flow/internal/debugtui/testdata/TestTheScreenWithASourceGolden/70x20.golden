@@ -1,0 +1,20 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2       ? help
+ flow [source] steps  scope   tab switches                            
+→ source main.yaml:8 ─────────────────────────────────────────────────
+    2 name: main                                                      
+    3 # fetch, charge, then hand over to the child                    
+    4 steps:                                                          
+    5   - id: fetch                                                   
+    6     log:                                                        
+    7       message: fetching                                         
+▶   8   - id: charge                                                  
+│   9     log:                                                        
+│  10       message: ${"charging " + string(1)}                       
+   11   - id: nested                                                  
+   12     call: ./child.yaml                                          
+console ──────────────────────────────────────────────────────────────
+                                                                      
+                                                                      
+debug>                                                                
+                                                                      
+s step  n next  c continue  tab focus  : console  ? help  q quit      

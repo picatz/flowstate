@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
@@ -181,6 +182,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	var (
 		sourceMap *v1.DebugSourceMap
 		parsed    *v1.Workflow
+		documents []debugtui.Document
 	)
 	if program != "" {
 		workflow, source, err := loadMappedWorkflow(program)
@@ -189,6 +191,9 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		}
 		sourceMap = source.sourceMap(workflow)
 		parsed = workflow
+		if wantTUI {
+			documents = source.documents(sourceMap)
+		}
 	}
 
 	ctx := cmd.Context()
@@ -240,7 +245,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 
 	// The screen drives the run itself and ends the way the loop below does.
 	if wantTUI {
-		return attachWithTUI(ctx, cmd, remote, driver, parsed, sourceMap, surface, recording, args[0])
+		return attachWithTUI(ctx, cmd, remote, driver, parsed, sourceMap, documents, surface, recording, args[0])
 	}
 
 	in, interactive := io.Reader(cmd.InOrStdin()), stdinIsInteractive(cmd)

@@ -1,24 +1,24 @@
 flow debug · release-1 · run 3f7c9a2e · held step · rev 4                                                         ? help
-→ flow 9 steps ────────────────── steps ─────────────────── scope 4 names ────────────────── inspector ─────────────────
-     ✓ fetch task "http"            no step inventory; pass •▸ inputs  {2}                   group     inputs           
-     — validate skipped task "htt                            ▸ steps   {1}                   root                       
-  ┌▾ ✓ checks parallel                                       ▸ run     {1}                   names     2                
-  │  branch 1                                                                                resolved  2                
-  │     ✓ notify task "http"                                                                                            
+→ flow 9 steps ───────────── source addresses only ──────────── steps ──────────────── scope 4 names ───────────────────
+     ✓ fetch task "http"       No source: pass --program          no step inventory; p •▸ inputs  {2}                   
+     — validate skipped task   <Flowfile> to see its lines;                             ▸ steps   {1}                   
+  ┌▾ ✓ checks parallel         showing the step's address.                              ▸ run     {1}                   
+  │  branch 1                                                                                                           
+  │     ✓ notify task "http"   held at pages[1]/store                                                                   
   │  branch 2                                                                                                           
-  │     △ audit tolerated task "h                                                                                       
+  │     △ audit tolerated ta                                                                                            
   └──                                                                                                                   
   ┌▾ ▶ pages running loop                                                                                               
   │     ✓ page task "http"                                                                                              
-→ │     ▶ store held task "http"                                                                                        
+→ │     ▶ store held task "h                                                                                            
   └──                                                                                                                   
      ○ charge task "http"                                                                                               
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+                                                                                       inspector ───────────────────────
+                                                                                       group     inputs                 
+                                                                                       root                             
+                                                                                       names     2                      
+                                                                                       resolved  2                      
                                                                                                                         
                                                                                                                         
                                                                                                                         

@@ -1,17 +1,17 @@
 flow debug · release-1 · run 3f7c9a2e · held step · rev 4                 ? help
-→ flow 9 steps ────────────────── scope 4 names ────────────────────────────────
-  │  branch 2                     •▸ inputs  {2}                                
-  │     △ audit tolerated task "h  ▸ steps   {1}                                
-  └──                              ▸ run     {1}                                
+→ flow 9 steps ──────────────── source addresses only ──────────────────────────
+  │     △ audit tolerated task    No source: pass --program <Flowfile> to see   
+  └──                             its lines; showing the step's address.        
   ┌▾ ▶ pages running loop                                                       
-  │     ✓ page task "http"                                                      
-→ │     ▶ store held task "http"                                                
+  │     ✓ page task "http"        held at pages[1]/store                        
+→ │     ▶ store held task "http                                                 
   └──                                                                           
      ○ charge task "http"                                                       
-steps ───────────────────────────                                               
-  no step inventory; pass --progr                                               
-                                                                                
-                                                                                
+steps ─────────────────────────                                                 
+  no step inventory; pass --pro scope 4 names ──────────────────────────────────
+                                •▸ inputs  {2}                                  
+                                 ▸ steps   {1}                                  
+                                 ▸ run     {1}                                  
                                                                                 
                                                                                 
                                                                                 

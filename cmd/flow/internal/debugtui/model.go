@@ -49,6 +49,13 @@ type Config struct {
 	// step list.
 	Frame flowdebug.FrameOptions
 
+	// Documents are the texts of the Flowfile the run was started from, and of
+	// the files it calls, for the source pane. They are shown only where the
+	// frame's source map is verified and records the digest of these bytes;
+	// otherwise the pane draws the step's address and says why. Documents past
+	// [MaxSourceDocuments] are not held.
+	Documents []Document
+
 	// Verbs is what the front answers; empty means [flowdebug.DriverVerbs].
 	Verbs []flowdebug.Verb
 
@@ -63,6 +70,11 @@ type Config struct {
 
 	// Accepted is called with each line the run took, for a recording.
 	Accepted func(line string)
+
+	// Unscripted is called when a command with no spelling a script could replay
+	// (a breakpoint on a line) was taken by the run. A recording must end there:
+	// what followed would replay from a different stop than it was typed at.
+	Unscripted func()
 
 	// Now is the clock a double click is judged by. The screen reads no clock of
 	// its own; a screen given none never sees a double click, and a click then
@@ -102,6 +114,10 @@ type (
 		line   string
 		result *flowdebug.DriveResult
 		err    error
+
+		// unscripted is a command with no spelling a script could replay, such as
+		// a breakpoint on a line: it is shown in the console and never recorded.
+		unscripted bool
 	}
 	watchMsg struct {
 		after uint64
@@ -165,7 +181,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		return Model{}, err
 	}
 
-	ring := tui.NewRing(paneFlow, paneSteps, paneScope, paneConsole)
+	ring := tui.NewRing(paneFlow, paneSource, paneSteps, paneScope, paneConsole)
 	focus := paneSteps
 	if cfg.Frame.Program != nil {
 		// With a program the flow is the first thing to look at; without one it is
@@ -189,7 +205,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		reading:       true,
 		screen: Screen{
 			Size: cfg.Size, Tree: pane.NewTree(nil), Console: NewConsole(), Keys: keys, Verbs: cfg.Verbs,
-			Focus: ring.Current(), Pane: focus, Diverged: map[uint64]bool{}, Flow: NewFlow(),
+			Focus: ring.Current(), Pane: focus, Diverged: map[uint64]bool{}, Flow: NewFlow(), Source: NewSource(cfg.Documents),
 		},
 	}, nil
 }
@@ -296,6 +312,11 @@ func (m Model) read(seq uint64) tea.Cmd {
 			// the run does not have, and aim `until` and `break` at them.
 			frame.Program = nil
 		}
+		if err == nil && frame.SourceMap != nil && !programIsTheRuns(frame.SourceMap.GetIrDigest(), frame.Snapshot.GetIrDigest()) {
+			// The same rule for lines: a map of another program would mark
+			// the wrong step, and arm a breakpoint on it.
+			frame.SourceMap = nil
+		}
 
 		return frameMsg{seq: seq, frame: frame, err: err}
 	}
@@ -334,6 +355,17 @@ func (m Model) wait(after uint64) tea.Cmd {
 // run sends one line through the driver. Only one runs at a time: the driver
 // keeps state between lines, and a movement can wait a long while.
 func (m *Model) run(line string) tea.Cmd {
+	driver := m.cfg.Driver
+
+	return m.start(line, false, func(ctx context.Context) (*flowdebug.DriveResult, error) {
+		return driver.Do(ctx, line)
+	})
+}
+
+// start is [Model.run] for a command that is not a line: echo is what the
+// console shows for it, and unscripted says it has no line to record.
+func (m *Model) start(echo string, unscripted bool, do func(context.Context) (*flowdebug.DriveResult, error)) tea.Cmd {
+	line := echo
 	if m.screen.Busy != "" {
 		m.toast(ui.ToneWarning, fmt.Sprintf("still running %q; ctrl+c leaves", m.screen.Busy))
 
@@ -343,13 +375,14 @@ func (m *Model) run(line string) tea.Cmd {
 	if m.moves(line) {
 		// The run is about to be somewhere else, and the view goes with it.
 		m.screen.Flow.Follow()
+		m.screen.Source.Follow()
 	}
-	driver, ctx := m.cfg.Driver, m.ctx
+	ctx := m.ctx
 
 	return func() tea.Msg {
-		result, err := driver.Do(ctx, line)
+		result, err := do(ctx)
 
-		return doneMsg{line: line, result: result, err: err}
+		return doneMsg{line: line, result: result, err: err, unscripted: unscripted}
 	}
 }
 
@@ -375,6 +408,7 @@ func (m Model) framed(msg frameMsg) (tea.Model, tea.Cmd) {
 	m.frameRev = msg.frame.Snapshot.GetRevision()
 	m.screen.Tree.SetRoots(ScopeNodes(msg.frame))
 	m.screen.Flow.Apply(msg.frame)
+	m.screen.Source.Apply(msg.frame)
 	m.revealSelection()
 
 	var cmds []tea.Cmd
@@ -471,8 +505,13 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 	if state := result.Unarmed; state != nil {
 		m.toast(ui.ToneWarning, fmt.Sprintf("the breakpoint %s was not armed: %s", state.GetId(), state.GetMessage()))
 	}
-	if m.cfg.Accepted != nil && (result.Receipt == nil || flowdebug.Accepted(result.Receipt)) && result.Unarmed == nil {
-		m.cfg.Accepted(msg.line)
+	if taken := (result.Receipt == nil || flowdebug.Accepted(result.Receipt)) && result.Unarmed == nil; taken {
+		switch {
+		case msg.unscripted && m.cfg.Unscripted != nil:
+			m.cfg.Unscripted()
+		case !msg.unscripted && m.cfg.Accepted != nil:
+			m.cfg.Accepted(msg.line)
+		}
 	}
 
 	if msg.line == "detach" && flowdebug.Accepted(result.Receipt) {

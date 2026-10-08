@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
@@ -81,4 +82,32 @@ func (s *debugSource) sourceMap(workflow *v1.Workflow) *v1.DebugSourceMap {
 	}
 
 	return flowfile.SourceMap(s.path, s.data, workflow, s.positions)
+}
+
+// documents are the texts of the files a source map names, for the full-screen
+// debugger to show beside the flow: the Flowfile as it was read for the
+// compile, and each file it calls as it is on disk now. A file that cannot be
+// read is left out, and one that changed is handed over as it is: the screen
+// compares each with the digest the map records, and shows addresses instead of
+// lines for one that differs.
+func (s *debugSource) documents(sourceMap *v1.DebugSourceMap) []debugtui.Document {
+	if s == nil {
+		return nil
+	}
+	docs := []debugtui.Document{{URI: s.path, Text: s.data}}
+	for _, document := range sourceMap.GetDocuments() {
+		if len(docs) >= debugtui.MaxSourceDocuments {
+			break
+		}
+		if document.GetUri() == s.path || document.GetUri() == "" {
+			continue
+		}
+		data, err := readBoundedFile(document.GetUri(), "a called Flowfile", debugtui.MaxSourceBytes)
+		if err != nil {
+			continue
+		}
+		docs = append(docs, debugtui.Document{URI: document.GetUri(), Text: data})
+	}
+
+	return docs
 }

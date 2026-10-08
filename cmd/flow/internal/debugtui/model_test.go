@@ -142,11 +142,11 @@ func TestTabCyclesTheFocusRing(t *testing.T) {
 		order = append(order, m.screen.Focus)
 		m = send(m, tuitest.Key("tab"))
 	}
-	assert.Equal(t, []string{"steps", "scope", "console", "flow", "steps"}, order)
-	assert.Equal(t, "scope", m.screen.Focus)
+	assert.Equal(t, []string{"steps", "scope", "console", "flow", "source"}, order)
+	assert.Equal(t, "steps", m.screen.Focus)
 
 	m = send(m, tuitest.Key("shift+tab"))
-	assert.Equal(t, "steps", m.screen.Focus, "shift+tab did not go back")
+	assert.Equal(t, "source", m.screen.Focus, "shift+tab did not go back")
 }
 
 func TestAClickOnATreeRowTogglesIt(t *testing.T) {

@@ -40,35 +40,42 @@ func TestTheLayoutFoldsAtTheThresholds(t *testing.T) {
 	for _, w := range []int{200, 121, 120} {
 		g, err := layoutAt(w, 36)
 		require.NoError(t, err)
-		flow, steps, scope, detail := cell(g, paneFlow), cell(g, paneSteps), cell(g, paneScope), cell(g, paneInspector)
+		flow, source, steps, scope, detail := cell(g, paneFlow), cell(g, paneSource), cell(g, paneSteps), cell(g, paneScope), cell(g, paneInspector)
 		assert.False(t, detail.Empty(), "w=%d: four columns have an inspector", w)
-		assert.True(t, flow.X+flow.W <= steps.X && steps.X+steps.W <= scope.X && scope.X+scope.W <= detail.X,
-			"w=%d: not four columns left to right, the flow first", w)
+		assert.True(t, flow.X+flow.W <= source.X && source.X+source.W <= steps.X && steps.X+steps.W <= scope.X,
+			"w=%d: not four columns left to right, the flow first and the source beside it", w)
+		assert.Equal(t, scope.X, detail.X, "w=%d: the inspector is not under the scope", w)
+		assert.Greater(t, detail.Y, scope.Y)
 		assert.Empty(t, g.layout.Tabs)
 	}
 	for _, w := range []int{119, 100} {
 		g, err := layoutAt(w, 36)
 		require.NoError(t, err)
-		flow, steps, scope, detail := cell(g, paneFlow), cell(g, paneSteps), cell(g, paneScope), cell(g, paneInspector)
-		assert.True(t, flow.X+flow.W <= steps.X && steps.X+steps.W <= scope.X, "w=%d: the flow is not the left column", w)
-		assert.False(t, detail.Empty(), "w=%d: the inspector folded away instead of under the scope", w)
-		assert.Equal(t, scope.X, detail.X, "w=%d: the inspector is not under the scope", w)
-		assert.Greater(t, detail.Y, scope.Y)
+		flow, source, steps, scope := cell(g, paneFlow), cell(g, paneSource), cell(g, paneSteps), cell(g, paneScope)
+		assert.True(t, flow.X+flow.W <= source.X && source.X+source.W <= steps.X, "w=%d: the flow is not the left column, the source beside it", w)
+		assert.Equal(t, steps.X, scope.X, "w=%d: the scope is not under the steps", w)
+		assert.Greater(t, scope.Y, steps.Y)
+		assert.False(t, g.layout.Shown(paneInspector), "w=%d: the inspector has no room here", w)
 	}
 	for _, w := range []int{99, 80} {
 		g, err := layoutAt(w, 36)
 		require.NoError(t, err)
-		assert.True(t, g.layout.Shown(paneFlow) && g.layout.Shown(paneSteps) && g.layout.Shown(paneScope), "w=%d", w)
+		for _, name := range []string{paneFlow, paneSource, paneSteps, paneScope} {
+			assert.True(t, g.layout.Shown(name), "w=%d: %s is not drawn", w, name)
+		}
 		assert.False(t, g.layout.Shown(paneInspector), "w=%d: the inspector has no room here", w)
-		flow, steps := cell(g, paneFlow), cell(g, paneSteps)
+		flow, steps, source, scope := cell(g, paneFlow), cell(g, paneSteps), cell(g, paneSource), cell(g, paneScope)
 		assert.Equal(t, flow.X, steps.X, "w=%d: the steps are not under the flow", w)
 		assert.Greater(t, steps.Y, flow.Y)
+		assert.Equal(t, source.X, scope.X, "w=%d: the scope is not under the source", w)
+		assert.Greater(t, scope.Y, source.Y)
+		assert.Greater(t, source.X, flow.X, "w=%d: the source is not beside the flow", w)
 		assert.Empty(t, g.layout.Tabs)
 	}
 	for _, w := range []int{79, 60} {
 		g, err := layoutAt(w, 36)
 		require.NoError(t, err)
-		assert.Equal(t, []string{paneFlow, paneSteps, paneScope}, g.layout.Tabs, "w=%d: panes are tabs below 80", w)
+		assert.Equal(t, []string{paneFlow, paneSource, paneSteps, paneScope}, g.layout.Tabs, "w=%d: panes are tabs below 80", w)
 		assert.Len(t, g.layout.Cells, 1)
 	}
 

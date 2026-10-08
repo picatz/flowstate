@@ -69,7 +69,7 @@ const toolsModfile = "tools/external/go.mod"
 //
 // staticcheck_test.go reads the whole run line back out of the workflow, so
 // this tier cannot drift into a second opinion about the tool.
-const staticcheckToolchain = "go1.27.0"
+const staticcheckToolchain = "go1.27.2"
 
 func main() {
 	// The first flag is the one thing to choose: who is asking. The local

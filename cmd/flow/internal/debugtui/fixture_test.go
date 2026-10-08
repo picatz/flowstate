@@ -418,3 +418,19 @@ func find(t *testing.T, m Model, id string) (x, y int) {
 }
 
 func lines(s string) []string { return strings.Split(s, "\n") }
+
+// paneLines are the rows of a pane as drawn: the cells of the screen under its
+// rectangle, so a test that scans one pane is not answered by another's text.
+func paneLines(t *testing.T, m Model, name string) []string {
+	t.Helper()
+
+	rect, ok := m.cell(name)
+	require.True(t, ok, "%s is not drawn on this screen", name)
+	var out []string
+	for _, line := range lines(view(m))[rect.Y:min(rect.Y+rect.H, len(lines(view(m))))] {
+		cells := []rune(line)
+		out = append(out, string(cells[min(rect.X, len(cells)):min(rect.X+rect.W, len(cells))]))
+	}
+
+	return out
+}
