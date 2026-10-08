@@ -624,7 +624,7 @@ func TestAQuestionSetThatBreaksTheSchemaIsRefusedBeforeARequest(t *testing.T) {
 }
 
 func TestInputsAreBoundedBeforeAnyRequest(t *testing.T) {
-	set := flowstatev1.NewValue(map[string]any{"questions": []any{map[string]any{"name": "a", "predicate": map[string]any{}}}})
+	set := &decisionv1.QuestionSet{Questions: []*decisionv1.Question{{Name: "a", Kind: &decisionv1.Question_Predicate_{Predicate: &decisionv1.Question_Predicate{}}}}}
 	valid := func() *openaiv1.DecideInputs {
 		return &openaiv1.DecideInputs{Model: "a-model", Evidence: "text", QuestionSet: set}
 	}
@@ -765,4 +765,15 @@ func TestBoundedNeverSplitsARune(t *testing.T) {
 	if len(got) > maxErrorBytes+len("…") {
 		t.Errorf("bounded is %d bytes, over the cap", len(got))
 	}
+}
+
+// parseQuestionSet is the author's mapping as the plugin receives it: filled
+// into the typed input by the SDK, the same routine the host runs, and then
+// checked by the plugin.
+func parseQuestionSet(v *flowstatev1.Value) (*decisionv1.QuestionSet, error) {
+	var in openaiv1.DecideInputs
+	if err := sdk.DecodeInputs(map[string]*flowstatev1.Value{"question_set": v}, &in); err != nil {
+		return nil, err
+	}
+	return checkQuestionSet(in.GetQuestionSet())
 }

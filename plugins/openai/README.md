@@ -18,7 +18,10 @@ Inputs are `api_key`, `model`, `evidence` and `question_set`; the output is
 - `question_set` is a `flowstate.decision.v1.QuestionSet` written as a mapping: each
   question has a `name`, optional `instructions`, and one of `predicate: {}`,
   `choice: {options: [...]}` or `score: {levels: [...]}` (levels lowest to
-  highest). It is validated against the schema before any request is made.
+  highest). It is a typed input, so `flow validate` checks it against the
+  schema's rules at the line that wrote it (a repeated option, a name that is
+  not an identifier, an empty list of levels), and the plugin checks it again
+  before any request is made.
 - `evidence` is text, up to 256 KiB, sent as the request's `input`. The plugin
   sends no images.
 - `model` is passed through unchanged and never defaulted: which models support

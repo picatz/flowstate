@@ -53,13 +53,13 @@ message DecideInputs {
   // set rather than trusted.
   string evidence = 3;
 
-  // QuestionSet is a flowstate.decision.v1.QuestionSet written as a mapping: a
+  // QuestionSet is written in a Flowfile as a mapping: a
   // `questions` list whose entries each have a `name`, optional
   // `instructions`, and exactly one of `predicate: {}`, `choice: {options:
   // [...]}` or `score: {levels: [...]}`. It is validated against the schema's
   // rules before any request is made. Names are also limited to 64 characters
   // here, the longest property name the Messages API accepts in a tool schema.
-  flowstate.v1.Value question_set = 4;
+  flowstate.decision.v1.QuestionSet question_set = 4;
 
   // ReportConfidence asks the model to include a confidence between 0 and 1
   // with each answer. What comes back is the model's claim about itself and is

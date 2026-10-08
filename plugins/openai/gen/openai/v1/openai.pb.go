@@ -74,12 +74,12 @@ type DecideInputs struct {
 	// is why an answer is validated against the question set rather than
 	// trusted.
 	Evidence string `protobuf:"bytes,3,opt,name=evidence,proto3" json:"evidence,omitempty"`
-	// QuestionSet is a flowstate.decision.v1.QuestionSet written as a mapping: a
+	// QuestionSet is written in a Flowfile as a mapping: a
 	// `questions` list whose entries each have a `name`, optional
 	// `instructions`, and exactly one of `predicate: {}`, `choice: {options:
 	// [...]}` or `score: {levels: [...]}`. It is validated against the schema's
 	// rules before any request is made.
-	QuestionSet   *v1.Value `protobuf:"bytes,4,opt,name=question_set,json=questionSet,proto3" json:"question_set,omitempty"`
+	QuestionSet   *v11.QuestionSet `protobuf:"bytes,4,opt,name=question_set,json=questionSet,proto3" json:"question_set,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -135,7 +135,7 @@ func (x *DecideInputs) GetEvidence() string {
 	return ""
 }
 
-func (x *DecideInputs) GetQuestionSet() *v1.Value {
+func (x *DecideInputs) GetQuestionSet() *v11.QuestionSet {
 	if x != nil {
 		return x.QuestionSet
 	}
@@ -199,12 +199,12 @@ var File_openai_v1_openai_proto protoreflect.FileDescriptor
 
 const file_openai_v1_openai_proto_rawDesc = "" +
 	"\n" +
-	"\x16openai/v1/openai.proto\x12\topenai.v1\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xae\x01\n" +
+	"\x16openai/v1/openai.proto\x12\topenai.v1\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xbd\x01\n" +
 	"\fDecideInputs\x124\n" +
 	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x06apiKey\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1a\n" +
-	"\bevidence\x18\x03 \x01(\tR\bevidence\x126\n" +
-	"\fquestion_set\x18\x04 \x01(\v2\x13.flowstate.v1.ValueR\vquestionSet\"H\n" +
+	"\bevidence\x18\x03 \x01(\tR\bevidence\x12E\n" +
+	"\fquestion_set\x18\x04 \x01(\v2\".flowstate.decision.v1.QuestionSetR\vquestionSet\"H\n" +
 	"\rDecideOutputs\x127\n" +
 	"\aanswers\x18\x01 \x03(\v2\x1d.flowstate.decision.v1.AnswerR\aanswersB\xa4\x01\n" +
 	"\rcom.openai.v1B\vOpenaiProtoP\x01ZAgithub.com/picatz/flowstate/plugins/openai/gen/openai/v1;openaiv1\xa2\x02\x03OXX\xaa\x02\tOpenai.V1\xca\x02\tOpenai\\V1\xe2\x02\x15Openai\\V1\\GPBMetadata\xea\x02\n" +
@@ -224,15 +224,16 @@ func file_openai_v1_openai_proto_rawDescGZIP() []byte {
 
 var file_openai_v1_openai_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_openai_v1_openai_proto_goTypes = []any{
-	(*DecideInputs)(nil),  // 0: openai.v1.DecideInputs
-	(*DecideOutputs)(nil), // 1: openai.v1.DecideOutputs
-	(*v1.Value)(nil),      // 2: flowstate.v1.Value
-	(*v11.Answer)(nil),    // 3: flowstate.decision.v1.Answer
+	(*DecideInputs)(nil),    // 0: openai.v1.DecideInputs
+	(*DecideOutputs)(nil),   // 1: openai.v1.DecideOutputs
+	(*v1.Value)(nil),        // 2: flowstate.v1.Value
+	(*v11.QuestionSet)(nil), // 3: flowstate.decision.v1.QuestionSet
+	(*v11.Answer)(nil),      // 4: flowstate.decision.v1.Answer
 }
 var file_openai_v1_openai_proto_depIdxs = []int32{
 	2, // 0: openai.v1.DecideInputs.api_key:type_name -> flowstate.v1.Value
-	2, // 1: openai.v1.DecideInputs.question_set:type_name -> flowstate.v1.Value
-	3, // 2: openai.v1.DecideOutputs.answers:type_name -> flowstate.decision.v1.Answer
+	3, // 1: openai.v1.DecideInputs.question_set:type_name -> flowstate.decision.v1.QuestionSet
+	4, // 2: openai.v1.DecideOutputs.answers:type_name -> flowstate.decision.v1.Answer
 	3, // [3:3] is the sub-list for method output_type
 	3, // [3:3] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name
