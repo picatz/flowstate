@@ -210,6 +210,84 @@ tests:
       - task: log
         where: inputs.message == "hello"
         returns: {}`)
-		assert.NotContains(t, report.GetRefused(), "can never be reached")
+		assert.Empty(t, report.GetRefused())
 	})
+
+	t.Run("two catch-alls are a twin, once", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        returns: {}
+      - task: log
+        returns: {}`)
+		refused := report.GetRefused()
+		require.NotEmpty(t, refused)
+		assert.Contains(t, refused, "selected again, the same way")
+		assert.NotContains(t, refused, "can never be reached")
+	})
+
+	t.Run("a catch-all that fails shadows too", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        fails: {kind: Upstream, message: down}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		assert.Contains(t, report.GetRefused(), "can never be reached")
+	})
+}
+
+// A case that answers a target with its own catch-all over a filtered stub from
+// the file's `defaults:` is the ordinary override: inherited stubs are ordered
+// after the case's own, so the author cannot reorder them and they are not judged.
+func TestACaseCatchAllOverAFilteredDefaultStubIsNotShadowRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+defaults:
+  stubs:
+    - task: log
+      where: inputs.message == "hello"
+      returns: {}
+tests:
+  - name: the override
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [greet]
+`))
+	assert.Empty(t, report.GetRefused())
+	assert.NotEmpty(t, report.GetCases())
+}
+
+// A table row that overrides a filtered entry stub with its own catch-all is the
+// same ordinary override: the entry's stubs are inherited after the row's.
+func TestATableRowCatchAllOverAFilteredEntryStubIsNotShadowRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: the table
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+    cases:
+      - name: overridden
+        stubs:
+          - task: log
+            returns: {}
+        expect:
+          ran: [greet]
+`))
+	assert.Empty(t, report.GetRefused())
+	assert.NotEmpty(t, report.GetCases())
 }

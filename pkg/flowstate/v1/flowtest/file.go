@@ -1968,6 +1968,12 @@ func (t *stubTwins) note(p *problems, at site, label string, s *Stub) {
 // it when an earlier unbounded stub with no `where:` already answers every call
 // to its target: the filter behind it can never be reached.
 func (t *stubTwins) noteShadow(p *problems, at site, label string, s *Stub) {
+	// A stub the case inherited from a table entry or the file's `defaults:` is
+	// always ordered after the case's own, so its author cannot move it, and a
+	// row that overrides a filtered entry stub with a catch-all means to.
+	if s.fromDefaults {
+		return
+	}
 	target := "task:" + s.Task
 	if s.Step != "" {
 		target = "step:" + s.Step
