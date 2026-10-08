@@ -98,7 +98,7 @@ func init() {
 		},
 		{
 			Name:    "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_READ",
-			Leading: " Reading a run: Get, GetTimeline and List.\n",
+			Leading: " Reading a run: Get, GetTimeline, GetCheckpoint and List.\n",
 		},
 		{
 			Name:    "flowstate.v1.AUTHORIZATION_ACTION_WORKLOAD_SIGNAL",

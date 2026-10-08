@@ -1158,6 +1158,23 @@ service WorkflowService {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
   }
 
+  // GetCheckpoint reports whether a run segment started from a point a new run
+  // could be started from, and where that point stands.
+  //
+  // Every segment's start input is the run's complete carried state, so the
+  // answer is read from history and changes nothing. It describes the point
+  // without returning the state, which holds the run's inputs and outputs in
+  // full; see [CheckpointInfo]. A segment whose position is inside a call, a
+  // loop or concurrent work is reported unavailable with the reason, because
+  // only a position between top-level steps is a legal starting state.
+  //
+  // `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
+  rpc GetCheckpoint(GetCheckpointRequest) returns (GetCheckpointResponse) {
+    // workload.read, because the answer discloses only names, a digest and a
+    // size, which [GetTimeline] already discloses at that level.
+    option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
+  }
+
   // Cancel asks a run to stop and lets it clean up on the way out.
   //
   // Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -1445,6 +1462,44 @@ message GetTimelineRequest {
   // RevealSensitive is GetRequest.reveal_sensitive for the timeline's failure
   // text, under the same action.
   bool reveal_sensitive = 5;
+}
+
+// GetCheckpointRequest addresses one run segment.
+message GetCheckpointRequest {
+  // WorkflowId is the workload to read, as Run's `workflow_id` reports it. 1 to
+  // 256 bytes. The caller may read only runs in its own tenant.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  // RunId names one segment of the workload, as a UUID. Empty reads the
+  // latest segment.
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+}
+
+// GetCheckpointResponse is the checkpoint a segment started from, or why there
+// is none.
+message GetCheckpointResponse {
+  // Result is the checkpoint, or why there is none. Exactly one is set.
+  oneof result {
+    option (buf.validate.oneof).required = true;
+
+    // Checkpoint is set when the segment's start is a legal starting state.
+    CheckpointInfo checkpoint = 1;
+
+    // UnavailableReason is set when it is not: the position is inside a call,
+    // a loop or concurrent work, the carried state is invalid or too large to
+    // resume, or it could not be read.
+    string unavailable_reason = 2 [(buf.validate.field).string.min_len = 1];
+  }
 }
 
 // GetTimelineResponse is what one run did.

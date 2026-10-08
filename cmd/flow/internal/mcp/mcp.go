@@ -739,6 +739,19 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
+			Name:   "GetCheckpoint",
+			Input:  (&v1.GetCheckpointRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.GetCheckpointResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().GetCheckpoint(ctx, connect.NewRequest(in.(*v1.GetCheckpointRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			Name:   "Signal",
 			Input:  (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
 			Output: (&v1.SignalResponse{}).ProtoReflect().Descriptor(),

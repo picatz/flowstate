@@ -245,3 +245,36 @@ func TestCheckpointRefusals(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestCheckpointUnavailableNamesTheIneligiblePositions(t *testing.T) {
+	t.Parallel()
+
+	state, _ := checkpointFixture(t)
+	require.NoError(t, v1.CheckpointUnavailable(state))
+	require.Equal(t, "c", v1.CheckpointStep(state))
+
+	state.Frames = []*v1.Frame{{NextNode: 2}, {NextNode: 0}}
+	require.ErrorIs(t, v1.CheckpointUnavailable(state), v1.ErrCheckpointUnsupported, "inside a call or loop body")
+
+	state.Frames = []*v1.Frame{{NextNode: 1, NextIteration: 2}}
+	require.ErrorIs(t, v1.CheckpointUnavailable(state), v1.ErrCheckpointUnsupported, "mid for_each")
+
+	state.Frames = []*v1.Frame{{NextNode: 3}}
+	require.NoError(t, v1.CheckpointUnavailable(state), "the end of the steps is a legal position")
+	require.Empty(t, v1.CheckpointStep(state))
+}
+
+func TestGetCheckpointResponseHoldsExactlyOneAnswer(t *testing.T) {
+	t.Parallel()
+
+	require.Error(t, v1.Validate(&v1.GetCheckpointResponse{}), "neither a checkpoint nor a reason")
+	require.Error(t, v1.Validate(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_UnavailableReason{},
+	}), "an unavailable answer must say why")
+	require.NoError(t, v1.Validate(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_UnavailableReason{UnavailableReason: "inside a loop"},
+	}))
+	require.NoError(t, v1.Validate(&v1.GetCheckpointResponse{
+		Result: &v1.GetCheckpointResponse_Checkpoint{Checkpoint: &v1.CheckpointInfo{WorkflowId: "wf"}},
+	}))
+}
