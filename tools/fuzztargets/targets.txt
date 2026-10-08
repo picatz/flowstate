@@ -93,3 +93,5 @@ FuzzRootParsers              pkg/flowstate/v1                            deep
 # header gives.
 FuzzDecodeNeverPanicsOrEchoes pkg/flowstate/v1/payloadcodec/envelope    deep
 FuzzValueTokensAreLossless pkg/flowstate/v1/flowdebug deep
+FuzzRefRoundTrip             pkg/flowstate/v1/graph         deep
+FuzzParseRefNeverPanics      pkg/flowstate/v1/graph         deep

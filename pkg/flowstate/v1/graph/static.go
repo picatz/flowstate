@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -170,7 +172,7 @@ func (b *builder) workflow(wf *v1.Workflow, depth int) {
 		return
 	}
 	if len(known) > 0 {
-		b.note("workflow %q is declared more than once with different definitions; its relations are merged into one node", name)
+		b.note("workflow %s is declared more than once with different definitions; its relations are merged into one node", clipName(name))
 	}
 	if known == nil {
 		known = map[string]struct{}{}
@@ -230,4 +232,10 @@ func withoutSourceDigest(wf *v1.Workflow) *v1.Workflow {
 	clone.SourceDigest = ""
 
 	return clone
+}
+
+// clipName quotes a name for a note, shortened so a note stays inside the
+// schema's bound on one however hostile the name is.
+func clipName(name string) string {
+	return strconv.Quote(textbound.Truncate(name, 64))
 }

@@ -73,6 +73,48 @@ func init() {
 				" workflow are one USES edge with count 3.\n",
 		},
 		{
+			Name: "flowstate.v1.GraphRef",
+			Leading: " GraphRef addresses one thing a graph can be a view of, at any zoom level: the\n" +
+				" whole fleet, a workflow definition, a run, a step of a run, or one attempt of\n" +
+				" that step.\n" +
+				"\n" +
+				" It is a message so every surface (the CLI, the terminal UI, MCP, the language\n" +
+				" server) names a thing the same way and none grows a parser of its own. The\n" +
+				" level is not a field: it is which fields are set, so a reference cannot say\n" +
+				" two things at once. The graph package turns a reference into its two text\n" +
+				" spellings and back.\n" +
+				"\n" +
+				"   - nothing set: the fleet.\n" +
+				"   - `workflow_name`: a workflow definition.\n" +
+				"   - `workflow_id`, optionally `run_id`: a run. Without `run_id` it is the\n" +
+				"     latest run of that workflow id.\n" +
+				"   - `workflow_id`, `run_id` and `step`: a step of that run.\n" +
+				"   - `attempt` as well: one attempt of that step.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphRef.workflow_name",
+			Leading: " WorkflowName is the declared name of a workflow definition.\n",
+		},
+		{
+			Name: "flowstate.v1.GraphRef.workflow_id",
+			Leading: " WorkflowId is the id of a run's workflow, as the engine records it. It is\n" +
+				" arbitrary text, 1 to 256 characters when set.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphRef.run_id",
+			Leading: " RunId distinguishes the runs of one workflow id.\n",
+		},
+		{
+			Name: "flowstate.v1.GraphRef.step",
+			Leading: " Step is a debug address in the form `FormatDebugAddress` writes, so a\n" +
+				" reference from the explorer opens at the same place in the debugger.\n",
+		},
+		{
+			Name: "flowstate.v1.GraphRef.attempt",
+			Leading: " Attempt is the attempt of the step, counting from 1, when the reference is\n" +
+				" to one.\n",
+		},
+		{
 			Name:    "flowstate.v1.GraphNodeKind",
 			Leading: " GraphNodeKind says what a node stands for.\n",
 		},

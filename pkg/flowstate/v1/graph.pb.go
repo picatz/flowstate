@@ -363,6 +363,106 @@ func (x *GraphEdge) GetCount() uint32 {
 	return 0
 }
 
+// GraphRef addresses one thing a graph can be a view of, at any zoom level: the
+// whole fleet, a workflow definition, a run, a step of a run, or one attempt of
+// that step.
+//
+// It is a message so every surface (the CLI, the terminal UI, MCP, the language
+// server) names a thing the same way and none grows a parser of its own. The
+// level is not a field: it is which fields are set, so a reference cannot say
+// two things at once. The graph package turns a reference into its two text
+// spellings and back.
+//
+//   - nothing set: the fleet.
+//   - `workflow_name`: a workflow definition.
+//   - `workflow_id`, optionally `run_id`: a run. Without `run_id` it is the
+//     latest run of that workflow id.
+//   - `workflow_id`, `run_id` and `step`: a step of that run.
+//   - `attempt` as well: one attempt of that step.
+type GraphRef struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// WorkflowName is the declared name of a workflow definition.
+	WorkflowName string `protobuf:"bytes,1,opt,name=workflow_name,json=workflowName,proto3" json:"workflow_name,omitempty"`
+	// WorkflowId is the id of a run's workflow, as the engine records it. It is
+	// arbitrary text, 1 to 256 characters when set.
+	WorkflowId string `protobuf:"bytes,2,opt,name=workflow_id,json=workflowId,proto3" json:"workflow_id,omitempty"`
+	// RunId distinguishes the runs of one workflow id.
+	RunId string `protobuf:"bytes,3,opt,name=run_id,json=runId,proto3" json:"run_id,omitempty"`
+	// Step is a debug address in the form `FormatDebugAddress` writes, so a
+	// reference from the explorer opens at the same place in the debugger.
+	Step string `protobuf:"bytes,4,opt,name=step,proto3" json:"step,omitempty"`
+	// Attempt is the attempt of the step, counting from 1, when the reference is
+	// to one.
+	Attempt       *uint32 `protobuf:"varint,5,opt,name=attempt,proto3,oneof" json:"attempt,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GraphRef) Reset() {
+	*x = GraphRef{}
+	mi := &file_flowstate_v1_graph_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GraphRef) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GraphRef) ProtoMessage() {}
+
+func (x *GraphRef) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_graph_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GraphRef.ProtoReflect.Descriptor instead.
+func (*GraphRef) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_graph_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GraphRef) GetWorkflowName() string {
+	if x != nil {
+		return x.WorkflowName
+	}
+	return ""
+}
+
+func (x *GraphRef) GetWorkflowId() string {
+	if x != nil {
+		return x.WorkflowId
+	}
+	return ""
+}
+
+func (x *GraphRef) GetRunId() string {
+	if x != nil {
+		return x.RunId
+	}
+	return ""
+}
+
+func (x *GraphRef) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
+}
+
+func (x *GraphRef) GetAttempt() uint32 {
+	if x != nil && x.Attempt != nil {
+		return *x.Attempt
+	}
+	return 0
+}
+
 var File_flowstate_v1_graph_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_graph_proto_rawDesc = "" +
@@ -386,7 +486,20 @@ const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x02to\x12;\n" +
 	"\x04kind\x18\x03 \x01(\x0e2\x1b.flowstate.v1.GraphEdgeKindB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x14\n" +
-	"\x05count\x18\x04 \x01(\rR\x05count*\x84\x01\n" +
+	"\x05count\x18\x04 \x01(\rR\x05count\"\x88\x06\n" +
+	"\bGraphRef\x12-\n" +
+	"\rworkflow_name\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\fworkflowName\x12)\n" +
+	"\vworkflow_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\n" +
+	"workflowId\x12\x1f\n" +
+	"\x06run_id\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05runId\x12\x1c\n" +
+	"\x04step\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04step\x12&\n" +
+	"\aattempt\x18\x05 \x01(\rB\a\xbaH\x04*\x02(\x01H\x00R\aattempt\x88\x01\x01:\xae\x04\xbaH\xaa\x04\x1a\xf1\x01\n" +
+	"\x14graph_ref.definition\x12eworkflow_name addresses a definition and cannot be combined with workflow_id, run_id, step or attempt\x1arthis.workflow_name == '' || (this.workflow_id == '' && this.run_id == '' && this.step == '' && !has(this.attempt))\x1a\x94\x01\n" +
+	"\rgraph_ref.run\x12+run_id, step and attempt need a workflow_id\x1aVthis.workflow_id != '' || (this.run_id == '' && this.step == '' && !has(this.attempt))\x1aK\n" +
+	"\x0egraph_ref.step\x12\x13step needs a run_id\x1a$this.step == '' || this.run_id != ''\x1aP\n" +
+	"\x11graph_ref.attempt\x12\x14attempt needs a step\x1a%!has(this.attempt) || this.step != ''B\n" +
+	"\n" +
+	"\b_attempt*\x84\x01\n" +
 	"\rGraphNodeKind\x12\x1f\n" +
 	"\x1bGRAPH_NODE_KIND_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18GRAPH_NODE_KIND_WORKFLOW\x10\x01\x12\x18\n" +
@@ -413,13 +526,14 @@ func file_flowstate_v1_graph_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_graph_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_flowstate_v1_graph_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_flowstate_v1_graph_proto_goTypes = []any{
 	(GraphNodeKind)(0), // 0: flowstate.v1.GraphNodeKind
 	(GraphEdgeKind)(0), // 1: flowstate.v1.GraphEdgeKind
 	(*Graph)(nil),      // 2: flowstate.v1.Graph
 	(*GraphNode)(nil),  // 3: flowstate.v1.GraphNode
 	(*GraphEdge)(nil),  // 4: flowstate.v1.GraphEdge
+	(*GraphRef)(nil),   // 5: flowstate.v1.GraphRef
 }
 var file_flowstate_v1_graph_proto_depIdxs = []int32{
 	3, // 0: flowstate.v1.Graph.nodes:type_name -> flowstate.v1.GraphNode
@@ -438,13 +552,14 @@ func file_flowstate_v1_graph_proto_init() {
 	if File_flowstate_v1_graph_proto != nil {
 		return
 	}
+	file_flowstate_v1_graph_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_graph_proto_rawDesc), len(file_flowstate_v1_graph_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   3,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
