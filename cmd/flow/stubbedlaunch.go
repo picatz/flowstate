@@ -33,6 +33,10 @@ type stubbedCase struct {
 	// Run executes the case with the debugger it is handed.
 	Run func(ctx context.Context, debugger v1.Debugger) flowtest.RunResult
 
+	// Failure, when set, words why a report that did not pass failed, for the
+	// session's account of the end of the run. Defaults to [caseFailure].
+	Failure func(*v1.TestReport) error
+
 	// Finish settles the case with the verdict of the run that is shown. It is
 	// called at most once by the host's own guard, and may be called from the
 	// run's goroutine.
@@ -64,7 +68,11 @@ func (c stubbedCase) launcher(runCtx context.Context) flowdebug.Launcher {
 
 			result := c.Run(caseCtx, session)
 			if testReportFailed(result.Report) {
-				session.Finished(caseFailure(result.Report))
+				failure := caseFailure
+				if c.Failure != nil {
+					failure = c.Failure
+				}
+				session.Finished(failure(result.Report))
 			} else {
 				session.Finished(nil)
 			}

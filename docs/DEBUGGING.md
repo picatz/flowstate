@@ -207,9 +207,9 @@ The forms a verb takes:
   previous stop and to the nearest earlier breakpoint stop, for a target that can
   step back; any other says so and does not move. `flow test --debug` at a
   terminal steps back too (a stubbed case, as under `flow dap`); `flow run
-  local --debug` and a script's session stay forward-only. A failed case is
-  held once more after its verdict, and `back` from there returns to its last
-  stop.
+  local --debug` steps back only with `--reverse` (below), and a script's
+  session stays forward-only. A failed case is held once more after its verdict,
+  and `back` from there returns to its last stop.
 - An empty line at the prompt is `step`.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
@@ -483,6 +483,20 @@ The tool debugs a *test case* — stubs, no egress, no secret resolved, a virtua
 clock — which is why it needs no operator opt-in. Debugging a real, unstubbed
 local run is `flow run local --debug`, at a terminal, under that command's own
 egress policy.
+
+### Stepping back through a real local run
+
+`flow run local --debug --reverse` makes `back` and `reverse-continue` work at
+the terminal prompt of a real run. Going back runs the workflow again from its
+start and replays your commands up to the earlier stop, so **every task runs
+again**; the replay says nothing until it replaces the run before it, and a stop
+it reaches must show what the first time showed or the step is refused.
+
+Because that re-executes effects, `--reverse` is refused for a workflow with a
+task that may act outside the process. Only `log` is known not to; a plugin,
+`http` and `exec` are not, nor is a task not named here. `--reverse=unsafe` takes
+the risk and prints a warning. It also needs a terminal and `--debug`, and is
+refused with `--signal`, which is delivered once.
 
 ### A session that outlives the call
 
