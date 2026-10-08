@@ -329,3 +329,25 @@ func TestDebugAttachRecordsWhatTheRunAccepted(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "status\n", string(got))
 }
+
+// TestDebugAttachRefusesToRecordOverItsOwnScript: the script is streamed and
+// the recording written last, so recording over it would replace it.
+func TestDebugAttachRefusesToRecordOverItsOwnScript(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(heldRun{}))
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	script := filepath.Join(t.TempDir(), "in.script")
+	const body = "status\nbreakpoints\ndisconnect\n"
+	require.NoError(t, os.WriteFile(script, []byte(body), 0o600))
+
+	res := runFlow(t, "debug", "attach", "w", "--session", "held-1", "--script", script,
+		"--address", srv.URL, "--record", script)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "--record")
+
+	got, err := os.ReadFile(script)
+	require.NoError(t, err)
+	assert.Equal(t, body, string(got))
+}

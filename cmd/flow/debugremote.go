@@ -158,6 +158,11 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	program, _ := cmd.Flags().GetString("program")
 	wait, _ := cmd.Flags().GetDuration("wait")
 	record, _ := cmd.Flags().GetString("record")
+	if script != "" {
+		if err := refuseRecordingOver(cmd, script); err != nil {
+			return err
+		}
+	}
 
 	var sourceMap *v1.DebugSourceMap
 	if program != "" {
