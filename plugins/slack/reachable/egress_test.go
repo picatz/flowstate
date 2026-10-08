@@ -3,6 +3,7 @@ package reachable
 import (
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -58,9 +59,10 @@ func TestAnOperatorDenyRuleStopsASlackPost(t *testing.T) {
 	})
 
 	defs := host.TaskDefs()
-	if len(defs) != 1 || defs[0].Name != "slack.post" {
-		t.Fatalf("the launched plugin does not offer exactly slack.post: %v", defs)
+	if len(defs) != 2 {
+		t.Fatalf("the launched plugin does not offer exactly slack.post and slack.update: %v", defs)
 	}
+	post := defs[slices.IndexFunc(defs, func(d flowstatev1.TaskDef) bool { return d.Name == "slack.post" })]
 
 	ctx := plugin.NewContextWithIdentity(t.Context(), &flowstatev1.WorkloadIdentity{Principal: &flowstatev1.Principal{Subject: "https://issuer.example.com#worker"}, Mode: flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION})
 	ctx = flowstatev1.ContextWithTaskRuntime(ctx, taskRuntimeResolvingTheTestToken(t))
@@ -70,10 +72,10 @@ func TestAnOperatorDenyRuleStopsASlackPost(t *testing.T) {
 	// credential rule) this test has to satisfy rather than test. Destination
 	// authorization and credential release stay separate all the way down —
 	// this call has a credential and is refused anyway, on the destination.
-	_, err := defs[0].Fn(ctx, map[string]*flowstatev1.Value{
-		"channel":     flowstatev1.NewValue("C0123456789"),
-		"text":        flowstatev1.NewValue("a message the operator's policy should stop"),
-		"message_key": flowstatev1.NewValue("018f0e6c-7b42-7cc1-8a31-65c0f8758f4a"),
+	_, err := post.Fn(ctx, map[string]*flowstatev1.Value{
+		"channel":         flowstatev1.NewValue("C0123456789"),
+		"text":            flowstatev1.NewValue("a message the operator's policy should stop"),
+		"idempotency_key": flowstatev1.NewValue("018f0e6c-7b42-7cc1-8a31-65c0f8758f4a"),
 		"token": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: testTokenName,
 		}}},

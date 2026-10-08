@@ -1,0 +1,32 @@
+edition: v2026.4
+tests:
+  - name: one status message is posted and then updated in place through the rollout
+    workflow: ./status.yaml
+    inputs:
+      channel: C123DEPLOYS
+      status_idempotency_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4b
+      service: api
+      version: v1.4.2
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    stubs:
+      - step: started
+        returns:
+          channel: C123DEPLOYS
+          ts: "1503435956.000247"
+      - step: canary_done
+        returns:
+          channel: C123DEPLOYS
+          ts: "1503435956.000247"
+      - step: half_done
+        returns:
+          channel: C123DEPLOYS
+          ts: "1503435956.000247"
+      - step: finished
+        returns:
+          channel: C123DEPLOYS
+          ts: "1503435956.000247"
+    expect:
+      ran: [started, canary, canary_done, half, half_done, full, finished]
+      outputs:
+        message_ts: "1503435956.000247"

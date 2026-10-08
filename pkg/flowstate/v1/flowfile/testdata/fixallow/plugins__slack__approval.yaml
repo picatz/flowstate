@@ -1,25 +1,19 @@
 edition: v2026.4
 name: slack-approval-notification
-description: Posts an approval request to Slack, waits durably for the separately verified Flowstate signal, then keeps the recorded outcome in the same Slack thread.
+description: Posts an approval card to Slack, waits durably for the separately verified Flowstate signal, then replaces the card with its recorded outcome.
 plugins:
-  slack: v0.1.0
+  slack: v0.2.0
 inputs:
   channel:
     type: string
     required: true
     description: stable Slack conversation ID, not a channel name
     example: C123APPROVAL
-  request_message_key:
+  request_idempotency_key:
     type: string
     required: true
-    description: UUID chosen once for this approval request and reused unchanged only for the same logical message
+    description: UUID chosen once for this approval card and reused unchanged only for the same logical message
     example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
-    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
-  outcome_message_key:
-    type: string
-    required: true
-    description: distinct UUID chosen once for this approval outcome notification
-    example: 018f0e6c-80aa-7550-972a-7bc69716cc3b
     must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
   change:
     type: string
@@ -43,8 +37,27 @@ steps:
   - id: notify
     slack.post:
       channel: ${inputs.channel}
-      message_key: ${inputs.request_message_key}
-      text: '${"Approval required: %s. Use Flowstate signal change-approved; Slack interactions are not an authorization channel.".format([inputs.change])}'
+      idempotency_key: ${inputs.request_idempotency_key}
+      # The notification text and what a screen reader says. The card below is
+      # the message people see.
+      text: '${"Approval required: " + inputs.change}'
+      card:
+        approval:
+          title: {plain: Approval required}
+          # A markup template: {change} is escaped, so a value that looks like
+          # <!channel> or <@U123> is shown, never acted on.
+          summary: {markup: {template: "*{change}*", args: {change: "${inputs.change}"}}}
+          fields:
+            - {label: Requested by, value: {plain: "${run.identity.subject}"}}
+            - {label: Approver, value: {plain: "${inputs.expected_approver}"}}
+          # callback.action becomes the button's action_id (the decision) and
+          # callback.value its value (the correlation token a receiver reads).
+          approve: {label: {plain: Approve}, callback: {action: approve, value: "${run.workflow_id}"}}
+          reject:
+            label: {plain: Reject}
+            callback: {action: reject, value: "${run.workflow_id}"}
+            confirm: {title: {plain: Reject this change?}, text: {plain: The requester is told it was refused.}}
+          footer: {plain: "Slack buttons notify only; the decision is the Flowstate signal change-approved."}
       # The whole credential input is a secret reference. The host resolves it
       # under the run's namespace; literals are refused before durable history.
       token: ${secret('env:SLACK_BOT_TOKEN')}
@@ -60,14 +73,24 @@ steps:
     value: '${steps.approval.approved ? "approved" : "refused"}'
   - id: outcome
     value: '${steps.approval.timed_out ? "timed_out" : steps.approval_decision.value}'
-  - id: outcome_text
-    value: '${{"timed_out": "Approval timed out.", "approved": "Approval granted.", "refused": "Approval refused."}[steps.outcome.value]}'
+  - id: outcome_title
+    value: '${{"timed_out": "Approval timed out", "approved": "Approval granted", "refused": "Approval refused"}[steps.outcome.value]}'
+  - id: outcome_state
+    value: '${{"timed_out": "warn", "approved": "ok", "refused": "failed"}[steps.outcome.value]}'
+  # slack.update is idempotent on its target message, so unlike slack.post it is
+  # safe for the step's retry policy to repeat.
   - id: report
-    slack.post:
+    slack.update:
       channel: ${steps.notify.channel}
-      message_key: ${inputs.outcome_message_key}
-      text: ${steps.outcome_text.value}
-      thread_ts: ${steps.notify.ts}
+      ts: ${steps.notify.ts}
+      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      card:
+        status:
+          state: ${steps.outcome_state.value}
+          title: {plain: "${steps.outcome_title.value}"}
+          detail: {markup: {template: "*{change}*", args: {change: "${inputs.change}"}}}
+          fields:
+            - {label: Approver, value: {plain: "${inputs.expected_approver}"}}
       token: ${secret('env:SLACK_BOT_TOKEN')}
 outputs:
   approved:
@@ -75,4 +98,4 @@ outputs:
     description: true only after the server admitted an attested, authorized signal
   request_message_ts:
     value: ${steps.notify.ts}
-    description: Slack timestamp anchoring the approval notification thread
+    description: Slack timestamp anchoring the approval card
