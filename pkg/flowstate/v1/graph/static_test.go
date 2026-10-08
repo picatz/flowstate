@@ -92,6 +92,19 @@ func TestStaticNotesADuplicateWorkflowName(t *testing.T) {
 	}, edgesOf(g), "the second declaration's relations are merged, not dropped")
 }
 
+// A name made of control bytes quotes to four bytes each; the note naming it must
+// still satisfy the schema's bound on a note.
+func TestStaticKeepsADuplicateNoteInsideTheSchema(t *testing.T) {
+	name := strings.Repeat("\x01", graph.MaxNameBytes)
+	first := &v1.Workflow{Name: name, Steps: []*v1.Node{task("x", "log")}}
+	second := &v1.Workflow{Name: name, Steps: []*v1.Node{task("y", "http")}}
+
+	g := graph.Static(first, second)
+
+	require.True(t, g.GetPartial())
+	require.NoError(t, v1.Validate(g), "the note must fit the schema's bound")
+}
+
 func TestStaticBoundsNodesAndSaysSo(t *testing.T) {
 	var steps []*v1.Node
 	for i := range graph.MaxNodes + 10 {
