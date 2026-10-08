@@ -74,6 +74,11 @@ type RunOptions struct {
 	// caller's, and a run does one or the other.
 	Fuzz FuzzOptions
 
+	// Mutate additionally runs each workflow's passing cases against mutants
+	// of it ([MutateOptions]): whether the file would notice the program
+	// changing.
+	Mutate MutateOptions
+
 	// Select filters which cases run, by name; nil runs every case. A case
 	// filtered out is not run, not reported, and counted in
 	// [RunResult.Filtered] — the number a caller's own output must surface,
@@ -312,6 +317,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		observeUnrun(test)
 	}
 	fuzz := newFuzzer(opts.Fuzz)
+	mutation := newMutator(opts.Mutate)
 	var transcripts [][]TranscriptLine
 	transcriptBudget := newSuiteTranscriptBudget()
 	warningBudget := newSuiteWarningBudget()
@@ -449,6 +455,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
 		coverage.observe(identity, spec, transcript, l.positions())
+		mutation.observe(identity, &test, spec, l.positions, l.deliveryPath, result)
 		if opts.FailFast && (!result.GetPassed() || schedules.divergence != nil) {
 			// The verdict's own name, redacted under the case's posture, so the
 			// reason later cases carry cannot spell a value this one withholds.
@@ -485,6 +492,10 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		report.Schedules = out.Schedules.Report()
 	}
 	report.Fuzz = fuzz.report()
+	if ctx.Err() == nil && haltedAt == "" {
+		report.Mutation = mutation.run(ctx, fileVars{values: file.Vars, withheld: file.varsWithheld}, caseTimeout, suite.WithholdAll())
+	}
+
 	return out
 }
 
