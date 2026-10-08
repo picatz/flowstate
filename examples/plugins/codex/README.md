@@ -52,12 +52,10 @@ is a rehearsal policy that allows every reference). `FLOWSTATE_CODEX_BIN` is
 read by the plugin, whose environment starts empty, so it is named with
 `--plugin-env`; exported in the shell, it would never reach the plugin.
 
-`flow run` refuses this file today (#1548): it checks the file against its own
-build's task registry, takes no `--plugin-dir`, and so reports `codex.exec` as a
-task nothing registered before the server sees it. Until that is fixed,
-`flow run local` with the same plugin, secret and policy flags runs it in one
-process, and an agent host running `flow mcp --plugin-dir ./plugins` submits it
-to this server with `flowstate_compile` then `flowstate_run`.
+`flow run` asks the server it submits to which tasks it can run (`GetCatalog`), so a plugin task the
+server loaded validates on the client without the client launching anything. Against a server whose
+policy denies that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow plugins --plugin-dir ./plugins --output json`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on
