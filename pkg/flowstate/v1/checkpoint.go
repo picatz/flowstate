@@ -74,16 +74,15 @@ func (cp *Checkpoint) Verify() error {
 	return verifyCheckpointPosition(cp)
 }
 
-// verifyCheckpointPosition holds the position to the one shape this contract
-// admits: between two top-level steps, with no frame standing inside a call, a
-// loop or a for_each. Deeper positions carry callee outputs and iteration
-// results that a patch could contradict; admitting them waits for the
-// interpreter to define fork-eligible boundaries once (#2249), so they are
-// refused here rather than half-checked. The cursor must also name the step the
-// origin said it was about to run, so a position edited to rewind past an
-// executed step is caught.
-func verifyCheckpointPosition(cp *Checkpoint) error {
-	state := cp.GetState()
+// CheckpointUnavailable reports why state is not a legal checkpoint, or nil
+// when it is. It is the one definition of a fork-eligible position: between two
+// top-level steps, with no frame standing inside a call, a loop or a for_each,
+// and inside the workflow's steps.
+//
+// Deeper positions carry callee outputs and iteration results that a patch
+// could contradict; admitting them waits for the interpreter to define those
+// boundaries (#2249), so they are refused here rather than half-checked.
+func CheckpointUnavailable(state *RunState) error {
 	steps := state.GetWorkflow().GetSteps()
 	pos := checkpointPosition(state)
 	if pos < 0 || pos > len(steps) {
@@ -92,12 +91,31 @@ func verifyCheckpointPosition(cp *Checkpoint) error {
 	if frames := state.GetFrames(); len(frames) > 1 || (len(frames) == 1 && !proto.Equal(frames[0], &Frame{NextNode: int32(pos)})) {
 		return fmt.Errorf("%w: only a position between top-level steps can be checkpointed", ErrCheckpointUnsupported)
 	}
-	next := ""
-	if pos < len(steps) {
-		next = steps[pos].GetId()
+
+	return nil
+}
+
+// CheckpointStep is the id of the next top-level step state would execute, or
+// empty at the end of the steps.
+func CheckpointStep(state *RunState) string {
+	steps := state.GetWorkflow().GetSteps()
+	if pos := checkpointPosition(state); pos >= 0 && pos < len(steps) {
+		return steps[pos].GetId()
 	}
-	if next != cp.GetOrigin().GetStep() {
-		return fmt.Errorf("%w: position %d is step %q, the origin recorded %q", ErrCheckpointTampered, pos, next, cp.GetOrigin().GetStep())
+
+	return ""
+}
+
+// verifyCheckpointPosition holds the position to [CheckpointUnavailable]'s
+// shape, and the cursor to the step the origin said it was about to run, so a
+// position edited to rewind past an executed step is caught.
+func verifyCheckpointPosition(cp *Checkpoint) error {
+	if err := CheckpointUnavailable(cp.GetState()); err != nil {
+		return err
+	}
+	if next := CheckpointStep(cp.GetState()); next != cp.GetOrigin().GetStep() {
+		return fmt.Errorf("%w: position %d is step %q, the origin recorded %q",
+			ErrCheckpointTampered, checkpointPosition(cp.GetState()), next, cp.GetOrigin().GetStep())
 	}
 
 	return nil

@@ -245,3 +245,21 @@ func TestCheckpointRefusals(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+func TestCheckpointUnavailableNamesTheIneligiblePositions(t *testing.T) {
+	t.Parallel()
+
+	state, _ := checkpointFixture(t)
+	require.NoError(t, v1.CheckpointUnavailable(state))
+	require.Equal(t, "c", v1.CheckpointStep(state))
+
+	state.Frames = []*v1.Frame{{NextNode: 2}, {NextNode: 0}}
+	require.ErrorIs(t, v1.CheckpointUnavailable(state), v1.ErrCheckpointUnsupported, "inside a call or loop body")
+
+	state.Frames = []*v1.Frame{{NextNode: 1, NextIteration: 2}}
+	require.ErrorIs(t, v1.CheckpointUnavailable(state), v1.ErrCheckpointUnsupported, "mid for_each")
+
+	state.Frames = []*v1.Frame{{NextNode: 3}}
+	require.NoError(t, v1.CheckpointUnavailable(state), "the end of the steps is a legal position")
+	require.Empty(t, v1.CheckpointStep(state))
+}

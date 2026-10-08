@@ -1251,7 +1251,7 @@ func init() {
 				" established once, before the point, and a run that edited them would no longer\n" +
 				" be a continuation of anything. The workflow is the one field a patch may\n" +
 				" replace, and only when the steps already executed are unchanged; see\n" +
-				" `ResumeCheckpoint` in pkg/flowstate/v1/checkpoint.go, which owns the rule and\n" +
+				" `Checkpoint.Resume` in pkg/flowstate/v1/checkpoint.go, which owns the rule and\n" +
 				" the refusals.\n" +
 				"\n" +
 				" # Size\n" +
@@ -1305,6 +1305,49 @@ func init() {
 			Name: "flowstate.v1.CheckpointOrigin.step",
 			Leading: " Step is the id of the next top-level step the origin would have executed,\n" +
 				" empty when the point is the end of the run's steps.\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointInfo",
+			Leading: " CheckpointInfo describes the checkpoint a run segment started from, without\n" +
+				" the state itself.\n" +
+				"\n" +
+				" # Why only the description\n" +
+				"\n" +
+				" The state a segment starts from carries the run's inputs, vars, outputs and\n" +
+				" identity in full, which is more than `workload.read` returns for a run that\n" +
+				" declares sensitive values. A server that later starts a run from a\n" +
+				" checkpoint holds that state itself, so the operator-facing surface needs only\n" +
+				" to say that a checkpoint exists, where it stands, and how large it is. Handing\n" +
+				" the state to a client would need a disclosure decision of its own, and nothing\n" +
+				" here pre-empts it.\n",
+		},
+		{
+			Name:    "flowstate.v1.CheckpointInfo.workflow_id",
+			Leading: " WorkflowID is the workload the segment belongs to.\n",
+		},
+		{
+			Name:    "flowstate.v1.CheckpointInfo.run_id",
+			Leading: " RunID is the segment the checkpoint is the start of.\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointInfo.segment",
+			Leading: " Segment is how many Continue-As-New handovers preceded this one: zero for\n" +
+				" the segment the workload was submitted as.\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointInfo.step",
+			Leading: " Step is the id of the next top-level step the segment would execute,\n" +
+				" empty when the checkpoint is the end of the run's steps.\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointInfo.spec_hash",
+			Leading: " SpecHash is the canonical digest of the workflow the checkpoint carries; see\n" +
+				" [Checkpoint.spec_hash].\n",
+		},
+		{
+			Name: "flowstate.v1.CheckpointInfo.size_bytes",
+			Leading: " SizeBytes is the serialized size of the carried state, which a resume\n" +
+				" weighs against [MaxRunStateBytes].\n",
 		},
 		{
 			Name: "flowstate.v1.TimelineEntry",
