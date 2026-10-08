@@ -372,7 +372,7 @@ steps:
             log:
               message: ${steps.left.result}
 `,
-			want: `references step "left", which is not visible from here; it is declared in a branch of parallel "fan" (branches cannot read each other)`,
+			want: `references step "left", which is not visible from here; it is declared in another branch of parallel "fan" (branches cannot read each other)`,
 		},
 		{
 			name: "step after a parallel block may reference branch outputs",

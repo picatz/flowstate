@@ -32,7 +32,7 @@ func TestUnresolvedReferenceSaysWhereAHiddenStepLives(t *testing.T) {
           steps:
             - id: two
               log: {message: "${steps.one.result}"}
-`, `which is not visible from here; it is declared in a case of switch "pick" (only that case's own steps can read it)`},
+`, `which is not visible from here; it is declared in another case of switch "pick" (only that case's own steps can read it)`},
 		{"loop body from a later step", head + `  - id: spin
     loop:
       until: "${true}"
@@ -72,6 +72,27 @@ func TestUnresolvedReferenceSaysWhereAHiddenStepLives(t *testing.T) {
           - id: b1
             log: {message: x}
 `, `references step "b1", which runs later`},
+		{"id nested in a later parallel", head + `  - id: early
+    log: {message: "${steps.deep.result}"}
+  - id: fan
+    parallel:
+      - steps:
+          - id: deep
+            log: {message: x}
+`, `references step "deep", which runs later`},
+		{"parallel inside a loop read from after the loop", head + `  - id: spin
+    loop:
+      until: "${true}"
+      max_iterations: 2
+      steps:
+        - id: fan
+          parallel:
+            - steps:
+                - id: deep
+                  log: {message: x}
+  - id: after
+    log: {message: "${steps.deep.result}"}
+`, "declared inside the body of loop \"spin\" (read its values through `steps.spin.results`)"},
 		{"declared nowhere", head + `  - id: after
     log: {message: "${steps.nothing.result}"}
 `, `references unknown step "nothing"`},
