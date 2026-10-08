@@ -752,6 +752,19 @@ func WorkflowServiceMethods() []ServiceMethod {
 			},
 		},
 		{
+			Name:   "ResumeRun",
+			Input:  (&v1.ResumeRunRequest{}).ProtoReflect().Descriptor(),
+			Output: (&v1.ResumeRunResponse{}).ProtoReflect().Descriptor(),
+			Call: func(ctx context.Context, _ *server.FlowstateServer, remote func() flowstatev1connect.WorkflowServiceClient, in proto.Message) (proto.Message, error) {
+				resp, err := remote().ResumeRun(ctx, connect.NewRequest(in.(*v1.ResumeRunRequest)))
+				if err != nil {
+					return nil, err
+				}
+
+				return resp.Msg, nil
+			},
+		},
+		{
 			Name:   "Signal",
 			Input:  (&v1.SignalRequest{}).ProtoReflect().Descriptor(),
 			Output: (&v1.SignalResponse{}).ProtoReflect().Descriptor(),

@@ -53,15 +53,20 @@ func (s *FlowstateServer) GetCheckpoint(
 	}
 
 	return connect.NewResponse(&v1.GetCheckpointResponse{Result: &v1.GetCheckpointResponse_Checkpoint{
-		Checkpoint: &v1.CheckpointInfo{
-			WorkflowId: execution.GetWorkflowId(),
-			RunId:      execution.GetRunId(),
-			Segment:    state.GetSegment(),
-			Step:       v1.CheckpointStep(state),
-			SpecHash:   v1.CanonicalDigest(state.GetWorkflow()),
-			SizeBytes:  int64(v1.RunStateEncodedSize(state)),
-		},
+		Checkpoint: checkpointInfo(execution.GetWorkflowId(), execution.GetRunId(), state),
 	}}), nil
+}
+
+// checkpointInfo describes the checkpoint state is, for the segment it started.
+func checkpointInfo(workflowID, runID string, state *v1.RunState) *v1.CheckpointInfo {
+	return &v1.CheckpointInfo{
+		WorkflowId: workflowID,
+		RunId:      runID,
+		Segment:    state.GetSegment(),
+		Step:       v1.CheckpointStep(state),
+		SpecHash:   v1.CanonicalDigest(state.GetWorkflow()),
+		SizeBytes:  int64(v1.RunStateEncodedSize(state)),
+	}
 }
 
 // unavailable is the answer for a segment that is not a legal starting state.

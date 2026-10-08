@@ -264,6 +264,18 @@ func TestCheckpointUnavailableNamesTheIneligiblePositions(t *testing.T) {
 	require.Empty(t, v1.CheckpointStep(state))
 }
 
+func TestCheckpointUnavailableRefusesStateThatEscapesItsOrigin(t *testing.T) {
+	t.Parallel()
+
+	state, _ := checkpointFixture(t)
+	state.PendingUndo = []*v1.PendingUndo{{}}
+	require.ErrorIs(t, v1.CheckpointUnavailable(state), v1.ErrCheckpointUnsupported, "registered compensations would be undone twice")
+
+	state, _ = checkpointFixture(t)
+	state.Workflow.Concurrency = &v1.Concurrency{}
+	require.ErrorIs(t, v1.CheckpointUnavailable(state), v1.ErrCheckpointUnsupported, "a second run would bypass the permit")
+}
+
 func TestGetCheckpointResponseHoldsExactlyOneAnswer(t *testing.T) {
 	t.Parallel()
 

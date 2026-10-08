@@ -1066,6 +1066,53 @@ func init() {
 			Leading: " Result is the checkpoint, or why there is none. Exactly one is set.\n",
 		},
 		{
+			Name: "flowstate.v1.ResumeRunRequest",
+			Leading: " ResumeRunRequest names the checkpoint to start from and what, if anything,\n" +
+				" to change.\n",
+		},
+		{
+			Name:    "flowstate.v1.ResumeRunRequest.workflow_id",
+			Leading: " WorkflowId is the origin workload, as Run's `workflow_id` reports it.\n",
+		},
+		{
+			Name: "flowstate.v1.ResumeRunRequest.run_id",
+			Leading: " RunId names the origin segment, as a UUID. Empty reads the latest, which\n" +
+				" moves if the workload continues as new; pair it with `expected_step`.\n",
+		},
+		{
+			Name: "flowstate.v1.ResumeRunRequest.patch",
+			Leading: " Patch replaces the workflow's steps after the checkpoint's position. It\n" +
+				" must equal the origin workflow in everything but those steps and keep the\n" +
+				" executed steps unchanged. Empty resumes the origin workflow as it was.\n",
+		},
+		{
+			Name: "flowstate.v1.ResumeRunRequest.expected_step",
+			Leading: " ExpectedStep is the next step the caller inspected with [GetCheckpoint]. When\n" +
+				" set, the resume is refused if the checkpoint stands before a different step.\n",
+		},
+		{
+			Name: "flowstate.v1.ResumeRunRequest.reason",
+			Leading: " Reason is recorded on the new run beside its origin, for whoever reads it\n" +
+				" later. It is not visible to expressions.\n",
+		},
+		{
+			Name:    "flowstate.v1.ResumeRunResponse",
+			Leading: " ResumeRunResponse is the run that was started.\n",
+		},
+		{
+			Name:    "flowstate.v1.ResumeRunResponse.workflow_id",
+			Leading: " WorkflowId and RunId address the new run.\n",
+		},
+		{
+			Name:    "flowstate.v1.ResumeRunResponse.origin",
+			Leading: " Origin describes the checkpoint it started from.\n",
+		},
+		{
+			Name: "flowstate.v1.ResumeRunResponse.patch_digest",
+			Leading: " PatchDigest is the canonical digest of the patched workflow, empty when no\n" +
+				" patch was given.\n",
+		},
+		{
 			Name:    "flowstate.v1.GetTimelineResponse",
 			Leading: " GetTimelineResponse is what one run did.\n",
 		},
@@ -1436,6 +1483,25 @@ func init() {
 				" only a position between top-level steps is a legal starting state.\n" +
 				"\n" +
 				" `run_id` names the segment, as in [GetTimeline]; empty reads the latest.\n",
+		},
+		{
+			Name: "flowstate.v1.WorkflowService.ResumeRun",
+			Leading: " ResumeRun starts a new run from the checkpoint a run segment started from,\n" +
+				" optionally with a patched workflow, and links it to its origin.\n" +
+				"\n" +
+				" The new run is an ordinary run: its own workflow id, executed by an\n" +
+				" ordinary driver, with the origin recorded in its memo (origin run, step and\n" +
+				" the digest of the patch). It carries the origin's inputs, vars, outputs and\n" +
+				" pending signals exactly; a patch may replace only the steps after the\n" +
+				" position, see [Checkpoint]. Only a position [GetCheckpoint] reports\n" +
+				" available can be resumed.\n" +
+				"\n" +
+				" Authorized as starting work (`workload.run`), and additionally requires\n" +
+				" `workload.read` on the origin because the new run inherits its state. The\n" +
+				" caller must be the principal the origin run acts as: the carried identity\n" +
+				" is not changeable, so any other caller would otherwise borrow it. A patched\n" +
+				" workflow passes the same specification admission as a submitted one, and the\n" +
+				" workflow's `manual:` policy decides whether this caller may start it.\n",
 		},
 		{
 			Name: "flowstate.v1.WorkflowService.Cancel",

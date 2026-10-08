@@ -7,6 +7,12 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// CheckpointBuild names the generation of the run state a checkpoint carries.
+// History does not record which binary wrote a segment's start state, so a
+// server reading its own history resumes under this one name; a checkpoint
+// handed across deployments carries the emitter's own.
+const CheckpointBuild = "flowstate.runstate.v1"
+
 // CheckpointVersion is the only [Checkpoint] format this package reads and
 // writes.
 const CheckpointVersion = 1
@@ -90,6 +96,19 @@ func CheckpointUnavailable(state *RunState) error {
 	}
 	if frames := state.GetFrames(); len(frames) > 1 || (len(frames) == 1 && !proto.Equal(frames[0], &Frame{NextNode: int32(pos)})) {
 		return fmt.Errorf("%w: only a position between top-level steps can be checkpointed", ErrCheckpointUnsupported)
+	}
+	// A saga's registered compensations undo effects the origin run really
+	// performed. A run started from here that later failed would undo them a
+	// second time, so until the engine defines what a fork may inherit of them,
+	// a point holding any is not a starting state.
+	if len(state.GetPendingUndo()) > 0 {
+		return fmt.Errorf("%w: the run holds %d registered compensation(s) for effects it already performed, which a new run would undo a second time",
+			ErrCheckpointUnsupported, len(state.GetPendingUndo()))
+	}
+	// A concurrency key or entity address names exactly one live run; a second
+	// run started from a checkpoint would escape the permit it is meant to hold.
+	if state.GetWorkflow().GetConcurrency() != nil {
+		return fmt.Errorf("%w: the workflow declares a `concurrency:` block, whose permit a second run would bypass", ErrCheckpointUnsupported)
 	}
 
 	return nil

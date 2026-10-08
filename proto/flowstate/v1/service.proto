@@ -1175,6 +1175,26 @@ service WorkflowService {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
   }
 
+  // ResumeRun starts a new run from the checkpoint a run segment started from,
+  // optionally with a patched workflow, and links it to its origin.
+  //
+  // The new run is an ordinary run: its own workflow id, executed by an
+  // ordinary driver, with the origin recorded in its memo (origin run, step and
+  // the digest of the patch). It carries the origin's inputs, vars, outputs and
+  // pending signals exactly; a patch may replace only the steps after the
+  // position, see [Checkpoint]. Only a position [GetCheckpoint] reports
+  // available can be resumed.
+  //
+  // Authorized as starting work (`workload.run`), and additionally requires
+  // `workload.read` on the origin because the new run inherits its state. The
+  // caller must be the principal the origin run acts as: the carried identity
+  // is not changeable, so any other caller would otherwise borrow it. A patched
+  // workflow passes the same specification admission as a submitted one, and the
+  // workflow's `manual:` policy decides whether this caller may start it.
+  rpc ResumeRun(ResumeRunRequest) returns (ResumeRunResponse) {
+    option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_RUN;
+  }
+
   // Cancel asks a run to stop and lets it clean up on the way out.
   //
   // Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -1500,6 +1520,54 @@ message GetCheckpointResponse {
     // resume, or it could not be read.
     string unavailable_reason = 2 [(buf.validate.field).string.min_len = 1];
   }
+}
+
+// ResumeRunRequest names the checkpoint to start from and what, if anything,
+// to change.
+message ResumeRunRequest {
+  // WorkflowId is the origin workload, as Run's `workflow_id` reports it.
+  string workflow_id = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_bytes: 256
+    }
+  ];
+
+  // RunId names the origin segment, as a UUID. Empty reads the latest, which
+  // moves if the workload continues as new; pair it with `expected_step`.
+  string run_id = 2 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.uuid = true
+  ];
+
+  // Patch replaces the workflow's steps after the checkpoint's position. It
+  // must equal the origin workflow in everything but those steps and keep the
+  // executed steps unchanged. Empty resumes the origin workflow as it was.
+  Workflow patch = 3;
+
+  // ExpectedStep is the next step the caller inspected with [GetCheckpoint]. When
+  // set, the resume is refused if the checkpoint stands before a different step.
+  string expected_step = 4 [(buf.validate.field).string = {max_len: 128}];
+
+  // Reason is recorded on the new run beside its origin, for whoever reads it
+  // later. It is not visible to expressions.
+  string reason = 5 [(buf.validate.field).string = {max_len: 512}];
+}
+
+// ResumeRunResponse is the run that was started.
+message ResumeRunResponse {
+  // WorkflowId and RunId address the new run.
+  string workflow_id = 1;
+  string run_id = 2;
+
+  // Origin describes the checkpoint it started from.
+  CheckpointInfo origin = 3;
+
+  // PatchDigest is the canonical digest of the patched workflow, empty when no
+  // patch was given.
+  string patch_digest = 4;
 }
 
 // GetTimelineResponse is what one run did.
