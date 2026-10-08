@@ -124,9 +124,14 @@ type (
 
 // Model is the debugger screen.
 type Model struct {
-	cfg  Config
-	ctx  context.Context
-	keys tui.Keymap
+	cfg Config
+
+	// programDigest is the digest of the program the screen was given, taken
+	// once: a frame's program is trusted only while it is the program the run
+	// reports.
+	programDigest string
+	ctx           context.Context
+	keys          tui.Keymap
 
 	screen Screen
 	ring   tui.Ring
@@ -169,13 +174,19 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 	}
 	ring = ring.Set(focus)
 
+	var digest string
+	if cfg.Frame.Program != nil {
+		digest = v1.WorkflowIRDigest(cfg.Frame.Program)
+	}
+
 	return Model{
-		cfg:     cfg,
-		ctx:     ctx,
-		keys:    keys,
-		ring:    ring,
-		readSeq: 1,
-		reading: true,
+		cfg:           cfg,
+		programDigest: digest,
+		ctx:           ctx,
+		keys:          keys,
+		ring:          ring,
+		readSeq:       1,
+		reading:       true,
 		screen: Screen{
 			Size: cfg.Size, Tree: pane.NewTree(nil), Console: NewConsole(), Keys: keys, Verbs: cfg.Verbs,
 			Focus: ring.Current(), Pane: focus, Diverged: map[uint64]bool{}, Flow: NewFlow(),
@@ -273,17 +284,27 @@ func (m Model) ended() bool {
 
 // read reads one frame.
 func (m Model) read(seq uint64) tea.Cmd {
-	ctx, target, opts := m.ctx, m.cfg.Target, m.cfg.Frame
+	ctx, target, opts, digest := m.ctx, m.cfg.Target, m.cfg.Frame, m.programDigest
 	opts.StepRows = stepRowsAsked
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, readTimeout)
 		defer cancel()
 		frame, err := flowdebug.ReadFrame(ctx, target, opts)
+		if err == nil && frame.Program != nil && !programIsTheRuns(digest, frame.Snapshot.GetIrDigest()) {
+			// A file that is not the program the run executes would draw steps
+			// the run does not have, and aim `until` and `break` at them.
+			frame.Program = nil
+		}
 
 		return frameMsg{seq: seq, frame: frame, err: err}
 	}
 }
+
+// programIsTheRuns reports whether a program with digest want may be drawn for
+// a run that reports digest got. A run that reports none (a local session
+// built from the program) cannot contradict it.
+func programIsTheRuns(want, got string) bool { return got == "" || got == want }
 
 // reread asks for a fresh read. One runs at a time: a run whose revisions come
 // faster than a read completes costs one more read afterwards, not one each.

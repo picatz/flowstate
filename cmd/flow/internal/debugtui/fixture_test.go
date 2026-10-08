@@ -62,9 +62,12 @@ type fakeTarget struct {
 	// has reached, and dropped more before them. diverge names the points a
 	// travel finds the run cannot be brought back to; travels is what it was asked.
 	timelined bool
-	dropped   uint32
-	diverge   map[int32]bool
-	travels   []int32
+
+	// irDigest is the program digest the snapshot reports, when set.
+	irDigest string
+	dropped  uint32
+	diverge  map[int32]bool
+	travels  []int32
 
 	// moved is closed and replaced each time the run changes, so a wait can
 	// block on it.
@@ -111,6 +114,7 @@ func (f *fakeTarget) snapshot() *v1.DebugSnapshot {
 		Session:  &v1.DebugSession{SessionId: "s-1", Run: &v1.RunAddress{WorkflowId: "release-1", RunId: "3f7c9a2e-1111-2222-3333-444455556666"}},
 		State:    v1.DebugRunState_DEBUG_RUN_STATE_HELD,
 		Reason:   v1.DebugStopReason_DEBUG_STOP_REASON_STEP,
+		IrDigest: f.irDigest,
 	}
 	if f.timelined && f.at < len(f.program) {
 		timeline := &v1.DebugTimeline{Current: int32(f.at), Dropped: f.dropped}

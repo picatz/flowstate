@@ -984,3 +984,45 @@ func TestTheScreenWithAFlowGolden(t *testing.T) {
 		})
 	}
 }
+
+// TestAProgramThatIsNotTheRunsIsNeverDrawn: a file whose digest is not the one
+// the run reports would draw steps the run does not have and aim `until` and
+// `break` at them, so the frame carries no program and the pane says so.
+func TestAProgramThatIsNotTheRunsIsNeverDrawn(t *testing.T) {
+	t.Parallel()
+
+	read := func(t *testing.T, fake *fakeTarget) flowdebug.Frame {
+		t.Helper()
+		m := flowModel(t, fake, flowProgram())
+		msg, ok := m.read(m.readSeq)().(frameMsg)
+		require.True(t, ok)
+		require.NoError(t, msg.err)
+
+		return msg.frame
+	}
+
+	t.Run("a digest that matches draws the program", func(t *testing.T) {
+		t.Parallel()
+
+		fake := inLoop(newFake())
+		fake.irDigest = v1.WorkflowIRDigest(flowProgram())
+		assert.NotNil(t, read(t, fake).Program)
+	})
+	t.Run("a run that reports none cannot contradict it", func(t *testing.T) {
+		t.Parallel()
+
+		assert.NotNil(t, read(t, inLoop(newFake())).Program)
+	})
+	t.Run("a digest that differs draws no program and commands refuse", func(t *testing.T) {
+		t.Parallel()
+
+		fake := inLoop(newFake())
+		fake.irDigest = "sha256:somebody-elses"
+		frame := read(t, fake)
+		assert.Nil(t, frame.Program)
+
+		m := send(flowModel(t, fake, flowProgram()), tuitest.Key("u"))
+		assert.Contains(t, m.screen.Toast.Text(), NoProgramNote)
+		assert.Empty(t, fake.resumes, "until was aimed at a step of a program the run is not running")
+	})
+}

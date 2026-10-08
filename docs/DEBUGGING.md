@@ -942,12 +942,14 @@ built once per program, each stop only changes the marks, and the view
 re-centres on the held step until you scroll it, after which it stays where you
 put it until you ask the run to move. `up` and `down` select a step, `left` and
 `right` fold and unfold a group (a folded group shows how many steps it hides,
-and carries the mark of what is inside it), `enter` or `u` is `until` that
+and keeps its own mark only, so open it to see what failed inside), `enter` or `u` is `until` that
 step, and `B` is `break` on it, or `delete` if it already has one; a double
 click is `until` and a right click is `B`. These send the console's own lines,
 which the console shows, so a step the run's redactor withholds, or whose name
 cannot be typed on a line, is refused with a sentence and sent nowhere. The
-pane draws at most 2048 steps and calls at most eight deep; past that it says
+pane draws a program only when it is the one the run reports (the digests
+match), so a stale file gives the no-program line instead of steps the run does
+not have. It draws at most 2048 steps and calls at most eight deep; past that it says
 `N more not drawn`.
 
 The panes fold as the terminal narrows:
