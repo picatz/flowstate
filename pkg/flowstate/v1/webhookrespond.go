@@ -284,6 +284,13 @@ func CheckWebhookRespondWithin(wf *Workflow, trigger *WebhookTrigger) error {
 			"for. Keep `signal:` to answer a gate, or `respond_within:` to answer with a run's outputs", name)
 	}
 
+	if WebhookAnswersEmpty(trigger) {
+		return fmt.Errorf("webhook %q declares `respond_within:` and verifies with a scheme whose sender takes only "+
+			"a bodyless 200; Slack shows any other answer to the person who clicked as a failure, so a run's "+
+			"outputs have nowhere to go. Drop `respond_within:` and read the outcome with `flow get`, or post it "+
+			"back to the channel from a step", name)
+	}
+
 	if len(wf.GetDeclaredOutputs()) == 0 {
 		return fmt.Errorf("webhook %q declares `respond_within:`, but this workflow declares no `outputs:`; "+
 			"the declared outputs are the only thing a run can answer with, so declare the ones the caller "+
