@@ -106,6 +106,12 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	}
 	from := doc.parsed.stepAt(pos)
 	if from == nil {
+		// Outside every step, the one place that reads a step is the workflow's
+		// own `outputs:`, which sees the steps that merge into the top-level
+		// namespace.
+		if target := stepReferencedAt(doc, pos); target != nil && target.idEntry != nil {
+			return []lsp.Location{{URI: doc.uri, Range: target.idEntry.valueRange()}}
+		}
 		return nil
 	}
 

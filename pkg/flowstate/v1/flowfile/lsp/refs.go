@@ -97,14 +97,15 @@ func stepReferencedAt(doc *document, pos lsp.Position) *parsedStep {
 }
 
 // resolveStepFrom resolves a step id written in an expression of from. A
-// top-level expression (from nil) sees only top-level steps, because a block's
-// body outputs do not escape it.
+// top-level expression (from nil) sees the steps that merge into the top-level
+// namespace: a parallel branch's and a switch body's outputs do, a loop or
+// for_each body's do not escape it.
 func resolveStepFrom(doc *document, from *parsedStep, ls loopScope, id string) *parsedStep {
 	if from != nil {
 		return doc.parsed.stepVisibleFrom(id, from, ls)
 	}
 	for _, s := range doc.parsed.steps {
-		if s.id == id && len(s.scope) == 0 {
+		if s.id == id && !slices.ContainsFunc(s.scope, scopeFrame.loopBody) {
 			return s
 		}
 	}

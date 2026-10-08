@@ -351,3 +351,46 @@ steps:
 	_, err = renameAt(doc, positionOf(t, src, "id: first", len("id: ")), "second")
 	assert.Error(t, err)
 }
+
+// The workflow's `outputs:` reads the steps that merge into the top-level
+// namespace — a parallel branch's, not a loop body's — and go-to-definition,
+// references and rename follow it there.
+func TestOutputsReadMergedAndTopLevelSteps(t *testing.T) {
+	t.Parallel()
+	const src = `name: out
+steps:
+  - id: fan
+    parallel:
+      - steps:
+          - id: left
+            http:
+              url: https://example.com
+  - id: each
+    for_each:
+      items: ${[1]}
+      as: n
+      steps:
+        - id: inner
+          log:
+            message: ${string(n)}
+outputs:
+  code:
+    value: ${steps.left.status_code}
+  hidden:
+    value: ${steps.inner.result}
+`
+	doc := refsDoc(t, src)
+
+	loc := definitionAt(doc, positionOf(t, src, "steps.left.status_code", len("steps.")+1))
+	require.Len(t, loc, 1)
+	assert.Equal(t, "left", textInRange(src, loc[0].Range))
+
+	// A loop body's step does not escape the loop: nothing to go to.
+	assert.Empty(t, definitionAt(doc, positionOf(t, src, "steps.inner.result", len("steps.")+1)))
+
+	edit, err := renameAt(doc, positionOf(t, src, "id: left", len("id: ")), "west")
+	require.NoError(t, err)
+	got := applyEdits(t, src, edit.Changes["file:///refs.yaml"])
+	assert.Contains(t, got, "id: west")
+	assert.Contains(t, got, "steps.west.status_code")
+}
