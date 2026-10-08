@@ -2,6 +2,7 @@ package flowfile_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -193,4 +194,45 @@ steps:
 	assert.NotContains(t, key, "default")
 	assert.NotContains(t, key, "examples")
 	assert.Equal(t, "eu", at(t, schema, "properties", "region", "default"), "a plain input keeps its default")
+}
+
+func TestAJSONSchemaOfAHandBuiltDeepChainOfRecordsIsBounded(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{Name: "deep"}
+	const chain = 60
+	for i := range chain {
+		next := &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}
+		if i < chain-1 {
+			next = &v1.Type{Kind: &v1.Type_Message{Message: fmt.Sprintf("R%d", i+1)}}
+		}
+		wf.DeclaredTypes = append(wf.DeclaredTypes, &v1.TypeDeclaration{
+			Name:   fmt.Sprintf("R%d", i),
+			Fields: []*v1.InputDeclaration{{Name: "next", ValueType: next}},
+		})
+	}
+	wf.DeclaredInputs = []*v1.InputDeclaration{{Name: "root", ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "R0"}}}}
+
+	defs := v1.InputsJSONSchema(wf)["$defs"].(map[string]any)
+	assert.LessOrEqual(t, len(defs), v1.MaxStructureDepth+1, "the walk stops at the structure bound")
+	assert.Contains(t, defs, "R0")
+}
+
+func TestADurationKeepsHowItIsWrittenBesideTheAuthorsDescription(t *testing.T) {
+	t.Parallel()
+
+	schema := schemaOf(t, `edition: `+flowfile.CurrentEdition+`
+name: waits
+inputs:
+  timeout:
+    type: duration
+    description: How long to wait.
+steps:
+  - id: done
+    value: ${inputs.timeout}
+`, v1.InputsJSONSchema)
+
+	description := at(t, schema, "properties", "timeout", "description").(string)
+	assert.Contains(t, description, "How long to wait.")
+	assert.Contains(t, description, "90m")
 }

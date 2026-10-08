@@ -35,7 +35,7 @@ func InputsJSONSchema(wf *Workflow) map[string]any {
 	properties := make(map[string]any, len(wf.GetDeclaredInputs()))
 	var required []string
 	for _, declaration := range wf.GetDeclaredInputs() {
-		properties[declaration.GetName()] = b.declaration(declarationFacts{
+		properties[declaration.GetName()] = b.declaration(0, declarationFacts{
 			description: declaration.GetDescription(),
 			sensitive:   declaration.GetSensitive(),
 			must:        declaration.GetMust(),
@@ -65,7 +65,7 @@ func OutputsJSONSchema(wf *Workflow) map[string]any {
 	properties := make(map[string]any, len(wf.GetDeclaredOutputs()))
 	required := make([]string, 0, len(wf.GetDeclaredOutputs()))
 	for _, declaration := range wf.GetDeclaredOutputs() {
-		properties[declaration.GetName()] = b.declaration(declarationFacts{
+		properties[declaration.GetName()] = b.declaration(0, declarationFacts{
 			description: declaration.GetDescription(),
 			sensitive:   declaration.GetSensitive(),
 			must:        declaration.GetMust(),
@@ -120,8 +120,8 @@ func (b *schemaBuilder) root(title string, properties map[string]any, required [
 }
 
 // declaration is the schema of one declared value.
-func (b *schemaBuilder) declaration(facts declarationFacts) map[string]any {
-	schema := b.typed(facts.typed, 0)
+func (b *schemaBuilder) declaration(depth int, facts declarationFacts) map[string]any {
+	schema := b.typed(facts.typed, depth)
 
 	if facts.typed.GetEnum() && len(facts.values) > 0 {
 		schema["enum"] = slices.Clone(facts.values)
@@ -142,7 +142,12 @@ func (b *schemaBuilder) declaration(facts declarationFacts) map[string]any {
 	}
 
 	if facts.description != "" {
-		schema["description"] = facts.description
+		// A duration carries how it is written; the author's words add to that.
+		if built, ok := schema["description"].(string); ok {
+			schema["description"] = facts.description + " (" + built + ")"
+		} else {
+			schema["description"] = facts.description
+		}
 	}
 	if facts.sensitive {
 		schema["x-flowstate-sensitive"] = true
@@ -182,7 +187,7 @@ func (b *schemaBuilder) typed(t *Type, depth int) map[string]any {
 	case *Type_Enum:
 		return map[string]any{"type": "string"}
 	case *Type_Message:
-		return b.record(kind.Message)
+		return b.record(kind.Message, depth+1)
 	}
 
 	return map[string]any{}
@@ -215,7 +220,7 @@ func scalarSchema(scalar Type_Scalar) map[string]any {
 // the first time the record is named. The definition is entered before its fields
 // are read, so a record that reaches itself (a hand-built specification; the
 // compiler refuses a cycle) ends at the reference rather than looping.
-func (b *schemaBuilder) record(name string) map[string]any {
+func (b *schemaBuilder) record(name string, depth int) map[string]any {
 	reference := map[string]any{"$ref": "#/$defs/" + name}
 
 	declaration, ok := b.table[name]
@@ -227,12 +232,17 @@ func (b *schemaBuilder) record(name string) map[string]any {
 	if _, written := b.defs[name]; written {
 		return reference
 	}
+	if depth > MaxStructureDepth {
+		// Declarations are bounded to this depth by [CheckRecordDeclarations]; a
+		// specification that skipped it ends here rather than recursing on.
+		return map[string]any{"type": "object"}
+	}
 	b.defs[name] = nil
 
 	properties := make(map[string]any, len(declaration.GetFields()))
 	var required []string
 	for _, field := range declaration.GetFields() {
-		properties[field.GetName()] = b.declaration(declarationFacts{
+		properties[field.GetName()] = b.declaration(depth, declarationFacts{
 			description: field.GetDescription(),
 			sensitive:   field.GetSensitive(),
 			must:        field.GetMust(),
