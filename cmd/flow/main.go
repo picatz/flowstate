@@ -973,6 +973,18 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	// tenant the server will derive is not part of the sentence.
 	announceVenue(cmd, serverVenue(serverFlagsOf(cmd), os.Getenv))
 
+	// Built before the file is read so the file can be checked against what
+	// this deployment runs (#1548); see [registerDeploymentCatalog]. It also
+	// moves a misconfigured --credential-source ahead of the file, which was
+	// already ahead of the submission.
+	client, err := newFollowClient(serverFlagsOf(cmd))
+	if err != nil {
+		return err
+	}
+	if err := registerDeploymentCatalog(cmd, client); err != nil {
+		return err
+	}
+
 	workflow, err := loadWorkflow(args[0])
 	if err != nil {
 		return err
@@ -1019,17 +1031,6 @@ func runWorkflow(cmd *cobra.Command, args []string) error {
 	}
 
 	server := serverFlagsOf(cmd)
-
-	// Built once and used for both the request that starts the run and every
-	// poll of the follow phase below, rather than once per RPC — see
-	// [newFollowClient]. That also moves a misconfigured --credential-source
-	// ahead of the Flowfile being submitted at all: refused here, before
-	// anything has started, instead of surfacing from the transport on the
-	// first request the same as any other refusal.
-	client, err := newFollowClient(server)
-	if err != nil {
-		return err
-	}
 
 	started, err := client.Run(cmd.Context(),
 		connect.NewRequest(&v1.RunRequest{Workflow: workflow, Inputs: inputs, Reason: reason, RequestId: &requestID}))
@@ -2759,6 +2760,7 @@ flow validate examples/hello-world/workflow.yaml`,
 	addRawOutputFlag(runCmd)
 	addFollowFlags(runCmd)
 	addInputFlags(runCmd)
+	addPluginCatalogFlag(runCmd)
 
 	// Why a person is starting this run, recorded on it. Optional here and
 	// required by the *workflow*: a file declaring `manual: {require_reason:

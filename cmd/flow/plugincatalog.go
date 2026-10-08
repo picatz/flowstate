@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 
+	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
@@ -186,3 +188,52 @@ func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
 // drops the ambient search path so nothing is launched behind the catalog's
 // back.
 var errPluginCatalogAndLaunch = errors.New("--" + pluginCatalogFlag + " and the plugin launch flags are two sources of the same fact")
+
+// registerDeploymentCatalog teaches this process the plugin tasks the
+// deployment it is about to submit to can run (#1548).
+//
+// `flow run` validates the file before submitting it, and a plugin task is
+// unknown to a client that launched no plugin: the refusal then said the file
+// was fine and offered no way to act on it. The deployment is the authority on
+// what it will run, and GetCatalog already answers with its plugin snapshot —
+// the same one submissions are pinned against — so a plugin the server has is a
+// task this client accepts, and one it lacks stays refused.
+//
+// An explicit --plugin-catalog wins and nothing is fetched. A deployment that
+// cannot be asked (unreachable, or its policy denies the RPC) leaves the
+// client's own registry in place, which is what this verb did before: the
+// submission then reaches the server, whose refusal is the authoritative one.
+// Registration uses the same bounded rebuild as a saved catalog, so a server
+// cannot hand a client more than a document read from disk could carry.
+func registerDeploymentCatalog(cmd *cobra.Command, client flowstatev1connect.WorkflowServiceClient) error {
+	if pluginCatalogPath(cmd) != "" {
+		_, err := loadPluginCatalog(cmd)
+
+		return err
+	}
+
+	resp, err := client.GetCatalog(cmd.Context(), connect.NewRequest(&v1.GetCatalogRequest{}))
+	if err != nil {
+		return nil
+	}
+
+	catalog := resp.Msg.GetPlugins()
+	if len(catalog.GetPlugins()) == 0 {
+		return nil
+	}
+
+	defs, err := plugin.TaskDefsFromCatalog(catalog, plugin.Config{})
+	if err != nil {
+		return nil
+	}
+	for _, def := range defs {
+		if _, exists := v1.DefaultRegistry().Lookup(def.Name); exists {
+			continue
+		}
+		if err := v1.DefaultRegistry().Replace(def); err != nil {
+			return fmt.Errorf("registering the deployment's task %q: %w", def.Name, err)
+		}
+	}
+
+	return nil
+}

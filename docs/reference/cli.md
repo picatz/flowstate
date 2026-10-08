@@ -1533,6 +1533,7 @@ flow validate examples/hello-world/workflow.yaml
 | `--interval <duration>` | `duration` | `1s` | — | how often to ask the server, clamped to a floor of 250ms |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plain` | `bool` | `false` | — | print one line per change instead of drawing a live view, even on a terminal |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--raw` | `bool` | `false` | — | write the schema's own protojson instead of the run document: `stepValues`, `namedValues` and CEL's tagged encoding of every value, exactly as the RPC surface spells them. For a consumer generated against the schema |
 | `--reason <string>` | `string` | — | — | why this run is being started, recorded on it; required by a workflow whose `manual:` block asks for one |
 | `--request-id <string>` | `string` | — | — | idempotency key for this submission, a UUID or a caller-chosen string; a second `flow run` carrying the same value is answered with the run the first started rather than starting another. Generated per invocation when unset |
