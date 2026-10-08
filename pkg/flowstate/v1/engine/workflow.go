@@ -322,14 +322,14 @@ func failedAt(err error, position string) error {
 // error from the activity or the workflow-side evaluator, or already a run
 // failure carrying the account up from the node. The innermost step wins, so a
 // nested failure keeps the step it was raised in.
-func attributeToStep(err error, step string) error {
+func attributeToStep(err error, node *v1.Node) error {
 	if inner, ok := errors.AsType[*ErrRunFailed](err); ok && inner.expression != nil {
-		inner.expression.AttributeStep(step)
+		inner.expression.AttributeStep(node.GetId(), node.GetSource())
 
 		return err
 	}
 
-	return v1.AttributeToStep(err, step)
+	return v1.AttributeToStep(err, node)
 }
 
 // qualifyStep is [attributeToStep]'s counterpart at a `call:` boundary: the

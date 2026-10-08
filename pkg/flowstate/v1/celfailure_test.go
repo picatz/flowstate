@@ -341,12 +341,13 @@ func TestAttributeToStepKeepsTheInnermostStep(t *testing.T) {
 	})
 	require.Error(t, err)
 
-	AttributeToStep(err, "inner")
-	AttributeToStep(err, "outer")
+	AttributeToStep(err, &Node{Id: "inner", Source: &SourceLocation{File: "w.yaml", Line: 3, Column: 5}})
+	AttributeToStep(err, &Node{Id: "outer", Source: &SourceLocation{File: "w.yaml", Line: 9, Column: 1}})
 	assert.Equal(t, "inner", ExpressionFailureOf(err).GetStep())
+	assert.EqualValues(t, 3, ExpressionFailureOf(err).GetLocation().GetLine(), "the innermost step's location is kept with it")
 
-	assert.NotPanics(t, func() { AttributeToStep(nil, "x") })
-	assert.Equal(t, "plain", AttributeToStep(errors.New("plain"), "x").Error())
+	assert.NotPanics(t, func() { AttributeToStep(nil, &Node{Id: "x"}) })
+	assert.Equal(t, "plain", AttributeToStep(errors.New("plain"), &Node{Id: "x"}).Error())
 }
 
 // TestQualifyStepMarksAFailureThatCrossedACall pins that a callee's step is
@@ -360,11 +361,11 @@ func TestQualifyStepMarksAFailureThatCrossedACall(t *testing.T) {
 	})
 	require.Error(t, err)
 
-	AttributeToStep(err, "first")
+	AttributeToStep(err, &Node{Id: "first"})
 	QualifyStepWithin(err, "callee")
-	AttributeToStep(err, "called")
+	AttributeToStep(err, &Node{Id: "called"})
 	assert.Equal(t, "callee/first", ExpressionFailureOf(err).GetStep())
 
 	var nilFailure *ExpressionFailure
-	assert.NotPanics(t, func() { nilFailure.QualifyStep("x"); nilFailure.AttributeStep("x") })
+	assert.NotPanics(t, func() { nilFailure.QualifyStep("x"); nilFailure.AttributeStep("x", nil) })
 }

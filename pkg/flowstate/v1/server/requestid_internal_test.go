@@ -222,3 +222,28 @@ func TestSubmissionKeyIgnoresTheRootSourceDigest(t *testing.T) {
 	require.Equal(t, one.submission, fromFile.submission, "a program compiled from a file is another submission")
 	require.NotEmpty(t, sourced.GetSourceDigest(), "the key changed the workflow it was given")
 }
+
+// TestSubmissionKeyIgnoresStepLocations: where a step is written is advisory,
+// so a retry after a comment moved a line is the same submission, and the same
+// program is still the same program to the trusted-copy comparison.
+func TestSubmissionKeyIgnoresStepLocations(t *testing.T) {
+	t.Parallel()
+
+	step := func(line int32) *v1.Workflow {
+		return &v1.Workflow{Name: "w", Steps: []*v1.Node{{
+			Id:     "a",
+			Source: &v1.SourceLocation{File: "w.yaml", Line: line, Column: 5},
+		}}}
+	}
+	first, err := newSubmissionKey("team-a", "job-1", step(4), nil)
+	require.NoError(t, err)
+	moved, err := newSubmissionKey("team-a", "job-1", step(9), nil)
+	require.NoError(t, err)
+	require.Equal(t, first.submission, moved.submission, "a moved comment is another submission")
+
+	require.True(t, sameProgram(step(4), step(9)))
+	require.True(t, sameProgram(step(4), &v1.Workflow{Name: "w", Steps: []*v1.Node{{Id: "a"}}}))
+	require.False(t, sameProgram(step(4), &v1.Workflow{Name: "w", Steps: []*v1.Node{{Id: "b"}}}),
+		"a different program must still differ")
+	require.NotNil(t, step(4).GetSteps()[0].GetSource())
+}

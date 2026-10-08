@@ -523,7 +523,11 @@ type ExpressionFailure struct {
 	// Step is the id of the step whose expression failed, the innermost one when
 	// steps nest, so a consumer that holds the Flowfile can find the line the
 	// sentence is about. Empty when the failure was raised outside any step.
-	Step          string `protobuf:"bytes,8,opt,name=step,proto3" json:"step,omitempty"`
+	Step string `protobuf:"bytes,8,opt,name=step,proto3" json:"step,omitempty"`
+	// Location is where that step is written, when the specification carried it
+	// (`Node.source`). Unset for a hand-built specification, for a step of a
+	// called workflow, and for an id declared in more than one place.
+	Location      *SourceLocation `protobuf:"bytes,9,opt,name=location,proto3" json:"location,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -614,6 +618,84 @@ func (x *ExpressionFailure) GetStep() string {
 	return ""
 }
 
+func (x *ExpressionFailure) GetLocation() *SourceLocation {
+	if x != nil {
+		return x.Location
+	}
+	return nil
+}
+
+// SourceLocation is where a step is written in the file it was compiled from.
+//
+// Advisory: it is carried so a failure can point back at the file without the
+// reader holding it, and it is never part of the program. It is cleared from
+// every digest ([CanonicalWorkflow], [WorkflowIRDigest]) and counts against the
+// specification's size like any other field. Lines and columns are 1-based and
+// count characters, as `Diagnostic.line` and `Diagnostic.column` do.
+type SourceLocation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// File is the path as the submitter named it, or its base name when that was
+	// absolute, so a home directory does not travel into durable history.
+	File string `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
+	// Line is the 1-based line.
+	Line int32 `protobuf:"varint,2,opt,name=line,proto3" json:"line,omitempty"`
+	// Column is the 1-based column, or zero when only the line is known.
+	Column        int32 `protobuf:"varint,3,opt,name=column,proto3" json:"column,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SourceLocation) Reset() {
+	*x = SourceLocation{}
+	mi := &file_flowstate_v1_value_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SourceLocation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SourceLocation) ProtoMessage() {}
+
+func (x *SourceLocation) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_value_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SourceLocation.ProtoReflect.Descriptor instead.
+func (*SourceLocation) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_value_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *SourceLocation) GetFile() string {
+	if x != nil {
+		return x.File
+	}
+	return ""
+}
+
+func (x *SourceLocation) GetLine() int32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *SourceLocation) GetColumn() int32 {
+	if x != nil {
+		return x.Column
+	}
+	return 0
+}
+
 // Error is why a value could not be produced.
 type Value_Error struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -627,7 +709,7 @@ type Value_Error struct {
 
 func (x *Value_Error) Reset() {
 	*x = Value_Error{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[4]
+	mi := &file_flowstate_v1_value_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -639,7 +721,7 @@ func (x *Value_Error) String() string {
 func (*Value_Error) ProtoMessage() {}
 
 func (x *Value_Error) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[4]
+	mi := &file_flowstate_v1_value_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -701,7 +783,7 @@ type Value_Structure struct {
 
 func (x *Value_Structure) Reset() {
 	*x = Value_Structure{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[5]
+	mi := &file_flowstate_v1_value_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -713,7 +795,7 @@ func (x *Value_Structure) String() string {
 func (*Value_Structure) ProtoMessage() {}
 
 func (x *Value_Structure) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[5]
+	mi := &file_flowstate_v1_value_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -780,7 +862,7 @@ type Value_Structure_List struct {
 
 func (x *Value_Structure_List) Reset() {
 	*x = Value_Structure_List{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[6]
+	mi := &file_flowstate_v1_value_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -792,7 +874,7 @@ func (x *Value_Structure_List) String() string {
 func (*Value_Structure_List) ProtoMessage() {}
 
 func (x *Value_Structure_List) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[6]
+	mi := &file_flowstate_v1_value_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -828,7 +910,7 @@ type Value_Structure_Map struct {
 
 func (x *Value_Structure_Map) Reset() {
 	*x = Value_Structure_Map{}
-	mi := &file_flowstate_v1_value_proto_msgTypes[7]
+	mi := &file_flowstate_v1_value_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -840,7 +922,7 @@ func (x *Value_Structure_Map) String() string {
 func (*Value_Structure_Map) ProtoMessage() {}
 
 func (x *Value_Structure_Map) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_value_proto_msgTypes[7]
+	mi := &file_flowstate_v1_value_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -919,7 +1001,7 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"\tTYPE_EXPR\x10\a\x12\x0e\n" +
 	"\n" +
 	"TYPE_ERROR\x10\bB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xe5\x02\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\x9f\x03\n" +
 	"\x11ExpressionFailure\x12$\n" +
 	"\boperator\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\boperator\x12-\n" +
 	"\roperand_types\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\foperandTypes\x12.\n" +
@@ -930,9 +1012,14 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"candidates\x12$\n" +
 	"\x06offset\x18\x06 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x00R\x06offset\x88\x01\x01\x12\"\n" +
 	"\x05caret\x18\a \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x01R\x05caret\x88\x01\x01\x12\x1c\n" +
-	"\x04step\x18\b \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04stepB\t\n" +
+	"\x04step\x18\b \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04step\x128\n" +
+	"\blocation\x18\t \x01(\v2\x1c.flowstate.v1.SourceLocationR\blocationB\t\n" +
 	"\a_offsetB\b\n" +
-	"\x06_caretB\xa9\x01\n" +
+	"\x06_caret\"l\n" +
+	"\x0eSourceLocation\x12\x1c\n" +
+	"\x04file\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04file\x12\x1b\n" +
+	"\x04line\x18\x02 \x01(\x05B\a\xbaH\x04\x1a\x02(\x01R\x04line\x12\x1f\n" +
+	"\x06column\x18\x03 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\x06columnB\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"ValueProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
@@ -949,7 +1036,7 @@ func file_flowstate_v1_value_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_value_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_value_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_flowstate_v1_value_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_flowstate_v1_value_proto_goTypes = []any{
 	(Value_Type)(0),              // 0: flowstate.v1.Value.Type
 	(Value_Error_Code)(0),        // 1: flowstate.v1.Value.Error.Code
@@ -957,32 +1044,34 @@ var file_flowstate_v1_value_proto_goTypes = []any{
 	(*CredentialRef)(nil),        // 3: flowstate.v1.CredentialRef
 	(*Value)(nil),                // 4: flowstate.v1.Value
 	(*ExpressionFailure)(nil),    // 5: flowstate.v1.ExpressionFailure
-	(*Value_Error)(nil),          // 6: flowstate.v1.Value.Error
-	(*Value_Structure)(nil),      // 7: flowstate.v1.Value.Structure
-	(*Value_Structure_List)(nil), // 8: flowstate.v1.Value.Structure.List
-	(*Value_Structure_Map)(nil),  // 9: flowstate.v1.Value.Structure.Map
-	nil,                          // 10: flowstate.v1.Value.Structure.Map.EntriesEntry
-	(*v1alpha1.ParsedExpr)(nil),  // 11: google.api.expr.v1alpha1.ParsedExpr
-	(*v1alpha1.Value)(nil),       // 12: google.api.expr.v1alpha1.Value
+	(*SourceLocation)(nil),       // 6: flowstate.v1.SourceLocation
+	(*Value_Error)(nil),          // 7: flowstate.v1.Value.Error
+	(*Value_Structure)(nil),      // 8: flowstate.v1.Value.Structure
+	(*Value_Structure_List)(nil), // 9: flowstate.v1.Value.Structure.List
+	(*Value_Structure_Map)(nil),  // 10: flowstate.v1.Value.Structure.Map
+	nil,                          // 11: flowstate.v1.Value.Structure.Map.EntriesEntry
+	(*v1alpha1.ParsedExpr)(nil),  // 12: google.api.expr.v1alpha1.ParsedExpr
+	(*v1alpha1.Value)(nil),       // 13: google.api.expr.v1alpha1.Value
 }
 var file_flowstate_v1_value_proto_depIdxs = []int32{
-	11, // 0: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
-	12, // 1: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
-	6,  // 2: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
+	12, // 0: flowstate.v1.Value.expr:type_name -> google.api.expr.v1alpha1.ParsedExpr
+	13, // 1: flowstate.v1.Value.literal:type_name -> google.api.expr.v1alpha1.Value
+	7,  // 2: flowstate.v1.Value.error:type_name -> flowstate.v1.Value.Error
 	2,  // 3: flowstate.v1.Value.secret_ref:type_name -> flowstate.v1.SecretRef
-	7,  // 4: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
+	8,  // 4: flowstate.v1.Value.structure:type_name -> flowstate.v1.Value.Structure
 	3,  // 5: flowstate.v1.Value.credential_ref:type_name -> flowstate.v1.CredentialRef
-	1,  // 6: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
-	8,  // 7: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
-	9,  // 8: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
-	4,  // 9: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
-	10, // 10: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
-	4,  // 11: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
-	12, // [12:12] is the sub-list for method output_type
-	12, // [12:12] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	6,  // 6: flowstate.v1.ExpressionFailure.location:type_name -> flowstate.v1.SourceLocation
+	1,  // 7: flowstate.v1.Value.Error.code:type_name -> flowstate.v1.Value.Error.Code
+	9,  // 8: flowstate.v1.Value.Structure.list:type_name -> flowstate.v1.Value.Structure.List
+	10, // 9: flowstate.v1.Value.Structure.map:type_name -> flowstate.v1.Value.Structure.Map
+	4,  // 10: flowstate.v1.Value.Structure.List.values:type_name -> flowstate.v1.Value
+	11, // 11: flowstate.v1.Value.Structure.Map.entries:type_name -> flowstate.v1.Value.Structure.Map.EntriesEntry
+	4,  // 12: flowstate.v1.Value.Structure.Map.EntriesEntry.value:type_name -> flowstate.v1.Value
+	13, // [13:13] is the sub-list for method output_type
+	13, // [13:13] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_value_proto_init() }
@@ -999,7 +1088,7 @@ func file_flowstate_v1_value_proto_init() {
 		(*Value_CredentialRef)(nil),
 	}
 	file_flowstate_v1_value_proto_msgTypes[3].OneofWrappers = []any{}
-	file_flowstate_v1_value_proto_msgTypes[5].OneofWrappers = []any{
+	file_flowstate_v1_value_proto_msgTypes[6].OneofWrappers = []any{
 		(*Value_Structure_List_)(nil),
 		(*Value_Structure_Map_)(nil),
 	}
@@ -1009,7 +1098,7 @@ func file_flowstate_v1_value_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_value_proto_rawDesc), len(file_flowstate_v1_value_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

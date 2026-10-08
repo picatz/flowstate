@@ -240,5 +240,34 @@ func init() {
 				" steps nest, so a consumer that holds the Flowfile can find the line the\n" +
 				" sentence is about. Empty when the failure was raised outside any step.\n",
 		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.location",
+			Leading: " Location is where that step is written, when the specification carried it\n" +
+				" (`Node.source`). Unset for a hand-built specification, for a step of a\n" +
+				" called workflow, and for an id declared in more than one place.\n",
+		},
+		{
+			Name: "flowstate.v1.SourceLocation",
+			Leading: " SourceLocation is where a step is written in the file it was compiled from.\n" +
+				"\n" +
+				" Advisory: it is carried so a failure can point back at the file without the\n" +
+				" reader holding it, and it is never part of the program. It is cleared from\n" +
+				" every digest ([CanonicalWorkflow], [WorkflowIRDigest]) and counts against the\n" +
+				" specification's size like any other field. Lines and columns are 1-based and\n" +
+				" count characters, as `Diagnostic.line` and `Diagnostic.column` do.\n",
+		},
+		{
+			Name: "flowstate.v1.SourceLocation.file",
+			Leading: " File is the path as the submitter named it, or its base name when that was\n" +
+				" absolute, so a home directory does not travel into durable history.\n",
+		},
+		{
+			Name:    "flowstate.v1.SourceLocation.line",
+			Leading: " Line is the 1-based line.\n",
+		},
+		{
+			Name:    "flowstate.v1.SourceLocation.column",
+			Leading: " Column is the 1-based column, or zero when only the line is known.\n",
+		},
 	})
 }

@@ -6,14 +6,15 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -150,7 +151,7 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	workflow, positions, err := loadWorkflowAt(args[0])
+	workflow, err := loadWorkflow(args[0])
 	if err != nil {
 		return err
 	}
@@ -392,11 +393,8 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// move the operator without moving a caret computed before it, so the
 		// excerpt is omitted rather than drawn under the wrong character. The
 		// same rule `flow get` follows.
-		if where := failureLocation(args[0], positions, response.GetError().GetExpression()); where != "" {
-			failure = fmt.Errorf("%w\n    --> %s", failure, where)
-		}
-		if excerpt := response.GetError().GetExpression().Excerpt("    "); excerpt != "" {
-			failure = fmt.Errorf("%w\n%s", failure, excerpt)
+		if rendered := failureExcerpt(response.GetError().GetExpression()); rendered != "" {
+			failure = fmt.Errorf("%w\n%s", failure, rendered)
 		}
 
 		return redactFailureError(wrapLoopbackDenial(cmd, failure), sensitive)
@@ -537,22 +535,27 @@ func debugRevealRefusal(name string, decided carriedValues) error {
 	}
 }
 
-// failureLocation is where in the file at path the step an expression failure
-// happened in is written, as `path:line:col`, or "" when the failure names no
-// step or the file does not place it. Taken from the redacted response's
-// account, so it is absent wherever the excerpt is.
-func failureLocation(path string, positions *flowfile.Positions, failure *v1.ExpressionFailure) string {
-	if failure.GetStep() == "" {
-		return ""
+// failureExcerpt is the lines an expression failure adds under its sentence: the
+// step's place in its file (`--> path:line:col`) when the specification carried
+// one, then the failing subexpression with a caret under the operator. It is
+// built from the structured account alone, which every redaction drops whole, so
+// it is absent wherever the message is.
+func failureExcerpt(failure *v1.ExpressionFailure) string {
+	var lines []string
+	if where := failure.GetLocation(); where.GetFile() != "" && where.GetLine() > 0 {
+		position := fmt.Sprintf("%s:%d", ui.EscapeControl(where.GetFile()), where.GetLine())
+		if where.GetColumn() > 0 {
+			position += fmt.Sprintf(":%d", where.GetColumn())
+		}
+		lines = append(lines, "    --> "+position)
 	}
-	stepPath, ok := positions.UniqueStepPath(failure.GetStep())
-	if !ok {
-		return ""
-	}
-	span, ok := positions.At(stepPath)
-	if !ok || !span.IsValid() {
-		return ""
+	if excerpt := failure.Excerpt("    "); excerpt != "" {
+		// The excerpt is drawn from text a remote peer supplied, one line per
+		// source line; escape each so a control byte cannot reach the terminal.
+		for line := range strings.SplitSeq(excerpt, "\n") {
+			lines = append(lines, ui.EscapeControl(line))
+		}
 	}
 
-	return path + ":" + span.Start.String()
+	return strings.Join(lines, "\n")
 }

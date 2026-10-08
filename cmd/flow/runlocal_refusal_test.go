@@ -12,6 +12,7 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 // refusalWorkflow declares one of each thing a command line can get wrong: a
@@ -470,4 +471,20 @@ steps:
 	rendered := stderr + err.Error()
 	assert.Contains(t, rendered, "steps.n.value.k + \"x\"", "the excerpt still shows")
 	assert.NotContains(t, rendered, "-->", "the caller's own `first` is not where this failed")
+}
+
+// A failure account can come from a remote peer, so the position and the
+// excerpt it prints must not carry a control byte to the terminal.
+func TestFailureExcerptEscapesControlBytes(t *testing.T) {
+	t.Parallel()
+
+	out := failureExcerpt(&v1.ExpressionFailure{
+		Location:      &v1.SourceLocation{File: "a\x1b[2Jb.yaml", Line: 3, Column: 1},
+		Subexpression: "x\x1b]0;t\x07 + 1",
+		Caret:         proto.Int32(2),
+	})
+
+	assert.NotContains(t, out, "\x1b")
+	assert.NotContains(t, out, "\x07")
+	assert.Contains(t, out, "-->")
 }

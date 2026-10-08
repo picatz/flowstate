@@ -471,7 +471,7 @@ func pendingActivityLines(msg *v1.GetResponse, now time.Time) []string {
 func runEndedError(workflowID string, msg *v1.GetResponse, failure *v1.RunResponse_Error) error {
 	err := fmt.Errorf("run %s ended %s: %s",
 		workflowID, strings.ToLower(statusLabel(msg.GetStatus())), failure.GetMessage())
-	if excerpt := failure.GetExpression().Excerpt("    "); excerpt != "" {
+	if excerpt := failureExcerpt(failure.GetExpression()); excerpt != "" {
 		return fmt.Errorf("%w\n%s", err, excerpt)
 	}
 
