@@ -525,6 +525,37 @@ glob matching a real nested path, and the editor behaviour itself — Helix is a
 terminal UI with no headless mode, so `--health` is as far as a scripted check
 reaches.
 
+### CEL files in Helix
+
+Helix can colour a standalone `.cel` file once it has the CEL grammar. The
+grammar's parser is generated, not checked in, so generate it first and point Helix
+at the directory:
+
+```console
+$ (cd editors/tree-sitter-cel && tree-sitter generate)
+$ mkdir -p ~/.config/helix/runtime/queries/cel
+$ cp editors/tree-sitter-cel/queries/highlights.scm ~/.config/helix/runtime/queries/cel/
+```
+
+```toml
+[[language]]
+name = "cel"
+scope = "source.cel"
+file-types = ["cel"]
+grammar = "cel"
+
+[[grammar]]
+name = "cel"
+source = { path = "/path/to/flowstate/editors/tree-sitter-cel" }
+```
+
+Then `hx --grammar build`. **Unverified:** written from Helix's documentation and
+not run. There is deliberately no injection of CEL *into* a Flowfile for Helix:
+`must:` is CEL only beneath `inputs:`, `outputs:` and `types:` and not inside a
+`default:` or `example:`, which a tree-sitter query cannot state at unbounded depth,
+and an injection that fires on every `must` key colours ordinary data as CEL. `flow
+lsp` semantic tokens enforce that scope and colour the CEL in a Flowfile.
+
 ## Zed
 
 Zed needs an extension to register a language server, but you can point it at the
@@ -550,6 +581,9 @@ elsewhere until a proper Flowfile extension exists.
 
 > **Untested.** Zed is a GUI application and was not run while writing this. The
 > settings shape is from Zed's documentation, not from a session anyone had.
+> CEL injection needs a Zed extension that bundles the `tree-sitter-cel` grammar,
+> which does not exist yet; until it does, Zed gets the language server's
+> semantic tokens and nothing from the tree-sitter queries.
 
 ## Emacs (eglot)
 
