@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"unicode"
@@ -521,7 +522,8 @@ func lineOfBreakpointID(id, uri string) (int, bool) {
 	if !ok {
 		return 0, false
 	}
-	line, err := strconv.ParseUint(number, 10, 32)
+	// 31 bits: the line fits an int on every platform and a uint32 as well.
+	line, err := strconv.ParseUint(number, 10, 31)
 	if err != nil || line == 0 {
 		return 0, false
 	}
@@ -827,7 +829,7 @@ func (m Model) sourceBreak(line int) (tea.Model, tea.Cmd) {
 
 		return m, nil
 	}
-	if line < 1 || line > len(face.doc.lines) {
+	if line < 1 || line > len(face.doc.lines) || line > math.MaxInt32 {
 		m.toast(ui.ToneWarning, "select a line of the source first")
 
 		return m, nil
