@@ -166,7 +166,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 		reading: true,
 		screen: Screen{
 			Size: cfg.Size, Tree: pane.NewTree(nil), Console: NewConsole(), Keys: keys, Verbs: cfg.Verbs,
-			Focus: ring.Current(), Pane: paneSteps,
+			Focus: ring.Current(), Pane: paneSteps, Diverged: map[uint64]bool{},
 		},
 	}, nil
 }
@@ -407,11 +407,28 @@ func (m Model) done(msg doneMsg) (tea.Model, tea.Cmd) {
 	m.screen.Console.Say(result.Text)
 
 	if receipt := result.Receipt; receipt != nil && !flowdebug.Accepted(receipt) {
+		if point, ok := gotoPoint(msg.line); ok && receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED {
+			// Nothing moved. The point is marked, and the run's own words say
+			// why: it is not deterministic, so there is no going back to it.
+			timeline := m.screen.Frame.Snapshot.GetTimeline()
+			m.screen.Diverged[uint64(timeline.GetDropped())+uint64(point)] = true
+			m.toast(ui.ToneDanger, fmt.Sprintf("the run is not deterministic, so point %d is not reachable: %s", point, strings.TrimSpace(receipt.GetMessage())))
+
+			cmd := m.reread()
+
+			return m, cmd
+		}
 		m.toast(ui.ToneWarning, "the command was not applied: "+strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
 
 		cmd := m.reread()
 
 		return m, cmd
+	}
+	if flowdebug.StepsBack(msg.line) && result.Snapshot != nil {
+		// The transcript is never rewound: a travel is one more thing that happened.
+		before := int(m.screen.Frame.Snapshot.GetTimeline().GetCurrent())
+		after := int(result.Snapshot.GetTimeline().GetCurrent())
+		m.screen.Console.Say(travelNote(result.Snapshot, before, after, pane.Options{Symbols: m.cfg.Style.Symbols}))
 	}
 	if state := result.Unarmed; state != nil {
 		m.toast(ui.ToneWarning, fmt.Sprintf("the breakpoint %s was not armed: %s", state.GetId(), state.GetMessage()))

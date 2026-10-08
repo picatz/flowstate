@@ -111,6 +111,7 @@ type capabilities struct {
 	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
 	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
 	SupportsStepBack                  bool              `json:"supportsStepBack"`
+	SupportsGotoTargetsRequest        bool              `json:"supportsGotoTargetsRequest"`
 	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
 }
 
@@ -148,6 +149,13 @@ type threadsBody struct {
 	Threads []thread `json:"threads"`
 }
 
+// gotoTarget is one point of the session's timeline an editor may travel to.
+type gotoTarget struct {
+	ID    int    `json:"id"`
+	Label string `json:"label"`
+	Line  int    `json:"line"`
+}
+
 type stackFrame struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -164,6 +172,10 @@ type stackFrame struct {
 	// PresentationHint is "subtle" for a container frame: a loop iteration, a
 	// parallel branch, a switch arm or a call the stop is inside.
 	PresentationHint string `json:"presentationHint,omitempty"`
+}
+
+type gotoTargetsBody struct {
+	Targets []gotoTarget `json:"targets"`
 }
 
 type stackTraceBody struct {

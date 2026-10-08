@@ -183,6 +183,8 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 		return d.back(ctx, false)
 	case "reverse-continue":
 		return d.back(ctx, true)
+	case "goto":
+		return d.goTo(ctx, rest)
 	case "detach":
 		return d.move(ctx, v1.DebugResumeAction_DEBUG_RESUME_ACTION_DETACH, "")
 
@@ -443,6 +445,38 @@ func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, err
 	if !ok {
 		return nil, errCannotStepBack
 	}
+	back := reverser.Back
+	if toBreakpoint {
+		back = reverser.BackToBreakpoint
+	}
+
+	return d.travel(ctx, back)
+}
+
+// goTo travels to the point on the timeline that rest names, in one move, through
+// a target that can. It answers as a step back does: fenced to the stop the
+// caller is looking at, and a refusal or a divergence leaves the run where it was.
+func (d *Driver) goTo(ctx context.Context, rest string) (*DriveResult, error) {
+	traveler, ok := d.target.(Traveler)
+	if !ok {
+		return nil, errCannotTravel
+	}
+	point, err := strconv.ParseInt(rest, 10, 32)
+	if err != nil {
+		return nil, errors.New("goto needs a point: goto <point>, an index on the timeline counted from 0")
+	}
+
+	return d.travel(ctx, func(ctx context.Context, request string, expected uint64) (*v1.DebugReceipt, error) {
+		return traveler.Travel(ctx, request, expected, int32(point))
+	})
+}
+
+// travel runs one move through a target that returns to a stop it showed. It is
+// a movement like any other: the expected revision, or the current one when the
+// caller named none, reaches the target, which answers a stale one. The run is
+// already held at the stop when the receipt is applied, so the stop is read
+// rather than waited for.
+func (d *Driver) travel(ctx context.Context, move func(ctx context.Context, request string, expected uint64) (*v1.DebugReceipt, error)) (*DriveResult, error) {
 	// Fenced to the stop the caller is looking at, as a forward movement is:
 	// another controller that moves the target first gets a stale receipt
 	// rather than a rewind from a stop nobody here saw.
@@ -455,12 +489,7 @@ func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, err
 		expected = current.GetRevision()
 	}
 	d.sending()
-	request := cmp.Or(d.request, newRequestID())
-	back := reverser.Back
-	if toBreakpoint {
-		back = reverser.BackToBreakpoint
-	}
-	receipt, err := back(ctx, request, expected)
+	receipt, err := move(ctx, cmp.Or(d.request, newRequestID()), expected)
 	if err != nil {
 		return nil, err
 	}

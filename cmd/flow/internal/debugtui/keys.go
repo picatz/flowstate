@@ -21,6 +21,7 @@ var verbKeys = []struct {
 	{"continue", []string{"c"}, "continue", true},
 	{"back", []string{"b"}, "back", false},
 	{"reverse-continue", []string{"r"}, "reverse", false},
+	{"goto", []string{"g"}, "goto", false},
 	{"pause", []string{"p"}, "pause", false},
 }
 
@@ -93,7 +94,7 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 		tui.Binding{Name: bindCollapse, Keys: []string{"left", "h"}, Help: "close the row, or go to its parent", Group: "Move"},
 		tui.Binding{Name: bindPageUp, Keys: []string{"pgup"}, Help: "up a page", Group: "Move"},
 		tui.Binding{Name: bindPageDown, Keys: []string{"pgdown"}, Help: "down a page", Group: "Move"},
-		tui.Binding{Name: bindHome, Keys: []string{"home", "g"}, Help: "first row", Group: "Move"},
+		tui.Binding{Name: bindHome, Keys: []string{"home"}, Help: "first row", Group: "Move"},
 		tui.Binding{Name: bindEnd, Keys: []string{"end", "G"}, Help: "last row", Group: "Move"},
 		tui.Binding{Name: bindFocusNext, Keys: []string{"tab"}, Help: "focus the next pane (click a pane to focus it)", Group: "Screen",
 			Hint: true, Short: "focus"},

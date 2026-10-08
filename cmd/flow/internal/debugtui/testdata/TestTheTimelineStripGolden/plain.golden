@@ -1,0 +1,13 @@
+=== at the fourth step
+timeline 0 1 2 [3]
+=== point 1 diverged
+timeline 0 ✗1 2 [3]
+=== replaying to point 1
+timeline 0 1 2 [3]
+=== three dropped
+timeline +3 earlier 0 1 2 [3]
+=== sixty points, at the thirtieth, too narrow
+timeline +26 earlier 26 27 28 29 [30] 31 32 33 34 +25 later
+=== a history: points ahead of the run
+timeline 0 1 [2] 3 4 5 6 7 8 9 10 11
+

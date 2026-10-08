@@ -104,8 +104,12 @@ type seenAtAStop struct {
 	state      v1.DebugRunState
 	reason     v1.DebugStopReason
 	occurrence *v1.DebugOccurrence
-	totals     map[string]int32
-	values     map[string]string
+	// current and points are where the timeline puts the run, and how many
+	// stops it has shown.
+	current int32
+	points  int
+	totals  map[string]int32
+	values  map[string]string
 }
 
 func seen(t *testing.T, target flowdebug.Target, opts flowdebug.FrameOptions) seenAtAStop {
@@ -120,6 +124,8 @@ func seen(t *testing.T, target flowdebug.Target, opts flowdebug.FrameOptions) se
 		state:      frame.Snapshot.GetState(),
 		reason:     frame.Snapshot.GetReason(),
 		occurrence: frame.Snapshot.GetOccurrence(),
+		current:    frame.Snapshot.GetTimeline().GetCurrent(),
+		points:     len(frame.Snapshot.GetTimeline().GetPoints()),
 		totals:     map[string]int32{},
 		values:     map[string]string{},
 	}
@@ -168,6 +174,8 @@ func TestAFrameReadsTheSameOnEveryFront(t *testing.T) {
 			assert.Equal(t, want[i].reason, got[i].reason, "%s stop %d: reason", name, i)
 			assert.True(t, proto.Equal(want[i].occurrence, got[i].occurrence), "%s stop %d: occurrence %v != %v",
 				name, i, want[i].occurrence, got[i].occurrence)
+			assert.Equal(t, want[i].current, got[i].current, "%s stop %d: timeline.current", name, i)
+			assert.Equal(t, want[i].points, got[i].points, "%s stop %d: timeline points", name, i)
 			assert.Equal(t, want[i].totals, got[i].totals, "%s stop %d: scope totals", name, i)
 			assert.Equal(t, want[i].values, got[i].values, "%s stop %d: scope values", name, i)
 		}
@@ -177,6 +185,10 @@ func TestAFrameReadsTheSameOnEveryFront(t *testing.T) {
 	// front that kept answering about the first stop would have failed above.
 	assert.NotEqual(t, want[0].occurrence.GetAddress(), want[1].occurrence.GetAddress())
 	assert.NotEqual(t, want[0].values, want[2].values, "the scope never changed across stops")
+	for i, at := range want {
+		assert.Equal(t, int32(i), at.current, "the timeline does not follow the run")
+		assert.Equal(t, i+1, at.points, "a point for every stop shown")
+	}
 }
 
 // TestAFrameFromTheWireNamesOnlyWhatTheSnapshotCarries: with no program a

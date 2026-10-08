@@ -39,6 +39,7 @@
   [1;38;2;241;239;239mc[m          run to the next breakpoint, or the end
   [1;38;2;241;239;239mb[m          return to the previous stop (a session that can step back)
   [1;38;2;241;239;239mr[m          return to the nearest earlier breakpoint stop, or the first
+  [1;38;2;241;239;239mg[m          go to a point of the timeline, counted from 0, in one move (a sessi
   [1;38;2;241;239;239mp[m          hold at the next step boundary
 
 [1;38;2;133;131;146mMove[m
@@ -49,7 +50,7 @@
   [1;38;2;241;239;239mleft h[m     close the row, or go to its parent
   [1;38;2;241;239;239mPgUp[m       up a page
   [1;38;2;241;239;239mPgDn[m       down a page
-  [1;38;2;241;239;239mhome g[m     first row
+  [1;38;2;241;239;239mhome[m       first row
   [1;38;2;241;239;239mend G[m      last row
 
 [1;38;2;133;131;146mScreen[m

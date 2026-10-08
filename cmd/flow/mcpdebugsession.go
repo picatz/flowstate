@@ -688,8 +688,8 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 		{Tool: &mcp.Tool{
 			Name: debugSessionCommandTool,
 			Description: "Run one debugger command in a retained session and answer with its typed result. Commands: " +
-				flowdebug.DriverCommandList() + ". back and reverse-continue (rc) need a stubbed session that can step back; " +
-				"any other says so and does not move. Movements answer with the next stop. Set expected_revision to the " +
+				flowdebug.DriverCommandList() + ". back, reverse-continue (rc) and goto <point> (a point of the snapshot's timeline, counted from 0) " +
+				"need a stubbed session that can step back; any other says so and does not move. Movements answer with the next stop. Set expected_revision to the " +
 				"snapshot you acted on, " +
 				"so a command meant for a stop the run has left is refused as stale: a movement or an inspection is " +
 				"judged by the run in the same step as the command; any other command is checked just before it is sent.",
@@ -740,9 +740,9 @@ func (a sessionAnswer) result() *mcp.CallToolResult {
 // snapshot's observations and breakpoint definitions — so it is fitted as
 // every other answer on this surface is, dropping first what a caller can
 // most afford to lose and saying what went: the transcript's oldest fragments,
-// then the transcript, then the rendered text and the snapshot's observations,
-// and at the floor the snapshot and inspection themselves, which an observe
-// reads again. An ended case's report is the verdict, so it is kept to the
+// then the transcript, then the snapshot's timeline points, then the rendered
+// text and the snapshot's observations, and at the floor the snapshot and
+// inspection themselves, which an observe reads again. An ended case's report is the verdict, so it is kept to the
 // floor and there re-rendered within what the rest of the answer leaves it.
 func (a sessionAnswer) encode() ([]byte, error) {
 	encode := func() ([]byte, error) { return json.Marshal(a) }
@@ -766,6 +766,19 @@ func (a sessionAnswer) encode() ([]byte, error) {
 			if len(a.Transcript) > 0 {
 				note("The transcript was dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
 				a.Transcript = nil
+			}
+
+			return encode()
+		},
+		func() ([]byte, error) {
+			if points := a.snapshot.GetTimeline().GetPoints(); len(points) > 0 {
+				// The timeline goes first: it is the part of the answer that
+				// grows with the run, and a smaller answer keeps the text.
+				trimmed := proto.CloneOf(a.snapshot)
+				trimmed.Timeline.Dropped += uint32(len(points))
+				trimmed.Timeline.Points, trimmed.Timeline.Current = nil, -1
+				a.Snapshot = schemaJSON(trimmed)
+				note("The snapshot's timeline points were dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
 			}
 
 			return encode()
