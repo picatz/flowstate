@@ -198,3 +198,8 @@ func HTTPTaskDef(policy *netpolicy.Policy) TaskDef {
 		Fn:             taskFuncHTTP(policy),
 	}
 }
+
+// nonCanonicalIPv4 is the egress policy's own question about a host's spelling,
+// bound here because this file already holds the package's netpolicy import and
+// [checkHTTPLiteral] asks it of a literal `url:` without taking on another.
+var nonCanonicalIPv4 = netpolicy.NonCanonicalIPv4
