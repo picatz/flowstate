@@ -285,10 +285,11 @@ does not imply the write capability.
 
 ### Slack outbound plugin
 
-`slack.post` is the notification half of approval and human-in-the-loop flows.
-It posts bounded accessible text and optionally keeps an outcome in the request
-message's thread; it does not receive Slack interactions or authorize an
-approval. Verified inbound events bridging into Flowstate signals remain a
+`slack.post` and `slack.update` are the notification half of approval and
+human-in-the-loop flows. They post and replace Slack messages (plain text, a
+vendor-neutral card, or native Block Kit) and keep an approval's outcome on the
+message that asked for it; they do not receive Slack interactions or authorize
+an approval. Verified inbound events bridging into Flowstate signals remain a
 separate control-plane concern.
 
 The entire `token` input must be a host-resolved secret reference such as
@@ -306,16 +307,19 @@ or filesystem access.
 
 Every post also requires the host-attested production mode. Local rehearsal and
 unknown modes are refused before network access, because a preview that sends a
-real notification is not a safe rehearsal. Operators must allow `slack.post` in
-task policy independently from permitting the plugin binary to launch.
+real notification is not a safe rehearsal. Operators must allow `slack.post` and
+`slack.update` in task policy independently from permitting the plugin binary to
+launch.
 
-Calls carry a workflow-supplied UUID as Slack's `client_msg_id`, but Slack does
-not document a complete deduplication guarantee. The plugin retries nothing
-internally: a definite 429 or initial-hop operator rate-limit refusal carries a
-bounded delay into the workflow retry mechanism, while connection loss,
-timeout, malformed acknowledgement, a rate limit after a redirect, and
-ambiguous server errors return non-retryable unknown outcomes. Inspect Slack
-before manually retrying one of those outcomes.
+A post carries a workflow-supplied UUID (`idempotency_key`) as Slack's
+`client_msg_id`, but Slack does not document a complete deduplication guarantee.
+The plugin retries nothing internally: a definite 429 or initial-hop operator
+rate-limit refusal carries a bounded delay into the workflow retry mechanism,
+while connection loss, timeout, malformed acknowledgement, a rate limit after a
+redirect, and ambiguous server errors on a post return non-retryable unknown
+outcomes. Inspect Slack before manually retrying one of those. An update names
+its message, so the same outcomes on `slack.update` are retryable: applying the
+same content to the same message twice is the same as once.
 
 ### Webhook outbound plugin
 

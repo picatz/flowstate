@@ -1,70 +1,45 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
-	"io"
-	"net"
-	"net/http"
-	"regexp"
-	"strconv"
-	"strings"
-	"time"
-	"unicode/utf8"
-
-	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/netpolicy"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	slackv1 "github.com/picatz/flowstate/plugins/slack/gen/slack/v1"
+	"github.com/picatz/flowstate/plugins/slack/render"
 )
 
-const (
-	chatPostMessageURL = "https://slack.com/api/chat.postMessage"
-	maxTextCharacters  = 4000
-	maxTokenBytes      = 4096
-	maxChannelBytes    = 255
-	maxThreadTSBytes   = 32
-	maxErrorBytes      = 256
-	maxResponseBytes   = 64 << 10
-)
-
-var (
-	channelPattern = regexp.MustCompile(`^[CDG][A-Z0-9]{1,254}$`)
-	uuidPattern    = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
-	threadPattern  = regexp.MustCompile(`^[0-9]{1,16}\.[0-9]{6}$`)
-)
-
+// postRequest is the body of chat.postMessage. Link and media unfurling are
+// always off, so message content cannot make Slack fetch an arbitrary URL, and
+// icon_url and username are never sent, because chat:write.customize would make
+// Slack fetch an author-chosen image.
 type postRequest struct {
-	Channel     string `json:"channel"`
-	Text        string `json:"text"`
-	ClientMsgID string `json:"client_msg_id"`
-	ThreadTS    string `json:"thread_ts,omitempty"`
-	UnfurlLinks bool   `json:"unfurl_links"`
-	UnfurlMedia bool   `json:"unfurl_media"`
+	Channel        string           `json:"channel"`
+	Text           string           `json:"text"`
+	Blocks         []render.Block   `json:"blocks,omitempty"`
+	ClientMsgID    string           `json:"client_msg_id"`
+	ThreadTS       string           `json:"thread_ts,omitempty"`
+	ReplyBroadcast bool             `json:"reply_broadcast,omitempty"`
+	Metadata       *requestMetadata `json:"metadata,omitempty"`
+	UnfurlLinks    bool             `json:"unfurl_links"`
+	UnfurlMedia    bool             `json:"unfurl_media"`
 }
 
-type postResponse struct {
-	OK      bool   `json:"ok"`
-	Error   string `json:"error"`
-	Channel string `json:"channel"`
-	TS      string `json:"ts"`
+// ephemeralRequest is the body of chat.postEphemeral. Slack's method has no
+// client_msg_id, metadata or unfurl controls, so none are sent.
+type ephemeralRequest struct {
+	Channel  string         `json:"channel"`
+	User     string         `json:"user"`
+	Text     string         `json:"text"`
+	Blocks   []render.Block `json:"blocks,omitempty"`
+	ThreadTS string         `json:"thread_ts,omitempty"`
 }
 
 func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error) {
-	caller, ok := sdk.CallerFromContext(ctx)
-	if err := requireProductionMode(caller, ok); err != nil {
+	if err := guard(ctx, opPost.task); err != nil {
 		return nil, err
 	}
-	if egressPolicy == nil {
-		return nil, sdk.PermissionDenied(
-			"slack.post has no usable egress policy, so no destination is authorized: %v", egressRefusal)
-	}
-
 	var in slackv1.PostInputs
 	if err := sdk.DecodeInputs(inputs, &in); err != nil {
 		return nil, err
@@ -73,200 +48,74 @@ func slackPost(ctx context.Context, inputs map[string]*flowstatev1.Value, _ *flo
 	if err != nil {
 		return nil, err
 	}
-	if err := validatePost(&in); err != nil {
+	p, err := planPost(&in)
+	if err != nil {
 		return nil, err
 	}
 
 	// The SDK's client, not egressPolicy.Client(): it is the same policy, plus
-	// the credential marking this request needs. The policy above is what the
-	// boundary check reads; this is what the request crosses.
+	// the credential marking this request needs. The policy checked in guard is
+	// what the boundary reads; this is what the request crosses.
 	governed, err := sdk.HTTPClient()
 	if err != nil {
-		return nil, sdk.PermissionDenied("slack.post has no usable egress policy: %v", err)
+		return nil, sdk.PermissionDenied("%s has no usable egress policy: %v", opPost.task, err)
 	}
-
-	response, err := sendPost(ctx, governed, chatPostMessageURL, token, &in)
+	answer, err := send(ctx, governed, apiBase, token, p)
 	if err != nil {
 		return nil, err
 	}
-	return sdk.EncodeOutputs(&slackv1.PostOutputs{Channel: response.Channel, Ts: response.TS})
+	if p.op == opEphemeral {
+		return sdk.EncodeOutputs(&slackv1.PostOutputs{Channel: p.channel, MessageTs: answer.MessageTS})
+	}
+	return sdk.EncodeOutputs(&slackv1.PostOutputs{Channel: answer.Channel, Ts: answer.TS})
 }
 
-// requireProductionMode is slack.post's side-effect posture, not an
-// authorization decision. Task policy, secret release, and egress policy grant
-// the authorities the call spends; the host-attested mode only keeps a local
-// rehearsal from being mistaken for a notification preview.
-func requireProductionMode(caller sdk.Caller, ok bool) error {
-	if !ok || caller.Mode() != flowstatev1.WorkloadIdentityMode_WORKLOAD_IDENTITY_MODE_PRODUCTION {
-		return sdk.PermissionDenied(
-			"slack.post performs an external write and requires a production execution identity; local rehearsals and unknown execution modes are refused")
+// planPost enforces every rule of slack.post that needs more than one field, or
+// the text after rendering, before any request: protovalidate carries the
+// single-field rules to `flow validate`, but the host strips cross-field rules
+// from a plugin's descriptor, so they live here.
+func planPost(in *slackv1.PostInputs) (*plan, error) {
+	if err := requireChannel(in.GetChannel()); err != nil {
+		return nil, err
 	}
-	return nil
-}
-
-func tokenFromValue(v *flowstatev1.Value) (string, error) {
-	if v == nil {
-		return "", sdk.InvalidInput("token is required")
+	if !uuidPattern.MatchString(in.GetIdempotencyKey()) {
+		return nil, sdk.InvalidInput("idempotency_key must be a canonical lowercase UUID chosen once for this logical message; got %q", in.GetIdempotencyKey())
 	}
-	switch kind := v.GetKind().(type) {
-	case *flowstatev1.Value_Literal:
-		s, ok := kind.Literal.GetKind().(*expr.Value_StringValue)
-		if !ok || s.StringValue == "" || len(s.StringValue) > maxTokenBytes {
-			return "", sdk.InvalidInput("token must resolve to a non-empty string no longer than %d bytes", maxTokenBytes)
+	if in.GetThreadTs() != "" {
+		if err := requireTS("thread_ts", in.GetThreadTs()); err != nil {
+			return nil, err
 		}
-		return s.StringValue, nil
-	case *flowstatev1.Value_SecretRef:
-		return "", sdk.Failed("token reached slack.post as an unresolved secret reference; the host must resolve required secret inputs before plugin execution")
-	default:
-		return "", sdk.InvalidInput("token must resolve to a string")
 	}
-}
-
-func validatePost(in *slackv1.PostInputs) error {
-	if len(in.GetChannel()) > maxChannelBytes || !channelPattern.MatchString(in.GetChannel()) {
-		return sdk.InvalidInput("channel must be a Slack conversation ID beginning C, D, or G and no longer than %d bytes", maxChannelBytes)
+	if in.GetReplyBroadcast() && in.GetThreadTs() == "" {
+		return nil, sdk.InvalidInput("reply_broadcast needs thread_ts: it also shows a threaded reply in the channel, so there must be a thread to reply to")
 	}
-	if in.GetText() == "" {
-		return sdk.InvalidInput("text is required")
-	}
-	if !utf8.ValidString(in.GetText()) || utf8.RuneCountInString(in.GetText()) > maxTextCharacters {
-		return sdk.InvalidInput("text must be valid UTF-8 and no longer than %d Unicode characters", maxTextCharacters)
-	}
-	if !uuidPattern.MatchString(in.GetMessageKey()) {
-		return sdk.InvalidInput("message_key must be a canonical lowercase UUID chosen once for this logical notification")
-	}
-	if len(in.GetThreadTs()) > maxThreadTSBytes || (in.GetThreadTs() != "" && !threadPattern.MatchString(in.GetThreadTs())) {
-		return sdk.InvalidInput("thread_ts must be empty or a Slack message timestamp such as 1503435956.000247")
-	}
-	return nil
-}
-
-func sendPost(ctx context.Context, client *http.Client, endpoint, token string, in *slackv1.PostInputs) (*postResponse, error) {
-	// Nothing is marked here any more, and both halves moved for the same
-	// reason: they are the SDK's. The calling workload's identity is installed
-	// where netpolicy looks when the task call is delivered, and the bearer
-	// token below travels in an Authorization header, which sdk.HTTPClient's
-	// transport marks as a credential before the policy is evaluated. A second
-	// install of either would be one fact written twice. sdk.WithCredentials is
-	// for a request whose credential no header shows; this is not one.
-
-	body, err := json.Marshal(postRequest{
-		Channel: in.GetChannel(), Text: in.GetText(), ClientMsgID: in.GetMessageKey(), ThreadTS: in.GetThreadTs(),
-		UnfurlLinks: false, UnfurlMedia: false,
-	})
-	if err != nil {
-		return nil, sdk.Failed("encoding the bounded Slack request: %v", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return nil, sdk.Failed("building the Slack request: %v", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, classifyTransportError(err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusTooManyRequests {
-		delay := retryAfter(resp.Header.Get("Retry-After"))
-		return nil, sdk.UnavailableAfter(delay, "Slack rate-limited chat.postMessage; retry after %s", delay)
-	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		var tooLarge *netpolicy.BodyTooLargeError
-		if errors.As(err, &tooLarge) {
-			return nil, sdk.OutcomeUnknown("Slack's response exceeded the operator egress policy's %d-byte limit after chat.postMessage was sent; the message may already exist, so it is not retried automatically", tooLarge.Limit)
+	if in.GetToUser() != "" {
+		if !userPattern.MatchString(in.GetToUser()) {
+			return nil, sdk.InvalidInput("to_user must be a Slack user ID such as U0123ABCD; got %q", in.GetToUser())
 		}
-		return nil, sdk.OutcomeUnknown("Slack's response could not be read after chat.postMessage was sent; the message may already exist, so it is not retried automatically")
-	}
-	if len(raw) > maxResponseBytes {
-		return nil, sdk.OutcomeUnknown("Slack's response exceeded the %d-byte limit after chat.postMessage was sent; the message may already exist, so it is not retried automatically", maxResponseBytes)
-	}
-	var answer postResponse
-	if err := json.Unmarshal(raw, &answer); err != nil {
-		return nil, sdk.OutcomeUnknown("Slack's response could not be decoded after chat.postMessage was sent; the message may already exist, so it is not retried automatically")
-	}
-	if resp.StatusCode >= 500 {
-		return nil, sdk.OutcomeUnknown("Slack returned HTTP %d after receiving chat.postMessage; Slack documents that some server errors may still have applied the operation, so it is not retried automatically", resp.StatusCode)
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, sdk.Failed("Slack returned HTTP %d: %s", resp.StatusCode, bounded(answer.Error))
-	}
-	if !answer.OK {
-		return nil, classifySlackError(answer.Error, resp.Header.Get("Retry-After"))
-	}
-	if answer.Channel != in.GetChannel() || !channelPattern.MatchString(answer.Channel) || answer.TS == "" || !threadPattern.MatchString(answer.TS) {
-		return nil, sdk.OutcomeUnknown("Slack acknowledged chat.postMessage without a valid channel and timestamp; the message may exist, so it is not retried automatically")
-	}
-	return &answer, nil
-}
-
-func classifyTransportError(err error) error {
-	var limited *netpolicy.RateLimitedError
-	if errors.As(err, &limited) {
-		if limited.AfterRedirect {
-			return sdk.OutcomeUnknown("Slack redirected chat.postMessage before the operator egress policy rate-limited the next hop; the original request may already have taken effect, so it is not retried automatically")
+		if in.GetReplyBroadcast() {
+			return nil, sdk.InvalidInput("to_user and reply_broadcast exclude each other: an ephemeral message is visible to one person and cannot be broadcast")
 		}
-		delay := boundedRetryAfter(limited.RetryAfter)
-		return sdk.UnavailableAfter(delay, "operator egress policy rate-limited slack.post before it was sent; retry after %s", delay)
+		if in.GetMetadata() != nil {
+			return nil, sdk.InvalidInput("to_user and metadata exclude each other: Slack's chat.postEphemeral stores no metadata")
+		}
 	}
-	var deny *netpolicy.DenyError
-	if errors.As(err, &deny) {
-		return sdk.PermissionDenied("deployment egress policy denied slack.post")
+	msg, err := buildBody(in.GetText(), in.GetCard(), in.GetBlocks())
+	if err != nil {
+		return nil, err
 	}
-	var netErr net.Error
-	if errors.As(err, &netErr) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return sdk.OutcomeUnknown("the Slack connection failed after chat.postMessage began; the message may already exist, so it is not retried automatically")
+	meta, err := buildMetadata(in.GetMetadata())
+	if err != nil {
+		return nil, err
 	}
-	return sdk.OutcomeUnknown("chat.postMessage failed after the request began; the message may already exist, so it is not retried automatically")
-}
 
-func classifySlackError(code, retryHeader string) error {
-	code = bounded(code)
-	switch code {
-	case "ratelimited", "rate_limited", "service_unavailable", "request_timeout":
-		delay := retryAfter(retryHeader)
-		return sdk.UnavailableAfter(delay, "Slack refused chat.postMessage with %s; retry after %s", code, delay)
-	case "invalid_auth", "not_authed", "account_inactive", "token_expired", "token_revoked", "missing_scope", "not_allowed_token_type":
-		return sdk.PermissionDenied("Slack refused the credential: %s", code)
-	case "channel_not_found", "no_text", "invalid_arguments", "invalid_arg_name", "invalid_post_type", "is_archived", "duplicate_channel_not_found", "duplicate_message_not_found":
-		return sdk.InvalidInput("Slack refused chat.postMessage: %s", code)
-	case "internal_error", "fatal_error":
-		return sdk.OutcomeUnknown("Slack returned %s and documents that the operation may have succeeded; the message is not retried automatically", code)
-	default:
-		return sdk.Failed("Slack refused chat.postMessage: %s", code)
+	if in.GetToUser() != "" {
+		return &plan{op: opEphemeral, channel: in.GetChannel(), body: ephemeralRequest{
+			Channel: in.GetChannel(), User: in.GetToUser(), Text: msg.text, Blocks: msg.blocks, ThreadTS: in.GetThreadTs(),
+		}}, nil
 	}
-}
-
-func retryAfter(value string) time.Duration {
-	seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 32)
-	if err != nil || seconds <= 0 {
-		return time.Second
-	}
-	return boundedRetryAfter(time.Duration(seconds) * time.Second)
-}
-
-func boundedRetryAfter(delay time.Duration) time.Duration {
-	if delay <= 0 {
-		return time.Second
-	}
-	if delay > 5*time.Minute {
-		return 5 * time.Minute
-	}
-	return delay
-}
-
-func bounded(value string) string {
-	value = strings.TrimSpace(value)
-	if len(value) > maxErrorBytes {
-		return value[:maxErrorBytes] + "…"
-	}
-	if value == "" {
-		return "unspecified_error"
-	}
-	return value
+	return &plan{op: opPost, channel: in.GetChannel(), body: postRequest{
+		Channel: in.GetChannel(), Text: msg.text, Blocks: msg.blocks, ClientMsgID: in.GetIdempotencyKey(),
+		ThreadTS: in.GetThreadTs(), ReplyBroadcast: in.GetReplyBroadcast(), Metadata: meta,
+	}}, nil
 }

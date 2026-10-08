@@ -105,6 +105,25 @@ const workflowSliceCostChange = "workflow-slice-cost-v1"
 // that recorded it did.
 const heldFailureCarryChange = "held-failure-carry-v1"
 
+// asyncContinueChange gates joining a scope's outstanding `async:` steps as a
+// continuation leaves through it (#1968).
+//
+// A `for_each` iteration, a `loop:` iteration and a called workflow's own
+// next-step boundary can each continue as new while an enclosing scope still
+// holds an unjoined `async:` step, and the step's outputs and any failure then
+// existed in neither segment. Refusing those seams was rejected because a
+// sequential top-level `for_each` is exempt from [v1.MaxAtomicBlockActivities]
+// on the strength of them. So the scope the continuation leaves through joins
+// what it started instead, in written order, and holds the failures it hears so
+// the next segment raises them where the scope-end join would have. Outputs
+// merge into the scope as a join always merges them, and cross in the run
+// state.
+//
+// Joining is a wait, and a wait is a history event only when a step is still
+// running, so a replay of a history without the marker — which continued as new
+// without waiting — keeps doing exactly that.
+const asyncContinueChange = "async-continue-join-v1"
+
 // executor carries the state of one workflow execution.
 type executor struct {
 	ctx      workflow.Context
@@ -209,9 +228,14 @@ type executor struct {
 	// property #1968's first shipped attempt lost by gating only the two.
 	//
 	// Read-only: it reports, drains nothing and mutates no scope. That is what
-	// separates it from the two-phase settlement shape #1968's remaining half
-	// needs, and why this one is safe as a closure.
+	// separates it from settling a scope's async work, which only the scope that
+	// owns it can do — see [asyncContinueChange] — and why this one is safe as a
+	// closure.
 	holdingFailure func() bool
+
+	// joinsOnContinue is [asyncContinueChange]: whether a continuation leaving
+	// through a scope first joins the async work that scope started.
+	joinsOnContinue bool
 
 	// callDepth counts calls nested so far, zero at the top-level workflow. It
 	// is unaffected by descending into a loop body or a parallel branch — only
@@ -586,71 +610,8 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// of the feature being off, and why the check lives at the boundary.
 		if (susp == 0 || e.holdsInBody()) && !e.reoffers(descend, depth) {
 			if e.debugAsksWaiting() {
-				for len(started) > 0 {
-					joined := started[0]
-					started = started[1:]
-					if err := e.joinAsync(joined); err != nil {
-						// Held, not raised. A debugger may hold a run and may
-						// end it, and may never change what it computes — the
-						// claim `conformance/debugger.go` names as the one
-						// thing a debugger must never break. Raising here does
-						// change it: an `async:` step nothing after it reads is
-						// heard at the scope-end join, so the steps written
-						// between its failure and that join still run. Joining
-						// early to make the hold honest, and then propagating
-						// early, skips exactly those steps — so whether a
-						// side-effecting step ran came to depend on whether
-						// somebody was debugging, and on when their ask
-						// happened to arrive (#1119).
-						//
-						// The failure is carried to the point that join would
-						// have reached instead. [executor.recordOutcome] has
-						// already run, so a *tolerated* failure is recorded
-						// exactly as it would have been; what waits is only the
-						// propagation this scope owes its caller.
-						// Never a cancellation. `recordOutcome` returns one
-						// unwrapped so Temporal reads the run as CANCELED
-						// rather than FAILED, and a held failure crosses the
-						// seam rebuilt as an [ErrRunFailed] — so holding one
-						// would make a cancelled run resume, report FAILED,
-						// and take its failure compensations instead of its
-						// cancellation ones. A failure this scope heard
-						// earlier still outranks it, because written order is
-						// what decides which failure a scope reports — see
-						// [drainRaises].
-						//
-						// It costs a sliver of the neutrality a debugger owes
-						// the run, and the size of that sliver is why the trade
-						// is worth taking: returning here ends the walk where
-						// holding would have carried the failure to the join
-						// that owed it, so a step written between the two could
-						// run without an ask and not with one. A step that
-						// touches the context fails immediately with the same
-						// cancellation and is not tolerated — see
-						// [executor.recordOutcome] — so the divergence stops at
-						// the first one that does. What can differ is the steps
-						// before it: a `value:`, a step whose `if:` is false, or
-						// a `switch:` whose taken body schedules nothing all
-						// evaluate inline and do not fail under a cancelled
-						// context, so those would have run had the failure been
-						// held. The list is not exhaustive — a `call:` or a
-						// block made only of such steps behaves the same way —
-						// which understates the divergence rather than
-						// overstating it.
-						//
-						// What the two shapes then report is not stated here,
-						// because it is not one sentence: [drainRaises] decides
-						// between the cancellation and a failure held earlier,
-						// and an intervening inline step can fail on its own
-						// merits and be reported instead. #2027 works out the
-						// cases; what is certain, and all this guard needs, is
-						// that a held cancellation must never cross the seam.
-						if temporal.IsCanceledError(err) {
-							return drainRaises(held, err)
-						}
-
-						held = append(held, heldFailure{id: joined.node.GetId(), err: err})
-					}
+				if err := e.joinOutstanding(&started, &held); err != nil {
+					return err
 				}
 			}
 			e.debugAsksAtBoundary(node)
@@ -684,6 +645,16 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 				// checks written in this function covered two of the four
 				// exits (#1968).
 				if errors.Is(propagate, errContinueAsNew) {
+					// Outstanding work leaves with the segment unless it is
+					// joined first (#1968), and a failure the join hears is
+					// held rather than raised, so the continuation still
+					// happens and the next segment raises it where the
+					// scope-end join would have.
+					if e.joinsOnContinue && len(started) > 0 {
+						if err := e.joinOutstanding(&started, &held); err != nil {
+							return err
+						}
+					}
 					e.holdInFrame(depth, held)
 				}
 
@@ -717,15 +688,16 @@ func (e *executor) runNodes(nodes []*v1.Node, depth, susp int) (err error) {
 		// boundary is a seam, so refusing there for the whole life of one
 		// unjoined `async:` step would remove the pacing that exemption is
 		// written against and let a large loop run as one segment into Temporal's
-		// history cap. The consequence is a live residual, and it is the same
-		// three boundaries a held failure has to reach: a `for_each`'s iteration
-		// boundary, a `loop:`'s, and a called workflow's own next-step boundary
-		// — a call leaves the suspend depth unchanged, so the callee reaches this
-		// very check at `susp == 0` with its own empty `started` while this
-		// scope's coroutines are still running. Each can continue as new and
-		// strand work that then exists in neither segment. #1968 tracks it, and
-		// settling it rather than refusing it is what that issue's remaining half
-		// is for.
+		// history cap.
+		//
+		// The three boundaries that are not written here — a `for_each`'s
+		// iteration, a `loop:`'s, and a called workflow's own next-step boundary
+		// (a call leaves the suspend depth unchanged, so the callee reaches this
+		// very check with its own empty `started`) — may continue as new beneath a
+		// scope that has async work outstanding. Under [asyncContinueChange] that
+		// scope joins what it started as the continuation leaves through it,
+		// holding any failure it hears, so nothing is stranded and nothing is
+		// refused (#1968).
 		if susp == 0 && i < len(nodes)-1 && len(started) == 0 && e.shouldSuspend() {
 			// The frame first, because the stamp below writes onto the frame at
 			// this depth and [executor.setFrame] replaces it wholesale.
@@ -1134,8 +1106,9 @@ func (e *executor) runCall(node *v1.Node, call *v1.Call, depth, susp int, descen
 		// could cross the seam. Every nested executor carries it, not only this
 		// one, so that "which levels need it" is never a judgement a later
 		// literal has to repeat.
-		carriesHeld:    e.carriesHeld,
-		holdingFailure: e.holdingFailure,
+		carriesHeld:     e.carriesHeld,
+		joinsOnContinue: e.joinsOnContinue,
+		holdingFailure:  e.holdingFailure,
 
 		// Shared by pointer with the caller, for the same reasons the top-level
 		// executor shares them with every nested one: a signal or a compensation
@@ -2076,6 +2049,7 @@ func (e *executor) runLoopIteration(body []string, segments []*v1.DebugSegment, 
 		sliceCost:              e.sliceCost,
 		everyExpressionCharged: e.everyExpressionCharged,
 		carriesHeld:            e.carriesHeld,
+		joinsOnContinue:        e.joinsOnContinue,
 		holdingFailure:         e.holdingFailure,
 		frames:                 e.frames,
 
@@ -2219,6 +2193,7 @@ func (e *executor) runIteration(body []string, segments []*v1.DebugSegment, loop
 		sliceCost:              e.sliceCost,
 		everyExpressionCharged: e.everyExpressionCharged,
 		carriesHeld:            e.carriesHeld,
+		joinsOnContinue:        e.joinsOnContinue,
 		holdingFailure:         e.holdingFailure,
 		frames:                 e.frames,
 
@@ -2310,6 +2285,7 @@ func (e *executor) runIterationsConcurrently(node *v1.Node, first int, loop *v1.
 					sliceCost:              e.sliceCost,
 					everyExpressionCharged: e.everyExpressionCharged,
 					carriesHeld:            e.carriesHeld,
+					joinsOnContinue:        e.joinsOnContinue,
 					holdingFailure:         e.holdingFailure,
 					signals:                e.signals,
 					debug:                  e.debug,
@@ -2428,6 +2404,7 @@ func (e *executor) runParallel(node *v1.Node, parallel *v1.Parallel, depth, susp
 				sliceCost:              e.sliceCost,
 				everyExpressionCharged: e.everyExpressionCharged,
 				carriesHeld:            e.carriesHeld,
+				joinsOnContinue:        e.joinsOnContinue,
 				holdingFailure:         e.holdingFailure,
 				signals:                e.signals,
 				debug:                  e.debug,

@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
@@ -300,6 +301,7 @@ func (e *executor) startAsync(node *v1.Node, depth, susp int) *asyncStep {
 			sliceCost:              e.sliceCost,
 			everyExpressionCharged: e.everyExpressionCharged,
 			carriesHeld:            e.carriesHeld,
+			joinsOnContinue:        e.joinsOnContinue,
 			holdingFailure:         e.holdingFailure,
 			signals:                e.signals,
 			debug:                  e.debug,
@@ -363,6 +365,84 @@ func (e *executor) joinAsync(started *asyncStep) error {
 		e.observeForDebug(v1.DebugObservationKind_DEBUG_OBSERVATION_KIND_FINISHED, started.node, nil)
 	}
 	e.progress.finished()
+
+	return nil
+}
+
+// joinOutstanding joins every step this scope started, in written order, and
+// holds the failures it hears instead of raising them.
+//
+// It is the one place an early join happens: for a debugger's ask at a step
+// boundary and for a continuation leaving through this scope, which must not
+// take outstanding work with it (#1968). The error it returns is only ever a
+// cancellation, or a failure held earlier that outranks one.
+func (e *executor) joinOutstanding(started *[]*asyncStep, held *[]heldFailure) error {
+	for len(*started) > 0 {
+		joined := (*started)[0]
+		*started = (*started)[1:]
+		if err := e.joinAsync(joined); err != nil {
+			// Held, not raised. A debugger may hold a run and may
+			// end it, and may never change what it computes — the
+			// claim `conformance/debugger.go` names as the one
+			// thing a debugger must never break. Raising here does
+			// change it: an `async:` step nothing after it reads is
+			// heard at the scope-end join, so the steps written
+			// between its failure and that join still run. Joining
+			// early to make the hold honest, and then propagating
+			// early, skips exactly those steps — so whether a
+			// side-effecting step ran came to depend on whether
+			// somebody was debugging, and on when their ask
+			// happened to arrive (#1119).
+			//
+			// The failure is carried to the point that join would
+			// have reached instead. [executor.recordOutcome] has
+			// already run, so a *tolerated* failure is recorded
+			// exactly as it would have been; what waits is only the
+			// propagation this scope owes its caller.
+			// Never a cancellation. `recordOutcome` returns one
+			// unwrapped so Temporal reads the run as CANCELED
+			// rather than FAILED, and a held failure crosses the
+			// seam rebuilt as an [ErrRunFailed] — so holding one
+			// would make a cancelled run resume, report FAILED,
+			// and take its failure compensations instead of its
+			// cancellation ones. A failure this scope heard
+			// earlier still outranks it, because written order is
+			// what decides which failure a scope reports — see
+			// [drainRaises].
+			//
+			// It costs a sliver of the neutrality a debugger owes
+			// the run, and the size of that sliver is why the trade
+			// is worth taking: returning here ends the walk where
+			// holding would have carried the failure to the join
+			// that owed it, so a step written between the two could
+			// run without an ask and not with one. A step that
+			// touches the context fails immediately with the same
+			// cancellation and is not tolerated — see
+			// [executor.recordOutcome] — so the divergence stops at
+			// the first one that does. What can differ is the steps
+			// before it: a `value:`, a step whose `if:` is false, or
+			// a `switch:` whose taken body schedules nothing all
+			// evaluate inline and do not fail under a cancelled
+			// context, so those would have run had the failure been
+			// held. The list is not exhaustive — a `call:` or a
+			// block made only of such steps behaves the same way —
+			// which understates the divergence rather than
+			// overstating it.
+			//
+			// What the two shapes then report is not stated here,
+			// because it is not one sentence: [drainRaises] decides
+			// between the cancellation and a failure held earlier,
+			// and an intervening inline step can fail on its own
+			// merits and be reported instead. #2027 works out the
+			// cases; what is certain, and all this guard needs, is
+			// that a held cancellation must never cross the seam.
+			if temporal.IsCanceledError(err) {
+				return drainRaises(*held, err)
+			}
+
+			*held = append(*held, heldFailure{id: joined.node.GetId(), err: err})
+		}
+	}
 
 	return nil
 }

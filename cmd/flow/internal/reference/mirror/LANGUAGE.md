@@ -1626,12 +1626,12 @@ version:
 
 ```yaml
 plugins:
-  slack: v0.1.0
+  slack: v0.2.0
 steps:
   - id: announce
     slack.post:
       channel: C0123456789
-      message_key: ${inputs.announcement_id}
+      idempotency_key: ${inputs.announcement_id}
       text: release is out
       token: ${secret('env:SLACK_BOT_TOKEN')}
 ```

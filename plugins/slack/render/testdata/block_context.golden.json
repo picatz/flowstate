@@ -1,0 +1,16 @@
+[
+  {
+    "type": "context",
+    "elements": [
+      {
+        "type": "image",
+        "image_url": "https://example.com/a.png",
+        "alt_text": "diagram"
+      },
+      {
+        "type": "plain_text",
+        "text": "posted by flowstate"
+      }
+    ]
+  }
+]

@@ -1,0 +1,430 @@
+syntax = "proto3";
+
+package flowstate.chat.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatechatv1";
+
+// The vendor-neutral shape of a chat message: text, buttons, and four card
+// presets that every chat platform can render well (docs, Slack design §5).
+//
+// # What this is, and is not
+//
+// This file is the contract a chat task plugin speaks. It adds no Flowfile
+// keyword and no task; a chat post is an ordinary plugin task call whose typed
+// input is a [Card]. No vendor name appears in a field, and none may: a
+// platform adapter maps these shapes onto its own wire format inside its
+// plugin, and anything platform-specific (Slack Block Kit, Discord embeds)
+// lives in that plugin's own schema.
+//
+// # Safe text
+//
+// [Text] is either literal plain text or a [Markup] template whose arguments
+// are escaped by the adapter, so a value that came from an event or a model can
+// never smuggle platform markup or a broadcast mention into a message.
+//
+// The package is engine-provided (docs/ARCHITECTURE.md, "Proto packages: core
+// versus domain"), so the limits below are enforced at the host.
+
+// Text is a piece of message text: literal plain text, or an escaped template.
+message Text {
+  // kind selects how the text is rendered. Exactly one is required.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // plain is literal text. An adapter renders it with no markup
+    // interpretation at all.
+    string plain = 1 [(buf.validate.field).string = {max_len: 3000}];
+
+    // markup is an author-written template with escaped arguments.
+    Markup markup = 2;
+  }
+
+  // emoji asks the adapter to interpret emoji shortcodes such as `:tada:` in
+  // plain text, where the platform supports it.
+  bool emoji = 3;
+}
+
+// Markup is author-written template text with escaped arguments. The template
+// may contain platform markup (mrkdwn on Slack, Markdown on Discord); args never
+// can. `{name}` marks a placeholder, and `{{` is a literal brace.
+message Markup {
+  // template is the author-written text, a literal and never a value resolved
+  // from an event.
+  string template = 1 [(buf.validate.field).string = {min_len: 1, max_len: 3000}];
+
+  // args maps a placeholder name to the value an adapter escapes before
+  // substituting it into the template.
+  map<string, string> args = 2 [(buf.validate.field).map = {
+    max_pairs: 32
+    keys: {string: {pattern: "^[a-z][a-z0-9_]{0,31}$"}}
+    values: {string: {max_len: 3000}}
+  }];
+
+  // mentions are the typed allowlist of mentions the template may contain; a
+  // mention never comes from args.
+  repeated Mention mentions = 3 [(buf.validate.field).repeated.max_items = 8];
+}
+
+// Mention names who or what a message addresses, as a typed value rather than
+// platform markup.
+message Mention {
+  // kind selects the mention target.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // user is a platform user identifier. The alphabet excludes every character
+    // platform markup uses, so an identifier cannot close the mention it is
+    // written into and open another.
+    string user = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64, pattern: "^[A-Za-z0-9._:-]+$"}];
+
+    // channel is a platform channel identifier, bounded like user.
+    string channel = 2 [(buf.validate.field).string = {min_len: 1, max_len: 64, pattern: "^[A-Za-z0-9._:-]+$"}];
+
+    // broadcast notifies everyone present in the conversation.
+    Broadcast broadcast = 3 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+  }
+}
+
+// Broadcast is the set of people a broadcast mention notifies. There is no
+// value for "everyone in the workspace": it is unreachable by construction.
+enum Broadcast {
+  // BROADCAST_UNSPECIFIED is the zero value and addresses no one.
+  BROADCAST_UNSPECIFIED = 0;
+
+  // BROADCAST_HERE notifies the members of the conversation who are active.
+  BROADCAST_HERE = 1;
+
+  // BROADCAST_CHANNEL notifies every member of the conversation.
+  BROADCAST_CHANNEL = 2;
+}
+
+// Callback is the opaque identity a button carries back when it is pressed.
+message Callback {
+  // action names what was chosen, such as `approve`.
+  string action = 1 [(buf.validate.field).string = {min_len: 1, max_len: 64, pattern: "^[a-z][a-z0-9_]*$"}];
+
+  // value is a correlation token, such as a run's entity key. Its alphabet is
+  // narrow so it survives every platform's encoding unchanged.
+  string value = 2 [(buf.validate.field).string = {max_len: 1000, pattern: "^[A-Za-z0-9._:-]*$"}];
+}
+
+// Style is how prominently a button renders.
+enum Style {
+  // STYLE_UNSPECIFIED is the platform's default appearance.
+  STYLE_UNSPECIFIED = 0;
+
+  // STYLE_PRIMARY marks the affirmative action.
+  STYLE_PRIMARY = 1;
+
+  // STYLE_DANGER marks a destructive action.
+  STYLE_DANGER = 2;
+}
+
+// Button is a pressable control that either reports a [Callback] or opens a URL.
+message Button {
+  option (buf.validate.message).cel = {
+    id: "button.callback_xor_url"
+    message: "a button carries a callback or a url, not both and not neither"
+    expression: "has(this.callback) != (this.url != '')"
+  };
+
+  // label is the text on the button.
+  Text label = 1 [(buf.validate.field).required = true];
+
+  // callback is reported to the workflow when the button is pressed.
+  Callback callback = 2;
+
+  // url opens a link instead of reporting a callback.
+  string url = 3 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string = {max_len: 3000, uri: true, prefix: "https://"}
+  ];
+
+  // style is how prominently the button renders.
+  Style style = 4 [(buf.validate.field).enum.defined_only = true];
+
+  // confirm asks the person to confirm before the press is reported.
+  Confirm confirm = 5;
+}
+
+// Confirm is the confirmation dialog a [Button] may require.
+message Confirm {
+  // title is the dialog heading.
+  Text title = 1;
+
+  // text is the dialog body.
+  Text text = 2;
+
+  // confirm is the label of the affirmative choice.
+  Text confirm = 3;
+
+  // deny is the label of the dismissing choice.
+  Text deny = 4;
+}
+
+// Field is a labelled value in a card.
+message Field {
+  // label names the value.
+  string label = 1 [(buf.validate.field).string = {max_len: 48}];
+
+  // value is the content shown under the label.
+  Text value = 2;
+
+  // inline asks for the field to sit beside others where the platform allows.
+  bool inline = 3;
+}
+
+// Code is a preformatted block.
+message Code {
+  // text is the code, shown verbatim.
+  string text = 1 [(buf.validate.field).string = {max_len: 2800}];
+
+  // lang names the language for highlighting where supported.
+  string lang = 2 [(buf.validate.field).string = {max_len: 16}];
+}
+
+// Progress is a count of completed work against a total.
+message Progress {
+  option (buf.validate.message).cel = {
+    id: "progress.current_within_total"
+    message: "current must not exceed total"
+    expression: "this.current <= this.total"
+  };
+
+  // current is the amount completed.
+  int32 current = 1 [(buf.validate.field).int32 = {gte: 0}];
+
+  // total is the amount that completes the work.
+  int32 total = 2 [(buf.validate.field).int32 = {gt: 0, lte: 10000}];
+}
+
+// State is the lifecycle position a [Status] card reports.
+enum State {
+  // STATE_UNSPECIFIED is the zero value.
+  STATE_UNSPECIFIED = 0;
+
+  // STATE_PENDING means the work has not started.
+  STATE_PENDING = 1;
+
+  // STATE_RUNNING means the work is in progress.
+  STATE_RUNNING = 2;
+
+  // STATE_OK means the work succeeded.
+  STATE_OK = 3;
+
+  // STATE_WARN means the work finished with a caveat.
+  STATE_WARN = 4;
+
+  // STATE_FAILED means the work failed.
+  STATE_FAILED = 5;
+}
+
+// Level is the severity a [Log] card reports.
+enum Level {
+  // LEVEL_UNSPECIFIED is the zero value.
+  LEVEL_UNSPECIFIED = 0;
+
+  // LEVEL_DEBUG is diagnostic detail.
+  LEVEL_DEBUG = 1;
+
+  // LEVEL_INFO is routine information.
+  LEVEL_INFO = 2;
+
+  // LEVEL_WARN is a condition worth attention.
+  LEVEL_WARN = 3;
+
+  // LEVEL_ERROR is a failure.
+  LEVEL_ERROR = 4;
+}
+
+// Card is a message body in one of four presets. It is not a generic element
+// list: the presets are what every platform can render well, and a fifth is a
+// reviewed addition that every shipped adapter must render.
+message Card {
+  // kind selects the preset. Exactly one is required.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // approval asks a person to approve or reject.
+    Approval approval = 1;
+
+    // status reports the state of some work.
+    Status status = 2;
+
+    // log reports a leveled message.
+    Log log = 3;
+
+    // notice is a titled announcement with optional actions.
+    Notice notice = 4;
+  }
+}
+
+// Approval asks a person to approve or reject, the human gate of a workflow.
+message Approval {
+  option (buf.validate.message).cel = {
+    id: "approval.decision_buttons"
+    message: "approve and reject each carry a callback, since a url button reports no decision"
+    expression: "has(this.approve.callback) && has(this.reject.callback)"
+  };
+
+  // title is the heading of the request.
+  Text title = 1 [(buf.validate.field).required = true];
+
+  // summary explains what is being approved.
+  Text summary = 2;
+
+  // fields are labelled details, at most 10.
+  repeated Field fields = 3 [(buf.validate.field).repeated.max_items = 10];
+
+  // approve is the affirmative button.
+  Button approve = 4 [(buf.validate.field).required = true];
+
+  // reject is the negative button.
+  Button reject = 5 [(buf.validate.field).required = true];
+
+  // extra are further buttons, at most 3.
+  repeated Button extra = 6 [(buf.validate.field).repeated.max_items = 3];
+
+  // footer is small text under the buttons.
+  Text footer = 7;
+}
+
+// Status reports the state of some work, and is what an approval card is
+// updated to once decided.
+message Status {
+  // state is where the work stands.
+  State state = 1 [(buf.validate.field).enum.defined_only = true];
+
+  // title names the work.
+  Text title = 2 [(buf.validate.field).required = true];
+
+  // detail adds explanation.
+  Text detail = 3;
+
+  // fields are labelled details, at most 10.
+  repeated Field fields = 4 [(buf.validate.field).repeated.max_items = 10];
+
+  // progress shows completion when the work is countable.
+  Progress progress = 5;
+
+  // link points at more detail.
+  string link = 6 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string = {max_len: 3000, uri: true, prefix: "https://"}
+  ];
+}
+
+// Log reports a leveled message, optionally with code and context.
+message Log {
+  // level is the severity.
+  Level level = 1 [(buf.validate.field).enum.defined_only = true];
+
+  // message is the log line.
+  Text message = 2 [(buf.validate.field).required = true];
+
+  // code is a preformatted block shown with the message.
+  Code code = 3;
+
+  // context are further lines, at most 5.
+  repeated Text context = 4 [(buf.validate.field).repeated.max_items = 5];
+}
+
+// Notice is a titled announcement with optional paragraphs, fields and actions.
+message Notice {
+  // title is the heading.
+  Text title = 1 [(buf.validate.field).required = true];
+
+  // body are paragraphs, at most 10.
+  repeated Text body = 2 [(buf.validate.field).repeated.max_items = 10];
+
+  // buttons are actions, at most 5.
+  repeated Button buttons = 3 [(buf.validate.field).repeated.max_items = 5];
+
+  // fields are labelled details, at most 10.
+  repeated Field fields = 4 [(buf.validate.field).repeated.max_items = 10];
+}
+
+// MessageRef addresses a posted message so it can be updated or replied to.
+message MessageRef {
+  // channel is the conversation (Slack channel, Discord channel_id).
+  string channel = 1 [(buf.validate.field).string.max_len = 256];
+
+  // id is the message (Slack ts, Discord message_id).
+  string id = 2 [(buf.validate.field).string.max_len = 256];
+
+  // thread is the thread the message is in (Slack thread_ts, Discord thread_id).
+  string thread = 3 [(buf.validate.field).string.max_len = 256];
+}
+
+// Actor is the person behind an [Interaction], as the platform reports them.
+message Actor {
+  // platform names the chat platform, such as `slack`.
+  string platform = 1 [(buf.validate.field).string.max_len = 256];
+
+  // workspace is the platform's tenant (Slack team, Discord guild).
+  string workspace = 2 [(buf.validate.field).string.max_len = 256];
+
+  // user is the platform's stable user identifier.
+  string user = 3 [(buf.validate.field).string.max_len = 256];
+
+  // username is the display handle, informational only.
+  string username = 4 [(buf.validate.field).string.max_len = 256];
+}
+
+// Interaction is what an adapter documents a platform's inbound event as. It is
+// not a durable engine type and not a second input path: a receiver still binds
+// the raw event, and this is the mapping each adapter publishes.
+message Interaction {
+  // Kind is what the person did.
+  enum Kind {
+    // KIND_UNSPECIFIED is the zero value.
+    KIND_UNSPECIFIED = 0;
+
+    // KIND_BUTTON is a button press.
+    KIND_BUTTON = 1;
+
+    // KIND_SELECT is a menu selection.
+    KIND_SELECT = 2;
+
+    // KIND_MODAL_SUBMIT is a submitted modal.
+    KIND_MODAL_SUBMIT = 3;
+
+    // KIND_MODAL_CLOSE is a dismissed modal.
+    KIND_MODAL_CLOSE = 4;
+
+    // KIND_COMMAND is a slash command.
+    KIND_COMMAND = 5;
+
+    // KIND_SHORTCUT is a shortcut invocation.
+    KIND_SHORTCUT = 6;
+  }
+
+  // actor is who acted.
+  Actor actor = 1;
+
+  // message is the message acted on.
+  MessageRef message = 2;
+
+  // callback is the callback the control carried.
+  Callback callback = 3;
+
+  // kind is what the person did.
+  Kind kind = 4 [(buf.validate.field).enum.defined_only = true];
+
+  // form holds submitted field values, at most 64.
+  map<string, string> form = 5 [(buf.validate.field).map = {
+    max_pairs: 64
+    keys: {string: {max_len: 256}}
+    values: {string: {max_len: 4000}}
+  }];
+
+  // Field 6 carried the platform's reply capability (Slack response_url,
+  // Discord interaction token). It is removed: that value is a credential, and a
+  // plugin may declare an Interaction as an output, which becomes durable step
+  // history. An adapter reads it from the raw delivery and binds it through
+  // `with:` into the one gate it answers, as its README documents.
+  reserved 6;
+  reserved "respond_to";
+}

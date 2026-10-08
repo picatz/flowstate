@@ -62,6 +62,7 @@ func TestEveryDomainFileIsEngineProvided(t *testing.T) {
 
 	sources := domainProtoSources(t)
 	// An empty walk would make the loop below pass by finding nothing.
+	require.Contains(t, sources, "flowstate/chat/v1/chat.proto")
 	require.Contains(t, sources, "flowstate/decision/v1/decision.proto")
 	require.Contains(t, sources, "flowstate/plugin/v1/plugin.proto")
 

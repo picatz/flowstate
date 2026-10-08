@@ -1,0 +1,121 @@
+edition: v2026.4
+name: slack-deploy-status
+description: Posts one status card when a rollout starts and updates that same message in place as each stage finishes, ending in a pass or fail state with a link to the run.
+plugins:
+  slack: v0.2.0
+inputs:
+  channel:
+    type: string
+    required: true
+    description: stable Slack conversation ID, not a channel name
+    example: C123DEPLOYS
+  status_idempotency_key:
+    type: string
+    required: true
+    description: UUID chosen once for this rollout's status message
+    example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4b
+    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
+  service:
+    type: string
+    required: true
+    description: service being rolled out
+    example: api
+  version:
+    type: string
+    required: true
+    description: version being rolled out
+    example: v1.4.2
+steps:
+  # The facts every card repeats and the title of the running cards, stated once
+  # so the four cards cannot drift apart.
+  - id: facts
+    value:
+      - label: Service
+        value:
+          plain: ${inputs.service}
+      - label: Version
+        value:
+          plain: ${inputs.version}
+  - id: deploying
+    value:
+      plain: ${"Deploying " + inputs.service}
+  - id: started
+    slack.post:
+      card:
+        status:
+          state: running
+          title: ${steps.deploying.value}
+          detail:
+            plain: "Starting stage 1 of 3: canary"
+          fields: ${steps.facts.value}
+          progress:
+            current: 0
+            total: 3
+      channel: ${inputs.channel}
+      idempotency_key: ${inputs.status_idempotency_key}
+      token: ${secret('env:SLACK_BOT_TOKEN')}
+  # The rollout itself is out of scope here: each `value` step stands in for the
+  # work that finishes a stage. The updates below are the point. They replace the
+  # message in place, and because slack.update names its target it is safe for a
+  # retry policy to repeat.
+  - id: canary
+    value: ${"canary healthy"}
+  - id: canary_done
+    slack.update:
+      card:
+        status:
+          state: running
+          title: ${steps.deploying.value}
+          detail:
+            plain: "Stage 2 of 3: half of traffic"
+          fields: ${steps.facts.value}
+          progress:
+            current: 1
+            total: 3
+      channel: ${steps.started.channel}
+      token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.started.ts}
+  - id: half
+    value: ${"half of traffic healthy"}
+  - id: half_done
+    slack.update:
+      card:
+        status:
+          state: running
+          title: ${steps.deploying.value}
+          detail:
+            plain: "Stage 3 of 3: all traffic"
+          fields: ${steps.facts.value}
+          progress:
+            current: 2
+            total: 3
+      channel: ${steps.started.channel}
+      token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.started.ts}
+  - id: full
+    value: ${"all traffic healthy"}
+  - id: finished
+    slack.update:
+      card:
+        status:
+          state: ok
+          title:
+            plain: ${"Deployed " + inputs.service}
+          detail:
+            markup:
+              template: "*{service}* {version} is serving all traffic."
+              args:
+                service: ${inputs.service}
+                version: ${inputs.version}
+          fields: ${steps.facts.value}
+          progress:
+            current: 3
+            total: 3
+          link: ${"https://deploys.example.com/" + inputs.service + "/" + inputs.version}
+      channel: ${steps.started.channel}
+      token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.started.ts}
+outputs:
+  message_ts:
+    value: ${steps.started.ts}
+    description: Slack timestamp of the status message, updated in place
