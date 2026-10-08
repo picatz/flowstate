@@ -124,7 +124,7 @@ func TestATreePagesChildrenItDoesNotHold(t *testing.T) {
 	t.Parallel()
 
 	tree := pane.NewTree(sample())
-	request, load := tree.Activate("g:steps")
+	_, load := tree.Activate("g:steps")
 	assert.False(t, load, "two of forty are held, so opening needs no first page")
 
 	rows := tree.Rows()
@@ -132,7 +132,7 @@ func TestATreePagesChildrenItDoesNotHold(t *testing.T) {
 	require.Equal(t, pane.RowMore, more.Kind, "the elision row is missing: %+v", rows)
 	assert.Equal(t, 38, more.Remaining)
 
-	request, load = tree.Activate(more.ID)
+	request, load := tree.Activate(more.ID)
 	require.True(t, load)
 	assert.Equal(t, pane.Request{Parent: "g:steps", Offset: 2}, request)
 
