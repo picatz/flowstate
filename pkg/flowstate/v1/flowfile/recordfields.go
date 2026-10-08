@@ -82,7 +82,7 @@ func (t *typeTable) fieldPaths(parsed *expr.ParsedExpr, step string) []recordPat
 		if root != v1.InputsRoot || len(fields) < 2 {
 			return
 		}
-		key := strings.Join(fields, ".")
+		key := v1.InputsRoot + "." + strings.Join(fields, ".")
 		if seen[key] {
 			return
 		}

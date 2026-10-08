@@ -771,3 +771,40 @@ steps:
 		})
 	}
 }
+
+func TestAnIteratorAndARecordInputSharingANameAreCheckedSeparately(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(`edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Line:
+    fields:
+      sku:
+        type: string
+  Order:
+    fields:
+      id:
+        type: string
+inputs:
+  order:
+    type: Line
+    required: true
+  orders:
+    type: list(Order)
+    required: true
+steps:
+  - id: each
+    for_each:
+      items: ${inputs.orders}
+      as: order
+      steps:
+        - id: use
+          value: ${order.id + inputs.order.id}
+`))
+	require.NoError(t, err)
+
+	ds := flowfile.Validate(wf)
+	require.NotEmpty(t, ds)
+	assert.Contains(t, ds.Error(), `the record Line has no field "id"`)
+}
