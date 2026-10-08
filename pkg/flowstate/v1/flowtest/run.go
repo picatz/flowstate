@@ -79,6 +79,11 @@ type RunOptions struct {
 	// changing.
 	Mutate MutateOptions
 
+	// Durable additionally runs each passing case on the durable interpreter
+	// with a Continue-As-New forced between every pair of steps, and fails the
+	// case where the two drivers disagree. Nil runs the local driver alone.
+	Durable DurableRunner
+
 	// Select filters which cases run, by name; nil runs every case. A case
 	// filtered out is not run, not reported, and counted in
 	// [RunResult.Filtered] — the number a caller's own output must surface,
@@ -410,7 +415,11 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 					ctx, stop = caseContextWithin(ctx, caseTimeout)
 					defer stop()
 				}
-				result, spec, transcript, account, shown, err := runCase(ctx, &test, l.deliveryPath, l.load,
+				caseCtx := ctx
+				if reported && opts.Debugger == nil {
+					caseCtx = contextWithDurable(ctx, opts.Durable)
+				}
+				result, spec, transcript, account, shown, err := runCase(caseCtx, &test, l.deliveryPath, l.load,
 					!opts.skipTranscript && reported,
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 				if reported {
@@ -1083,6 +1092,18 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		return
 	}
 	ctx = v1.NewContextWithRegistry(ctx, registry)
+	var durableRegistry *v1.Registry
+	durableUnanswered := &unstubbedTasks{}
+	durableSkipped := ""
+	if durableFrom(base) != nil && v1.SchedulerFromContext(base) == v1.WrittenOrder {
+		if durableSkipped = durableIneligible(test, workflow, stubs); durableSkipped == "" {
+			durableRegistry, err = freshCaseRegistry(test, workflow, boundaries, durableUnanswered)
+			if err != nil {
+				caseError("%s", err)
+				return
+			}
+		}
+	}
 	releaseRegistry()
 
 	inputs := v1.NewNamedValues(test.Inputs)
@@ -1418,6 +1439,22 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	if faults != nil {
 		result.Failures = append(result.Failures, faults.unreached()...)
 	}
+	if durableRegistry != nil && len(result.Failures) == 0 && v1.DebuggerFromContext(ctx) == nil {
+		dctx := v1.NewContextWithRegistry(base, durableRegistry)
+		// Named for the workflow it serves, as the local driver names it, which is
+		// what a `step:` stub matches the step it answers by.
+		durableRuntime := runtime
+		durableRuntime.Step.Workflow = workflow.GetName()
+		dctx = v1.ContextWithTaskRuntime(dctx, durableRuntime)
+		dctx = v1.NewContextWithTrigger(dctx, trigger)
+		disagreements, localOnly := durableDisagreements(dctx, durableFrom(base), workflow, inputs, durableRuntime,
+			durableUnanswered, outputs, runErr, sensitive)
+		result.Failures = append(result.Failures, disagreements...)
+		durableSkipped = localOnly
+	}
+	if durableSkipped != "" {
+		result.Warnings = append(result.Warnings, &v1.Diagnostic{Field: durableFailureField, Message: "local only: " + durableSkipped})
+	}
 	result.Passed = len(result.Failures) == 0
 
 	// The autopsy (#1072 decision 4's follow-on): a failing case under a
@@ -1455,7 +1492,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// that never reached a run at all (result.Error set) returns above and
 	// never gets here.
 	if runErr == nil {
-		result.Warnings = append(unusedStubWarnings(stubs), undeliveredSignalWarnings(test.Signals, outcomes)...)
+		result.Warnings = append(result.Warnings, append(unusedStubWarnings(stubs), undeliveredSignalWarnings(test.Signals, outcomes)...)...)
 	}
 
 	// Whatever the run's verdict, and ahead of the idle-stub account above:
@@ -3014,4 +3051,24 @@ func compensatedSteps(runErr error) []string {
 	}
 
 	return out
+}
+
+// freshCaseRegistry is [caseRegistry] over stubs bound anew from the case, for a
+// second run of it: the first run has spent whatever its stubs count.
+func freshCaseRegistry(test *Test, workflow *v1.Workflow, boundaries map[string]*v1.Workflow, unanswered *unstubbedTasks) (*v1.Registry, error) {
+	compiled, err := compileStubs(test.Stubs)
+	if err != nil {
+		return nil, err
+	}
+	stubs, err := bindStubs(compiled, workflow)
+	if err != nil {
+		return nil, err
+	}
+	for name, callee := range boundaries {
+		if stub, ok := stubs[name]; ok {
+			stub.callee = callee
+		}
+	}
+
+	return caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow, unanswered)
 }

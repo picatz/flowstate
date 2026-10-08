@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest/durable"
 )
 
 // `flow test` is the third verb on the local driver's substrate (#155):
@@ -207,6 +209,12 @@ flow test -o jsonl examples/`,
 	cmd.Flags().String("mutant", "",
 		"replay the mutant a reported survivor's id names (in each workflow of the file that has one), instead of running them all")
 
+	cmd.Flags().String("driver", driverLocal,
+		"which driver proves each case: local (the default), or both, which also runs each passing case on the "+
+			"durable interpreter, in-process, with a Continue-As-New between every pair of steps, and fails "+
+			"where the two disagree; a case with signals, faults, a trigger delivery, plugins or stub tasks "+
+			"this build does not register stays local and says so")
+
 	// The step debugger (#928 slice 1). Interactive by nature, so it is
 	// refused wherever "interactive" is not true of the run: a machine-format
 	// run whose document a prompt would corrupt, a seeded exploration that
@@ -337,6 +345,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	if err != nil {
 		return err
 	}
+	durableRunner, err := driverOption(cmd, budget, fuzzOpts, mutateOpts)
+	if err != nil {
+		return err
+	}
 
 	// The filter (#929 slice 1). Refusals before anything runs, both fail
 	// closed: a pattern that does not compile selects nothing knowable, and
@@ -386,6 +398,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			{"--seeds", cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed")},
 			{"--fuzz", cmd.Flags().Changed("fuzz") || cmd.Flags().Changed("fuzz-seed")},
 			{"--mutate", mutateOpts.Max > 0 || mutateOpts.Only != ""},
+			{"--driver", durableRunner != nil},
 			{"--coverage-required", coverageRequired},
 		} {
 			if other.set {
@@ -467,6 +480,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 			Budget:      budget,
 			Fuzz:        fuzzOpts,
 			Mutate:      mutateOpts,
+			Durable:     durableRunner,
 			Select:      selectCase,
 			CaseTimeout: timeout,
 			FailFast:    failFast,
@@ -1355,6 +1369,50 @@ func mutateOptions(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOpti
 	}
 
 	return flowtest.MutateOptions{Max: n, Only: only}, nil
+}
+
+// The values `--driver` takes.
+const (
+	driverLocal = "local"
+	driverBoth  = "both"
+)
+
+// driverOption reads `--driver`. The durable proof judges the written-order run
+// of each case, so like mutation it is a dimension of its own and is refused
+// beside the others rather than multiplied by them. It returns nil for the
+// local driver alone.
+func driverOption(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOptions, mutate flowtest.MutateOptions) (flowtest.DurableRunner, error) {
+	driver, _ := cmd.Flags().GetString("driver")
+	switch driver {
+	case driverLocal:
+		return nil, nil
+	case driverBoth:
+	default:
+		return nil, fmt.Errorf("--driver %q is not a driver; write %s or %s", driver, driverLocal, driverBoth)
+	}
+
+	switch {
+	case cmd.Flags().Changed("debug"):
+		return nil, errors.New("--driver both cannot be combined with --debug: a debug session stops one case on the local driver")
+	case budget.Schedules > 0 || budget.Pinned != nil || cmd.Flags().Changed("seeds") || cmd.Flags().Changed("seed"):
+		return nil, errors.New("--driver both runs each case in written order and --seeds explores schedules; " +
+			"run them separately so a finding names one cause")
+	case fuzz.Runs > 0 || fuzz.Pinned:
+		return nil, errors.New("--driver both proves the authored cases and --fuzz generates others; " +
+			"run them separately so a finding names one cause")
+	case mutate.Max > 0 || mutate.Only != "":
+		return nil, errors.New("--driver both proves the program as written and --mutate changes it; " +
+			"run them separately so a finding names one cause")
+	}
+
+	return func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
+		res, err := durable.Run(ctx, wf, inputs, runtime)
+		if res == nil {
+			return flowtest.DurableResult{}, err
+		}
+
+		return flowtest.DurableResult{Outputs: res.Outputs, Segments: res.Segments}, err
+	}, nil
 }
 
 // mutantFound reports that some file's report ran the mutant `--mutant` named.
