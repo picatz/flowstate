@@ -367,12 +367,12 @@ var File_flowstate_v1_graph_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/graph.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xb5\x01\n" +
+	"\x18flowstate/v1/graph.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xbc\x01\n" +
 	"\x05Graph\x128\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x17.flowstate.v1.GraphNodeB\t\xbaH\x06\x92\x01\x03\x10\xe8\aR\x05nodes\x128\n" +
 	"\x05edges\x18\x02 \x03(\v2\x17.flowstate.v1.GraphEdgeB\t\xbaH\x06\x92\x01\x03\x10\xa0\x1fR\x05edges\x12\x18\n" +
-	"\apartial\x18\x03 \x01(\bR\apartial\x12\x1e\n" +
-	"\x05notes\x18\x04 \x03(\tB\b\xbaH\x05\x92\x01\x02\x10dR\x05notes\"\x84\x01\n" +
+	"\apartial\x18\x03 \x01(\bR\apartial\x12%\n" +
+	"\x05notes\x18\x04 \x03(\tB\x0f\xbaH\f\x92\x01\t\x10d\"\x05r\x03\x18\x80\bR\x05notes\"\x84\x01\n" +
 	"\tGraphNode\x12\x1a\n" +
 	"\x02id\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x02id\x12;\n" +

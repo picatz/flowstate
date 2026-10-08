@@ -38,7 +38,10 @@ message Graph {
   bool partial = 3;
 
   // Notes say, in plain text, why the graph is partial or what was skipped.
-  repeated string notes = 4 [(buf.validate.field).repeated = {max_items: 100}];
+  repeated string notes = 4 [(buf.validate.field).repeated = {
+    max_items: 100
+    items: {string: {max_len: 1024}}
+  }];
 }
 
 // GraphNode is one thing in a graph.

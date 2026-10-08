@@ -13,7 +13,7 @@ import (
 
 // Bounds on a static graph, matching the limits the schema message declares so a
 // build that reaches one reports it instead of producing a message that fails
-// validation.
+// validation. They bound what is returned; building costs what the input costs.
 const (
 	MaxNodes = 1000
 	MaxEdges = 4000
@@ -56,15 +56,14 @@ type edgeKey struct {
 type builder struct {
 	nodes map[string]*v1.GraphNode
 	edges map[edgeKey]uint32
-	seen  map[string]*v1.Workflow // workflows already walked, by name
-	graph *v1.Graph
+	seen  map[string]map[string]struct{} // workflow name -> digests of the definitions walked
+	notes map[string]struct{}
 }
 
+// note records why the graph is partial. Notes are a set, so the same finding
+// reached by two paths, or in a different input order, is one note.
 func (b *builder) note(format string, args ...any) {
-	b.graph.Partial = true
-	if len(b.graph.Notes) < maxNotes {
-		b.graph.Notes = append(b.graph.Notes, fmt.Sprintf(format, args...))
-	}
+	b.notes[fmt.Sprintf(format, args...)] = struct{}{}
 }
 
 func (b *builder) node(kind v1.GraphNodeKind, name string) (string, bool) {
@@ -77,24 +76,13 @@ func (b *builder) node(kind v1.GraphNodeKind, name string) (string, bool) {
 
 		return id, false
 	}
-	if len(b.nodes) >= MaxNodes {
-		b.note("node limit of %d reached; %s %q and later nodes were left out", MaxNodes, prefix(kind), name)
-
-		return id, false
-	}
 	b.nodes[id] = &v1.GraphNode{Id: id, Kind: kind, Label: name}
 
 	return id, true
 }
 
 func (b *builder) edge(from, to string, kind v1.GraphEdgeKind) {
-	key := edgeKey{from, to, kind}
-	if _, ok := b.edges[key]; !ok && len(b.edges) >= MaxEdges {
-		b.note("edge limit of %d reached; later relations were left out", MaxEdges)
-
-		return
-	}
-	b.edges[key]++
+	b.edges[edgeKey{from, to, kind}]++
 }
 
 // Static derives the graph of what the given workflows declare: a node per
@@ -103,16 +91,22 @@ func (b *builder) edge(from, to string, kind v1.GraphEdgeKind) {
 // its own edges, even when no file declares it separately.
 //
 // The result is deterministic: nodes are ordered by id and edges by (from, to,
-// kind), so the same workflows give the same bytes in any input order. Two inputs
-// that declare the same workflow name are one node; the second is noted, and its
-// relations are merged rather than dropped. Reaching [MaxNodes] or [MaxEdges]
-// leaves the graph partial and says so in its notes.
+// kind), so the same workflows give the same bytes in any input order. That
+// holds when a bound is reached too: the graph is built whole, which costs no
+// more than the input already does, and only then cut to [MaxNodes] and
+// [MaxEdges] in that sorted order, so which nodes survive does not depend on
+// which workflow came first.
+//
+// Two different definitions under one workflow name are one node whose
+// relations are merged, and the graph says so in its notes. The same definition
+// reached twice, as a callee of two workflows or as a callee and a file of its
+// own, is walked once. Whatever is left out leaves the graph partial, with a note.
 func Static(workflows ...*v1.Workflow) *v1.Graph {
 	b := &builder{
 		nodes: map[string]*v1.GraphNode{},
 		edges: map[edgeKey]uint32{},
-		seen:  map[string]*v1.Workflow{},
-		graph: &v1.Graph{},
+		seen:  map[string]map[string]struct{}{},
+		notes: map[string]struct{}{},
 	}
 
 	for _, wf := range workflows {
@@ -122,16 +116,41 @@ func Static(workflows ...*v1.Workflow) *v1.Graph {
 		b.workflow(wf, 0)
 	}
 
-	b.graph.Nodes = slices.SortedFunc(maps.Values(b.nodes), func(a, c *v1.GraphNode) int {
+	g := &v1.Graph{}
+	g.Nodes = slices.SortedFunc(maps.Values(b.nodes), func(a, c *v1.GraphNode) int {
 		return cmp.Compare(a.GetId(), c.GetId())
 	})
+	if len(g.Nodes) > MaxNodes {
+		b.note("node limit of %d reached; %d nodes were left out", MaxNodes, len(g.Nodes)-MaxNodes)
+		g.Nodes = g.Nodes[:MaxNodes]
+	}
+	kept := make(map[string]struct{}, len(g.Nodes))
+	for _, n := range g.Nodes {
+		kept[n.GetId()] = struct{}{}
+	}
+
+	dropped := 0
 	for _, key := range slices.SortedFunc(maps.Keys(b.edges), func(a, c edgeKey) int {
 		return cmp.Or(cmp.Compare(a.from, c.from), cmp.Compare(a.to, c.to), cmp.Compare(a.kind, c.kind))
 	}) {
-		b.graph.Edges = append(b.graph.Edges, &v1.GraphEdge{From: key.from, To: key.to, Kind: key.kind, Count: b.edges[key]})
+		_, fromKept := kept[key.from]
+		_, toKept := kept[key.to]
+		if !fromKept || !toKept || len(g.Edges) >= MaxEdges {
+			dropped++
+
+			continue
+		}
+		g.Edges = append(g.Edges, &v1.GraphEdge{From: key.from, To: key.to, Kind: key.kind, Count: b.edges[key]})
+	}
+	if dropped > 0 {
+		b.note("%d relations were left out: edge limit of %d, or an end that is not in the graph", dropped, MaxEdges)
 	}
 
-	return b.graph
+	notes := slices.Sorted(maps.Keys(b.notes))
+	g.Partial = len(notes) > 0
+	g.Notes = notes[:min(len(notes), maxNotes)]
+
+	return g
 }
 
 // workflow adds wf and everything it declares, following inlined callees.
@@ -141,16 +160,23 @@ func (b *builder) workflow(wf *v1.Workflow, depth int) {
 	if !ok {
 		return
 	}
-	if prior, dup := b.seen[name]; dup {
-		// The same workflow reached twice, as a callee and as a file of its own,
-		// is one workflow. Only a different one under the same name is worth a
-		// note, and its relations are merged rather than dropped.
-		if sameProgram(prior, wf) {
-			return
-		}
-		b.note("workflow %q is declared more than once; its relations are merged into one node", name)
+
+	// A definition is walked once, whoever reaches it. A different definition
+	// under a name already walked is still walked, so its relations are merged
+	// rather than dropped, and is noted.
+	digest := v1.CanonicalDigest(withoutSourceDigest(wf))
+	known := b.seen[name]
+	if _, walked := known[digest]; walked {
+		return
 	}
-	b.seen[name] = wf
+	if len(known) > 0 {
+		b.note("workflow %q is declared more than once with different definitions; its relations are merged into one node", name)
+	}
+	if known == nil {
+		known = map[string]struct{}{}
+		b.seen[name] = known
+	}
+	known[digest] = struct{}{}
 
 	var callees []*v1.Workflow
 	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
@@ -186,9 +212,6 @@ func (b *builder) workflow(wf *v1.Workflow, depth int) {
 		if depth+1 > maxCallDepth {
 			b.note("call chain below %q is deeper than %d; not followed", name, maxCallDepth)
 
-			continue
-		}
-		if _, walked := b.seen[callee.GetName()]; walked {
 			continue
 		}
 		b.workflow(callee, depth+1)

@@ -2,6 +2,7 @@ package graph_test
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -157,9 +158,10 @@ func TestStaticBoundsEdgesAndSaysSo(t *testing.T) {
 }
 
 func TestStaticBoundsNotes(t *testing.T) {
+	// 150 differently over-long names are 150 different findings.
 	var workflows []*v1.Workflow
 	for i := range 150 {
-		workflows = append(workflows, &v1.Workflow{Name: "dup", Steps: []*v1.Node{task("x", fmt.Sprintf("t%d", i))}})
+		workflows = append(workflows, &v1.Workflow{Name: strings.Repeat("n", graph.MaxNameBytes+1+i)})
 	}
 
 	g := graph.Static(workflows...)
@@ -167,6 +169,36 @@ func TestStaticBoundsNotes(t *testing.T) {
 	require.True(t, g.GetPartial())
 	require.Len(t, g.GetNotes(), 100, "notes are capped, and the graph stays partial")
 	require.NoError(t, v1.Validate(g))
+}
+
+func TestStaticCapsAreAppliedInAStableOrder(t *testing.T) {
+	var workflows []*v1.Workflow
+	for w := range graph.MaxNodes + 20 {
+		workflows = append(workflows, &v1.Workflow{Name: fmt.Sprintf("wf%04d", w), Steps: []*v1.Node{task("s", "log")}})
+	}
+	reversed := slices.Clone(workflows)
+	slices.Reverse(reversed)
+
+	one, two := graph.Static(workflows...), graph.Static(reversed...)
+
+	require.Len(t, one.GetNodes(), graph.MaxNodes)
+	require.True(t, one.GetPartial())
+	require.True(t, proto.Equal(one, two), "which nodes survive the cap must not depend on input order")
+	require.NoError(t, v1.Validate(one))
+}
+
+func TestStaticWalksDistinctCalleesThatShareAName(t *testing.T) {
+	sharedLog := &v1.Workflow{Name: "shared", Steps: []*v1.Node{task("a", "log")}}
+	sharedHTTP := &v1.Workflow{Name: "shared", Steps: []*v1.Node{task("a", "http")}}
+	a := &v1.Workflow{Name: "a", Steps: []*v1.Node{call("c", sharedLog)}}
+	b := &v1.Workflow{Name: "b", Steps: []*v1.Node{call("c", sharedHTTP)}}
+
+	one, two := graph.Static(a, b), graph.Static(b, a)
+
+	require.True(t, proto.Equal(one, two))
+	require.Contains(t, edgesOf(one), "workflow:shared -GRAPH_EDGE_KIND_USES-> task:http x1")
+	require.Contains(t, edgesOf(one), "workflow:shared -GRAPH_EDGE_KIND_USES-> task:log x1", "neither definition is dropped")
+	require.Contains(t, strings.Join(one.GetNotes(), "\n"), "different definitions")
 }
 
 func TestStaticStopsFollowingCallsPastTheDepthBound(t *testing.T) {

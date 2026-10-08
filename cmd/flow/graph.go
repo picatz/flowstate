@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -9,6 +10,19 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/graph"
 )
+
+// maxGraphFiles bounds how many Flowfiles one `flow graph` parses.
+const maxGraphFiles = 1000
+
+// truncateNote cuts a path to a length the graph schema's notes can hold.
+func truncateNote(path string) string {
+	const limit = 512
+	if len(path) <= limit {
+		return path
+	}
+
+	return strings.ToValidUTF8(path[:limit], "") + "..."
+}
 
 // newGraphCommand builds `flow graph`.
 func newGraphCommand() *cobra.Command {
@@ -56,6 +70,12 @@ func runGraph(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Bounded before any file is parsed: a directory is another party's to fill,
+	// and parsing is the expensive part.
+	if len(files) > maxGraphFiles {
+		return fmt.Errorf("%d Flowfiles found, more than the %d one graph reads; name a narrower directory", len(files), maxGraphFiles)
+	}
+
 	var (
 		workflows []*v1.Workflow
 		skipped   []string
@@ -67,7 +87,7 @@ func runGraph(cmd *cobra.Command, args []string) error {
 		}
 		wf, _, err := flowfile.ParseFile(path)
 		if err != nil {
-			skipped = append(skipped, fmt.Sprintf("%s does not compile and was left out", path))
+			skipped = append(skipped, fmt.Sprintf("%s does not compile and was left out", truncateNote(path)))
 
 			continue
 		}

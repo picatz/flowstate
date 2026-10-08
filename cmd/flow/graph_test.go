@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -70,4 +71,18 @@ func TestGraphRefusesAPathThatIsNotThere(t *testing.T) {
 
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), "error reading")
+}
+
+func TestGraphRefusesMoreFilesThanItReads(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("edition: v2026.4\nname: w\nsteps:\n  - id: a\n    log:\n      message: hi\n")
+	for i := range maxGraphFiles + 1 {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, fmt.Sprintf("w%04d.flow.yaml", i)), body, 0o600))
+	}
+
+	res := runFlow(t, "graph", dir)
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "name a narrower directory")
+	assert.Empty(t, res.Stdout)
 }
