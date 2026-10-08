@@ -966,7 +966,7 @@ You can run the same thing yourself; it needs `flow` on `PATH` and nothing else:
 $ go build -o /usr/local/bin/flow ./cmd/flow
 $ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
 …
-36 checks, 0 failed
+40 checks, 0 failed
 ```
 
 **Verified by hand, not by CI:** Helix 25.07.1 (`hx --health flowfile`, including
