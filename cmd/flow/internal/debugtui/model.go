@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -451,6 +452,11 @@ func (m Model) completed(msg completeMsg) (tea.Model, tea.Cmd) {
 		// An answer to a line that has since changed is not applied to the new one.
 		return m, nil
 	}
+	// A candidate too long to be part of a command is dropped before any work is
+	// done with it.
+	msg.answer.Candidates = slices.DeleteFunc(slices.Clone(msg.answer.Candidates), func(c flowdebug.Candidate) bool {
+		return len(c.Text) > flowdebug.MaxCommandBytes
+	})
 	line, offers := applyCompletion(msg.line, msg.answer)
 	// A candidate is the target's text: one with a control character, or one
 	// that would outgrow a command, is not put on the line.

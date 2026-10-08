@@ -46,7 +46,7 @@ func TestThePaneViewsGolden(t *testing.T) {
 				{"scope", ScopeView(s.Tree, s.Frame, true, "", opts(v.style, 44, 9, true))},
 				{"inspector", InspectorView(s.Tree, s.Frame, opts(v.style, 40, 8, false))},
 				{"console", ConsoleView(consoleWith("inspect inputs.region", `"eu-west-1"`), "", opts(v.style, 60, 5, true))},
-				{"help", HelpView(s.Keys, s.Verbs, opts(v.style, 80, 60, false))},
+				{"help", HelpView(s.Keys, s.Verbs, opts(v.style, 80, 60, false), 0)},
 			} {
 				b.WriteString("=== " + part.name + "\n")
 				b.WriteString(part.text + "\n")

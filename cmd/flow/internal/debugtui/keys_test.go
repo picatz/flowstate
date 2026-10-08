@@ -333,3 +333,75 @@ func TestAPageOfAnEarlierStopIsNotAppended(t *testing.T) {
 		assert.NotEqual(t, "inputs.stale", row.ID)
 	}
 }
+
+// TestAHelpLongerThanTheScreenCanBeScrolledToItsEnd: nothing it teaches is
+// permanently cut off.
+func TestAHelpLongerThanTheScreenCanBeScrolledToItsEnd(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake(), func(c *Config) { c.Size = tui.Size{W: 80, H: 14} })
+	m = send(m, tuitest.Key("?"))
+	first := view(m)
+	require.Contains(t, first, "scrolls", "the fixture's help fits, so this proves nothing")
+
+	last := ""
+	for _, v := range flowdebug.DriverVerbs() {
+		last = v.Name
+	}
+	assert.NotContains(t, first, "  "+last+" ", "the last verb was already visible")
+
+	m = send(m, tuitest.Key("end"))
+	end := view(m)
+	assert.Contains(t, end, last, "scrolling to the end did not reach the last line")
+	assert.NotEqual(t, first, end)
+
+	m = send(m, tuitest.Key("home"))
+	assert.Equal(t, first, view(m), "home did not return to the top")
+
+	// Scrolling past either end stays on the first or last page.
+	m = send(m, tuitest.Key("up"))
+	assert.Equal(t, 0, m.screen.HelpTop)
+}
+
+// TestTheExitKeysHelpTeachesWorkWhileItIsOpen: q detaches and ctrl+d leaves,
+// as the overlay says.
+func TestTheExitKeysHelpTeachesWorkWhileItIsOpen(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake())
+	m = send(m, tuitest.Key("?"))
+	next, _ := m.key(tuitest.Key("ctrl+d"))
+	assert.Equal(t, OutcomeLeave, next.(Model).outcome)
+
+	next, cmd := m.key(tuitest.Key("q"))
+	assert.False(t, next.(Model).screen.Help)
+	assert.NotNil(t, cmd, "q in help did nothing")
+	assert.Equal(t, "detach", next.(Model).screen.Busy)
+}
+
+// TestAnEnormousAnswerIsBoundedBeforeItIsHandled: the target chooses how much
+// it says, and the console keeps a bounded tail of a bounded head.
+func TestAnEnormousAnswerIsBoundedBeforeItIsHandled(t *testing.T) {
+	t.Parallel()
+
+	c := NewConsole()
+	c.Say(strings.Repeat("x", 8<<20))
+	require.Len(t, c.Lines(), 1)
+	assert.LessOrEqual(t, len([]rune(c.Lines()[0])), maxLineRunes+1)
+
+	c = NewConsole()
+	c.Say(strings.Repeat("line\n", 1<<20))
+	assert.LessOrEqual(t, len(c.Lines()), maxTranscriptLines)
+}
+
+// TestACandidateTooLongForACommandIsDropped: before any prefix work is done
+// with it.
+func TestACandidateTooLongForACommandIsDropped(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake())
+	m.screen.Console.Text = "inspect st"
+	huge := strings.Repeat("s", flowdebug.MaxCommandBytes+1)
+	next, _ := m.completed(completeMsg{line: "inspect st", answer: flowdebug.Completion{Prefix: "st", Candidates: []flowdebug.Candidate{{Text: huge}}}})
+	assert.Equal(t, "inspect st", next.(Model).screen.Console.Text)
+}

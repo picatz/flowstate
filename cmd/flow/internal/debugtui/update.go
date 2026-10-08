@@ -72,10 +72,30 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	if m.screen.Help {
 		switch name {
-		case "esc", "?", "q":
-			m.screen.Help = false
+		case "esc", "?":
+			m.screen.Help, m.screen.HelpTop = false, 0
 		case "ctrl+c":
 			return m.leave(OutcomeInterrupt)
+		case "ctrl+d":
+			return m.leave(OutcomeLeave)
+		case "q":
+			// The exit keys the overlay teaches do what it says they do.
+			m.screen.Help, m.screen.HelpTop = false, 0
+			cmd := m.quit()
+
+			return m, cmd
+		case "up", "k":
+			m.scrollHelp(-1)
+		case "down", "j":
+			m.scrollHelp(1)
+		case "pgup":
+			m.scrollHelp(-m.helpPage())
+		case "pgdown", "space":
+			m.scrollHelp(m.helpPage())
+		case "home", "g":
+			m.scrollHelp(-1 << 20)
+		case "end", "G":
+			m.scrollHelp(1 << 20)
 		}
 
 		return m, nil
@@ -138,6 +158,20 @@ func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 
 	return m, nil
 }
+
+// scrollHelp moves the help overlay by delta lines, within the lines it has.
+func (m *Model) scrollHelp(delta int) {
+	g, err := m.screen.geometry()
+	if err != nil {
+		return
+	}
+	lines := len(helpLines(m.screen.Keys, m.screen.Verbs, pane.Options{Width: g.body.W}))
+	room := max(0, g.body.H+g.console.H-1)
+	m.screen.HelpTop = max(0, min(m.screen.HelpTop+delta, max(0, lines-room)))
+}
+
+// helpPage is how far a page key moves the overlay.
+func (m Model) helpPage() int { return max(1, m.screen.Size.H-4) }
 
 // quit detaches the run, or ends the screen if the run is already over. The
 // outcome is set when the driver reports the detach was taken.
@@ -346,6 +380,8 @@ func (m Model) wheel(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	}
 
 	switch {
+	case hit.ID == "help":
+		m.scrollHelp(delta)
 	case strings.HasPrefix(hit.ID, scopePrefix), hit.ID == panePrefix+paneScope:
 		m.screen.Tree.Scroll(delta, max(1, m.scopeRows()))
 	case hit.ID == panePrefix+paneSteps:

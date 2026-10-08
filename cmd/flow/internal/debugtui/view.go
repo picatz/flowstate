@@ -88,6 +88,10 @@ type Screen struct {
 	Pane  string
 	Help  bool
 
+	// HelpTop is the first help line shown, so a help longer than the screen
+	// can be read to its end.
+	HelpTop int
+
 	// Busy is the command line being run, or empty.
 	Busy string
 }
@@ -155,7 +159,7 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		o := s.options(g.body.W, g.body.H+g.console.H, st, true)
 		parts = append(parts, pane.Placed{
 			Rect: pane.Rect{X: 0, Y: 1, W: g.body.W, H: g.body.H + g.console.H},
-			Text: HelpView(s.Keys, s.Verbs, o),
+			Text: HelpView(s.Keys, s.Verbs, o, s.HelpTop),
 		})
 		hits.Add(parts[len(parts)-1].Rect, "help", pane.KindPane)
 
@@ -496,9 +500,27 @@ func SelectedExpression(tree *pane.Tree) string {
 //
 // Both halves come from the keymap and the verbs the front answers, so it
 // teaches no key that does nothing and no verb the front refuses.
-func HelpView(keys tui.Keymap, verbs []flowdebug.Verb, o pane.Options) string {
-	lines := []string{pane.Heading("help", "? or esc closes", o.Width, o)}
-	lines = append(lines, keys.Help(o.Width, o.Theme)...)
+func HelpView(keys tui.Keymap, verbs []flowdebug.Verb, o pane.Options, top int) string {
+	body := helpLines(keys, verbs, o)
+	room := max(0, o.Height-1)
+	top = max(0, min(top, max(0, len(body)-room)))
+
+	note := "? or esc closes"
+	if len(body) > room {
+		note = fmt.Sprintf("%d-%d of %d, up/down scrolls, ? or esc closes", top+1, min(top+room, len(body)), len(body))
+	}
+	lines := []string{pane.Heading("help", note, o.Width, o)}
+	lines = append(lines, body[top:min(len(body), top+room)]...)
+	for i, line := range lines {
+		lines[i] = ui.Trim(line, o.Width)
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// helpLines is every line of the help, before any is cut to the screen.
+func helpLines(keys tui.Keymap, verbs []flowdebug.Verb, o pane.Options) []string {
+	lines := keys.Help(o.Width, o.Theme)
 
 	bound := map[string]bool{}
 	for _, b := range keys.Bindings() {
@@ -522,10 +544,5 @@ func HelpView(keys tui.Keymap, verbs []flowdebug.Verb, o pane.Options) string {
 		lines = append(lines, typed...)
 	}
 
-	lines = lines[:min(len(lines), o.Height)]
-	for i, line := range lines {
-		lines[i] = ui.Trim(line, o.Width)
-	}
-
-	return strings.Join(lines, "\n")
+	return lines
 }

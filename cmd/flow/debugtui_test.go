@@ -97,3 +97,18 @@ func TestOtherDebugCommandsHaveNoTUIFlag(t *testing.T) {
 	}
 	assert.Equal(t, 60, debugtui.MinWidth)
 }
+
+// TestTheScreenRecordsAStepBackAsTheEndOfTheRecording: the same rule the line
+// editor applies, so a recording is never a script that replays from a stop it
+// was not typed at.
+func TestTheScreenRecordsAStepBackAsTheEndOfTheRecording(t *testing.T) {
+	var recording attachRecording
+	accept := acceptInto(&recording)
+
+	accept("step")
+	accept("back")
+	accept("step")
+
+	assert.Equal(t, []string{"step"}, recording.lines)
+	assert.True(t, recording.truncated, "the recording does not say it stopped early")
+}

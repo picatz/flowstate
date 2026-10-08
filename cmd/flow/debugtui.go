@@ -101,7 +101,7 @@ func attachWithTUI(
 		Size:   tui.Size{W: width, H: height},
 		// Refreshed by the target's own revisions, never by a clock.
 		Watch:    true,
-		Accepted: recording.add,
+		Accepted: acceptInto(recording),
 	})
 	if err != nil {
 		return err
@@ -117,5 +117,19 @@ func attachWithTUI(
 		return remote.Disconnect()
 	default:
 		return remote.Close()
+	}
+}
+
+// acceptInto is what the screen calls for each command the run accepted. A step
+// back ends the recording, as it does at the line editor: a script has no way
+// to say it, so what followed would replay from a different stop.
+func acceptInto(recording *attachRecording) func(string) {
+	return func(line string) {
+		if flowdebug.StepsBack(line) {
+			recording.rewound()
+
+			return
+		}
+		recording.add(line)
 	}
 }

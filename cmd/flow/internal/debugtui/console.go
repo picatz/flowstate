@@ -7,6 +7,7 @@ import (
 
 	"github.com/picatz/flowstate/cmd/flow/internal/pane"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/internal/textbound"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
@@ -15,6 +16,8 @@ import (
 const (
 	maxTranscriptLines = 200
 	maxLineRunes       = 512
+	maxLineBytes       = 4 * maxLineRunes
+	maxSayBytes        = 64 << 10
 	maxHistory         = 64
 )
 
@@ -124,12 +127,15 @@ func (c *Console) Newer() {
 // Say adds text to the transcript, one line at a time. Every line is escaped,
 // since a target's answer can hold anything, and cut to a bounded length.
 func (c *Console) Say(text string) {
+	// The peer chooses how much it says; past a bound the rest of an answer is
+	// neither scanned, escaped nor copied.
+	text = textbound.Cut(text, maxSayBytes)
 	for line := range strings.SplitSeq(strings.TrimRight(text, "\n"), "\n") {
-		line = ui.EscapeControl(line)
+		line = ui.EscapeControl(textbound.Cut(line, maxLineBytes))
 		if runes := []rune(line); len(runes) > maxLineRunes {
 			line = string(runes[:maxLineRunes]) + "…"
 		}
-		c.lines = append(c.lines, line)
+		c.lines = append(c.lines, strings.Clone(line))
 	}
 	if over := len(c.lines) - maxTranscriptLines; over > 0 {
 		c.lines = c.lines[over:]
