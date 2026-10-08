@@ -1,0 +1,43 @@
+[
+  {
+    "type": "header",
+    "block_id": "fs_header",
+    "text": {
+      "type": "plain_text",
+      "text": ":rocket: Deploying api",
+      "emoji": true
+    }
+  },
+  {
+    "type": "section",
+    "block_id": "fs_body",
+    "text": {
+      "type": "mrkdwn",
+      "text": ":arrows_counterclockwise: *In progress*\nStage 2 of 3: canary\n▰▰▰▰▰▰▰▱▱▱  2 of 3 · 66%",
+      "verbatim": true
+    },
+    "fields": [
+      {
+        "type": "mrkdwn",
+        "text": "*Environment*\nproduction",
+        "verbatim": true
+      },
+      {
+        "type": "mrkdwn",
+        "text": "*Started*\n12:04 UTC",
+        "verbatim": true
+      }
+    ]
+  },
+  {
+    "type": "context",
+    "block_id": "fs_footer",
+    "elements": [
+      {
+        "type": "mrkdwn",
+        "text": "<https://example.com/runs/42|View details>",
+        "verbatim": true
+      }
+    ]
+  }
+]

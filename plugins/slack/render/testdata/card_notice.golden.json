@@ -1,0 +1,62 @@
+[
+  {
+    "type": "header",
+    "block_id": "fs_header",
+    "text": {
+      "type": "plain_text",
+      "text": "Maintenance window"
+    }
+  },
+  {
+    "type": "section",
+    "block_id": "fs_body_0",
+    "text": {
+      "type": "plain_text",
+      "text": "The database will be read-only for 10 minutes."
+    }
+  },
+  {
+    "type": "section",
+    "block_id": "fs_body_1",
+    "text": {
+      "type": "mrkdwn",
+      "text": "Details: <https://example.com/m-17|status page>",
+      "verbatim": true
+    }
+  },
+  {
+    "type": "section",
+    "block_id": "fs_fields",
+    "fields": [
+      {
+        "type": "mrkdwn",
+        "text": "*Starts*\n02:00 UTC",
+        "verbatim": true
+      }
+    ]
+  },
+  {
+    "type": "actions",
+    "block_id": "fs_actions",
+    "elements": [
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Acknowledge"
+        },
+        "action_id": "ack",
+        "value": "m-17"
+      },
+      {
+        "type": "button",
+        "text": {
+          "type": "plain_text",
+          "text": "Status page"
+        },
+        "action_id": "link_1",
+        "url": "https://example.com/status"
+      }
+    ]
+  }
+]

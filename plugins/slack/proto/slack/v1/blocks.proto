@@ -1,0 +1,246 @@
+syntax = "proto3";
+
+package slack.v1;
+
+option go_package = "github.com/picatz/flowstate/plugins/slack/gen/slack/v1;slackv1";
+
+import "buf/validate/validate.proto";
+import "flowstate/chat/v1/chat.proto";
+
+// Block Kit for messages, as typed values rather than JSON.
+//
+// A Flowfile writes a block by naming the member it holds, so a message reads
+// like the layout it produces:
+//
+//	blocks:
+//	  - header: { text: { plain: Deploy finished } }
+//	  - section:
+//	      text: { markup: { template: "*{service}* is live", args: { service: ${inputs.service} } } }
+//	      accessory: { button: { text: { plain: Open }, action_id: open, url: "https://example.com" } }
+//	  - actions:
+//	      elements:
+//	        - button: { text: { plain: Roll back }, action_id: rollback, style: danger }
+//
+// Text everywhere is a flowstate.chat.v1.Text: literal `plain`, or an escaped
+// `markup` template, so a value from an event can never become a mention or a
+// link. The limits below are Slack's published ones, dated in
+// plugins/slack/render/limits.go; the rules that need two fields at once, or
+// the text after escaping, are enforced by the plugin before any request.
+
+// Block is one layout block of a message. Exactly one member is required.
+message Block {
+  // block_id names the block so a later interaction can say which block it came
+  // from. Optional: Slack assigns one when it is absent. At most 255 characters
+  // of letters, digits, underscore and hyphen, unique within its block.
+  string block_id = 1 [(buf.validate.field).string = {max_len: 255, pattern: "^[A-Za-z0-9_-]*$"}];
+
+  // kind selects the block type.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // section is text, optionally with fields and one accessory control.
+    Section section = 2;
+
+    // header is a large plain-text heading.
+    Header header = 3;
+
+    // divider is a horizontal rule.
+    Divider divider = 4;
+
+    // context is small, muted text and images, such as a footer.
+    Context context = 5;
+
+    // actions is a row of interactive controls.
+    Actions actions = 6;
+
+    // image is a standalone picture.
+    Image image = 7;
+  }
+}
+
+// Section is a paragraph of text, optionally with a two-column grid of fields
+// and one accessory control at its right.
+message Section {
+  // text is the paragraph, at most 3000 characters once rendered. Required
+  // unless fields is present.
+  flowstate.chat.v1.Text text = 1;
+
+  // fields are short texts laid out in two columns, at most 10, each at most
+  // 2000 characters once rendered.
+  repeated flowstate.chat.v1.Text fields = 2 [(buf.validate.field).repeated.max_items = 10];
+
+  // accessory is one control shown beside the text: a button, menu, date
+  // picker, overflow menu or image.
+  Element accessory = 3;
+}
+
+// Header is a large heading. Slack renders it as plain text only, so a markup
+// text is refused, and it is at most 150 characters.
+message Header {
+  // text is the heading, plain only.
+  flowstate.chat.v1.Text text = 1 [(buf.validate.field).required = true];
+}
+
+// Divider is a horizontal rule.
+message Divider {}
+
+// Context is a line of small, muted text and images.
+message Context {
+  // elements are shown left to right, 1 to 10.
+  repeated ContextElement elements = 1 [(buf.validate.field).repeated = {min_items: 1, max_items: 10}];
+}
+
+// ContextElement is one item of a [Context] block: text or an image.
+message ContextElement {
+  // kind selects the element. Exactly one is required.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // text is a muted text.
+    flowstate.chat.v1.Text text = 1;
+
+    // image is a small inline image.
+    Image image = 2;
+  }
+}
+
+// Actions is a row of interactive controls.
+message Actions {
+  // elements are the controls, 1 to 25. Each carries the action_id that a
+  // later interaction reports.
+  repeated Element elements = 1 [(buf.validate.field).repeated = {min_items: 1, max_items: 25}];
+}
+
+// Image is a picture Slack fetches from a public https URL, as a standalone
+// block, a context element, or a section accessory.
+message Image {
+  // url is the public https address of the image, at most 3000 characters.
+  string url = 1 [(buf.validate.field).string = {min_len: 1, max_len: 3000, uri: true, prefix: "https://"}];
+
+  // alt_text describes the image for people who cannot see it, 1 to 2000
+  // characters.
+  string alt_text = 2 [(buf.validate.field).string = {min_len: 1, max_len: 2000}];
+
+  // title is an optional plain-text caption, at most 2000 characters. Only a
+  // standalone image block shows it.
+  flowstate.chat.v1.Text title = 3;
+}
+
+// Element is an interactive control or an image. Exactly one member is
+// required.
+message Element {
+  // kind selects the control.
+  oneof kind {
+    option (buf.validate.oneof).required = true;
+
+    // button is a pressable control.
+    Button button = 1;
+
+    // static_select is a drop-down menu of fixed options.
+    StaticSelect static_select = 2;
+
+    // overflow is a "..." menu of 2 to 5 options.
+    Overflow overflow = 3;
+
+    // date_picker is a calendar date chooser.
+    DatePicker date_picker = 4;
+
+    // image is a picture, valid as a section accessory.
+    Image image = 5;
+  }
+}
+
+// Button is a pressable control. A press reports its action_id and value to the
+// app's interactivity URL; a button with a url also opens that link.
+message Button {
+  // text is the label, plain only, at most 75 characters.
+  flowstate.chat.v1.Text text = 1 [(buf.validate.field).required = true];
+
+  // action_id names what the press means, such as `approve`, 1 to 255
+  // characters, unique within its block. A receiver reads it as the decision.
+  string action_id = 2 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+
+  // value is the correlation token the press reports, at most 2000 characters.
+  // For an approval it is the run's entity key.
+  string value = 3 [(buf.validate.field).string.max_len = 2000];
+
+  // url opens a link when the button is pressed, at most 3000 characters.
+  string url = 4 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string = {max_len: 3000, uri: true, prefix: "https://"}
+  ];
+
+  // style is how prominently the button renders.
+  flowstate.chat.v1.Style style = 5;
+
+  // confirm asks the person to confirm before the press is reported.
+  flowstate.chat.v1.Confirm confirm = 6;
+
+  // accessibility_label is what a screen reader says instead of the text, at
+  // most 75 characters.
+  string accessibility_label = 7 [(buf.validate.field).string.max_len = 75];
+}
+
+// Option is one choice of a menu.
+message Option {
+  // text is the label, plain only, at most 75 characters.
+  flowstate.chat.v1.Text text = 1 [(buf.validate.field).required = true];
+
+  // value is what a selection reports, 1 to 150 characters, unique within the
+  // menu.
+  string value = 2 [(buf.validate.field).string = {min_len: 1, max_len: 150}];
+
+  // description is small text under the label, plain only, at most 75
+  // characters.
+  flowstate.chat.v1.Text description = 3;
+}
+
+// StaticSelect is a drop-down menu of fixed options.
+message StaticSelect {
+  // action_id names the menu, 1 to 255 characters, unique within its block.
+  string action_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+
+  // placeholder is shown until a choice is made, plain only, at most 150
+  // characters.
+  flowstate.chat.v1.Text placeholder = 2 [(buf.validate.field).required = true];
+
+  // options are the choices, 1 to 100.
+  repeated Option options = 3 [(buf.validate.field).repeated = {min_items: 1, max_items: 100}];
+
+  // initial_option is the preselected choice and must be one of options.
+  Option initial_option = 4;
+
+  // confirm asks the person to confirm a selection.
+  flowstate.chat.v1.Confirm confirm = 5;
+}
+
+// Overflow is a "..." menu for secondary actions.
+message Overflow {
+  // action_id names the menu, 1 to 255 characters, unique within its block.
+  string action_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+
+  // options are the choices, 2 to 5.
+  repeated Option options = 2 [(buf.validate.field).repeated = {min_items: 2, max_items: 5}];
+
+  // confirm asks the person to confirm a selection.
+  flowstate.chat.v1.Confirm confirm = 3;
+}
+
+// DatePicker is a calendar date chooser.
+message DatePicker {
+  // action_id names the picker, 1 to 255 characters, unique within its block.
+  string action_id = 1 [(buf.validate.field).string = {min_len: 1, max_len: 255}];
+
+  // placeholder is shown until a date is chosen, plain only, at most 150
+  // characters.
+  flowstate.chat.v1.Text placeholder = 2;
+
+  // initial_date preselects a date, written YYYY-MM-DD.
+  string initial_date = 3 [
+    (buf.validate.field).ignore = IGNORE_IF_UNPOPULATED,
+    (buf.validate.field).string.pattern = "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+  ];
+
+  // confirm asks the person to confirm a choice.
+  flowstate.chat.v1.Confirm confirm = 4;
+}

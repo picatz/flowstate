@@ -1,0 +1,36 @@
+[
+  {
+    "type": "section",
+    "block_id": "fs_body",
+    "text": {
+      "type": "mrkdwn",
+      "text": ":rotating_light: *ERROR*  migration 0042 failed",
+      "verbatim": true
+    }
+  },
+  {
+    "type": "section",
+    "block_id": "fs_code",
+    "text": {
+      "type": "mrkdwn",
+      "text": "```\nERROR: relation \"users\" does not exist\n```",
+      "verbatim": true
+    }
+  },
+  {
+    "type": "context",
+    "block_id": "fs_footer",
+    "elements": [
+      {
+        "type": "mrkdwn",
+        "text": "attempt 2 of 3",
+        "verbatim": true
+      },
+      {
+        "type": "mrkdwn",
+        "text": "db: primary",
+        "verbatim": true
+      }
+    ]
+  }
+]

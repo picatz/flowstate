@@ -1,0 +1,14 @@
+[
+  {
+    "type": "section",
+    "text": {
+      "type": "plain_text",
+      "text": "With a picture"
+    },
+    "accessory": {
+      "type": "image",
+      "image_url": "https://example.com/a.png",
+      "alt_text": "diagram"
+    }
+  }
+]

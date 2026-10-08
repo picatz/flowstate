@@ -1,0 +1,20 @@
+[
+  {
+    "type": "section",
+    "text": {
+      "type": "mrkdwn",
+      "text": "*3* things",
+      "verbatim": true
+    },
+    "fields": [
+      {
+        "type": "plain_text",
+        "text": "one"
+      },
+      {
+        "type": "plain_text",
+        "text": "two"
+      }
+    ]
+  }
+]
