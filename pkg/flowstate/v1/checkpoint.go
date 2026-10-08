@@ -19,6 +19,10 @@ var (
 	// position does not match the state it carries.
 	ErrCheckpointTampered = errors.New("flowstate: checkpoint does not match its state")
 
+	// ErrCheckpointUnsupported reports a position this contract does not yet
+	// admit: inside a call, a loop, or concurrent work.
+	ErrCheckpointUnsupported = errors.New("flowstate: checkpoint position is not a fork-eligible boundary")
+
 	// ErrCheckpointBuild reports a checkpoint emitted by a different
 	// interpreter build than the one asked to resume it.
 	ErrCheckpointBuild = errors.New("flowstate: checkpoint was emitted by a different interpreter build")
@@ -64,8 +68,33 @@ func (cp *Checkpoint) Verify() error {
 	if got := CanonicalDigest(cp.GetState().GetWorkflow()); got == "" || got != cp.GetSpecHash() {
 		return fmt.Errorf("%w: spec hash %q is not the digest of the carried workflow", ErrCheckpointTampered, cp.GetSpecHash())
 	}
-	if pos, steps := checkpointPosition(cp.GetState()), len(cp.GetState().GetWorkflow().GetSteps()); pos > steps {
-		return fmt.Errorf("%w: position %d is past the workflow's %d steps", ErrCheckpointTampered, pos, steps)
+	return verifyCheckpointPosition(cp)
+}
+
+// verifyCheckpointPosition holds the position to the one shape this contract
+// admits: between two top-level steps, with no frame standing inside a call, a
+// loop or a for_each. Deeper positions carry callee outputs and iteration
+// results that a patch could contradict; admitting them waits for the
+// interpreter to define fork-eligible boundaries once (#2249), so they are
+// refused here rather than half-checked. The cursor must also name the step the
+// origin said it was about to run, so a position edited to rewind past an
+// executed step is caught.
+func verifyCheckpointPosition(cp *Checkpoint) error {
+	state := cp.GetState()
+	steps := state.GetWorkflow().GetSteps()
+	pos := checkpointPosition(state)
+	if pos < 0 || pos > len(steps) {
+		return fmt.Errorf("%w: position %d is outside the workflow's %d steps", ErrCheckpointTampered, pos, len(steps))
+	}
+	if frames := state.GetFrames(); len(frames) > 1 || (len(frames) == 1 && !proto.Equal(frames[0], &Frame{NextNode: int32(pos)})) {
+		return fmt.Errorf("%w: only a position between top-level steps can be checkpointed", ErrCheckpointUnsupported)
+	}
+	next := ""
+	if pos < len(steps) {
+		next = steps[pos].GetId()
+	}
+	if next != cp.GetOrigin().GetStep() {
+		return fmt.Errorf("%w: position %d is step %q, the origin recorded %q", ErrCheckpointTampered, pos, next, cp.GetOrigin().GetStep())
 	}
 
 	return nil
@@ -104,6 +133,9 @@ func (cp *Checkpoint) Resume(build string, patch *Workflow) (*RunState, error) {
 		}
 	}
 	state.Workflow = proto.Clone(patch).(*Workflow)
+	if err := Validate(state); err != nil {
+		return nil, fmt.Errorf("patched workflow: %w", err)
+	}
 	if err := CheckRunStateSize(state); err != nil {
 		return nil, err
 	}

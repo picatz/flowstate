@@ -119,6 +119,55 @@ func TestCheckpointRefusals(t *testing.T) {
 		require.ErrorIs(t, err, v1.ErrCheckpointTampered)
 	})
 
+	t.Run("negative position", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		cp, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.NoError(t, err)
+
+		cp.State.Frames = nil
+		cp.State.NextStep = -1
+		require.Error(t, cp.Verify())
+		_, err = cp.Resume("build-1", &v1.Workflow{Name: "wf", Steps: state.GetWorkflow().GetSteps()})
+		require.Error(t, err)
+	})
+
+	t.Run("position rewound past an executed step", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		cp, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.NoError(t, err)
+
+		cp.State.Frames[0].NextNode = 1
+		require.ErrorIs(t, cp.Verify(), v1.ErrCheckpointTampered)
+	})
+
+	t.Run("position inside a nested frame", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		state.Frames = []*v1.Frame{{NextNode: 2}, {NextNode: 99}}
+		_, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.ErrorIs(t, err, v1.ErrCheckpointUnsupported)
+
+		state.Frames = []*v1.Frame{{NextNode: 2, NextIteration: 3}}
+		_, err = v1.NewCheckpoint(state, "build-1", origin)
+		require.ErrorIs(t, err, v1.ErrCheckpointUnsupported)
+	})
+
+	t.Run("patched workflow violates the schema", func(t *testing.T) {
+		t.Parallel()
+		state, origin := checkpointFixture(t)
+		cp, err := v1.NewCheckpoint(state, "build-1", origin)
+		require.NoError(t, err)
+
+		patch := proto.Clone(state.GetWorkflow()).(*v1.Workflow)
+		patch.Name = ""
+		patch.Steps[2] = &v1.Node{Id: "c"}
+		_, err = cp.Resume("build-1", patch)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "patched workflow")
+	})
+
 	t.Run("unknown version", func(t *testing.T) {
 		t.Parallel()
 		state, origin := checkpointFixture(t)
