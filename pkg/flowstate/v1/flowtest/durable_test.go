@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,8 +15,8 @@ import (
 )
 
 // durableRunner is what `flow test --driver both` hands the harness.
-func durableRunner(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
-	res, err := durable.Run(ctx, wf, inputs, runtime)
+func durableRunner(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
+	res, err := durable.Run(ctx, wf, inputs, start, runtime)
 	if res == nil {
 		return flowtest.DurableResult{}, err
 	}

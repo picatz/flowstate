@@ -1405,8 +1405,8 @@ func driverOption(cmd *cobra.Command, budget dst.Budget, fuzz flowtest.FuzzOptio
 			"run them separately so a finding names one cause")
 	}
 
-	return func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
-		res, err := durable.Run(ctx, wf, inputs, runtime)
+	return func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (flowtest.DurableResult, error) {
+		res, err := durable.Run(ctx, wf, inputs, start, runtime)
 		if res == nil {
 			return flowtest.DurableResult{}, err
 		}

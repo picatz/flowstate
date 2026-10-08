@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
+	"time"
 
+	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -36,9 +39,10 @@ type DurableResult struct {
 }
 
 // A DurableRunner runs wf with inputs on the durable interpreter, one step per
-// segment. ctx reaches every task, which is how the case's stubs do; runtime is
-// the secret access the case grants.
-type DurableRunner func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runtime v1.TaskRuntime) (DurableResult, error)
+// segment, beginning at start on its virtual clock as the local run does. ctx
+// reaches every task, which is how the case's stubs do, and carries the case's
+// trigger; runtime is the secret access the case grants.
+type DurableRunner func(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (DurableResult, error)
 
 // durableFailureField names a disagreement between the drivers in a report.
 const durableFailureField = "driver"
@@ -63,7 +67,7 @@ func durableFrom(ctx context.Context) DurableRunner {
 // durableIneligible says why a case cannot be run on the durable driver, or
 // the empty string when it can. The reason is reported, never swallowed: a
 // green that silently skipped the proof would read as one that passed it.
-func durableIneligible(test *Test, workflow *v1.Workflow, stubs map[string]*stubbedTask) string {
+func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStub, unregistered []string) string {
 	switch {
 	case len(test.Signals) > 0:
 		return "it scripts signals, which the durable driver does not yet receive"
@@ -75,13 +79,41 @@ func durableIneligible(test *Test, workflow *v1.Workflow, stubs map[string]*stub
 	if pins, err := v1.PinnedPlugins(workflow); err != nil || len(pins) > 0 {
 		return "the workflow requires plugins, which a durable worker takes from a deployment's selection"
 	}
-	for _, name := range slices.Sorted(maps.Keys(stubs)) {
-		if _, known := v1.LookupTask(name); !known {
-			return fmt.Sprintf("it stubs %q, a task this build does not register, which the durable worker refuses", name)
+	if text := prototext.Format(workflow); strings.Contains(text, "run.local") || strings.Contains(text, "sender.local") || strings.Contains(text, "run.identity") {
+		return "it reads run.local, sender.local or run.identity, which differ by design between a local run and a durable one"
+	}
+	// A step-scoped stub is matched on the durable side by the step id the
+	// activity carries, which names neither the workflow it runs in nor whether
+	// it is a compensation: so only where neither can be confused.
+	if calls := stepScopeAmbiguity.MatchString(prototext.Format(workflow)); calls {
+		for i := range compiled {
+			if compiled[i].step != "" {
+				return "it stubs a step by id in a workflow with calls or compensations, which the durable driver cannot tell apart from the forward call it serves"
+			}
 		}
+	}
+	if len(unregistered) > 0 {
+		return fmt.Sprintf("it stubs %q, a task this build does not register, which the durable worker refuses", unregistered[0])
 	}
 
 	return ""
+}
+
+// stepScopeAmbiguity matches a workflow that calls another or compensates a step.
+var stepScopeAmbiguity = regexp.MustCompile(`\b(call|undo)\s*:`)
+
+// unregisteredTasks is the subset of names this build registers no task for.
+// Asked before a case swaps placeholders for them in ([swapRegistry]), which
+// would make every stubbed name look registered.
+func unregisteredTasks(names []string) []string {
+	var missing []string
+	for _, name := range names {
+		if _, known := v1.LookupTask(name); !known {
+			missing = append(missing, name)
+		}
+	}
+
+	return missing
 }
 
 // durableDisagreements runs the case's workflow durably under ctx, whose
@@ -94,32 +126,47 @@ func durableIneligible(test *Test, workflow *v1.Workflow, stubs map[string]*stub
 // it dropped are not evidence either way; the ones it kept must equal the
 // local run's, because a value that changed across a seam is the bug this
 // exists to find.
-func durableDisagreements(ctx context.Context, runner DurableRunner, workflow *v1.Workflow, inputs map[string]*v1.Value, runtime v1.TaskRuntime,
+func durableDisagreements(ctx context.Context, runner DurableRunner, workflow *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime,
 	unanswered *unstubbedTasks, local *v1.Workflow_StepOutputs, localErr error, sensitive sensitiveInputs) (failures []*v1.Diagnostic, localOnly string) {
-	got, err := runner(ctx, workflow, inputs, runtime)
+	got, err := runner(ctx, workflow, inputs, start, runtime)
+
+	// The durable driver gathers no account of what its steps withhold, so a
+	// value it printed could be a private one only the durable run saw (a
+	// `run.local` branch choosing a different string, say). Where the workflow
+	// declares anything sensitive, a disagreement names where it is and quotes
+	// nothing.
+	declares, declErr := v1.DeclaresSensitiveValues(workflow)
+	withhold := (declares || declErr != nil || !sensitive.Empty())
+	const withheld = "(withheld: the workflow declares sensitive values)"
+	quote := func(text string) string {
+		if withhold {
+			return withheld
+		}
+
+		return redactedErrorText(text, sensitive)
+	}
 
 	failure := func(step, format string, args ...any) *v1.Diagnostic {
 		return &v1.Diagnostic{
 			Field:   durableFailureField,
 			Step:    step,
-			Message: redactedErrorText(fmt.Sprintf(format, args...), sensitive),
+			Message: fmt.Sprintf(format, args...),
 		}
 	}
 
 	switch {
+	case unanswered.matcherFailed():
+		// A `where:` that reads a loop binding, say, has none to read in an
+		// activity: a limit of the stub, not a disagreement about the workflow,
+		// and so said whatever else happened. A `where:` that merely evaluated
+		// false is an ordinary miss, compared like any other outcome.
+		return nil, "a stub's where: could not be evaluated on the durable driver, so the proof is not made"
 	case ctx.Err() != nil:
 		return []*v1.Diagnostic{failure("", "the durable run was cancelled: %v", ctx.Err())}, ""
 	case err != nil && localErr == nil:
-		if unanswered.any() {
-			// The workflow did not fail; a stub could not answer. A `where:` that
-			// reads a loop binding, say, has none to read in an activity, which
-			// is a limit of the stub and not a disagreement about the workflow.
-			return nil, "a stub could not answer the durable driver's invocation, so the proof is not made"
-		}
-
-		return []*v1.Diagnostic{failure("", "the run passed locally but failed after %d segment(s) on the durable driver: %v", got.Segments, err)}, ""
+		return []*v1.Diagnostic{failure("", "the run passed locally but failed after %d segment(s) on the durable driver: %s", got.Segments, quote(err.Error()))}, ""
 	case err == nil && localErr != nil:
-		return []*v1.Diagnostic{failure("", "the run failed locally (%v) but finished on the durable driver", localErr)}, ""
+		return []*v1.Diagnostic{failure("", "the run failed locally (%s) but finished on the durable driver", quote(localErr.Error()))}, ""
 	case err != nil:
 		// Both failed. The text differs by design (the durable driver wraps an
 		// activity's failure), so only that they agree it failed is a claim.
@@ -143,8 +190,27 @@ func durableDisagreements(ctx context.Context, runner DurableRunner, workflow *v
 				out = append(out, failure(id, "step %q produced %q on the durable driver and not locally", id, name))
 			case !sameValue(localValue, durableValue):
 				out = append(out, failure(id, "%s.%s changed once the run continued as new between steps:\n  local:   %s\n  durable: %s",
-					id, name, oneLine(localValue), oneLine(durableValue)))
+					id, name, quote(oneLine(localValue)), quote(oneLine(durableValue))))
 			}
+		}
+	}
+
+	// A declared output is a complete final result, unlike a pruned
+	// intermediate one, so it is compared whole.
+	localOut, durableOut := local.GetRunOutputs().GetValues(), got.Outputs.GetRunOutputs().GetValues()
+	for _, name := range slices.Sorted(maps.Keys(localOut)) {
+		other, present := durableOut[name]
+		switch {
+		case !present:
+			out = append(out, failure("", "output %q was produced locally and not on the durable driver", name))
+		case !sameValue(localOut[name], other):
+			out = append(out, failure("", "output %q changed once the run continued as new between steps:\n  local:   %s\n  durable: %s",
+				name, quote(oneLine(localOut[name])), quote(oneLine(other))))
+		}
+	}
+	for _, name := range slices.Sorted(maps.Keys(durableOut)) {
+		if _, present := localOut[name]; !present {
+			out = append(out, failure("", "output %q was produced on the durable driver and not locally", name))
 		}
 	}
 
@@ -171,10 +237,10 @@ func oneLine(m proto.Message) string {
 	return strings.Join(strings.Fields(fmt.Sprint(m)), " ")
 }
 
-// any reports whether a task was invoked that no stub answered.
-func (u *unstubbedTasks) any() bool {
+// matcherFailed reports whether a stub's `where:` failed to evaluate.
+func (u *unstubbedTasks) matcherFailed() bool {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 
-	return len(u.seen) > 0
+	return u.matcherErrors > 0
 }

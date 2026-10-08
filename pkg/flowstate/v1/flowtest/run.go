@@ -905,6 +905,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// makes stubbing a plugin task's name actually usable rather than merely
 	// advertised. Only task-form stubs can name a missing task; a step-form
 	// stub names a step whose task the compiler already knows.
+	unregistered := unregisteredTasks(stubTaskNames(compiled))
 	restore := swapRegistry(stubTaskNames(compiled))
 	// Released once the case has its own registry, and on any exit before: the
 	// process-wide one is held for compilation and for building [caseRegistry]
@@ -1096,7 +1097,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	durableUnanswered := &unstubbedTasks{}
 	durableSkipped := ""
 	if durableFrom(base) != nil && v1.SchedulerFromContext(base) == v1.WrittenOrder {
-		if durableSkipped = durableIneligible(test, workflow, stubs); durableSkipped == "" {
+		if durableSkipped = durableIneligible(test, workflow, compiled, unregistered); durableSkipped == "" {
 			durableRegistry, err = freshCaseRegistry(test, workflow, boundaries, durableUnanswered)
 			if err != nil {
 				caseError("%s", err)
@@ -1447,7 +1448,7 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 		durableRuntime.Step.Workflow = workflow.GetName()
 		dctx = v1.ContextWithTaskRuntime(dctx, durableRuntime)
 		dctx = v1.NewContextWithTrigger(dctx, trigger)
-		disagreements, localOnly := durableDisagreements(dctx, durableFrom(base), workflow, inputs, durableRuntime,
+		disagreements, localOnly := durableDisagreements(dctx, durableFrom(base), workflow, inputs, test.StartTime(), durableRuntime,
 			durableUnanswered, outputs, runErr, sensitive)
 		result.Failures = append(result.Failures, disagreements...)
 		durableSkipped = localOnly
@@ -1648,6 +1649,10 @@ func caseRegistry(stubs map[string]*stubbedTask, sensitiveInputNames map[string]
 type unstubbedTasks struct {
 	mu sync.Mutex
 
+	// matcherErrors counts `where:` evaluations that errored rather than
+	// answered false.
+	matcherErrors int
+
 	// seen holds one entry per task-and-step pair, because a warning that
 	// names only the task cannot be acted on when two steps run it and one of
 	// them is stubbed by `step:`. The step is the engine's own
@@ -1675,6 +1680,12 @@ type unstubbedAt struct {
 }
 
 // record notes one invocation of a task no stub was declared for.
+func (u *unstubbedTasks) recordMatcherError() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.matcherErrors++
+}
+
 func (u *unstubbedTasks) record(ctx context.Context, name string) {
 	u.at(ctx, name, false)
 }

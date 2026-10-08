@@ -4,7 +4,7 @@
 // does the run mean the same thing when it is suspended, serialized and resumed
 // between any two of its steps.
 //
-// It lives apart from [flowtest] because it carries the Temporal SDK's test
+// It lives apart from flowtest because it carries the Temporal SDK's test
 // environment, which the language server and every other importer of flowtest
 // have no use for; `flow test` wires it in.
 package durable
@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -53,13 +54,26 @@ type Result struct {
 // ctx is handed to every activity as its base context, which is how the case's
 // registry (its stubs) reaches the tasks: they resolve through the context,
 // exactly as they do on the local driver. runtime is the secret access the case
-// grants. A workflow that fails returns its error with the segments it took.
-func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runtime v1.TaskRuntime) (*Result, error) {
+// grants. The run begins at start on the test environment's virtual clock, which
+// each segment resumes where the last one ended, and carries the trigger ctx
+// holds. A workflow that fails returns its error with the segments it took.
+func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, start time.Time, runtime v1.TaskRuntime) (*Result, error) {
 	bound, err := v1.BindRunInputs(wf, inputs)
 	if err != nil {
 		return nil, err
 	}
-	state := &v1.RunState{Workflow: wf, Inputs: bound, StepsBudget: 1, Identity: v1.ProtoWorkloadIdentity(runtime.Identity)}
+	// runtime.Identity is the fixture's secret-access identity, which the
+	// worker's policy judges a secret read against; a workflow that reads
+	// run.identity sees it too, so the caller keeps such workflows local.
+	state := &v1.RunState{
+		Workflow:          wf,
+		Inputs:            bound,
+		StepsBudget:       1,
+		Identity:          v1.ProtoWorkloadIdentity(runtime.Identity),
+		Trigger:           v1.TriggerFromContext(ctx),
+		WorkloadStartedAt: timestamppb.New(start),
+	}
+	now := start
 
 	// The case's own secret store and policy, so a reference resolves on the
 	// worker as it does on the local driver and nowhere else.
@@ -90,10 +104,12 @@ func Run(ctx context.Context, wf *v1.Workflow, inputs map[string]*v1.Value, runt
 		// A virtual century is a legitimate wait: the clock is the environment's own
 		// and skips ahead whenever the run is blocked, so only a real stall ends it.
 		env.SetWorkflowRunTimeout(maxVirtualRun)
+		env.SetStartTime(now)
 		if segment > 1 {
 			env.SetContinuedExecutionRunID(fmt.Sprintf("segment-%d", segment-1))
 		}
 		env.ExecuteWorkflow(engine.Run, state)
+		now = env.Now()
 
 		err := env.GetWorkflowError()
 		var next *workflow.ContinueAsNewError

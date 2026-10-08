@@ -845,6 +845,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 				// invocation ultimately reports if nothing does match (#386
 				// follow-up), recorded above and surfaced below either way.
 				sawEvalErr = true
+				unstubbed.recordMatcherError()
 				continue
 			}
 			if !ok {

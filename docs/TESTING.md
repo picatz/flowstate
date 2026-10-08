@@ -644,9 +644,14 @@ What it proves is the carried state, the step outputs, loop frames and
 variables a continued run hands to its next segment. A continued run retains
 only the outputs later steps read, so a step it dropped is not compared. It
 does not prove signals or faults. A case that scripts `signals:` or `faults:`,
-replays a trigger delivery, requires plugins, or stubs a task this build does
-not register stays on the local driver and reports `driver: local only: <why>`
-as a warning, so a green never silently skipped the proof. A run that needs
+replays a trigger delivery, requires plugins, stubs a task this build does
+not register, reads `run.local`, `sender.local` or `run.identity` (which differ
+by design), or stubs a step by id in a workflow with calls or compensations
+stays on the local driver and reports `driver: local only: <why>`
+as a warning, so a green never silently skipped the proof. A stub whose `where:` cannot be
+evaluated on the durable side (it reads a loop binding an activity lacks) does
+the same. Declared run outputs are compared whole; where the workflow declares
+anything sensitive a disagreement names the step and quotes no value. A run that needs
 more than 2000 segments is reported rather than truncated. `--driver both` is
 refused with `--seeds`, `--fuzz`, `--mutate`, `--debug` and `--list`, each its
 own dimension; `--driver local` is the default.
