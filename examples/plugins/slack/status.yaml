@@ -28,17 +28,25 @@ inputs:
 steps:
   - id: started
     slack.post:
-      channel: ${inputs.channel}
-      idempotency_key: ${inputs.status_idempotency_key}
       card:
         status:
           state: running
-          title: {plain: '${"Deploying " + inputs.service}'}
-          detail: {plain: "Starting stage 1 of 3: canary"}
+          title:
+            plain: ${"Deploying " + inputs.service}
+          detail:
+            plain: "Starting stage 1 of 3: canary"
           fields:
-            - {label: Service, value: {plain: "${inputs.service}"}}
-            - {label: Version, value: {plain: "${inputs.version}"}}
-          progress: {current: 0, total: 3}
+            - label: Service
+              value:
+                plain: ${inputs.service}
+            - label: Version
+              value:
+                plain: ${inputs.version}
+          progress:
+            current: 0
+            total: 3
+      channel: ${inputs.channel}
+      idempotency_key: ${inputs.status_idempotency_key}
       token: ${secret('env:SLACK_BOT_TOKEN')}
   # The rollout itself is out of scope here: each `value` step stands in for the
   # work that finishes a stage. The updates below are the point. They replace the
@@ -48,51 +56,79 @@ steps:
     value: ${"canary healthy"}
   - id: canary_done
     slack.update:
-      channel: ${steps.started.channel}
-      ts: ${steps.started.ts}
       card:
         status:
           state: running
-          title: {plain: '${"Deploying " + inputs.service}'}
-          detail: {plain: "Stage 2 of 3: half of traffic"}
+          title:
+            plain: ${"Deploying " + inputs.service}
+          detail:
+            plain: "Stage 2 of 3: half of traffic"
           fields:
-            - {label: Service, value: {plain: "${inputs.service}"}}
-            - {label: Version, value: {plain: "${inputs.version}"}}
-          progress: {current: 1, total: 3}
+            - label: Service
+              value:
+                plain: ${inputs.service}
+            - label: Version
+              value:
+                plain: ${inputs.version}
+          progress:
+            current: 1
+            total: 3
+      channel: ${steps.started.channel}
       token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.started.ts}
   - id: half
     value: ${"half of traffic healthy"}
   - id: half_done
     slack.update:
-      channel: ${steps.started.channel}
-      ts: ${steps.started.ts}
       card:
         status:
           state: running
-          title: {plain: '${"Deploying " + inputs.service}'}
-          detail: {plain: "Stage 3 of 3: all traffic"}
+          title:
+            plain: ${"Deploying " + inputs.service}
+          detail:
+            plain: "Stage 3 of 3: all traffic"
           fields:
-            - {label: Service, value: {plain: "${inputs.service}"}}
-            - {label: Version, value: {plain: "${inputs.version}"}}
-          progress: {current: 2, total: 3}
+            - label: Service
+              value:
+                plain: ${inputs.service}
+            - label: Version
+              value:
+                plain: ${inputs.version}
+          progress:
+            current: 2
+            total: 3
+      channel: ${steps.started.channel}
       token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.started.ts}
   - id: full
     value: ${"all traffic healthy"}
   - id: finished
     slack.update:
-      channel: ${steps.started.channel}
-      ts: ${steps.started.ts}
       card:
         status:
           state: ok
-          title: {plain: '${"Deployed " + inputs.service}'}
-          detail: {markup: {template: "*{service}* {version} is serving all traffic.", args: {service: "${inputs.service}", version: "${inputs.version}"}}}
+          title:
+            plain: ${"Deployed " + inputs.service}
+          detail:
+            markup:
+              template: "*{service}* {version} is serving all traffic."
+              args:
+                service: ${inputs.service}
+                version: ${inputs.version}
           fields:
-            - {label: Service, value: {plain: "${inputs.service}"}}
-            - {label: Version, value: {plain: "${inputs.version}"}}
-          progress: {current: 3, total: 3}
-          link: '${"https://deploys.example.com/" + inputs.service + "/" + inputs.version}'
+            - label: Service
+              value:
+                plain: ${inputs.service}
+            - label: Version
+              value:
+                plain: ${inputs.version}
+          progress:
+            current: 3
+            total: 3
+          link: ${"https://deploys.example.com/" + inputs.service + "/" + inputs.version}
+      channel: ${steps.started.channel}
       token: ${secret('env:SLACK_BOT_TOKEN')}
+      ts: ${steps.started.ts}
 outputs:
   message_ts:
     value: ${steps.started.ts}

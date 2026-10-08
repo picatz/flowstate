@@ -232,7 +232,7 @@ func block(path string, b *slackv1.Block) (Block, error) {
 	case *slackv1.Block_Actions:
 		path += ".actions"
 		a := ActionsBlock{Type: "actions", BlockID: id, Elements: []Element{}}
-		for i, e := range k.Actions.GetElements() {
+		for i, e := range b.GetActions().GetElements() {
 			ep := fmt.Sprintf("%s.elements[%d]", path, i)
 			rendered, err := element(ep, e)
 			if err != nil {
