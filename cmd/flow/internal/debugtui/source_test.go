@@ -828,3 +828,76 @@ func TestEscapeControlAgreesWithTheSanitizer(t *testing.T) {
 	got, _ := sanitizeLine("a\x1b[0m\x07")
 	assert.Equal(t, ui.EscapeControl("a\x1b[0m\x07"), got)
 }
+
+// TestTheLineBoundHoldsForWhatACharacterBecomes: the bound is on the cells a line
+// takes once it is spelled, so a control character or a tab near the end cannot
+// push it past the bound.
+func TestTheLineBoundHoldsForWhatACharacterBecomes(t *testing.T) {
+	t.Parallel()
+
+	for name, tail := range map[string]string{"control": "\x1b", "tab": "\t", "bidi": "‮", "plain": "z"} {
+		got, cut := sanitizeLine(strings.Repeat("a", MaxSourceLineRunes-1) + tail + "tail")
+		assert.LessOrEqual(t, len([]rune(got)), MaxSourceLineRunes, name)
+		assert.True(t, cut, name)
+	}
+	got, cut := sanitizeLine(strings.Repeat("a", MaxSourceLineRunes))
+	assert.False(t, cut, "a line exactly at the bound is whole")
+	assert.Len(t, got, MaxSourceLineRunes)
+}
+
+// TestADurableSnapshotsLineBreakpointIsStillMarked: a durable run's snapshot keeps
+// the id and the step a line resolved to, not the line, so the mark comes from the
+// id this screen gave the line; an id that only looks like one marks nothing.
+func TestADurableSnapshotsLineBreakpointIsStillMarked(t *testing.T) {
+	t.Parallel()
+
+	fx := newSourceFixture(t)
+	f := newFake()
+	m := sourceModel(t, fx, f)
+	fetch := lineOf(t, mainText, "id: fetch")
+
+	id := flowdebug.LineBreakpointID(fx.root, uint32(fetch))
+	f.breakpoints = []*v1.DebugBreakpointState{{Id: id, Verified: true, Definition: &v1.DebugBreakpoint{Id: id, Step: "fetch"}}}
+	m = send(m, frameFrom(t, m, f))
+	armed := ""
+	for _, l := range paneLines(t, m, paneSource) {
+		if strings.Contains(l, "id: fetch") {
+			armed = l
+		}
+	}
+	assert.Contains(t, armed, "•", "the breakpoint set on the line is not marked from its id")
+
+	forged := "line:main.yaml.000000:" + strconv.Itoa(fetch)
+	f.breakpoints = []*v1.DebugBreakpointState{{Id: forged, Verified: true, Definition: &v1.DebugBreakpoint{Id: forged, Step: "fetch"}}}
+	m = send(m, frameFrom(t, m, f))
+	for _, l := range paneLines(t, m, paneSource) {
+		assert.NotContains(t, l, "•", "an id that is not the one this screen gives the line marked it")
+	}
+}
+
+// TestAHeldStepPastTheLinesKeptMarksNoLine: a step on a line past the lines the
+// pane keeps is reported by its address, not drawn on the last line kept.
+func TestAHeldStepPastTheLinesKeptMarksNoLine(t *testing.T) {
+	t.Parallel()
+
+	text := strings.Repeat("x: 1\n", MaxSourceLines+50)
+	src := NewSource([]Document{{URI: "x.yaml", Text: []byte(text)}})
+	site := &v1.DebugSite{Path: []string{"s"}}
+	frame := flowdebug.Frame{
+		SourceMap: &v1.DebugSourceMap{Documents: []*v1.DebugSourceDocument{{Uri: "x.yaml", Digest: v1.ContentDigest([]byte(text))}}},
+		Snapshot: &v1.DebugSnapshot{
+			State:      v1.DebugRunState_DEBUG_RUN_STATE_HELD,
+			Occurrence: &v1.DebugOccurrence{Address: "s", Site: site},
+			Frames: []*v1.DebugFrame{{
+				Id: 1, Occurrence: &v1.DebugOccurrence{Address: "s", Site: site},
+				Source: &v1.DebugSourceLocation{Range: &v1.SourceRange{StartLine: MaxSourceLines + 20, EndLine: MaxSourceLines + 20}},
+			}},
+		},
+	}
+
+	face := src.face(frame)
+	require.NotNil(t, face.doc, "the lines are trusted; only this step is out of reach")
+	assert.Zero(t, face.lo, "the last line kept was marked as the held one")
+	assert.Zero(t, face.hi)
+	assert.Contains(t, face.note, "past the")
+}

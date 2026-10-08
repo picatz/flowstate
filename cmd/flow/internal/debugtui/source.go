@@ -135,29 +135,32 @@ func sanitizeLine(line string) (string, bool) {
 	var b strings.Builder
 	col, runes := 0, 0
 	for _, r := range line {
-		if runes >= MaxSourceLineRunes {
-			return b.String(), true
-		}
+		var spelled string
 		switch {
 		case r == '\t':
-			n := sourceTabWidth - col%sourceTabWidth
-			b.WriteString(strings.Repeat(" ", n))
-			col += n
-			runes += n
+			spelled = strings.Repeat(" ", sourceTabWidth-col%sourceTabWidth)
 		case unicode.IsControl(r):
-			spelled := ui.EscapeControl(string(r))
-			b.WriteString(spelled)
-			col += len(spelled)
-			runes += len(spelled)
+			spelled = ui.EscapeControl(string(r))
 		case reorders(r):
-			spelled := fmt.Sprintf("\\u%04x", r)
-			b.WriteString(spelled)
-			col += len(spelled)
-			runes += len(spelled)
+			spelled = fmt.Sprintf("\\u%04x", r)
 		default:
-			b.WriteRune(r)
-			col += max(1, lipgloss.Width(string(r)))
-			runes++
+			spelled = string(r)
+		}
+		// The bound is checked on what this character becomes, not before it
+		// is spelled: a control character near the end is four cells long.
+		n := len(spelled)
+		if r != '\t' && !unicode.IsControl(r) && !reorders(r) {
+			n = 1
+		}
+		if runes+n > MaxSourceLineRunes {
+			return b.String(), true
+		}
+		b.WriteString(spelled)
+		runes += n
+		if r == '\t' || unicode.IsControl(r) || reorders(r) {
+			col += n
+		} else {
+			col += max(1, lipgloss.Width(spelled))
 		}
 	}
 
@@ -362,10 +365,17 @@ func (s *Source) face(f flowdebug.Frame) sourceFace {
 	if loc != nil {
 		face.lo = int(loc.GetRange().GetStartLine())
 		face.hi = max(face.lo, int(loc.GetRange().GetEndLine()))
-		face.lo = min(face.lo, len(doc.lines))
-		face.hi = min(face.hi, len(doc.lines))
-		if face.lo < 1 {
+		switch {
+		case face.lo < 1:
 			face.lo, face.hi = 0, 0
+		case face.lo > len(doc.lines):
+			// Past the lines kept: marking the last one would mark a line the
+			// step is not on.
+			face.lo, face.hi = 0, 0
+			face.note = fmt.Sprintf("held at %s, which is past the %d lines shown",
+				ui.EscapeControl(f.RedactText(face.address)), len(doc.lines))
+		default:
+			face.hi = min(face.hi, len(doc.lines))
 		}
 	} else if site := heldSite(f); site != nil {
 		face.note = fmt.Sprintf("held at %s:%s, which the source map has no line for",
@@ -480,6 +490,12 @@ func (s *Source) marks(f flowdebug.Frame, face sourceFace) map[int]string {
 		if loc := bp.GetSource(); loc != nil && int(loc.GetDocument()) == face.mapDoc {
 			set(int(loc.GetRange().GetStartLine()), bp.GetId())
 		}
+		// A durable run's snapshot keeps the id and the step a line was resolved
+		// to, not the line: an id this screen gave a line of this document says
+		// which line it was.
+		if line, ok := lineOfBreakpointID(bp.GetId(), face.uri); ok {
+			set(line, bp.GetId())
+		}
 		for _, site := range bp.GetSites() {
 			if visits++; visits > flowdebug.MaxOverlayNodes {
 				return marks
@@ -491,6 +507,26 @@ func (s *Source) marks(f flowdebug.Frame, face sourceFace) map[int]string {
 	}
 
 	return marks
+}
+
+// lineOfBreakpointID is the line an id names when it is the id
+// [flowdebug.LineBreakpointID] gives that line of the document uri, recomputed
+// so an id that only looks like one is not taken for it.
+func lineOfBreakpointID(id, uri string) (int, bool) {
+	_, tail, ok := strings.Cut(id, ":")
+	if !ok {
+		return 0, false
+	}
+	_, number, ok := strings.Cut(tail, ":")
+	if !ok {
+		return 0, false
+	}
+	line, err := strconv.ParseUint(number, 10, 32)
+	if err != nil || line == 0 {
+		return 0, false
+	}
+
+	return int(line), flowdebug.LineBreakpointID(uri, uint32(line)) == id
 }
 
 // ---- drawing ----
