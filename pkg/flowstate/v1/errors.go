@@ -193,6 +193,19 @@ func PermanentErrorKinds() []ErrorKind {
 	}
 }
 
+// RunTimeoutFailure is the one answer both drivers give for a run that ended on
+// its whole-run bound: the permanent [ErrorKindRunTimeout] and a message that
+// leads with the fact, followed by the driver's own account of which clock ran
+// out. Building it in one place is what keeps a local run and a durable one
+// from describing the same event differently (#1310); each driver supplies only
+// the reason, which is genuinely its own.
+func RunTimeoutFailure(reason string) *RunResponse_Error {
+	return &RunResponse_Error{
+		Message: "timed out: " + reason,
+		Kind:    ErrorKindRunTimeout.String(),
+	}
+}
+
 // A TaskError reports a task failure along with its classification.
 type TaskError struct {
 	// Task is the name of the task that failed.
