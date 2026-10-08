@@ -29,7 +29,7 @@ func signatureHelpAt(doc *document, pos lsp.Position) *lsp.SignatureHelp {
 	}
 
 	var help *lsp.SignatureHelp
-	forEachExpression(doc, func(_ *parsedStep, _ loopScope, v *value) {
+	visit := func(_ *parsedStep, _ loopScope, v *value) {
 		if help != nil {
 			return
 		}
@@ -42,7 +42,21 @@ func signatureHelpAt(doc *document, pos lsp.Position) *lsp.SignatureHelp {
 			return
 		}
 		help = signatureHelpFor(doc, f, call)
-	})
+	}
+
+	forEachExpression(doc, visit)
+
+	// The positions forEachExpression does not model, because nothing there
+	// resolves a step reference: the workflow's `vars:` and a declared
+	// function's `body:`. A call is a call wherever it is written.
+	for _, e := range doc.parsed.expressionEntries() {
+		walkValues(e.value, func(v *value) { visit(nil, loopScopeNone, v) })
+	}
+	for _, e := range doc.parsed.entries {
+		if e.key == "functions" {
+			walkValues(e.value, func(v *value) { visit(nil, loopScopeNone, v) })
+		}
+	}
 
 	return help
 }
@@ -81,7 +95,8 @@ func enclosingCall(src string, cursor int) (call, bool) {
 		case c == '"' || c == '\'':
 			raw := i > 0 && (src[i-1] == 'r' || src[i-1] == 'R')
 			end := stringEnd(src, i, raw)
-			if end > cursor {
+			closed := stringClosed(src, i, end, raw)
+			if end > cursor || (end == cursor && !closed) {
 				return call{}, false // the cursor is inside a string
 			}
 			i = end
@@ -120,6 +135,31 @@ func enclosingCall(src string, cursor int) (call, bool) {
 	}
 
 	return call{}, false
+}
+
+// stringClosed reports whether the literal opening at i ends at end with its own
+// closing quotes, as opposed to the end of the source or of the line, which is
+// where [stringEnd] stops for one that was never closed.
+func stringClosed(src string, i, end int, raw bool) bool {
+	q := src[i]
+	quotes := string([]byte{q})
+	opening := 1
+	if strings.HasPrefix(src[i:], strings.Repeat(quotes, 3)) {
+		quotes, opening = strings.Repeat(quotes, 3), 3
+	}
+	if end-i < 2*opening || !strings.HasSuffix(src[:end], quotes) {
+		return false
+	}
+	if raw {
+		return true
+	}
+	// An escaped final quote does not close it.
+	backslashes := 0
+	for j := end - len(quotes) - 1; j > i && src[j] == '\\'; j-- {
+		backslashes++
+	}
+
+	return backslashes%2 == 0
 }
 
 // calleeBefore returns the dotted identifier ending just before src[at], skipping
@@ -216,7 +256,7 @@ func lookupFunction(byName map[string]v1.LibraryFunction, word, last string) (v1
 // compile declares nothing, so the fence under the cursor is compiled as `null`:
 // the declarations are the part of the file the author is not editing.
 func declaredFunction(doc *document, f fence, name string) (*v1.FunctionDeclaration, bool) {
-	if !strings.HasPrefix(doc.text, "functions:") && !strings.Contains(doc.text, "\nfunctions:") {
+	if !slices.ContainsFunc(doc.parsed.entries, func(e *entry) bool { return e.key == "functions" }) {
 		return nil, false
 	}
 

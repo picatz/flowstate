@@ -61,8 +61,15 @@ func TestSignatureHelp(t *testing.T) {
 		{name: "an unknown name has none", expr: `nosuchfn(§)`, none: true},
 		{name: "outside any call", expr: `§1 + 2`, none: true},
 		{name: "after the call closed", expr: `math.abs(1)§`, none: true},
+		{name: "an unclosed string at the cursor", expr: `math.abs("abc§`, none: true},
+		{name: "an escaped final quote does not close", expr: `math.abs("abc\"§`, none: true},
+		{name: "after a closed string", expr: `math.abs("abc"§`, label: "math.abs(", wantParam: "double"},
 		{name: "inside a string", expr: `math.abs("§")`, none: true},
 		{name: "grouping is not a call", expr: `(1 + §2)`, none: true},
+		{
+			name: "a quoted functions key", header: "\"functions\":\n  slugify:\n    params:\n      title: string\n    returns: string\n    body: ${title.trim()}\n",
+			expr: `slugify(§"x")`, label: "slugify(title: string)", wantParam: "title: string",
+		},
 		{
 			name: "a declared function", header: "functions:\n  slugify:\n    params:\n      title: string\n      sep: string\n    returns: string\n    body: ${title.trim()}\n",
 			expr: `slugify("x", §)`, label: "slugify(title: string, sep: string) -> string", wantArg: 1, wantParam: "sep: string",
@@ -108,4 +115,22 @@ func TestEnclosingCallSkipsComments(t *testing.T) {
 
 	_, ok = enclosingCall("f(1 // inside", len("f(1 // inside"))
 	assert.False(t, ok, "the cursor in a comment is not in a call")
+}
+
+func TestSignatureHelpInVarsAndFunctionBodies(t *testing.T) {
+	t.Parallel()
+
+	for name, src := range map[string]string{
+		"vars":          "edition: v2026.4\nname: v\nvars:\n  n: ${math.abs(§1)}\nsteps:\n  - id: a\n    log:\n      message: x\n",
+		"function body": "edition: v2026.4\nname: v\nfunctions:\n  f:\n    params:\n      x: int\n    returns: int\n    body: ${math.abs(§x)}\nsteps:\n  - id: a\n    log:\n      message: x\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			before, after, _ := strings.Cut(src, "§")
+			doc := refsDoc(t, before+after)
+			help := signatureHelpAt(doc, doc.index.positionOfOffset(len(before)))
+			require.NotNil(t, help)
+			assert.Contains(t, help.Signatures[0].Label, "math.abs(")
+		})
+	}
 }
