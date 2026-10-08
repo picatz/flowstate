@@ -28,6 +28,8 @@ const (
 	KindMore Kind = "more"
 	// KindTab is a tab that names a pane the screen has folded away.
 	KindTab Kind = "tab"
+	// KindPoint is a point of a timeline strip; a click travels to it.
+	KindPoint Kind = "point"
 	// KindInput is a line the person types into.
 	KindInput Kind = "input"
 )

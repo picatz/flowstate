@@ -164,6 +164,7 @@ nothing here is worth learning twice. `help` lists it.
 | `until <step-id> [if <expr>]`, `u` | prompt, driver | run until the step with that id, optionally only where the condition holds |
 | `back` | prompt, driver | return to the previous stop (a session that can step back) |
 | `reverse-continue`, `rc` | prompt, driver | return to the nearest earlier breakpoint stop, or the first |
+| `goto <point>` | driver | go to a point of the timeline, counted from 0, in one move (a session that can travel) |
 | `pause` | driver | hold at the next step boundary |
 | `break <step-id> [hit <count>] [if <expr>]`, `b` | prompt, driver | stop at that step, always, when the expression holds, or from the given arrival count |
 | `log <step-id> <message>` | prompt, driver | record the message at every arrival without stopping; {expr} holes are CEL |
@@ -215,6 +216,13 @@ The forms a verb takes:
   local --debug` steps back only with `--reverse` (below), and a script's
   session stays forward-only. A failed case is held once more after its verdict,
   and `back` from there returns to its last stop.
+- `goto <point>` goes to a point on the snapshot's `timeline` (the stops the
+  session showed, counted from 0, with `current` the one it is at) in one move,
+  for a target that can: a stubbed or `--reverse` run replays once to the stop,
+  however far back it is, and a recorded history reads the point in either
+  direction. A replay that does not reproduce the stop answers `diverged`, moves
+  nothing, and the point is not `reachable` afterwards; any other target says it
+  cannot go to a point. Forward travel on a live run is still `until`.
 - An empty line at the prompt is `step`.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the

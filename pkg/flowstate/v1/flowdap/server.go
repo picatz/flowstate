@@ -560,6 +560,12 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	case "reverseContinue":
 		s.back(ctx, request, true)
 
+	case "gotoTargets":
+		s.gotoTargets(ctx, request)
+
+	case "goto":
+		s.goTo(ctx, request)
+
 	case "terminate":
 		s.mu.Lock()
 		owned := s.terminate != nil
@@ -654,6 +660,7 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
 		SupportsDelayedStackTraceLoading:  true,
 		SupportsStepBack:                  (caps.GetReverse() || caps.GetHistory()) && s.canStepBack(),
+		SupportsGotoTargetsRequest:        (caps.GetReverse() || caps.GetHistory()) && s.canTravel(),
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
 	if body.SupportsCompletionsRequest {
@@ -1164,6 +1171,13 @@ func (s *Server) canStepBack() bool {
 	return ok
 }
 
+// canTravel is whether the bound target can be asked to go to a timeline point.
+func (s *Server) canTravel() bool {
+	_, ok := s.currentTarget().(flowdebug.Traveler)
+
+	return ok
+}
+
 // back answers stepBack and, with toBreakpoint, reverseContinue: the target
 // goes to the previous stop, or the nearest earlier one a breakpoint decided.
 // The stop it lands on reaches the editor through the same watch as any other,
@@ -1181,7 +1195,18 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 
 		return
 	}
+	rewind := reverser.Back
+	if toBreakpoint {
+		rewind = reverser.BackToBreakpoint
+	}
+	s.travel(ctx, request, rewind)
+}
 
+// travel answers a request that moves the target to a stop it showed: the
+// target goes there, and the stop it lands on reaches the editor through the
+// same watch as any other, so the response is ordered ahead of it the way a
+// movement's is.
+func (s *Server) travel(ctx context.Context, request inbound, move func(ctx context.Context, requestID string, expected uint64) (*v1.DebugReceipt, error)) {
 	s.order.Lock()
 	defer s.order.Unlock()
 
@@ -1197,11 +1222,7 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 	revision := s.revision
 	s.mu.Unlock()
 
-	rewind := reverser.Back
-	if toBreakpoint {
-		rewind = reverser.BackToBreakpoint
-	}
-	receipt, err := rewind(ctx, s.requestID(request.Seq), revision)
+	receipt, err := move(ctx, s.requestID(request.Seq), revision)
 	if err != nil {
 		s.fail(request, err.Error())
 
@@ -1220,6 +1241,107 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 	default:
 		s.fail(request, receiptText(receipt))
 	}
+}
+
+// gotoTargets answers the points of the timeline an editor may jump to from a
+// source position: each point a travel would be tried for. A point whose step
+// the verified source map places on another line, or in another document, is
+// left out; one it cannot place is offered at the line asked about and named by
+// its address, so it can be chosen without being drawn somewhere it is not.
+func (s *Server) gotoTargets(ctx context.Context, request inbound) {
+	select {
+	case <-s.entered:
+	case <-ctx.Done():
+		return
+	}
+
+	var asked struct {
+		Source *source `json:"source"`
+		Line   int     `json:"line"`
+	}
+	if len(request.Arguments) != 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+			s.fail(request, "flowdap: gotoTargets needs a source and a line")
+
+			return
+		}
+	}
+	target := s.currentTarget()
+	if target == nil || !s.capabilitiesBody().SupportsGotoTargetsRequest {
+		s.reply(request, gotoTargetsBody{Targets: []gotoTarget{}})
+
+		return
+	}
+	snapshot, err := target.Snapshot(ctx)
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	s.mu.Lock()
+	sourceMap := s.sourceMap
+	s.mu.Unlock()
+	places := map[string]*v1.DebugSourceLocation{}
+	for _, entry := range sourceMap.GetEntries() {
+		if key := v1.DebugSiteKey(entry.GetSite()); places[key] == nil {
+			places[key] = entry.GetLocation()
+		}
+	}
+
+	lineBase, _ := s.clientBases()
+	targets := []gotoTarget{}
+	for i, point := range snapshot.GetTimeline().GetPoints() {
+		if !point.GetReachable() {
+			continue
+		}
+		line := asked.Line
+		if location := places[v1.DebugSiteKey(point.GetOccurrence().GetSite())]; location != nil && location.GetRange() != nil {
+			here := toClient(location.GetRange().GetStartLine(), lineBase)
+			documents := sourceMap.GetDocuments()
+			elsewhere := asked.Source != nil && asked.Source.Path != "" && int(location.GetDocument()) < len(documents) &&
+				!flowdebug.SameSourceURI(documents[location.GetDocument()].GetUri(), asked.Source.Path)
+			if elsewhere || (asked.Line > 0 && here != asked.Line) {
+				continue
+			}
+			line = here
+		}
+		targets = append(targets, gotoTarget{
+			ID:    i,
+			Label: fmt.Sprintf("%d: %s", i, point.GetOccurrence().GetAddress()),
+			Line:  line,
+		})
+	}
+	s.reply(request, gotoTargetsBody{Targets: targets})
+}
+
+// goTo answers goto: the target travels to the timeline point the target id
+// names, which is the index gotoTargets offered it under.
+func (s *Server) goTo(ctx context.Context, request inbound) {
+	select {
+	case <-s.entered:
+	case <-ctx.Done():
+		return
+	}
+
+	var asked struct {
+		TargetID *int `json:"targetId"`
+	}
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.TargetID == nil || *asked.TargetID < 0 || *asked.TargetID > math.MaxInt32 {
+		s.fail(request, "flowdap: goto needs the targetId of a target gotoTargets offered")
+
+		return
+	}
+	traveler, ok := s.currentTarget().(flowdebug.Traveler)
+	if !ok || !s.capabilitiesBody().SupportsGotoTargetsRequest {
+		s.fail(request, "flowdap: this session cannot go to a point on its timeline; launch with \"reverse\": true to run one that can, or attach with \"history\": true to walk a recorded run")
+
+		return
+	}
+	point := int32(*asked.TargetID)
+	s.travel(ctx, request, func(ctx context.Context, requestID string, expected uint64) (*v1.DebugReceipt, error) {
+		return traveler.Travel(ctx, requestID, expected, point)
+	})
 }
 
 func receiptText(receipt *v1.DebugReceipt) string {

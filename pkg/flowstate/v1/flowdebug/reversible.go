@@ -121,6 +121,15 @@ type Reverser interface {
 	BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error)
 }
 
+// Traveler is a [Target] that can go to any point of its own timeline in one
+// move, as [Reversible] and [Historical] do. point indexes
+// [v1.DebugTimeline.Points] as the snapshot last showed them. The receipt's
+// status is applied when the target stands at the point, and refused or
+// diverged, with the reason, when it does not; a diverged travel moves nothing.
+type Traveler interface {
+	Travel(ctx context.Context, requestID string, expectedRevision uint64, point int32) (*v1.DebugReceipt, error)
+}
+
 // Reversible is a [Target] over a run it can start again, so that [Reversible.Back]
 // can move to the previous stop. Use [NewReversible].
 type Reversible struct {
@@ -133,14 +142,18 @@ type Reversible struct {
 	command sync.Mutex
 	log     []recorded
 	stops   []stop
+	// noted is whether the last of stops is the stop the run is at now.
+	noted   bool
 	paused  bool
 	rewinds int
 	applied map[string]*v1.DebugReceipt
 	order   []string
 
-	// mu guards what reads need: the current run, the revision shift and the
-	// highest revision shown. A rewind swaps them under it, briefly.
+	// mu guards what reads need: the current run, the revision shift, the
+	// highest revision shown and the timeline published for snapshots. A rewind
+	// swaps them under it, briefly.
 	mu         sync.RWMutex
+	timeline   travelView
 	run        *Run
 	offset     uint64
 	highwater  uint64
@@ -149,7 +162,11 @@ type Reversible struct {
 	abort      context.CancelFunc
 }
 
-var _ Target = (*Reversible)(nil)
+var (
+	_ Target   = (*Reversible)(nil)
+	_ Reverser = (*Reversible)(nil)
+	_ Traveler = (*Reversible)(nil)
+)
 
 // NewReversible launches the program once and wraps it. The first run is the
 // host's to have configured through launch exactly as every later one will be.
@@ -235,8 +252,84 @@ func (r *Reversible) present(snapshot *v1.DebugSnapshot, offset uint64) *v1.Debu
 	if shown.GetCapabilities() != nil {
 		shown.Capabilities.Reverse = true
 	}
+	shown.Timeline = r.timelineAt(shown)
 
 	return shown
+}
+
+// travelView is the timeline as the last command left it, published for reads
+// under [Reversible.mu].
+type travelView struct {
+	points  []*v1.DebugTimelinePoint
+	dropped uint32
+	// noted is whether the last point is the stop the run is at.
+	noted bool
+}
+
+// timelineAt is the timeline a snapshot carries: the stops shown, and the stop
+// the run is at, which is the last of them or, when it has not been left yet, one
+// more. None is reachable while the run is not held, since a travel needs a stop
+// to leave. Nil before the run has stopped anywhere.
+func (r *Reversible) timelineAt(shown *v1.DebugSnapshot) *v1.DebugTimeline {
+	r.mu.RLock()
+	view := r.timeline
+	r.mu.RUnlock()
+
+	held := stopped(shown)
+	timeline := &v1.DebugTimeline{Current: -1, Dropped: view.dropped}
+	for _, point := range view.points {
+		point = proto.CloneOf(point)
+		point.Reachable = point.GetReachable() && held
+		timeline.Points = append(timeline.Points, point)
+	}
+	switch {
+	case !held:
+	case view.noted && len(timeline.Points) > 0:
+		timeline.Current = int32(len(timeline.Points) - 1)
+		timeline.Points[timeline.Current].Revision = shown.GetRevision()
+	default:
+		if len(timeline.Points) >= MaxTimelinePoints {
+			timeline.Points = slices.Delete(timeline.Points, 0, 1)
+			timeline.Dropped++
+		}
+		timeline.Points = append(timeline.Points, pointOf(shown))
+		timeline.Current = int32(len(timeline.Points) - 1)
+	}
+	if len(timeline.Points) == 0 {
+		return nil
+	}
+
+	return timeline
+}
+
+// pointOf is the timeline point for the stop a snapshot shows. The snapshot's
+// occurrence is the session's own, already redacted.
+func pointOf(snapshot *v1.DebugSnapshot) *v1.DebugTimelinePoint {
+	return &v1.DebugTimelinePoint{
+		Revision:   snapshot.GetRevision(),
+		Occurrence: proto.CloneOf(snapshot.GetOccurrence()),
+		Reason:     snapshot.GetReason(),
+	}
+}
+
+// publish makes the stops this wrapper has fingerprinted readable by snapshots.
+// A stop is reachable when a rewind to it would be tried: before the one the run
+// is at, in a history that can be replayed, and not found irreproducible.
+// Callers hold r.command.
+func (r *Reversible) publish() {
+	moves := movements(r.log)
+	replayable := !r.paused && moves <= MaxReversibleMoves
+	first := max(0, len(r.stops)-MaxTimelinePoints)
+	points := make([]*v1.DebugTimelinePoint, 0, len(r.stops)-first)
+	for i := first; i < len(r.stops); i++ {
+		point := proto.CloneOf(r.stops[i].point)
+		point.Reachable = replayable && i < moves && !r.stops[i].blocked
+		points = append(points, point)
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.timeline = travelView{points: points, dropped: uint32(first), noted: r.noted}
 }
 
 // presentReceipt is a receipt as this wrapper shows it.
@@ -347,7 +440,7 @@ func (r *Reversible) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v
 
 	// The stop being left is fingerprinted before the run leaves it: it is
 	// the only moment this wrapper is certain to see it.
-	if err := r.noteStop(ctx, run); err != nil {
+	if err := r.noteStop(ctx, run, offset); err != nil {
 		return nil, err
 	}
 	receipt, err := run.Session.Resume(ctx, forwarded)
@@ -355,6 +448,8 @@ func (r *Reversible) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v
 		return nil, err
 	}
 	if receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
+		// The run has left the stop that was noted.
+		r.noted = false
 		if len(r.log) >= maxReversibleLog {
 			// Still moved, but nothing past here can be replayed.
 			r.paused = true
@@ -362,6 +457,7 @@ func (r *Reversible) Resume(ctx context.Context, req *v1.DebugResumeRequest) (*v
 			r.log = append(r.log, recorded{resume: proto.CloneOf(req)})
 		}
 	}
+	r.publish()
 	shown := r.presentReceipt(receipt, offset)
 	r.remember(shown)
 
@@ -387,6 +483,7 @@ func (r *Reversible) Pause(ctx context.Context, requestID string) (*v1.DebugRece
 	// is answered applied and changes nothing a replay could miss.
 	if receipt.GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_PENDING {
 		r.paused = true
+		r.publish()
 	}
 	shown := r.presentReceipt(receipt, offset)
 	r.remember(shown)
@@ -425,6 +522,7 @@ func (r *Reversible) ReplaceBreakpoints(ctx context.Context, req *v1.DebugSetBre
 	if response.GetReceipt().GetStatus() == v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED {
 		if len(r.log) >= maxReversibleLog {
 			r.paused = true
+			r.publish()
 		} else {
 			r.log = append(r.log, recorded{breakpoints: proto.CloneOf(req)})
 		}
@@ -484,7 +582,16 @@ type stop struct {
 	address string
 	// hit is whether a breakpoint decided the stop, which is part of sum too.
 	hit bool
+	// point is what the timeline shows of the stop.
+	point *v1.DebugTimelinePoint
+	// blocked is whether a travel to the stop found the run could not be
+	// reproduced there.
+	blocked bool
 }
+
+// same is whether two stops fingerprint alike: what a replay must reproduce.
+// The timeline's account of a stop is the first visit's, and is not compared.
+func (s stop) same(other stop) bool { return s.sum == other.sum }
 
 // fingerprint identifies a stop by what a person was shown at it: where, why,
 // the frames, the observations that led there, and scope, the digest of what
@@ -542,7 +649,7 @@ func movements(log []recorded) int {
 // The stops list is kept aligned with the movements: after n movements it
 // should hold n+1 entries, the entry stop included. A stop noted late is
 // appended; one already noted is not repeated.
-func (r *Reversible) noteStop(ctx context.Context, run *Run) error {
+func (r *Reversible) noteStop(ctx context.Context, run *Run, offset uint64) error {
 	snapshot, err := run.Session.Snapshot(ctx)
 	if err != nil {
 		return err
@@ -557,7 +664,11 @@ func (r *Reversible) noteStop(ctx context.Context, run *Run) error {
 	if err != nil {
 		return err
 	}
+	at.point = pointOf(snapshot)
+	at.point.Revision += offset
 	r.stops = append(r.stops, at)
+	r.noted = true
+	r.publish()
 
 	return nil
 }
@@ -632,28 +743,69 @@ func scopeDigest(ctx context.Context, target Target) (string, error) {
 // what the first visit showed is answered as diverged, and the session stays
 // where it was.
 func (r *Reversible) Back(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error) {
-	return r.back(ctx, requestID, expectedRevision, func([]stop) int { return 1 })
+	return r.back(ctx, requestID, expectedRevision, func([]stop) (int, string) { return 1, "" })
+}
+
+// Travel goes to the point of the timeline the last snapshot showed, in one
+// replay, whatever its distance: the run is started again once and brought to the
+// stop, not rewound a stop at a time. It answers as [Reversible.Back] does, and a
+// point that is not behind the run, or that cannot be reproduced, is refused. A
+// replay that did not show the run the first visit showed is answered as
+// diverged, nothing moves, and the point is not reachable from then on.
+func (r *Reversible) Travel(ctx context.Context, requestID string, expectedRevision uint64, point int32) (*v1.DebugReceipt, error) {
+	var target int
+	var sum [sha256.Size]byte
+	receipt, err := r.back(ctx, requestID, expectedRevision, func(stops []stop) (int, string) {
+		at := len(stops) - 1
+		target = int(point)
+		switch {
+		case point < 0 || target > at:
+			return 0, fmt.Sprintf("there is no point %d on the timeline: it runs from 0 to %d", point, at)
+		case target == at:
+			return 0, fmt.Sprintf("already at point %d", point)
+		case stops[target].blocked:
+			return 0, fmt.Sprintf("point %d is not reachable: the run is not deterministic, so going there would show a different run as the earlier one", point)
+		}
+		sum = stops[target].sum
+
+		return at - target, ""
+	})
+	if err != nil || receipt.GetStatus() != v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED {
+		return receipt, err
+	}
+
+	// Marked after the replay, under the lock again; the stops are as they were
+	// unless another command ran between, which the fingerprint tells.
+	r.command.Lock()
+	defer r.command.Unlock()
+	if target < len(r.stops) && r.stops[target].sum == sum {
+		r.stops[target].blocked = true
+		r.publish()
+	}
+
+	return receipt, nil
 }
 
 // BackToBreakpoint moves to the nearest earlier stop a breakpoint decided, or
 // to the first stop when no breakpoint did, in one replay: the reverse of
 // continuing. It answers as [Reversible.Back] does.
 func (r *Reversible) BackToBreakpoint(ctx context.Context, requestID string, expectedRevision uint64) (*v1.DebugReceipt, error) {
-	return r.back(ctx, requestID, expectedRevision, func(stops []stop) int {
+	return r.back(ctx, requestID, expectedRevision, func(stops []stop) (int, string) {
 		// stops[len-1] is where the run is; look strictly before it.
 		for i := len(stops) - 2; i > 0; i-- {
 			if stops[i].hit {
-				return len(stops) - 1 - i
+				return len(stops) - 1 - i, ""
 			}
 		}
 
-		return len(stops) - 1
+		return len(stops) - 1, ""
 	})
 }
 
 // back rewinds by the number of movements count answers for the stops shown so
-// far, which is at least one and at most all of them.
-func (r *Reversible) back(ctx context.Context, requestID string, expectedRevision uint64, count func([]stop) int) (*v1.DebugReceipt, error) {
+// far, which is at least one and at most all of them, or refuses with the
+// reason count gives instead.
+func (r *Reversible) back(ctx context.Context, requestID string, expectedRevision uint64, count func([]stop) (int, string)) (*v1.DebugReceipt, error) {
 	r.command.Lock()
 	defer r.command.Unlock()
 
@@ -678,7 +830,7 @@ func (r *Reversible) back(ctx context.Context, requestID string, expectedRevisio
 		}
 	}
 
-	if err := r.noteStop(ctx, run); err != nil {
+	if err := r.noteStop(ctx, run, offset); err != nil {
 		return nil, err
 	}
 	snapshot, err := run.Session.Snapshot(ctx)
@@ -706,7 +858,12 @@ func (r *Reversible) back(ctx context.Context, requestID string, expectedRevisio
 
 	// The last count movements are the ones being undone; every breakpoint
 	// replacement stays, so the rewound run holds the same set.
-	undo := min(max(count(r.stops), 1), moves)
+	undone, why := count(r.stops)
+	if why != "" {
+		return refuse(v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, why)
+	}
+	want := min(max(undone, 1), moves)
+	undo := want
 	replay := make([]recorded, 0, len(r.log))
 	for i := len(r.log) - 1; i >= 0; i-- {
 		if r.log[i].resume != nil && undo > 0 {
@@ -717,7 +874,7 @@ func (r *Reversible) back(ctx context.Context, requestID string, expectedRevisio
 		replay = append(replay, r.log[i])
 	}
 	slices.Reverse(replay)
-	keep := moves - min(max(count(r.stops), 1), moves) + 1
+	keep := moves - want + 1
 
 	r.rewinds++
 	replayCtx, cancel := context.WithTimeout(ctx, r.timeout)
@@ -765,6 +922,8 @@ func (r *Reversible) back(ctx context.Context, requestID string, expectedRevisio
 	r.log = replay
 	r.stops = r.stops[:keep]
 	r.paused = false
+	r.noted = true
+	r.publish()
 
 	receipt := &v1.DebugReceipt{
 		RequestId: requestID,
@@ -799,7 +958,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 	if err != nil {
 		return abandon(interrupted(ctx, "could not be read at its first stop", "unavailable", err))
 	}
-	if got != stops[0] {
+	if !got.same(stops[0]) {
 		return abandon(diverged(0, stops[0], got))
 	}
 
@@ -839,7 +998,7 @@ func (r *Reversible) replay(ctx context.Context, commands []recorded, stops []st
 		if err != nil {
 			return abandon(interrupted(ctx, fmt.Sprintf("could not be read at stop %d", moved), "unavailable", err))
 		}
-		if got != stops[moved] {
+		if !got.same(stops[moved]) {
 			return abandon(diverged(moved, stops[moved], got))
 		}
 	}

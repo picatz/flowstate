@@ -138,6 +138,12 @@ type contractState struct {
 	sequence     uint64
 	dropped      uint64
 
+	// stops is the ring of the stops this session held, oldest first, and
+	// stopsDropped how many it evicted to stay within [MaxTimelinePoints]: the
+	// timeline a snapshot carries.
+	stops        []heldStop
+	stopsDropped uint32
+
 	receipts     map[string]*v1.DebugReceipt
 	receiptOrder []string
 
@@ -669,6 +675,13 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.contract.pauseAsked = false
 	s.contract.message = ""
 	s.bump()
+	if len(s.contract.stops) >= MaxTimelinePoints {
+		s.contract.stops = slices.Delete(s.contract.stops, 0, 1)
+		s.contract.stopsDropped++
+	}
+	s.contract.stops = append(s.contract.stops, heldStop{
+		revision: s.contract.revision, occurrence: proto.CloneOf(occurrence), reason: reason,
+	})
 
 	return true
 }
@@ -1082,8 +1095,29 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 		snapshot.Failure = c.failure
 		snapshot.Frames = s.framesLocked(c.occurrence)
 	}
+	snapshot.Timeline = s.timelineLocked()
 
 	return snapshot
+}
+
+// timelineLocked is the stops this session held, none reachable: a plain
+// session cannot go back to one. Nil until it has held a run.
+func (s *Session) timelineLocked() *v1.DebugTimeline {
+	c := &s.contract
+	if len(c.stops) == 0 {
+		return nil
+	}
+	timeline := &v1.DebugTimeline{Current: -1, Dropped: c.stopsDropped}
+	for _, at := range c.stops {
+		timeline.Points = append(timeline.Points, &v1.DebugTimelinePoint{
+			Revision: at.revision, Occurrence: s.redactedOccurrence(at.occurrence), Reason: at.reason,
+		})
+	}
+	if c.state == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+		timeline.Current = int32(len(timeline.Points) - 1)
+	}
+
+	return timeline
 }
 
 // redactedOccurrence is an occurrence with its names passed through the

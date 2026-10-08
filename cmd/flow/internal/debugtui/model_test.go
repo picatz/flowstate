@@ -281,7 +281,7 @@ func TestKeysMoveThroughTheScope(t *testing.T) {
 	assert.True(t, m.screen.Tree.Open("g:inputs"))
 	m = send(m, tuitest.Key("G"))
 	assert.Equal(t, "g:run", m.screen.Tree.Selected())
-	m = send(m, tuitest.Key("g"))
+	m = send(m, tuitest.Key("home"))
 	assert.Equal(t, "g:inputs", m.screen.Tree.Selected())
 
 	// Navigation keys do nothing to the run.
@@ -328,7 +328,8 @@ func pageCmdOf(m Model, req pane.Request) tea.Cmd { return m.pageCmd(req) }
 func TestAHelpOverlayListsOnlyWhatTheFrontAnswers(t *testing.T) {
 	t.Parallel()
 
-	m := started(t, newFake())
+	// Tall enough to show the whole overlay, which grows with each key the table earns.
+	m := started(t, newFake(), func(c *Config) { c.Size = tui.Size{W: 120, H: 50} })
 	m = send(m, tuitest.Key("?"))
 	require.True(t, m.screen.Help)
 	help := view(m)

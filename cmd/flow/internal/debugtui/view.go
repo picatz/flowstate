@@ -94,13 +94,26 @@ type Screen struct {
 
 	// Busy is the command line being run, or empty.
 	Busy string
+
+	// Diverged holds the timeline points a travel found the run could not be
+	// brought back to, by their number from the first point the target kept
+	// (its dropped count plus the index): the target says a point is not
+	// reachable, and this says why it is marked.
+	Diverged map[uint64]bool
 }
 
 // geometry is where the parts of the screen are.
 type geometry struct {
 	header, toast, status, console, body pane.Rect
-	layout                               tui.Layout
+	// timeline is the strip between the body and the console, empty when the
+	// frame carries no timeline.
+	timeline pane.Rect
+	layout   tui.Layout
 }
+
+// overlayRows is the height an overlay covers: everything between the header and
+// the toast.
+func (g geometry) overlayRows() int { return g.body.H + g.timeline.H + g.console.H }
 
 // consoleRows is the console's height, heading and input line included.
 func consoleRows(height int) int {
@@ -123,9 +136,14 @@ func (s Screen) geometry() (geometry, error) {
 
 	w, h := s.Size.W, s.Size.H
 	console := consoleRows(h)
+	strip := 0
+	if timelineOf(s.Frame, s.Loaded) != nil {
+		strip = 1
+	}
 	g.header = pane.Rect{X: 0, Y: 0, W: w, H: 1}
-	g.body = pane.Rect{X: 0, Y: 1, W: w, H: h - 3 - console}
-	g.console = pane.Rect{X: 0, Y: 1 + g.body.H, W: w, H: console}
+	g.body = pane.Rect{X: 0, Y: 1, W: w, H: h - 3 - console - strip}
+	g.timeline = pane.Rect{X: 0, Y: 1 + g.body.H, W: w, H: strip}
+	g.console = pane.Rect{X: 0, Y: 1 + g.body.H + strip, W: w, H: console}
 	g.toast = pane.Rect{X: 0, Y: h - 2, W: w, H: 1}
 	g.status = pane.Rect{X: 0, Y: h - 1, W: w, H: 1}
 
@@ -156,9 +174,9 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 	}
 
 	if s.Help {
-		o := s.options(g.body.W, g.body.H+g.console.H, st, true)
+		o := s.options(g.body.W, g.overlayRows(), st, true)
 		parts = append(parts, pane.Placed{
-			Rect: pane.Rect{X: 0, Y: 1, W: g.body.W, H: g.body.H + g.console.H},
+			Rect: pane.Rect{X: 0, Y: 1, W: g.body.W, H: g.overlayRows()},
 			Text: HelpView(s.Keys, s.Verbs, o, s.HelpTop),
 		})
 		hits.Add(parts[len(parts)-1].Rect, "help", pane.KindPane)
@@ -189,6 +207,17 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		parts = append(parts, pane.Placed{Rect: cell.Rect, Text: text})
 	}
 
+	if !g.timeline.Empty() {
+		replayTo, replaying := gotoPoint(s.Busy)
+		if !replaying {
+			replayTo = -1
+		}
+		o := s.options(g.timeline.W, 1, st, false)
+		parts = append(parts, pane.Placed{
+			Rect: g.timeline, Text: TimelineView(s.Frame, s.Loaded, s.Diverged, replayTo, g.timeline, hits, o),
+		})
+	}
+
 	co := s.options(g.console.W, g.console.H, st, s.Focus == paneConsole)
 	parts = append(parts, pane.Placed{Rect: g.console, Text: ConsoleView(s.Console, s.Busy, co)})
 	hits.Add(g.console, paneConsole, pane.KindInput)
@@ -204,7 +233,12 @@ func (s Screen) options(w, h int, st Style, focused bool) pane.Options {
 // is doing.
 func (s Screen) statusBar(width int, st Style) string {
 	right := ""
-	if s.Busy != "" {
+	switch {
+	case flowdebug.StepsBack(s.Busy):
+		// A travel starts the program again and brings it to the stop, which
+		// is the wait the person is looking at.
+		right = st.Theme.Warning.Render("replaying: " + ui.EscapeControl(s.Busy))
+	case s.Busy != "":
 		right = st.Theme.Warning.Render("working: " + ui.EscapeControl(s.Busy))
 	}
 

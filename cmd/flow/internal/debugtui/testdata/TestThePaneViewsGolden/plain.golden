@@ -39,6 +39,7 @@ Run the program
   c          run to the next breakpoint, or the end
   b          return to the previous stop (a session that can step back)
   r          return to the nearest earlier breakpoint stop, or the first
+  g          go to a point of the timeline, counted from 0, in one move (a sessi
   p          hold at the next step boundary
 
 Move
@@ -49,7 +50,7 @@ Move
   left h     close the row, or go to its parent
   PgUp       up a page
   PgDn       down a page
-  home g     first row
+  home       first row
   end G      last row
 
 Screen

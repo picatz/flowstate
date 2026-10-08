@@ -49,6 +49,14 @@ type fakeTarget struct {
 	resumes  []*v1.DebugResumeRequest
 	inspects []*v1.DebugInspectRequest
 
+	// timelined has the snapshot carry a timeline: a point for every step the run
+	// has reached, and dropped more before them. diverge names the points a
+	// travel finds the run cannot be brought back to; travels is what it was asked.
+	timelined bool
+	dropped   uint32
+	diverge   map[int32]bool
+	travels   []int32
+
 	// moved is closed and replaced each time the run changes, so a wait can
 	// block on it.
 	moved chan struct{}
@@ -94,6 +102,16 @@ func (f *fakeTarget) snapshot() *v1.DebugSnapshot {
 		Session:  &v1.DebugSession{SessionId: "s-1", Run: &v1.RunAddress{WorkflowId: "release-1", RunId: "3f7c9a2e-1111-2222-3333-444455556666"}},
 		State:    v1.DebugRunState_DEBUG_RUN_STATE_HELD,
 		Reason:   v1.DebugStopReason_DEBUG_STOP_REASON_STEP,
+	}
+	if f.timelined && f.at < len(f.program) {
+		timeline := &v1.DebugTimeline{Current: int32(f.at), Dropped: f.dropped}
+		for i := 0; i <= f.at; i++ {
+			timeline.Points = append(timeline.Points, &v1.DebugTimelinePoint{
+				Revision: uint64(i) + 2, Reachable: i < f.at, Reason: v1.DebugStopReason_DEBUG_STOP_REASON_STEP,
+				Occurrence: &v1.DebugOccurrence{Address: f.program[i]},
+			})
+		}
+		snap.Timeline = timeline
 	}
 	switch {
 	case f.detached:
@@ -170,6 +188,27 @@ func (f *fakeTarget) Resume(_ context.Context, req *v1.DebugResumeRequest) (*v1.
 	default:
 		f.at++
 	}
+	f.changed()
+
+	return receipt, nil
+}
+
+// Travel makes the fake a [flowdebug.Traveler]: it goes to the point unless the
+// test said the run diverges there.
+func (f *fakeTarget) Travel(_ context.Context, requestID string, _ uint64, point int32) (*v1.DebugReceipt, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	f.travels = append(f.travels, point)
+	receipt := &v1.DebugReceipt{RequestId: requestID, Revision: f.revision()}
+	if f.diverge[point] {
+		receipt.Status = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_DIVERGED
+		receipt.Message = "stop 0 was at checkout and is at build now"
+
+		return receipt, nil
+	}
+	f.at = int(point)
+	receipt.Status, receipt.Revision = v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_APPLIED, f.revision()
 	f.changed()
 
 	return receipt, nil
@@ -252,7 +291,10 @@ func (f *fakeTarget) Inspect(_ context.Context, req *v1.DebugInspectRequest) (*v
 	return &v1.DebugInspectResponse{Revision: f.revision(), Error: "no such name: " + expression}, nil
 }
 
-var _ flowdebug.Target = (*fakeTarget)(nil)
+var (
+	_ flowdebug.Target   = (*fakeTarget)(nil)
+	_ flowdebug.Traveler = (*fakeTarget)(nil)
+)
 
 // styleFor is a stated drawing environment.
 func styleFor(profile colorprofile.Profile, unicode bool) Style {

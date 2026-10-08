@@ -116,6 +116,14 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // act performs a binding.
 func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 	if verb, ok := strings.CutPrefix(b.Name, verbBindPrefix); ok {
+		if verb == "goto" {
+			// A point is an argument no key supplies: the console opens with
+			// the verb written and the point left to type.
+			m.screen.Console.Text = "goto "
+			m.setFocus(paneConsole)
+
+			return m, nil
+		}
 		cmd := m.run(verb)
 		return m, cmd
 	}
@@ -166,7 +174,7 @@ func (m *Model) scrollHelp(delta int) {
 		return
 	}
 	lines := len(helpLines(m.screen.Keys, m.screen.Verbs, pane.Options{Width: g.body.W}))
-	room := max(0, g.body.H+g.console.H-1)
+	room := max(0, g.overlayRows()-1)
 	m.screen.HelpTop = max(0, min(m.screen.HelpTop+delta, max(0, lines-room)))
 }
 
@@ -334,6 +342,15 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 
 	case pane.KindInput:
 		m.setFocus(paneConsole)
+
+	case pane.KindPoint:
+		point, ok := strings.CutPrefix(hit.ID, pointPrefix)
+		if !ok {
+			break
+		}
+		cmd := m.run("goto " + point)
+
+		return m, cmd
 
 	case pane.KindPane, pane.KindHeading:
 		if hit.ID == "help" {

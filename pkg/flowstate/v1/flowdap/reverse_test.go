@@ -2,6 +2,7 @@ package flowdap_test
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +30,19 @@ func threeSteps() *v1.Workflow {
 func rewindable(t *testing.T) *flowdebug.Reversible {
 	t.Helper()
 
+	target, _ := launchCounted(t)
+
+	return target
+}
+
+// launchCounted is [rewindable] with the number of times the program was started,
+// the first launch included.
+func launchCounted(t *testing.T) (*flowdebug.Reversible, *atomic.Int64) {
+	t.Helper()
+
+	launches := &atomic.Int64{}
 	target, err := flowdebug.NewReversible(t.Context(), func(context.Context) (*flowdebug.Run, error) {
+		launches.Add(1)
 		session, err := flowdebug.New(flowdebug.Options{Controlled: true})
 		if err != nil {
 			return nil, err
@@ -54,7 +67,7 @@ func rewindable(t *testing.T) *flowdebug.Reversible {
 	require.NoError(t, err)
 	t.Cleanup(target.Stop)
 
-	return target
+	return target, launches
 }
 
 // frameName is the name of the innermost frame the editor is shown.
@@ -183,4 +196,93 @@ func TestAFinishedRunHasNoStopToGoBackTo(t *testing.T) {
 	refused := c.await("response", "stepBack")
 	assert.Equal(t, false, refused["success"])
 	assert.Contains(t, refused["message"], "has ended")
+}
+
+// TestGotoTravelsToAPointTheEditorWasOffered: gotoTargets names the stops behind
+// the run, goto takes the editor to one in a single move, and the stop it lands
+// on arrives after the response as any other does.
+func TestGotoTravelsToAPointTheEditorWasOffered(t *testing.T) {
+	t.Parallel()
+
+	target, launches := launchCounted(t)
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	server := flowdap.NewServer(target, c)
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	initialized := c.await("response", "initialize")
+	assert.Equal(t, true, initialized["body"].(map[string]any)["supportsGotoTargetsRequest"])
+	c.await("event", "initialized")
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	// At the first stop there is nowhere to go to.
+	c.send(4, "gotoTargets", map[string]any{"source": map[string]any{"path": "wf.yaml"}, "line": 1})
+	none := c.await("response", "gotoTargets")
+	require.Equal(t, true, none["success"], "%v", none)
+	assert.Empty(t, none["body"].(map[string]any)["targets"])
+
+	for seq := 5; seq <= 6; seq++ {
+		c.send(seq, "stepIn", map[string]any{"threadId": 1})
+		c.await("response", "stepIn")
+		c.await("event", "stopped")
+	}
+	require.Equal(t, "wf.c (value)", frameName(t, c, 7))
+
+	c.send(8, "gotoTargets", map[string]any{"source": map[string]any{"path": "wf.yaml"}, "line": 1})
+	offered := c.await("response", "gotoTargets")
+	require.Equal(t, true, offered["success"], "%v", offered)
+	targets := offered["body"].(map[string]any)["targets"].([]any)
+	require.Len(t, targets, 2, "the stops behind the run, and not the one it is at")
+	assert.Equal(t, 0.0, targets[0].(map[string]any)["id"])
+	assert.Equal(t, "0: a", targets[0].(map[string]any)["label"])
+	assert.Equal(t, "1: b", targets[1].(map[string]any)["label"])
+
+	// Back two stops in one request: the response, then the stop.
+	before := launches.Load()
+	c.send(9, "goto", map[string]any{"threadId": 1, "targetId": 0})
+	moved := c.next()
+	require.Equal(t, "response", moved["type"], "%v", moved)
+	require.Equal(t, "goto", moved["command"])
+	require.Equal(t, true, moved["success"], "%v", moved)
+	c.await("event", "stopped")
+	assert.Equal(t, "wf.a (value)", frameName(t, c, 10))
+	assert.Equal(t, before+1, launches.Load(), "a goto two stops back was not one replay")
+
+	// A target nobody offered, and one that is not a number, are refused by name.
+	for i, arguments := range []map[string]any{{"targetId": 7}, {"targetId": 0}, {"targetId": -1}, {}} {
+		c.send(11+i, "goto", arguments)
+		refused := c.await("response", "goto")
+		assert.Equal(t, false, refused["success"], "%v", arguments)
+	}
+	assert.Equal(t, "wf.a (value)", frameName(t, c, 20))
+}
+
+// TestASessionThatCannotTravelOffersNoGotoTargets: the capability is the
+// target's to honour, and a refusal names how to run one that can.
+func TestASessionThatCannotTravelOffersNoGotoTargets(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := walked(t, "a", "b")
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	initialized := c.await("response", "initialize")
+	assert.Equal(t, false, initialized["body"].(map[string]any)["supportsGotoTargetsRequest"])
+	c.send(2, "launch", map[string]any{})
+	c.await("response", "launch")
+	c.send(3, "configurationDone", nil)
+	c.await("response", "configurationDone")
+	c.await("event", "stopped")
+
+	c.send(4, "gotoTargets", map[string]any{"source": map[string]any{"path": "wf.yaml"}, "line": 1})
+	empty := c.await("response", "gotoTargets")
+	assert.Empty(t, empty["body"].(map[string]any)["targets"])
+
+	c.send(5, "goto", map[string]any{"threadId": 1, "targetId": 0})
+	refused := c.await("response", "goto")
+	assert.Equal(t, false, refused["success"])
+	assert.Contains(t, refused["message"], `"reverse": true`)
 }

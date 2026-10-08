@@ -688,8 +688,8 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 		{Tool: &mcp.Tool{
 			Name: debugSessionCommandTool,
 			Description: "Run one debugger command in a retained session and answer with its typed result. Commands: " +
-				flowdebug.DriverCommandList() + ". back and reverse-continue (rc) need a stubbed session that can step back; " +
-				"any other says so and does not move. Movements answer with the next stop. Set expected_revision to the " +
+				flowdebug.DriverCommandList() + ". back, reverse-continue (rc) and goto <point> (a point of the snapshot's timeline, counted from 0) " +
+				"need a stubbed session that can step back; any other says so and does not move. Movements answer with the next stop. Set expected_revision to the " +
 				"snapshot you acted on, " +
 				"so a command meant for a stop the run has left is refused as stale: a movement or an inspection is " +
 				"judged by the run in the same step as the command; any other command is checked just before it is sent.",
@@ -772,13 +772,17 @@ func (a sessionAnswer) encode() ([]byte, error) {
 		},
 		func() ([]byte, error) {
 			a.Text = ""
-			if len(a.snapshot.GetObservations()) > 0 {
+			if len(a.snapshot.GetObservations()) > 0 || len(a.snapshot.GetTimeline().GetPoints()) > 0 {
 				trimmed := proto.CloneOf(a.snapshot)
 				trimmed.ObservationsDropped += uint64(len(trimmed.GetObservations()))
 				trimmed.Observations = nil
+				if trimmed.GetTimeline() != nil {
+					trimmed.Timeline.Dropped += uint32(len(trimmed.Timeline.GetPoints()))
+					trimmed.Timeline.Points, trimmed.Timeline.Current = nil, -1
+				}
 				a.Snapshot = schemaJSON(trimmed)
 			}
-			note("The rendered text and the snapshot's observations were dropped: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
+			note("The rendered text and the snapshot's observations were dropped, with any timeline points: the answer exceeded %d bytes.", flowmcp.MaxResultBytes)
 
 			return encode()
 		},

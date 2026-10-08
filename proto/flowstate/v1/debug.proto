@@ -1058,6 +1058,47 @@ message DebugSnapshot {
   // interpreter encodes it: what a client's source map must be bound to
   // before its lines are trusted to describe this run.
   string ir_digest = 16 [(buf.validate.field).string = {max_len: 128}];
+
+  // Timeline is the stops this session has shown and where it stands among
+  // them, for a front that lets a person travel to one. Empty where the target
+  // keeps no account of its stops.
+  DebugTimeline timeline = 17;
+}
+
+// DebugTimelinePoint is one stop a session showed, as a front draws it on a
+// strip and names it to travel there.
+message DebugTimelinePoint {
+  // Revision is the revision shown at that stop, or zero for a point never shown.
+  uint64 revision = 1;
+
+  // EventId is the history boundary the point is, for a durable history.
+  int64 event_id = 2;
+
+  // Occurrence is where the run was held, redacted as [DebugSnapshot.occurrence] is.
+  DebugOccurrence occurrence = 3;
+
+  DebugStopReason reason = 4 [(buf.validate.field).enum.defined_only = true];
+
+  // Fidelity is reconstructed for a history point and unspecified for a live stop.
+  DebugFidelity fidelity = 5 [(buf.validate.field).enum.defined_only = true];
+
+  // Reachable is whether a travel to the point would be tried now. A point the
+  // session is at is not reachable, and neither is one a travel found the run
+  // could not reproduce.
+  bool reachable = 6;
+}
+
+// DebugTimeline is the bounded account of the stops a session has shown.
+message DebugTimeline {
+  // Points are the stops, oldest first.
+  repeated DebugTimelinePoint points = 1 [(buf.validate.field).repeated = {max_items: 1024}];
+
+  // Current is the index in [points] of the stop the session is at, or -1
+  // between stops.
+  int32 current = 2;
+
+  // Dropped counts the stops evicted from the front to keep [points] bounded.
+  uint32 dropped = 3;
 }
 
 // DebugResumeAction is what a resume asks the run to do next.

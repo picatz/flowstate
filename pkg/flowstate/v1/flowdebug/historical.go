@@ -75,6 +75,10 @@ type Historical struct {
 	applied  map[string]*v1.DebugReceipt
 	order    []string
 
+	// seen is what the timeline knows of the points the session has stood at,
+	// by their index in points: bounded to the points the timeline carries.
+	seen map[int]*v1.DebugTimelinePoint
+
 	// values caches what a point said about a value. A recorded run never
 	// changes, so an answer is good for as long as the session lives; it is
 	// bounded all the same, first in first out, because a person can ask
@@ -98,6 +102,7 @@ type valueKey struct {
 var (
 	_ Target   = (*Historical)(nil)
 	_ Reverser = (*Historical)(nil)
+	_ Traveler = (*Historical)(nil)
 )
 
 // HistoricalOption configures [OpenHistorical].
@@ -150,6 +155,7 @@ func OpenHistorical(ctx context.Context, read HistoryReader, opts ...HistoricalO
 		revision:  1,
 		moved:     make(chan struct{}),
 		applied:   map[string]*v1.DebugReceipt{},
+		seen:      map[int]*v1.DebugTimelinePoint{},
 		values:    map[valueKey]*v1.DebugInspectResponse{},
 	}, nil
 }
@@ -229,8 +235,38 @@ func (h *Historical) present() *v1.DebugSnapshot {
 	shown.Capabilities = h.Capabilities()
 	shown.Message = fmt.Sprintf("Recorded run, point %d of %d (event %d), reconstructed from its history.%s",
 		h.at+1, len(h.points), h.here.GetEventId(), ended)
+	shown.Timeline = h.timelineLocked(shown)
 
 	return shown
+}
+
+// timelineLocked is the run's points as the timeline shows them: the last
+// [MaxTimelinePoints] of them, each reconstructed and each reachable but the one
+// the session stands at. A point carries its occurrence once the session has
+// stood there; the others are named by their event alone. Callers hold h.mu.
+func (h *Historical) timelineLocked(shown *v1.DebugSnapshot) *v1.DebugTimeline {
+	first := max(0, len(h.points)-MaxTimelinePoints)
+	if h.at >= first {
+		h.seen[h.at] = &v1.DebugTimelinePoint{
+			Revision: shown.GetRevision(), Occurrence: proto.CloneOf(shown.GetOccurrence()), Reason: shown.GetReason(),
+		}
+	}
+	timeline := &v1.DebugTimeline{Current: int32(h.at - first), Dropped: uint32(first)}
+	if h.at < first {
+		timeline.Current = -1
+	}
+	for i := first; i < len(h.points); i++ {
+		point := &v1.DebugTimelinePoint{Reason: v1.DebugStopReason_DEBUG_STOP_REASON_STEP}
+		if visited := h.seen[i]; visited != nil {
+			point = proto.CloneOf(visited)
+		}
+		point.EventId = h.points[i]
+		point.Fidelity = v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED
+		point.Reachable = i != h.at
+		timeline.Points = append(timeline.Points, point)
+	}
+
+	return timeline
 }
 
 // progressLabel names where a progress-only point stands.
@@ -415,6 +451,24 @@ func (h *Historical) BackToBreakpoint(ctx context.Context, requestID string, exp
 	defer h.command.Unlock()
 
 	return h.move(ctx, requestID, expectedRevision, 0, "first")
+}
+
+// Travel implements [Traveler]: the point of the timeline, which is a read of
+// that boundary like a step is, in either direction.
+func (h *Historical) Travel(ctx context.Context, requestID string, expectedRevision uint64, point int32) (*v1.DebugReceipt, error) {
+	h.command.Lock()
+	defer h.command.Unlock()
+
+	h.mu.Lock()
+	first := max(0, len(h.points)-MaxTimelinePoints)
+	carried := len(h.points) - first
+	h.mu.Unlock()
+	if point < 0 || int(point) >= carried {
+		return h.receipt(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED,
+			fmt.Sprintf("there is no point %d on the timeline: it runs from 0 to %d", point, carried-1)), nil
+	}
+
+	return h.move(ctx, requestID, expectedRevision, first+int(point), "requested")
 }
 
 // Pause implements [Target]: a recorded run is not running.
