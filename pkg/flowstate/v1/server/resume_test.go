@@ -103,6 +103,39 @@ func TestResumeRunStartsAnOrdinaryRunFromACheckpoint(t *testing.T) {
 		require.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	})
 
+	t.Run("a request id makes the resume idempotent", func(t *testing.T) {
+		t.Parallel()
+
+		ask := func(id string) *v1.ResumeRunResponse {
+			resumed, err := fixture.teamA.ResumeRun(t.Context(), connect.NewRequest(&v1.ResumeRunRequest{
+				WorkflowId: origin,
+				RequestId:  proto.String(id),
+			}))
+			require.NoError(t, err)
+			return resumed.Msg
+		}
+		first, again, fork := ask("retry-me"), ask("retry-me"), ask("another-fork")
+		assert.False(t, first.GetReused())
+		assert.True(t, again.GetReused(), "the retry must not start a second run")
+		assert.Equal(t, first.GetWorkflowId(), again.GetWorkflowId())
+		assert.Equal(t, first.GetRunId(), again.GetRunId())
+		assert.NotEqual(t, first.GetWorkflowId(), fork.GetWorkflowId(), "a different id is an intentional fork")
+	})
+
+	t.Run("an entity-addressed run cannot be resumed", func(t *testing.T) {
+		t.Parallel()
+
+		entity, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+			Workflow:  gatedWorkflow(),
+			EntityKey: proto.String("order-1"),
+		}))
+		require.NoError(t, err)
+		waitUntilParkedAtTheGate(t, fixture.temporal, entity.Msg.GetWorkflowId())
+
+		_, err = fixture.teamA.ResumeRun(t.Context(), connect.NewRequest(&v1.ResumeRunRequest{WorkflowId: entity.Msg.GetWorkflowId()}))
+		require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "%v", err)
+	})
+
 	t.Run("another tenant cannot resume it", func(t *testing.T) {
 		t.Parallel()
 

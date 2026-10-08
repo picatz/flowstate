@@ -7,11 +7,16 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"go.temporal.io/api/serviceerror"
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
+
+// resumeWorkflowIDPrefix keeps request-addressed resumes in an id namespace of
+// their own, as [requestWorkflowIDPrefix] does for runs.
+const resumeWorkflowIDPrefix = "flowstate-resume-"
 
 // Memo keys recording where a resumed run came from, read afterwards by whoever
 // asks how it came to happen. They sit beside the trigger and reason keys, and
@@ -59,10 +64,18 @@ func (s *FlowstateServer) ResumeRun(
 	// The new run acts as the origin's principal and nothing here can change
 	// that, so only that principal may start it. Anyone else would be borrowing
 	// an identity, which is the one thing a resume must never do.
-	if !samePrincipal(caller.GetPrincipal(), state.GetIdentity().GetPrincipal()) {
+	if !proto.Equal(caller.GetPrincipal(), state.GetIdentity().GetPrincipal()) {
 		return nil, s.auditDeny(ctx, "ResumeRun", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, execution.GetWorkflowId(),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED,
 			connect.NewError(connect.CodePermissionDenied, fmt.Errorf("a run can be resumed only by the principal it acts as")))
+	}
+
+	// An entity-addressed run is the one run its key names. The key is request
+	// state that RunState does not carry, so the address is the only evidence,
+	// and a second run under a random id would mutate the same entity beside it.
+	if v1.IsEntityWorkflowID(execution.GetWorkflowId()) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New(
+			"an entity-addressed run cannot be resumed: its key names exactly one live run"))
 	}
 
 	if err := v1.Validate(state); err != nil {
@@ -124,6 +137,12 @@ func (s *FlowstateServer) ResumeRun(
 	}
 
 	workflowID := fmt.Sprintf("flowstate-workflow-%s", uuid.New().String())
+	if id := req.Msg.GetRequestId(); id != "" {
+		// Scoped by namespace, origin and what is being resumed, so the same id
+		// asks for the same resume and a different patch or origin is a fork.
+		workflowID = resumeWorkflowIDPrefix + digestOf(caller.GetPrincipal().GetNamespace(),
+			execution.GetWorkflowId(), execution.GetRunId(), checkpoint.GetOrigin().GetStep(), patchDigest, id)
+	}
 	if err := s.authorizeManualStart(ctx, "ResumeRun", v1.AuditResourceKind_AUDIT_RESOURCE_KIND_RUN, workflowID,
 		next.GetWorkflow(), caller, req.Msg.GetReason(), next.GetInputs()); err != nil {
 		return nil, err
@@ -151,7 +170,18 @@ func (s *FlowstateServer) ResumeRun(
 		return nil, err
 	}
 
+	options.WorkflowExecutionErrorWhenAlreadyStarted = req.Msg.RequestId != nil
 	run, err := startClient.ExecuteWorkflow(ctx, options, engine.Run, next)
+	var already *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &already) {
+		return connect.NewResponse(&v1.ResumeRunResponse{
+			WorkflowId:  workflowID,
+			RunId:       already.RunId,
+			Origin:      checkpointInfo(execution.GetWorkflowId(), execution.GetRunId(), state),
+			PatchDigest: patchDigest,
+			Reused:      true,
+		}), nil
+	}
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("unable to execute workflow: %w", err))
 	}
@@ -162,10 +192,4 @@ func (s *FlowstateServer) ResumeRun(
 		Origin:      checkpointInfo(execution.GetWorkflowId(), execution.GetRunId(), state),
 		PatchDigest: patchDigest,
 	}), nil
-}
-
-// samePrincipal reports whether two principals are the same authenticated
-// identity: issuer, subject and namespace all equal.
-func samePrincipal(a, b *v1.Principal) bool {
-	return a.GetIssuer() == b.GetIssuer() && a.GetSubject() == b.GetSubject() && a.GetNamespace() == b.GetNamespace()
 }

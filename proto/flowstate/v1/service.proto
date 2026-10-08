@@ -1554,6 +1554,19 @@ message ResumeRunRequest {
   // Reason is recorded on the new run beside its origin, for whoever reads it
   // later. It is not visible to expressions.
   string reason = 5 [(buf.validate.field).string = {max_len: 512}];
+
+  // RequestId makes the resume idempotent. A retry carrying the same id, patch
+  // and origin returns the run the first attempt started (`reused`) instead of
+  // starting a second one, so a lost response cannot repeat the suffix's
+  // effects. A different id is an intentional fork. Same grammar as
+  // `RunRequest.request_id`; the value is digested, never stored.
+  optional string request_id = 6 [
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 128
+      pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]*$"
+    }
+  ];
 }
 
 // ResumeRunResponse is the run that was started.
@@ -1568,6 +1581,10 @@ message ResumeRunResponse {
   // PatchDigest is the canonical digest of the patched workflow, empty when no
   // patch was given.
   string patch_digest = 4;
+
+  // Reused is true when this describes the run an earlier request with the same
+  // `request_id` already started.
+  bool reused = 5;
 }
 
 // GetTimelineResponse is what one run did.

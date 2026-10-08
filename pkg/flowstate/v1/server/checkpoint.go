@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -76,12 +75,8 @@ func unavailable(reason string) *connect.Response[v1.GetCheckpointResponse] {
 	})
 }
 
-// unavailableReason is the sentence a caller reads for a position that is not a
-// legal starting state.
+// unavailableReason is the sentence a caller reads for a segment that is not a
+// legal starting state. The checkpoint errors already say which rule refused.
 func unavailableReason(err error) string {
-	if errors.Is(err, v1.ErrCheckpointUnsupported) {
-		return "the segment starts inside a call, a loop or concurrent work; only a position between top-level steps can be started from"
-	}
-
 	return err.Error()
 }

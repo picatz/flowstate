@@ -2657,7 +2657,13 @@ type ResumeRunRequest struct {
 	ExpectedStep string `protobuf:"bytes,4,opt,name=expected_step,json=expectedStep,proto3" json:"expected_step,omitempty"`
 	// Reason is recorded on the new run beside its origin, for whoever reads it
 	// later. It is not visible to expressions.
-	Reason        string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	Reason string `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	// RequestId makes the resume idempotent. A retry carrying the same id, patch
+	// and origin returns the run the first attempt started (`reused`) instead of
+	// starting a second one, so a lost response cannot repeat the suffix's
+	// effects. A different id is an intentional fork. Same grammar as
+	// `RunRequest.request_id`; the value is digested, never stored.
+	RequestId     *string `protobuf:"bytes,6,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2727,6 +2733,13 @@ func (x *ResumeRunRequest) GetReason() string {
 	return ""
 }
 
+func (x *ResumeRunRequest) GetRequestId() string {
+	if x != nil && x.RequestId != nil {
+		return *x.RequestId
+	}
+	return ""
+}
+
 // ResumeRunResponse is the run that was started.
 type ResumeRunResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -2737,7 +2750,10 @@ type ResumeRunResponse struct {
 	Origin *CheckpointInfo `protobuf:"bytes,3,opt,name=origin,proto3" json:"origin,omitempty"`
 	// PatchDigest is the canonical digest of the patched workflow, empty when no
 	// patch was given.
-	PatchDigest   string `protobuf:"bytes,4,opt,name=patch_digest,json=patchDigest,proto3" json:"patch_digest,omitempty"`
+	PatchDigest string `protobuf:"bytes,4,opt,name=patch_digest,json=patchDigest,proto3" json:"patch_digest,omitempty"`
+	// Reused is true when this describes the run an earlier request with the same
+	// `request_id` already started.
+	Reused        bool `protobuf:"varint,5,opt,name=reused,proto3" json:"reused,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2798,6 +2814,13 @@ func (x *ResumeRunResponse) GetPatchDigest() string {
 		return x.PatchDigest
 	}
 	return ""
+}
+
+func (x *ResumeRunResponse) GetReused() bool {
+	if x != nil {
+		return x.Reused
+	}
+	return false
 }
 
 // GetTimelineResponse is what one run did.
@@ -3588,7 +3611,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"checkpoint\x18\x01 \x01(\v2\x1c.flowstate.v1.CheckpointInfoH\x00R\n" +
 	"checkpoint\x128\n" +
 	"\x12unavailable_reason\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x10\x01H\x00R\x11unavailableReasonB\x0f\n" +
-	"\x06result\x12\x05\xbaH\x02\b\x01\"\xe9\x01\n" +
+	"\x06result\x12\x05\xbaH\x02\b\x01\"\xc8\x02\n" +
 	"\x10ResumeRunRequest\x122\n" +
 	"\vworkflow_id\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01(\x80\x02R\n" +
@@ -3596,13 +3619,17 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x06run_id\x18\x02 \x01(\tB\v\xbaH\b\xd8\x01\x01r\x03\xb0\x01\x01R\x05runId\x12,\n" +
 	"\x05patch\x18\x03 \x01(\v2\x16.flowstate.v1.WorkflowR\x05patch\x12-\n" +
 	"\rexpected_step\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x01R\fexpectedStep\x12 \n" +
-	"\x06reason\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x04R\x06reason\"\xa4\x01\n" +
+	"\x06reason\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x04R\x06reason\x12N\n" +
+	"\n" +
+	"request_id\x18\x06 \x01(\tB*\xbaH'r%\x10\x01\x18\x80\x012\x1e^[A-Za-z0-9][A-Za-z0-9._:/-]*$H\x00R\trequestId\x88\x01\x01B\r\n" +
+	"\v_request_id\"\xbc\x01\n" +
 	"\x11ResumeRunResponse\x12\x1f\n" +
 	"\vworkflow_id\x18\x01 \x01(\tR\n" +
 	"workflowId\x12\x15\n" +
 	"\x06run_id\x18\x02 \x01(\tR\x05runId\x124\n" +
 	"\x06origin\x18\x03 \x01(\v2\x1c.flowstate.v1.CheckpointInfoR\x06origin\x12!\n" +
-	"\fpatch_digest\x18\x04 \x01(\tR\vpatchDigest\"\xc7\x02\n" +
+	"\fpatch_digest\x18\x04 \x01(\tR\vpatchDigest\x12\x16\n" +
+	"\x06reused\x18\x05 \x01(\bR\x06reused\"\xc7\x02\n" +
 	"\x13GetTimelineResponse\x125\n" +
 	"\aentries\x18\x01 \x03(\v2\x1b.flowstate.v1.TimelineEntryR\aentries\x12\x15\n" +
 	"\x06run_id\x18\x06 \x01(\tR\x05runId\x12\x1c\n" +
@@ -3910,6 +3937,7 @@ func file_flowstate_v1_service_proto_init() {
 		(*GetCheckpointResponse_Checkpoint)(nil),
 		(*GetCheckpointResponse_UnavailableReason)(nil),
 	}
+	file_flowstate_v1_service_proto_msgTypes[27].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

@@ -1096,6 +1096,14 @@ func init() {
 				" later. It is not visible to expressions.\n",
 		},
 		{
+			Name: "flowstate.v1.ResumeRunRequest.request_id",
+			Leading: " RequestId makes the resume idempotent. A retry carrying the same id, patch\n" +
+				" and origin returns the run the first attempt started (`reused`) instead of\n" +
+				" starting a second one, so a lost response cannot repeat the suffix's\n" +
+				" effects. A different id is an intentional fork. Same grammar as\n" +
+				" `RunRequest.request_id`; the value is digested, never stored.\n",
+		},
+		{
 			Name:    "flowstate.v1.ResumeRunResponse",
 			Leading: " ResumeRunResponse is the run that was started.\n",
 		},
@@ -1111,6 +1119,11 @@ func init() {
 			Name: "flowstate.v1.ResumeRunResponse.patch_digest",
 			Leading: " PatchDigest is the canonical digest of the patched workflow, empty when no\n" +
 				" patch was given.\n",
+		},
+		{
+			Name: "flowstate.v1.ResumeRunResponse.reused",
+			Leading: " Reused is true when this describes the run an earlier request with the same\n" +
+				" `request_id` already started.\n",
 		},
 		{
 			Name:    "flowstate.v1.GetTimelineResponse",
