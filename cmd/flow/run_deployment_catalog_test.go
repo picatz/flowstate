@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -23,9 +24,15 @@ type catalogServer struct {
 	flowstatev1connect.UnimplementedWorkflowServiceHandler
 
 	plugins *v1.PluginCatalog
+	// catalogCalls, when set, counts GetCatalog requests.
+	catalogCalls *atomic.Int32
 }
 
 func (s catalogServer) GetCatalog(context.Context, *connect.Request[v1.GetCatalogRequest]) (*connect.Response[v1.GetCatalogResponse], error) {
+	if s.catalogCalls != nil {
+		s.catalogCalls.Add(1)
+	}
+
 	return connect.NewResponse(&v1.GetCatalogResponse{Catalog: v1.Catalog(), Plugins: s.plugins}), nil
 }
 
@@ -92,8 +99,10 @@ func TestRunSubmitsACompiledSpecification(t *testing.T) {
 	specPath := filepath.Join(t.TempDir(), "spec.json")
 	require.NoError(t, os.WriteFile(specPath, []byte(compiled), 0o600))
 
+	var catalogCalls atomic.Int32
+
 	mux := http.NewServeMux()
-	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(catalogServer{}))
+	mux.Handle(flowstatev1connect.NewWorkflowServiceHandler(catalogServer{catalogCalls: &catalogCalls}))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
@@ -102,6 +111,7 @@ func TestRunSubmitsACompiledSpecification(t *testing.T) {
 		require.Error(t, err, "the stub server refuses every submission:\n%s", output)
 		assert.Contains(t, output, "starting plugin-greeting",
 			"the specification never reached the server:\n%s", output)
+		assert.Zero(t, catalogCalls.Load(), "--spec fetched the deployment's catalog; the server validates and pins")
 	})
 
 	t.Run("a Flowfile is not a specification", func(t *testing.T) {
