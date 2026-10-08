@@ -471,9 +471,16 @@ func checkOutputEnumDomain(wf *v1.Workflow, scope refScope, declaration *v1.Outp
 		return nil
 	}
 
+	// Membership is built once: both lists are author-controlled and a Validate
+	// request may carry two large ones, so a scan of one per member of the other
+	// would be quadratic work an attacker chooses.
+	declared := make(map[string]struct{}, len(declaration.GetValues()))
+	for _, value := range declaration.GetValues() {
+		declared[value] = struct{}{}
+	}
 	var missing []string
 	for _, produced := range domain {
-		if !slices.Contains(declaration.GetValues(), produced) {
+		if _, ok := declared[produced]; !ok {
 			missing = append(missing, produced)
 		}
 	}
@@ -487,8 +494,22 @@ func checkOutputEnumDomain(wf *v1.Workflow, scope refScope, declaration *v1.Outp
 		Message: fmt.Sprintf(
 			"output %q is declared an enum of %s, but this expression can produce %s; "+
 				"add the missing values, or change the expression",
-			declaration.GetName(), quotedList(declaration.GetValues()), quotedList(missing)),
+			declaration.GetName(), quotedList(clipForMessage(declaration.GetValues())), quotedList(clipForMessage(missing))),
 	}
+}
+
+// maxListedValues bounds how many values a diagnostic spells out, so a message
+// about an oversized list stays a message.
+const maxListedValues = 10
+
+// clipForMessage is values cut to [maxListedValues] with a final element
+// saying how many more there are.
+func clipForMessage(values []string) []string {
+	if len(values) <= maxListedValues {
+		return values
+	}
+
+	return append(slices.Clone(values[:maxListedValues]), fmt.Sprintf("… and %d more", len(values)-maxListedValues))
 }
 
 // staticExpressionType reports the declared type an output expression is known

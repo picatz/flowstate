@@ -788,3 +788,39 @@ outputs:
 	assert.Empty(t, validateSwitchSrc(t, fmt.Sprintf(file, "approved, lapsed")), "a covering values list must validate")
 	assert.Empty(t, validateSwitchSrc(t, fmt.Sprintf(file, "approved, lapsed, rejected")), "extra values are allowed")
 }
+
+// TestEnumOutputDomainDiagnosticStaysBoundedOnLargeLists keeps #1554's check
+// near-linear and its message short when both lists are large: a Validate
+// request chooses their size.
+func TestEnumOutputDomainDiagnosticStaysBoundedOnLargeLists(t *testing.T) {
+	t.Parallel()
+
+	var inputValues, outputValues []string
+	for i := range 5000 {
+		inputValues = append(inputValues, fmt.Sprintf("in%d", i))
+		outputValues = append(outputValues, fmt.Sprintf("out%d", i))
+	}
+
+	ds := validateSwitchSrc(t, fmt.Sprintf(`edition: v2026.4
+name: t
+inputs:
+  x:
+    type: enum
+    values: [%s]
+    required: true
+steps:
+  - id: noop
+    log:
+      message: hi
+outputs:
+  y:
+    value: ${inputs.x}
+    type: enum
+    values: [%s]
+`, strings.Join(inputValues, ", "), strings.Join(outputValues, ", ")))
+
+	text := diagnosticMessages(ds)
+	require.Contains(t, text, "can produce", "the disjoint lists must still be refused")
+	assert.Contains(t, text, "… and ")
+	assert.Less(t, len(text), 2000, "the message spelled out every value")
+}
