@@ -51,6 +51,12 @@ type ErrRunFailed struct {
 	// without re-deriving it from a chain it has already flattened.
 	recordedFromTask bool
 
+	// expression is the structured account of the expression failure this run
+	// ended on, when it did (#1551): read back out of the activity's error
+	// details, and carried to the run's own failure so the server can answer it
+	// as `RunResponse.error.expression`.
+	expression *v1.ExpressionFailure
+
 	// recordedOwn is the outputs a step that owns an account of its own records
 	// in place of the bare `error` text ([v1.StepFailureRecord]): an exhausted
 	// loop's failure sentence plus the `results` that ran before the budget was
@@ -307,7 +313,28 @@ func failedAt(err error, position string) error {
 		Kind:             recordedStepKind(err),
 		sensitive:        v1.FailureSensitiveValues(err),
 		cause:            cause,
+		expression:       expressionOf(err, inner),
 	}
+}
+
+// expressionOf finds the structured account of an expression failure: the one an
+// inner failure already carries, or the one [activityError] attached to the
+// application error's details. A failure with neither has none.
+func expressionOf(err error, inner *ErrRunFailed) *v1.ExpressionFailure {
+	if inner != nil {
+		return inner.expression
+	}
+	if detail := v1.ExpressionFailureOf(err); detail != nil {
+		return detail
+	}
+	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok && app.HasDetails() {
+		var detail v1.ExpressionFailure
+		if app.Details(&detail) == nil && detail.GetOperator()+detail.GetSelected() != "" {
+			return &detail
+		}
+	}
+
+	return nil
 }
 
 // recordedStepError extracts the text a tolerated failure records as the step's
@@ -490,8 +517,13 @@ func classifyRunError(err error) error {
 		return err
 	}
 
+	details := []any{RunFailureMarker}
+	if run.expression != nil {
+		details = append(details, run.expression)
+	}
+
 	return temporal.NewApplicationErrorWithOptions(run.Error(), run.errorKind().String(),
-		temporal.ApplicationErrorOptions{Cause: err, Details: []any{RunFailureMarker}})
+		temporal.ApplicationErrorOptions{Cause: err, Details: details})
 }
 
 // RunFailureMarker is the detail [classifyRunError] puts on the application
@@ -1075,6 +1107,8 @@ func (e *executor) withheldRunFailure(ctx workflow.Context, err error, results [
 	if withholds {
 		results = withheldUndoResults(results, sensitive)
 		if ok {
+			// No expression: the structured account quotes the expression text the
+			// message is being redacted for.
 			inner = &ErrRunFailed{
 				Message:          sensitive.RedactText(inner.Message, "[withheld]"),
 				Recorded:         inner.Recorded,
@@ -1098,6 +1132,7 @@ func (e *executor) withheldRunFailure(ctx workflow.Context, err error, results [
 		recordedFromTask: inner.recordedFromTask,
 		Kind:             inner.Kind,
 		cause:            inner.cause,
+		expression:       inner.expression,
 	}
 }
 

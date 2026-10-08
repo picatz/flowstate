@@ -341,6 +341,14 @@ func activityError(taskName string, err error, continueOnError bool) error {
 	// the same sentence under either driver.
 	message := v1.StepErrorText(err)
 
+	// The structured account of an expression failure travels as the error's
+	// detail, so the run's `RunResponse.error.expression` reads the same fields
+	// under either driver (#1551). Absent for every other failure.
+	var details []any
+	if detail := v1.ExpressionFailureOf(err); detail != nil {
+		details = []any{detail}
+	}
+
 	var category temporal.ApplicationErrorCategory
 	if continueOnError && kind != v1.ErrorKindPolicyDenied {
 		category = temporal.ApplicationErrorCategoryBenign
@@ -359,6 +367,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 					Cause:          err,
 					NextRetryDelay: delay,
 					Category:       category,
+					Details:        details,
 				})
 		}
 
@@ -367,7 +376,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 		// explicitly now so the message carries the canonical text; the retry
 		// semantics are the same, and the type names the classification.
 		return temporal.NewApplicationErrorWithOptions(message, kind.String(),
-			temporal.ApplicationErrorOptions{Cause: err, Category: category})
+			temporal.ApplicationErrorOptions{Cause: err, Category: category, Details: details})
 	}
 
 	// NewNonRetryableApplicationError has no Options variant that also takes a
@@ -375,7 +384,7 @@ func activityError(taskName string, err error, continueOnError bool) error {
 	// retryable arms are, with NonRetryable pinned explicitly instead of relying
 	// on the constructor that cannot also carry Category.
 	return temporal.NewApplicationErrorWithOptions(message, kind.String(),
-		temporal.ApplicationErrorOptions{Cause: err, NonRetryable: true, Category: category})
+		temporal.ApplicationErrorOptions{Cause: err, NonRetryable: true, Category: category, Details: details})
 }
 
 // The first-party task span is [v1.StartTaskSpan], two packages up, and what is

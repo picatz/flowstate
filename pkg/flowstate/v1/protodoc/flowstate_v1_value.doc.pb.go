@@ -178,5 +178,53 @@ func init() {
 				" encoded in sorted key order, and a JSON object is unordered by\n" +
 				" definition.\n",
 		},
+		{
+			Name: "flowstate.v1.ExpressionFailure",
+			Leading: " ExpressionFailure is what a failed expression knew about itself, as fields a\n" +
+				" program can read without parsing the failure's words. It accompanies a failure\n" +
+				" of kind `Expression` whose cause was an operation with no overload for its\n" +
+				" operands, or a selection of a key that is not there; any other expression\n" +
+				" failure carries none.\n" +
+				"\n" +
+				" It quotes the failing expression's own source text (`subexpression`,\n" +
+				" `selected`), which is the author's and can hold literals, so it is treated\n" +
+				" exactly like the failure's message: a response whose message is redacted or\n" +
+				" withheld for a declared sensitive value carries no `expression` at all. Only\n" +
+				" `candidates` is restricted to the author's declared step and output names, and\n" +
+				" no field carries a runtime value, only type names.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.operator",
+			Leading: " Operator is the operator or function that failed, such as `+` or\n" +
+				" `size`. Empty when the failure was a selection.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.operand_types",
+			Leading: " OperandTypes names the type of each operand the operator saw, in order,\n" +
+				" such as `int` and `string`. A `?` stands for an operand that could not be\n" +
+				" evaluated again to find out.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.subexpression",
+			Leading: " Subexpression is the failing part of the expression, as source text cut to\n" +
+				" a bounded length.\n",
+		},
+		{
+			Name:    "flowstate.v1.ExpressionFailure.selected",
+			Leading: " Selected is the key a failed selection asked for. Empty for an operator.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.candidates",
+			Leading: " Candidates are the names that do exist where `selected` was asked for, when\n" +
+				" that is a step or a step's output: the author's own names, bounded and\n" +
+				" sorted. Empty when there is nothing to offer.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.offset",
+			Leading: " Offset is where the failing operation sits in the expression's own text, as\n" +
+				" a character offset from its start, so a consumer can point at it when\n" +
+				" `subexpression` repeats elsewhere in the expression. Unset when the\n" +
+				" expression carries no position for the node.\n",
+		},
 	})
 }

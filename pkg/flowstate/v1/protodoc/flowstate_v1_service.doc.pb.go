@@ -238,6 +238,12 @@ func init() {
 				" the argument to fix without parsing `message`.\n",
 		},
 		{
+			Name: "flowstate.v1.RunResponse.Error.expression",
+			Leading: " Expression says which operation failed and what it saw, when `kind` is\n" +
+				" `Expression` and the cause was an operator with no overload for its\n" +
+				" operands or a selection of a missing key. Unset for every other failure.\n",
+		},
+		{
 			Name:    "flowstate.v1.RunResponse.Status",
 			Leading: " Status is where a run is in its lifecycle.\n",
 		},

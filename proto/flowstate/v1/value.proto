@@ -223,3 +223,44 @@ message Value {
     CredentialRef credential_ref = 6;
   }
 }
+
+// ExpressionFailure is what a failed expression knew about itself, as fields a
+// program can read without parsing the failure's words. It accompanies a failure
+// of kind `Expression` whose cause was an operation with no overload for its
+// operands, or a selection of a key that is not there; any other expression
+// failure carries none.
+//
+// It quotes the failing expression's own source text (`subexpression`,
+// `selected`), which is the author's and can hold literals, so it is treated
+// exactly like the failure's message: a response whose message is redacted or
+// withheld for a declared sensitive value carries no `expression` at all. Only
+// `candidates` is restricted to the author's declared step and output names, and
+// no field carries a runtime value, only type names.
+message ExpressionFailure {
+  // Operator is the operator or function that failed, such as `+` or
+  // `size`. Empty when the failure was a selection.
+  string operator = 1 [(buf.validate.field).string.max_bytes = 256];
+
+  // OperandTypes names the type of each operand the operator saw, in order,
+  // such as `int` and `string`. A `?` stands for an operand that could not be
+  // evaluated again to find out.
+  repeated string operand_types = 2 [(buf.validate.field).repeated.max_items = 16];
+
+  // Subexpression is the failing part of the expression, as source text cut to
+  // a bounded length.
+  string subexpression = 3 [(buf.validate.field).string.max_bytes = 512];
+
+  // Selected is the key a failed selection asked for. Empty for an operator.
+  string selected = 4 [(buf.validate.field).string.max_bytes = 256];
+
+  // Candidates are the names that do exist where `selected` was asked for, when
+  // that is a step or a step's output: the author's own names, bounded and
+  // sorted. Empty when there is nothing to offer.
+  repeated string candidates = 5 [(buf.validate.field).repeated.max_items = 16];
+
+  // Offset is where the failing operation sits in the expression's own text, as
+  // a character offset from its start, so a consumer can point at it when
+  // `subexpression` repeats elsewhere in the expression. Unset when the
+  // expression carries no position for the node.
+  optional int32 offset = 6 [(buf.validate.field).int32.gte = 0];
+}

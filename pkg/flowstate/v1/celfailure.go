@@ -51,10 +51,10 @@ const maxFailureSubexpr = 256
 //
 // Returns "" when there is nothing to add: no node id, a node it cannot find, or
 // a failure that is not about an operation (a cost budget, a cancellation).
-func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, err error) string {
+func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, err error) (string, *ExpressionFailure) {
 	var celErr *types.Err
 	if !errors.As(err, &celErr) || celErr.NodeID() == 0 || parsed.GetExpr() == nil {
-		return ""
+		return "", nil
 	}
 
 	// Only the two failures the sentence leaves unexplained: an operation with
@@ -63,23 +63,27 @@ func (e *Evaluator) describeEvalFailure(ctx context.Context, env *cel.Env, parse
 	// went wrong in the words they have, and restating them would only
 	// lengthen a sentence that was complete.
 	if message := celErr.Error(); !strings.HasPrefix(message, "no such overload") && !strings.HasPrefix(message, "no such key") {
-		return ""
+		return "", nil
 	}
 
 	node, bound := findNode(parsed.GetExpr(), celErr.NodeID())
 	work := newFailureWork(e.limits.Cost)
 	if node == nil {
-		return ""
+		return "", nil
 	}
 
+	var text string
 	switch kind := node.GetExprKind().(type) {
 	case *v1alpha1.Expr_CallExpr:
-		return e.describeCall(ctx, env, parsed, activation, work, bound, node, kind.CallExpr)
+		text = e.describeCall(ctx, env, parsed, activation, work, bound, node, kind.CallExpr)
 	case *v1alpha1.Expr_SelectExpr:
-		return e.describeSelect(ctx, env, parsed, activation, work, bound, node, kind.SelectExpr)
+		text = e.describeSelect(ctx, env, parsed, activation, work, bound, node, kind.SelectExpr)
+	}
+	if text == "" {
+		return "", nil
 	}
 
-	return ""
+	return text, work.detail
 }
 
 // describeCall renders an operator or function failure: its name, the types it
@@ -106,7 +110,13 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 		what = `operator "?:"`
 	}
 
-	return fmt.Sprintf("%s applied to (%s) in `%s`", what, strings.Join(names, ", "), unparseNode(parsed, node))
+	subexpr := unparseNode(parsed, node)
+	work.detail.Operator = textbound.Cut(operatorName(call.GetFunction()), maxFailureFieldBytes)
+	work.detail.OperandTypes = names[:min(len(names), maxFailureOperands)]
+	work.detail.Subexpression = subexpr
+	work.detail.Offset = offsetOf(parsed, node)
+
+	return fmt.Sprintf("%s applied to (%s) in `%s`", what, strings.Join(names, ", "), subexpr)
 }
 
 // describeSelect renders a missing-key failure: the selection, and, when it
@@ -117,7 +127,11 @@ func (e *Evaluator) describeCall(ctx context.Context, env *cel.Env, parsed *v1al
 // prints. A map of data the run fetched is not listed, because its keys are the
 // data's and not the author's.
 func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1alpha1.ParsedExpr, activation any, work *failureWork, bound []string, node *v1alpha1.Expr, selection *v1alpha1.Expr_Select) string {
-	text := fmt.Sprintf("selecting %q in `%s`", selection.GetField(), unparseNode(parsed, node))
+	subexpr := unparseNode(parsed, node)
+	text := fmt.Sprintf("selecting %q in `%s`", selection.GetField(), subexpr)
+	work.detail.Selected = textbound.Cut(selection.GetField(), maxFailureFieldBytes)
+	work.detail.Subexpression = subexpr
+	work.detail.Offset = offsetOf(parsed, node)
 
 	if !stepsMapOperand(selection.GetOperand()) {
 		return text
@@ -162,6 +176,7 @@ func (e *Evaluator) describeSelect(ctx context.Context, env *cel.Env, parsed *v1
 		more = fmt.Sprintf(" (and %d more)", len(names)-maxFailureCandidates)
 		names = names[:maxFailureCandidates]
 	}
+	work.detail.Candidates = slices.Clone(names)
 
 	return fmt.Sprintf("%s; available: %s%s", text, strings.Join(names, ", "), more)
 }
@@ -173,6 +188,13 @@ const maxFailureEvals = 8
 // maxFailureNameLen bounds one listed candidate name.
 const maxFailureNameLen = 128
 
+// maxFailureFieldBytes and maxFailureOperands hold the structured account to the
+// limits ExpressionFailure declares in service.proto.
+const (
+	maxFailureFieldBytes = 256
+	maxFailureOperands   = 16
+)
+
 // failureWork is the one budget a failure's diagnostic work shares. Each operand
 // re-evaluation draws on the same cost the failed evaluation was allowed, so
 // describing a failure costs at most one more evaluation's worth in total, not
@@ -182,10 +204,13 @@ type failureWork struct {
 	remaining uint64
 	limited   bool
 	evals     int
+
+	// detail is the structured account being built beside the sentence.
+	detail *ExpressionFailure
 }
 
 func newFailureWork(cost uint64) *failureWork {
-	return &failureWork{remaining: cost, limited: cost > 0, evals: maxFailureEvals}
+	return &failureWork{remaining: cost, limited: cost > 0, evals: maxFailureEvals, detail: &ExpressionFailure{}}
 }
 
 // take reserves one operand evaluation, or reports the budget spent.
@@ -383,4 +408,28 @@ func unparseNode(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) string {
 // depth, not the control: that is listing only `steps` and `steps.<id>`.
 func declaredNameShape(name string) bool {
 	return len(name) <= maxFailureNameLen && IsCELIdentifier(name)
+}
+
+// operatorName is the operator as an author writes it (`+`), or the function's
+// own name when it has no operator spelling.
+func operatorName(function string) string {
+	if symbol, ok := operators.FindReverse(function); ok && symbol != "" {
+		return symbol
+	}
+	if function == operators.Conditional {
+		return "?:"
+	}
+
+	return function
+}
+
+// offsetOf is where node sits in the expression's text, or nil when the parsed
+// expression carries no position for it.
+func offsetOf(parsed *v1alpha1.ParsedExpr, node *v1alpha1.Expr) *int32 {
+	offset, ok := parsed.GetSourceInfo().GetPositions()[node.GetId()]
+	if !ok || offset < 0 {
+		return nil
+	}
+
+	return &offset
 }

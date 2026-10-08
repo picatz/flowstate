@@ -2039,8 +2039,13 @@ type HeldFailure struct {
 	// would be re-derived from has been flattened by then, which is exactly what
 	// `ErrRunFailed` exists to do.
 	RecordedFromTask bool `protobuf:"varint,5,opt,name=recorded_from_task,json=recordedFromTask,proto3" json:"recorded_from_task,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	// Expression is the structured account of the expression failure this held
+	// failure ended on, when it did, so a run that suspended while holding it
+	// reports the same `RunResponse.error.expression` as one that raised it
+	// without suspending.
+	Expression    *ExpressionFailure `protobuf:"bytes,6,opt,name=expression,proto3" json:"expression,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeldFailure) Reset() {
@@ -2106,6 +2111,13 @@ func (x *HeldFailure) GetRecordedFromTask() bool {
 		return x.RecordedFromTask
 	}
 	return false
+}
+
+func (x *HeldFailure) GetExpression() *ExpressionFailure {
+	if x != nil {
+		return x.Expression
+	}
+	return nil
 }
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.
@@ -3014,13 +3026,16 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\rheld_failures\x18\a \x03(\v2\x19.flowstate.v1.HeldFailureR\fheldFailures\x1aP\n" +
 	"\rCallVarsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12)\n" +
-	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xae\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\"\xef\x01\n" +
 	"\vHeldFailure\x12\x1f\n" +
 	"\astep_id\x18\x01 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x06stepId\x12 \n" +
 	"\amessage\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\amessage\x12\x12\n" +
 	"\x04kind\x18\x03 \x01(\tR\x04kind\x12\x1a\n" +
 	"\brecorded\x18\x04 \x01(\tR\brecorded\x12,\n" +
-	"\x12recorded_from_task\x18\x05 \x01(\bR\x10recordedFromTask\"\xd4\b\n" +
+	"\x12recorded_from_task\x18\x05 \x01(\bR\x10recordedFromTask\x12?\n" +
+	"\n" +
+	"expression\x18\x06 \x01(\v2\x1f.flowstate.v1.ExpressionFailureR\n" +
+	"expression\"\xd4\b\n" +
 	"\bRunState\x12>\n" +
 	"\bworkflow\x18\x01 \x01(\v2\x16.flowstate.v1.WorkflowB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\bworkflow\x12\x1b\n" +
@@ -3150,8 +3165,9 @@ var file_flowstate_v1_run_proto_goTypes = []any{
 	(*TriggerContext)(nil),              // 38: flowstate.v1.TriggerContext
 	(*timestamppb.Timestamp)(nil),       // 39: google.protobuf.Timestamp
 	(*Value)(nil),                       // 40: flowstate.v1.Value
-	(*Workflow)(nil),                    // 41: flowstate.v1.Workflow
-	(*RunOutputs)(nil),                  // 42: flowstate.v1.RunOutputs
+	(*ExpressionFailure)(nil),           // 41: flowstate.v1.ExpressionFailure
+	(*Workflow)(nil),                    // 42: flowstate.v1.Workflow
+	(*RunOutputs)(nil),                  // 43: flowstate.v1.RunOutputs
 }
 var file_flowstate_v1_run_proto_depIdxs = []int32{
 	0,  // 0: flowstate.v1.AttemptOutcome.effect:type_name -> flowstate.v1.AttemptOutcome.Effect
@@ -3184,35 +3200,36 @@ var file_flowstate_v1_run_proto_depIdxs = []int32{
 	29, // 27: flowstate.v1.Frame.call_vars:type_name -> flowstate.v1.Frame.CallVarsEntry
 	40, // 28: flowstate.v1.Frame.loop_state:type_name -> flowstate.v1.Value
 	18, // 29: flowstate.v1.Frame.held_failures:type_name -> flowstate.v1.HeldFailure
-	41, // 30: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
-	36, // 31: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
-	17, // 32: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
-	37, // 33: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
-	8,  // 34: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
-	30, // 35: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
-	31, // 36: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
-	42, // 37: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
-	7,  // 38: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
-	38, // 39: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
-	39, // 40: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
-	19, // 41: flowstate.v1.Checkpoint.state:type_name -> flowstate.v1.RunState
-	21, // 42: flowstate.v1.Checkpoint.origin:type_name -> flowstate.v1.CheckpointOrigin
-	11, // 43: flowstate.v1.CheckpointOrigin.run:type_name -> flowstate.v1.RunAddress
-	39, // 44: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
-	5,  // 45: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
-	40, // 46: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
-	40, // 47: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
-	40, // 48: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
-	40, // 49: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
-	40, // 50: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
-	40, // 51: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
-	40, // 52: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
-	40, // 53: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
-	54, // [54:54] is the sub-list for method output_type
-	54, // [54:54] is the sub-list for method input_type
-	54, // [54:54] is the sub-list for extension type_name
-	54, // [54:54] is the sub-list for extension extendee
-	0,  // [0:54] is the sub-list for field type_name
+	41, // 30: flowstate.v1.HeldFailure.expression:type_name -> flowstate.v1.ExpressionFailure
+	42, // 31: flowstate.v1.RunState.workflow:type_name -> flowstate.v1.Workflow
+	36, // 32: flowstate.v1.RunState.outputs:type_name -> flowstate.v1.Workflow.StepOutputs
+	17, // 33: flowstate.v1.RunState.frames:type_name -> flowstate.v1.Frame
+	37, // 34: flowstate.v1.RunState.identity:type_name -> flowstate.v1.WorkloadIdentity
+	8,  // 35: flowstate.v1.RunState.pending_signals:type_name -> flowstate.v1.PendingSignal
+	30, // 36: flowstate.v1.RunState.vars:type_name -> flowstate.v1.RunState.VarsEntry
+	31, // 37: flowstate.v1.RunState.inputs:type_name -> flowstate.v1.RunState.InputsEntry
+	43, // 38: flowstate.v1.RunState.run_outputs:type_name -> flowstate.v1.RunOutputs
+	7,  // 39: flowstate.v1.RunState.pending_undo:type_name -> flowstate.v1.PendingUndo
+	38, // 40: flowstate.v1.RunState.trigger:type_name -> flowstate.v1.TriggerContext
+	39, // 41: flowstate.v1.RunState.workload_started_at:type_name -> google.protobuf.Timestamp
+	19, // 42: flowstate.v1.Checkpoint.state:type_name -> flowstate.v1.RunState
+	21, // 43: flowstate.v1.Checkpoint.origin:type_name -> flowstate.v1.CheckpointOrigin
+	11, // 44: flowstate.v1.CheckpointOrigin.run:type_name -> flowstate.v1.RunAddress
+	39, // 45: flowstate.v1.TimelineEntry.time:type_name -> google.protobuf.Timestamp
+	5,  // 46: flowstate.v1.TimelineEntry.kind:type_name -> flowstate.v1.TimelineEntry.Kind
+	40, // 47: flowstate.v1.Scope.VarsEntry.value:type_name -> flowstate.v1.Value
+	40, // 48: flowstate.v1.Scope.AmbientVarsEntry.value:type_name -> flowstate.v1.Value
+	40, // 49: flowstate.v1.Scope.InputsEntry.value:type_name -> flowstate.v1.Value
+	40, // 50: flowstate.v1.EntityState.VarsEntry.value:type_name -> flowstate.v1.Value
+	40, // 51: flowstate.v1.EntityState.LoopStateEntry.value:type_name -> flowstate.v1.Value
+	40, // 52: flowstate.v1.Frame.CallVarsEntry.value:type_name -> flowstate.v1.Value
+	40, // 53: flowstate.v1.RunState.VarsEntry.value:type_name -> flowstate.v1.Value
+	40, // 54: flowstate.v1.RunState.InputsEntry.value:type_name -> flowstate.v1.Value
+	55, // [55:55] is the sub-list for method output_type
+	55, // [55:55] is the sub-list for method input_type
+	55, // [55:55] is the sub-list for extension type_name
+	55, // [55:55] is the sub-list for extension extendee
+	0,  // [0:55] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_run_proto_init() }

@@ -663,3 +663,24 @@ func blockReturnsCancellationsFirst(block *ast.BlockStmt) bool {
 
 	return false
 }
+
+// TestAHeldFailureCarriesItsExpressionAccountAcrossContinuation pins that the
+// structured account of an expression failure (#1551) crosses a Continue-As-New
+// with the rest of the held failure, so the run reports the same
+// `RunResponse.error.expression` whether or not a segment boundary fell there.
+func TestAHeldFailureCarriesItsExpressionAccountAcrossContinuation(t *testing.T) {
+	account := &v1.ExpressionFailure{Operator: "+", OperandTypes: []string{"int", "string"}, Subexpression: `a + "x"`}
+	held := []heldFailure{{
+		id:  "bad",
+		err: &ErrRunFailed{Message: `step "bad": no such overload`, Kind: v1.ErrorKindExpression, expression: account},
+	}}
+
+	back := heldFrom(heldAcross(held))
+	require.Len(t, back, 1)
+
+	var run *ErrRunFailed
+	require.True(t, errors.As(back[0].err, &run))
+	require.Equal(t, account.GetOperator(), run.expression.GetOperator())
+	require.Equal(t, account.GetOperandTypes(), run.expression.GetOperandTypes())
+	require.Equal(t, account.GetSubexpression(), run.expression.GetSubexpression())
+}
