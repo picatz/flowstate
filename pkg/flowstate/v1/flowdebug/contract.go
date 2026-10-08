@@ -581,11 +581,17 @@ func (s *Session) hold(
 		sensitive: s.sensitiveAt(ctx),
 	})
 	defer s.prompting(promptSubject{})
+	// Said before the stop is published: a front that waits for the held state
+	// writes its prompt the moment it sees it, and a heading printed after would
+	// race that prompt for the terminal. A session that ends in between has said
+	// one heading too many, which is the lesser fault.
+	if s.endedOrDetached() {
+		return nil
+	}
+	announce()
 	if !s.enterHeld(occurrence, reason, hitIDs, failure) {
 		return nil
 	}
-
-	announce()
 
 	for {
 		line, ok, readErr := s.readCommand(ctx)
@@ -639,6 +645,14 @@ func (s *Session) hold(
 		}
 		s.acknowledge(false)
 	}
+}
+
+// endedOrDetached reports whether the session can no longer hold a stop.
+func (s *Session) endedOrDetached() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return terminal(s.contract.state) || s.contract.detached
 }
 
 // enterHeld records a stop in the typed state, and reports false, recording
