@@ -55,6 +55,17 @@ type reversibleFront struct {
 
 	// Prompt is written before each read.
 	Prompt string
+
+	// mu serialises writes to Out: the shown run narrates from its own
+	// goroutine while the prompt loop answers from this one.
+	mu sync.Mutex
+}
+
+// write is the one way text reaches Out.
+func (f *reversibleFront) write(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, _ = io.WriteString(f.Out, text)
 }
 
 // run plays the case at the prompt and returns its result.
@@ -68,7 +79,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 	)
 	emit := f.Emit
 	if emit == nil {
-		emit = func(text string, _ flowdebug.Tone) { _, _ = io.WriteString(f.Out, text) }
+		emit = func(text string, _ flowdebug.Tone) { f.write(text) }
 	}
 
 	launch := stubbedCase{
@@ -115,19 +126,26 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		f.Console.SetCompleter(attachCompleter(ctx, driver))
 	}
 
-	// The first stop, or the end of a case with no steps to hold at.
-	for after := uint64(0); ; {
+	// The first stop, or the end of a case with no steps to hold at. after is
+	// the revision the run ended at, once it has: what follows is the case's
+	// verdict, or an autopsy, which holds a failed case for questions.
+	var after uint64
+	ended := false
+	for {
 		snapshot, err := reversible.WaitSnapshot(ctx, after)
-		if err != nil || snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
+		if err != nil {
 			break
 		}
 		after = snapshot.GetRevision()
-	}
+		if terminalDebugState(snapshot.GetState()) {
+			ended = true
 
-	// after is the revision the run ended at, once it has: what follows is the
-	// case's verdict, or an autopsy, which holds a failed case for questions.
-	var after uint64
-	ended := false
+			break
+		}
+		if snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
+			break
+		}
+	}
 	for {
 		if ended {
 			result, autopsy, err := awaitEnd(ctx, reversible, after, verdict)
@@ -137,7 +155,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 			ended = false
 		}
 		if f.Console == nil && f.Prompt != "" {
-			fmt.Fprint(f.Out, f.Prompt)
+			f.write(f.Prompt)
 		}
 		text, err := f.read()
 		if errors.Is(err, flowdebug.ErrConsoleInterrupted) {
@@ -167,7 +185,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 
 		result, err := driver.Do(ctx, line)
 		if err != nil {
-			fmt.Fprintf(f.Out, "%v\n", err)
+			f.write(fmt.Sprintf("%v\n", err))
 
 			continue
 		}
@@ -178,7 +196,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		// repeating that from the answer would say each stop twice. A rewind is
 		// not narrated, because the run it lands on was replayed in silence.
 		if !flowdebug.MovesForward(line) {
-			_, _ = io.WriteString(f.Out, result.Text)
+			f.write(result.Text)
 			if f.Panes != nil && flowdebug.StepsBack(line) && notDone(result) == nil {
 				f.Panes.paint()
 			}

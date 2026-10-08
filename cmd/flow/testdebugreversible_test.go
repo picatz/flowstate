@@ -212,3 +212,28 @@ func TestTheReversibleFrontHoldsAFailedCaseForQuestions(t *testing.T) {
 	assert.True(t, testReportFailed(result.Report), "the contradicted claim passed")
 	assert.Contains(t, text, "held at second", "back from the autopsy did not return to the last stop:\n"+text)
 }
+
+// TestTheReversibleFrontDoesNotPromptForACaseThatEndedBeforeAnyStop: with no
+// stop (here its workflow is missing) the case is over before the first prompt,
+// so none is asked.
+func TestTheReversibleFrontDoesNotPromptForACaseThatEndedBeforeAnyStop(t *testing.T) {
+	dir := writeDebugFixture(t)
+	require.NoError(t, os.Remove(filepath.Join(dir, "workflow.yaml")))
+
+	var out strings.Builder
+	front := &reversibleFront{
+		Path:   filepath.Join(dir, "workflow.test.yaml"),
+		Run:    flowtest.RunOptions{Select: func(name string) bool { return name == "the debugged case" }},
+		Out:    &out,
+		Prompt: flowdebug.Prompt,
+		Next: func() (string, error) {
+			t.Error("a finished case was prompted for a line")
+
+			return "", io.EOF
+		},
+	}
+	result, err := front.run(t.Context())
+	require.NoError(t, err)
+	assert.True(t, testReportFailed(result.Report), "a missing workflow cannot pass")
+	assert.NotContains(t, out.String(), flowdebug.Prompt)
+}
