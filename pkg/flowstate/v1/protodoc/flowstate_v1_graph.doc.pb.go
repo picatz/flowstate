@@ -110,8 +110,9 @@ func init() {
 				" reference from the explorer opens at the same place in the debugger.\n",
 		},
 		{
-			Name:    "flowstate.v1.GraphRef.attempt",
-			Leading: " Attempt is the attempt of the step, when the reference is to one.\n",
+			Name: "flowstate.v1.GraphRef.attempt",
+			Leading: " Attempt is the attempt of the step, counting from 1, when the reference is\n" +
+				" to one.\n",
 		},
 		{
 			Name:    "flowstate.v1.GraphNodeKind",

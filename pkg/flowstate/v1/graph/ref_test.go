@@ -96,6 +96,7 @@ func TestRefRefusesWhatItCannotMean(t *testing.T) {
 		{"run without id", &v1.GraphRef{RunId: "r"}, "need a workflow_id"},
 		{"step without run", &v1.GraphRef{WorkflowId: "w", Step: "s"}, "step needs a run_id"},
 		{"attempt without step", &v1.GraphRef{WorkflowId: "w", RunId: "r", Attempt: attempt(1)}, "attempt needs a step"},
+		{"attempt zero", &v1.GraphRef{WorkflowId: "w", RunId: "r", Step: "s", Attempt: attempt(0)}, "attempt counts from 1"},
 		{"long id", &v1.GraphRef{WorkflowId: strings.Repeat("x", graph.MaxRefNameRunes+1)}, "workflow_id is 257 characters"},
 		{"bad utf-8", &v1.GraphRef{WorkflowId: "\xff"}, "workflow_id is not valid UTF-8"},
 	} {
@@ -106,6 +107,51 @@ func TestRefRefusesWhatItCannotMean(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+// The schema and the Go helpers must agree on which references mean something,
+// so a surface that only runs schema validation cannot admit one the helpers
+// refuse.
+func TestRefSchemaRulesMatchRefLevel(t *testing.T) {
+	for _, ref := range []*v1.GraphRef{
+		{},
+		{WorkflowName: "a"},
+		{WorkflowId: "w"},
+		{WorkflowId: "w", RunId: "r", Step: "s", Attempt: attempt(1)},
+		{WorkflowName: "a", WorkflowId: "b"},
+		{RunId: "r"},
+		{WorkflowId: "w", Step: "s"},
+		{WorkflowId: "w", RunId: "r", Attempt: attempt(1)},
+		{WorkflowId: "w", RunId: "r", Step: "s", Attempt: attempt(0)},
+	} {
+		_, levelErr := graph.RefLevel(ref)
+		schemaErr := v1.Validate(ref)
+		assert.Equal(t, levelErr == nil, schemaErr == nil, "%v: RefLevel said %v, the schema said %v", ref, levelErr, schemaErr)
+	}
+}
+
+// The longest reference the schema accepts must survive both spellings: the
+// parsers' size bound has to sit above what the formatters can write.
+func TestRefLongestValidReferenceRoundTrips(t *testing.T) {
+	name := strings.Repeat("𝒳", graph.MaxRefNameRunes)
+	ref := &v1.GraphRef{
+		WorkflowId: name, RunId: name, Step: strings.Repeat("𝒳", graph.MaxRefStepRunes), Attempt: attempt(4_000_000_000),
+	}
+	require.NoError(t, v1.Validate(ref))
+
+	uri, err := graph.FormatURI(ref)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(uri), graph.MaxRefBytes)
+	back, err := graph.ParseURI(uri)
+	require.NoError(t, err)
+	assert.True(t, proto.Equal(ref, back))
+
+	short, err := graph.FormatShorthand(ref)
+	require.NoError(t, err)
+	require.LessOrEqual(t, len(short), graph.MaxRefBytes)
+	back, err = graph.ParseShorthand(short)
+	require.NoError(t, err)
+	assert.True(t, proto.Equal(ref, back))
 }
 
 func TestParseRefRefusesMalformedText(t *testing.T) {

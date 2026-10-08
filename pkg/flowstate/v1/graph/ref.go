@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -21,10 +22,11 @@ const (
 	// debug address.
 	MaxRefStepRunes = v1.MaxDebugAddressRunes
 
-	// MaxRefBytes is the longest text a parser reads. Every id is escaped at
-	// most threefold, so this is above the longest valid spelling and below
-	// anything worth allocating for.
-	MaxRefBytes = 3 * (3*MaxRefNameRunes + 4*MaxRefStepRunes + 64)
+	// MaxRefBytes is the longest text a parser reads: the longest reference the
+	// schema accepts, with every character a four-byte rune that percent-encoding
+	// writes as twelve bytes, plus the scheme and separators. A parser refuses
+	// more before doing any work.
+	MaxRefBytes = 12*(3*MaxRefNameRunes+MaxRefStepRunes) + 256
 )
 
 // uriScheme is the scheme of the canonical spelling. It extends the
@@ -93,6 +95,9 @@ func RefLevel(ref *v1.GraphRef) (Level, error) {
 		hasStep = ref.GetStep() != ""
 		hasTry  = ref.Attempt != nil
 	)
+	if hasTry && ref.GetAttempt() == 0 {
+		return 0, errors.New("attempt counts from 1")
+	}
 	switch {
 	case named && (hasID || hasRun || hasStep || hasTry):
 		return 0, errors.New("workflow_name addresses a definition and cannot be combined with workflow_id, run_id, step or attempt")
@@ -342,9 +347,5 @@ func parseAttempt(s string) (*uint32, error) {
 
 // clip keeps untrusted text quoted in an error short.
 func clip(s string) string {
-	const limit = 64
-	if len(s) <= limit {
-		return s
-	}
-	return strings.ToValidUTF8(s[:limit], "") + "…"
+	return textbound.Truncate(s, 64)
 }

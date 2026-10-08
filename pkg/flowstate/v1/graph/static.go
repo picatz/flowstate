@@ -9,6 +9,7 @@ import (
 
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
@@ -236,10 +237,5 @@ func withoutSourceDigest(wf *v1.Workflow) *v1.Workflow {
 // clipName quotes a name for a note, shortened so a note stays inside the
 // schema's bound on one however hostile the name is.
 func clipName(name string) string {
-	const limit = 64
-	if r := []rune(name); len(r) > limit {
-		name = string(r[:limit]) + "…"
-	}
-
-	return strconv.Quote(name)
+	return strconv.Quote(textbound.Truncate(name, 64))
 }

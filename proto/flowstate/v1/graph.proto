@@ -114,6 +114,27 @@ enum GraphEdgeKind {
 //   - `workflow_id`, `run_id` and `step`: a step of that run.
 //   - `attempt` as well: one attempt of that step.
 message GraphRef {
+  option (buf.validate.message).cel = {
+    id: "graph_ref.definition"
+    message: "workflow_name addresses a definition and cannot be combined with workflow_id, run_id, step or attempt"
+    expression: "this.workflow_name == '' || (this.workflow_id == '' && this.run_id == '' && this.step == '' && !has(this.attempt))"
+  };
+  option (buf.validate.message).cel = {
+    id: "graph_ref.run"
+    message: "run_id, step and attempt need a workflow_id"
+    expression: "this.workflow_id != '' || (this.run_id == '' && this.step == '' && !has(this.attempt))"
+  };
+  option (buf.validate.message).cel = {
+    id: "graph_ref.step"
+    message: "step needs a run_id"
+    expression: "this.step == '' || this.run_id != ''"
+  };
+  option (buf.validate.message).cel = {
+    id: "graph_ref.attempt"
+    message: "attempt needs a step"
+    expression: "!has(this.attempt) || this.step != ''"
+  };
+
   // WorkflowName is the declared name of a workflow definition.
   string workflow_name = 1 [(buf.validate.field).string = {max_len: 256}];
 
@@ -128,6 +149,7 @@ message GraphRef {
   // reference from the explorer opens at the same place in the debugger.
   string step = 4 [(buf.validate.field).string = {max_len: 4096}];
 
-  // Attempt is the attempt of the step, when the reference is to one.
-  optional uint32 attempt = 5;
+  // Attempt is the attempt of the step, counting from 1, when the reference is
+  // to one.
+  optional uint32 attempt = 5 [(buf.validate.field).uint32.gte = 1];
 }

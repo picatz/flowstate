@@ -391,7 +391,8 @@ type GraphRef struct {
 	// Step is a debug address in the form `FormatDebugAddress` writes, so a
 	// reference from the explorer opens at the same place in the debugger.
 	Step string `protobuf:"bytes,4,opt,name=step,proto3" json:"step,omitempty"`
-	// Attempt is the attempt of the step, when the reference is to one.
+	// Attempt is the attempt of the step, counting from 1, when the reference is
+	// to one.
 	Attempt       *uint32 `protobuf:"varint,5,opt,name=attempt,proto3,oneof" json:"attempt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -485,14 +486,18 @@ const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x02to\x12;\n" +
 	"\x04kind\x18\x03 \x01(\x0e2\x1b.flowstate.v1.GraphEdgeKindB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x14\n" +
-	"\x05count\x18\x04 \x01(\rR\x05count\"\xce\x01\n" +
+	"\x05count\x18\x04 \x01(\rR\x05count\"\x88\x06\n" +
 	"\bGraphRef\x12-\n" +
 	"\rworkflow_name\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\fworkflowName\x12)\n" +
 	"\vworkflow_id\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\n" +
 	"workflowId\x12\x1f\n" +
 	"\x06run_id\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05runId\x12\x1c\n" +
-	"\x04step\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04step\x12\x1d\n" +
-	"\aattempt\x18\x05 \x01(\rH\x00R\aattempt\x88\x01\x01B\n" +
+	"\x04step\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04step\x12&\n" +
+	"\aattempt\x18\x05 \x01(\rB\a\xbaH\x04*\x02(\x01H\x00R\aattempt\x88\x01\x01:\xae\x04\xbaH\xaa\x04\x1a\xf1\x01\n" +
+	"\x14graph_ref.definition\x12eworkflow_name addresses a definition and cannot be combined with workflow_id, run_id, step or attempt\x1arthis.workflow_name == '' || (this.workflow_id == '' && this.run_id == '' && this.step == '' && !has(this.attempt))\x1a\x94\x01\n" +
+	"\rgraph_ref.run\x12+run_id, step and attempt need a workflow_id\x1aVthis.workflow_id != '' || (this.run_id == '' && this.step == '' && !has(this.attempt))\x1aK\n" +
+	"\x0egraph_ref.step\x12\x13step needs a run_id\x1a$this.step == '' || this.run_id != ''\x1aP\n" +
+	"\x11graph_ref.attempt\x12\x14attempt needs a step\x1a%!has(this.attempt) || this.step != ''B\n" +
 	"\n" +
 	"\b_attempt*\x84\x01\n" +
 	"\rGraphNodeKind\x12\x1f\n" +
