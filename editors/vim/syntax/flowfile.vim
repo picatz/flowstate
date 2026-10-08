@@ -17,7 +17,8 @@ syn case match
 
 " CEL ------------------------------------------------------------------------
 syn match   flowfileCelComment  contained /\/\/.*$/
-syn region  flowfileCelString   contained start=/\c\%(\<\%(rb\|br\|r\|b\)\)\=\z(["']\)/ skip=/\\./ end=/\z1/ oneline
+syn region  flowfileCelStringD  contained start=/\c\%(\<\%(rb\|br\|r\|b\)\)\="/ skip=/\\./ end=/"/ oneline
+syn region  flowfileCelStringS  contained start=/\c\%(\<\%(rb\|br\|r\|b\)\)\='/ skip=/\\./ end=/'/ oneline
 syn match   flowfileCelNumber   contained /\<\%(0[xX]\x\+\|\d\+\%(\.\d\+\)\=\%([eE][+-]\=\d\+\)\=\)[uU]\=\>/
 syn keyword flowfileCelKeyword  contained true false null in
 syn keyword flowfileCelRoot     contained inputs vars steps run event trigger response this now sender
@@ -26,22 +27,33 @@ syn match   flowfileCelMember   contained /\.\zs\h\w*/ contains=NONE
 syn match   flowfileCelOperator contained /&&\|||\|==\|!=\|<=\|>=\|\.?\|[-+*%!<>?:]/
 syn region  flowfileCelBraces   contained matchgroup=flowfileCelOperator start=/{/ end=/}/ oneline transparent contains=@flowfileCel
 
-syn cluster flowfileCel contains=flowfileCelComment,flowfileCelString,flowfileCelNumber,flowfileCelKeyword,flowfileCelRoot,flowfileCelFunction,flowfileCelMember,flowfileCelOperator,flowfileCelBraces
+syn cluster flowfileCelCore contains=flowfileCelComment,flowfileCelNumber,flowfileCelKeyword,flowfileCelRoot,flowfileCelFunction,flowfileCelMember,flowfileCelOperator,flowfileCelBraces
+syn cluster flowfileCel contains=@flowfileCelCore,flowfileCelStringD,flowfileCelStringS
+" Inside a YAML-quoted predicate the outer quote is YAML's, so only the other
+" quote can open a CEL string.
+syn cluster flowfileCelInDq contains=@flowfileCelCore,flowfileCelStringS
+syn cluster flowfileCelInSq contains=@flowfileCelCore,flowfileCelStringD
 
-" A fence. Nested braces (a map literal) are consumed by flowfileCelBraces, so the
-" first unmatched } is the fence's own.
-syn region flowfileFence matchgroup=flowfileFenceDelim start=/\${/ end=/}/ contains=@flowfileCel oneline containedin=yamlFlowString,yamlPlainScalar,yamlBlockString,yamlFlowMappingVal,yamlFlowMappingKey,yamlString
+" A fence. A $ before the ${ makes it the escaped opening $${, which is literal
+" text (interp.go). Nested braces (a map literal) are consumed by flowfileCelBraces,
+" so the first unmatched } is the fence's own. A fence may span lines in a block
+" scalar; an unfinished one stops where the next line reads as a YAML key or item.
+syn region flowfileFence matchgroup=flowfileFenceDelim start=/\%(\$\)\@1<!\${/ end=/}/ end=/\n\ze\s*\%(-\s\+\)\=[[:alnum:]_"'.-]\+:\%(\s\|$\)/ end=/\n\ze\s*-\s/ contains=@flowfileCel containedin=yamlFlowString,yamlPlainScalar,yamlBlockString,yamlFlowMappingVal,yamlFlowMappingKey,yamlString
 
-" A bare-CEL value: everything after `must:` up to a trailing YAML comment.
-syn match flowfileMustKey /^\s*\%(-\s\+\)\=must:\ze\s/ nextgroup=flowfileMustVal skipwhite
-syn match flowfileMustVal contained /\%([^#]\|\S#\)\+/ contains=@flowfileCel nextgroup=flowfileMustComment skipwhite
+" A bare-CEL value: everything after `must:` up to a trailing YAML comment. A
+" value that opens with a quote is a YAML-quoted predicate; the quotes are YAML's.
+syn match flowfileMustKey /^\s*\%(-\s\+\)\=must:\ze\s/ nextgroup=flowfileMustVal,flowfileMustDq,flowfileMustSq skipwhite
+syn match flowfileMustVal contained /[^"'#[:space:]]\%([^#]\|\S#\)*/ contains=@flowfileCel nextgroup=flowfileMustComment skipwhite
+syn region flowfileMustDq contained matchgroup=yamlString start=/"/ skip=/\\./ end=/"/ oneline contains=@flowfileCelInDq nextgroup=flowfileMustComment skipwhite
+syn region flowfileMustSq contained matchgroup=yamlString start=/'/ skip=/''/ end=/'/ oneline contains=@flowfileCelInSq nextgroup=flowfileMustComment skipwhite
 syn match flowfileMustComment contained /#.*$/
 
 hi def link flowfileMustKey yamlBlockMappingKey
 hi def link flowfileMustComment yamlComment
 hi def link flowfileFenceDelim PreProc
 hi def link flowfileCelComment Comment
-hi def link flowfileCelString  String
+hi def link flowfileCelStringD String
+hi def link flowfileCelStringS String
 hi def link flowfileCelNumber  Number
 hi def link flowfileCelKeyword Keyword
 hi def link flowfileCelRoot    Identifier

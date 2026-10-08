@@ -11,3 +11,11 @@ steps:
       message: "hi ${size(steps.say.out)} and ${{'a': 1}.a}"
       other: plain ${a.b} text
       # a comment mentioning ${inputs.n}
+      escaped: $${inputs.version} literal
+      multi: |-
+        first ${size(
+          inputs.xs)} tail
+      broken: ${inputs.n
+      after: plain
+  - id: quoted
+    must: "this >= 1 && this != 'a'"

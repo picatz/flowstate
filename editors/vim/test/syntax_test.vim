@@ -72,10 +72,29 @@ call s:Expect(6, 'this', 'flowfileCelRoot', 0)
 call s:Expect(9, 'inputs', 'flowfileCelRoot')
 call s:Expect(9, '1', 'flowfileCelNumber')
 call s:Expect(11, 'size', 'flowfileCelFunction')
-call s:Expect(11, "'a'", 'flowfileCelString')
+call s:Expect(11, "'a'", 'flowfileCelStringS')
 call s:Expect(11, '.a}', 'flowfileFence')
 " Text between fences is YAML's.
-call s:Expect(12, 'plain', 'flowfileFence', 0)
+call s:Expect(11, 'and', 'flowfileFence', 0)
+call s:Expect(12, 'text', 'flowfileFence', 0)
+call s:Expect(12, 'a.b', 'flowfileFence')
+" $${ is an escaped opening: literal text, not a fence.
+call s:Expect(14, 'inputs', 'flowfileFence', 0)
+call s:Expect(14, 'literal', 'flowfileFence', 0)
+" A fence may span lines in a block scalar and ends at its own brace.
+call s:Expect(16, 'size', 'flowfileCelFunction')
+call s:Expect(17, 'inputs', 'flowfileCelRoot')
+call s:Expect(17, 'tail', 'flowfileFence', 0)
+" An unfinished fence stops at the next YAML key.
+call s:Expect(18, 'inputs', 'flowfileCelRoot')
+call s:Expect(19, 'plain', 'flowfileFence', 0)
+call s:Expect(19, 'after', 'flowfileFence', 0)
+" A YAML-quoted predicate: the outer quotes are YAML's, a CEL string inside is CEL's.
+call s:Expect(21, 'this', 'flowfileCelRoot')
+call s:Expect(21, '>=', 'flowfileCelOperator')
+call s:Expect(21, '1', 'flowfileCelNumber')
+call s:Expect(21, "'a'", 'flowfileCelStringS')
+call s:Expect(21, 'this', 'flowfileCelStringD', 0)
 " A fence-looking comment is a comment.
 call s:Expect(13, 'inputs', 'flowfileFence', 0)
 
