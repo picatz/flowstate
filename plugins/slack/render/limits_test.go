@@ -75,6 +75,9 @@ func TestEveryLimitIsEnforcedWithItsPath(t *testing.T) {
 		{"initial option outside options", []*slackv1.Block{actions(&slackv1.Element{Kind: &slackv1.Element_StaticSelect{StaticSelect: &slackv1.StaticSelect{
 			ActionId: "s", Placeholder: plain("p"), Options: []*slackv1.Option{opt("a", "a")}, InitialOption: opt("z", "z"),
 		}}})}, "blocks[0].actions.elements[0].static_select.initial_option"},
+		{"initial option sharing only a value", []*slackv1.Block{actions(&slackv1.Element{Kind: &slackv1.Element_StaticSelect{StaticSelect: &slackv1.StaticSelect{
+			ActionId: "s", Placeholder: plain("p"), Options: []*slackv1.Option{opt("A", "a")}, InitialOption: opt("Other", "a"),
+		}}})}, "blocks[0].actions.elements[0].static_select.initial_option"},
 		{"image in actions", []*slackv1.Block{actions(&slackv1.Element{Kind: &slackv1.Element_Image{Image: &slackv1.Image{Url: "https://x.test/a.png", AltText: "a"}}})}, "blocks[0].actions.elements[0].image"},
 		{"http image", []*slackv1.Block{{Kind: &slackv1.Block_Image{Image: &slackv1.Image{Url: "http://x.test/a.png", AltText: "a"}}}}, "blocks[0].image.url"},
 	} {

@@ -4,6 +4,7 @@ import (
 	"unicode/utf8"
 
 	chatv1 "github.com/picatz/flowstate/pkg/flowstate/chat/v1"
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	slackv1 "github.com/picatz/flowstate/plugins/slack/gen/slack/v1"
@@ -24,20 +25,30 @@ type body struct {
 // is text, a card, or blocks, and text beside a card or blocks is its fallback.
 // It is pure, so the rules run before any request and are tested without one.
 func buildBody(text string, card *chatv1.Card, blocks []*slackv1.Block) (*body, error) {
-	if !utf8.ValidString(text) || utf8.RuneCountInString(text) > render.MaxMessageText {
-		return nil, sdk.InvalidInput("text must be valid UTF-8 and no longer than %d characters", render.MaxMessageText)
+	if !utf8.ValidString(text) || utf8.RuneCountInString(render.Escape(text)) > render.MaxMessageText {
+		return nil, sdk.InvalidInput("text must be valid UTF-8 and, once &, < and > are escaped, no longer than %d characters", render.MaxMessageText)
 	}
 	if card != nil && len(blocks) > 0 {
 		return nil, sdk.InvalidInput("card and blocks are alternatives: use card for a preset layout, or blocks for native Block Kit, not both")
 	}
 	switch {
 	case card != nil:
+		// The host validates literals, but an expression builds its value at
+		// run time, so the rules are repeated here before rendering.
+		if err := flowstatev1.Validate(card); err != nil {
+			return nil, sdk.InvalidInput("card: %v", err)
+		}
 		rendered, err := render.Card(card)
 		if err != nil {
 			return nil, sdk.InvalidInput("%v", err)
 		}
 		return withFallback(text, rendered), nil
 	case len(blocks) > 0:
+		for i, b := range blocks {
+			if err := flowstatev1.Validate(b); err != nil {
+				return nil, sdk.InvalidInput("blocks[%d]: %v", i, err)
+			}
+		}
 		rendered, err := render.Blocks(blocks)
 		if err != nil {
 			return nil, sdk.InvalidInput("%v", err)

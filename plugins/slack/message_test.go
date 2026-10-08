@@ -233,10 +233,17 @@ func TestUpdateWithAStatusCard(t *testing.T) {
 
 func TestUpdateInputBounds(t *testing.T) {
 	for name, mutate := range map[string]func(*slackv1.UpdateInputs){
-		"channel name":    func(in *slackv1.UpdateInputs) { in.Channel = "general" },
-		"missing ts":      func(in *slackv1.UpdateInputs) { in.Ts = "" },
-		"nothing to send": func(in *slackv1.UpdateInputs) { in.Text = "" },
-		"card and blocks": func(in *slackv1.UpdateInputs) { in.Card, in.Blocks = testCard(), testBlocks() },
+		"channel name":                     func(in *slackv1.UpdateInputs) { in.Channel = "general" },
+		"missing ts":                       func(in *slackv1.UpdateInputs) { in.Ts = "" },
+		"nothing to send":                  func(in *slackv1.UpdateInputs) { in.Text = "" },
+		"card and blocks":                  func(in *slackv1.UpdateInputs) { in.Card, in.Blocks = testCard(), testBlocks() },
+		"text that escapes past the limit": func(in *slackv1.UpdateInputs) { in.Text = strings.Repeat("&", 3000) },
+		"card the schema refuses": func(in *slackv1.UpdateInputs) {
+			in.Text = ""
+			in.Card = &chatv1.Card{Kind: &chatv1.Card_Status{Status: &chatv1.Status{
+				Title: &chatv1.Text{Kind: &chatv1.Text_Plain{Plain: "t"}}, Progress: &chatv1.Progress{Total: 0},
+			}}}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			in := &slackv1.UpdateInputs{Channel: "C123APPROVAL", Ts: threadTS, Text: "x"}

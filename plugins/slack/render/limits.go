@@ -2,7 +2,9 @@ package render
 
 import (
 	"fmt"
+	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -251,8 +253,8 @@ func (v *validator) element(path string, e Element, ids map[string]bool) {
 			v.add(path+".options", "%d options, Slack requires 1 to %d", n, MaxSelectOptions)
 		}
 		v.options(path, e.Options)
-		if e.InitialOption != nil && !hasOption(e.Options, e.InitialOption.Value) {
-			v.add(path+".initial_option", "value %q is not one of the options", e.InitialOption.Value)
+		if e.InitialOption != nil && !hasOption(e.Options, *e.InitialOption) {
+			v.add(path+".initial_option", "value %q is not one of the options; Slack needs the whole option (text, value and description) to match", e.InitialOption.Value)
 		}
 		v.confirm(path+".confirm", e.Confirm)
 	case OverflowElement:
@@ -294,13 +296,10 @@ func (v *validator) options(path string, opts []OptionObject) {
 	}
 }
 
-func hasOption(opts []OptionObject, value string) bool {
-	for _, o := range opts {
-		if o.Value == value {
-			return true
-		}
-	}
-	return false
+// hasOption reports whether initial is one of opts. Slack matches the whole
+// option object, so a shared value with different text is not a match.
+func hasOption(opts []OptionObject, initial OptionObject) bool {
+	return slices.ContainsFunc(opts, func(o OptionObject) bool { return reflect.DeepEqual(o, initial) })
 }
 
 func (v *validator) confirm(path string, c *ConfirmObject) {
