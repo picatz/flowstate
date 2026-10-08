@@ -263,3 +263,27 @@ func TestCompileCompilesEveryExample(t *testing.T) {
 		})
 	}
 }
+
+// TestCompileSchemaWritesTheContractAsJSONSchema pins that `--schema` answers with the
+// projection of the declarations and not the specification, through the real command.
+func TestCompileSchemaWritesTheContractAsJSONSchema(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "record-types", "workflow.yaml")
+
+	out, errOut, err := compileOutput(t, path, "--schema", "inputs")
+	require.NoError(t, err, "stderr said:\n%s", errOut)
+
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal([]byte(out), &schema), "the answer is not a JSON document:\n%s", out)
+	assert.Equal(t, "https://json-schema.org/draft/2020-12/schema", schema["$schema"])
+	assert.Contains(t, schema["properties"], "order")
+	assert.Contains(t, schema["$defs"], "Order")
+	assert.NotContains(t, schema, "steps", "this is the contract, not the specification")
+
+	outputs, _, err := compileOutput(t, path, "--schema", "outputs", "-o", "jsonl")
+	require.NoError(t, err)
+	assert.Equal(t, 1, strings.Count(strings.TrimSpace(outputs), "\n")+1, "jsonl is one line")
+
+	_, _, err = compileOutput(t, path, "--schema", "steps")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"inputs" or "outputs"`)
+}
