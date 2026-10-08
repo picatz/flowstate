@@ -204,3 +204,79 @@ func TestFailureDiagnosticsChargeTheCostAnEvaluationReports(t *testing.T) {
 	work.spend(&cel.EvalDetails{})
 	assert.Zero(t, work.remaining, "an evaluation that reports no cost spends the rest")
 }
+
+// TestAnExpressionFailureHasItsFieldsBesideItsSentence pins the structured half
+// of #1551: the same facts the sentence states, as fields a program reads.
+func TestAnExpressionFailureHasItsFieldsBesideItsSentence(t *testing.T) {
+	t.Parallel()
+
+	steps := map[string]any{"n": map[string]any{"value": int64(2)}}
+
+	_, err := evalInProfile(t, `steps.n.value + "x"`, map[string]any{"steps": steps})
+	detail := ExpressionFailureOf(err)
+	require.NotNil(t, detail)
+	assert.Equal(t, "+", detail.GetOperator())
+	assert.Equal(t, []string{"int", "string"}, detail.GetOperandTypes())
+	assert.Equal(t, `steps.n.value + "x"`, detail.GetSubexpression())
+	assert.Empty(t, detail.GetSelected())
+	require.NotNil(t, detail.Offset, "the operator's position in the expression is reported")
+	assert.Equal(t, int32(strings.Index(`steps.n.value + "x"`, "+")), detail.GetOffset())
+
+	_, err = evalInProfile(t, `steps.n.valu`, map[string]any{"steps": steps})
+	detail = ExpressionFailureOf(err)
+	require.NotNil(t, detail)
+	assert.Equal(t, "valu", detail.GetSelected())
+	assert.Equal(t, []string{"value"}, detail.GetCandidates())
+	assert.Empty(t, detail.GetOperator())
+
+	_, err = evalInProfile(t, `inputs.payload.missing`, map[string]any{
+		"inputs": map[string]any{"payload": map[string]any{"k": "v"}},
+	})
+	detail = ExpressionFailureOf(err)
+	require.NotNil(t, detail)
+	assert.Empty(t, detail.GetCandidates(), "a map outside steps lists nothing")
+}
+
+// TestTheStructuredAccountHonorsTheLimitsItsSchemaDeclares pins that an
+// over-long selected key is cut to the bound service.proto declares, so the
+// fields can be returned without a second check.
+func TestTheStructuredAccountHonorsTheLimitsItsSchemaDeclares(t *testing.T) {
+	t.Parallel()
+
+	long := strings.Repeat("k", 1000)
+	_, err := evalInProfile(t, `inputs.payload.`+long, map[string]any{
+		"inputs": map[string]any{"payload": map[string]any{}},
+	})
+	detail := ExpressionFailureOf(err)
+	require.NotNil(t, detail)
+	assert.LessOrEqual(t, len(detail.GetSelected()), maxFailureFieldBytes)
+	assert.LessOrEqual(t, len(detail.GetSubexpression()), 512)
+}
+
+// TestAWithheldFailureDropsItsStructuredAccount pins the fail-closed rule: a
+// response whose message is redacted or withheld for a sensitive value does not
+// keep the expression fields, which quote the same text.
+func TestAWithheldFailureDropsItsStructuredAccount(t *testing.T) {
+	t.Parallel()
+
+	failing := func() *GetResponse {
+		return &GetResponse{Kind: &GetResponse_Error{Error: &RunResponse_Error{
+			Message:    "evaluate expression: no such overload",
+			Kind:       ErrorKindExpression.String(),
+			Expression: &ExpressionFailure{Operator: "+", Subexpression: `inputs.pin + "x"`},
+		}}}
+	}
+
+	withheld := failing()
+	WithholdGetResponseFailures(withheld)
+	assert.Nil(t, withheld.GetError().GetExpression())
+	assert.Equal(t, FailureWithheldMarker, withheld.GetError().GetMessage())
+
+	redacted := RedactGetResponseFailures(failing(), SensitiveInputValues(
+		map[string]*Value{"pin": NewLiteral("hunter2")}, map[string]bool{"pin": true}))
+	assert.Nil(t, redacted.GetError().GetExpression(), "a declared sensitive value drops the fields that quote the expression")
+	assert.Equal(t, ErrorKindExpression.String(), redacted.GetError().GetKind(), "the classification stays")
+
+	unchanged := RedactGetResponseFailures(failing(), SensitiveValues{})
+	assert.NotNil(t, unchanged.GetError().GetExpression(), "no sensitive value declared, so nothing is dropped")
+}

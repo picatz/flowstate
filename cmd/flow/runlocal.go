@@ -448,6 +448,7 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		errorResponse := &v1.RunResponse_Error{Message: runErr.Error()}
 		if response.GetStatus() == v1.RunResponse_STATUS_FAILED {
 			errorResponse.Kind = v1.ClassifyError(runErr).String()
+			errorResponse.Expression = v1.ExpressionFailureOf(runErr)
 		}
 		response.Kind = &v1.GetResponse_Error{Error: errorResponse}
 

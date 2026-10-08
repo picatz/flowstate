@@ -4,6 +4,7 @@ import (
 	"container/list"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -444,8 +445,8 @@ func (e *Evaluator) evalProgramWithCost(ctx context.Context, env *cel.Env, prg c
 		cost = *details.ActualCost()
 	}
 	if err != nil {
-		if detail := e.describeEvalFailure(ctx, env, parsedOf(), activation, err); detail != "" {
-			return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w (%s)", err, detail)}
+		if text, detail := e.describeEvalFailure(ctx, env, parsedOf(), activation, err); text != "" {
+			return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w (%s)", err, text), Detail: detail}
 		}
 		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
 	}
@@ -482,6 +483,20 @@ func (e *Evaluator) evalProgramWithCost(ctx context.Context, env *cel.Env, prg c
 type ExpressionError struct {
 	// Err is the failure this classifies, already worded for a reader.
 	Err error
+
+	// Detail is the same account as fields, when the failure was an operation
+	// with no overload or a missing key (#1551); nil otherwise.
+	Detail *ExpressionFailure
+}
+
+// ExpressionFailureOf returns the structured account of a failed expression
+// that err carries, or nil when it carries none.
+func ExpressionFailureOf(err error) *ExpressionFailure {
+	if expressionErr, ok := errors.AsType[*ExpressionError](err); ok {
+		return expressionErr.Detail
+	}
+
+	return nil
 }
 
 // Error implements the error interface. The cause's own words and nothing

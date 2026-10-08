@@ -211,8 +211,10 @@ func TestARefusedCommandLineDoesNotPrintASensitiveArgument(t *testing.T) {
 			value: "hunter2",
 		},
 		"a one-rune word the flag cannot coerce to the declared type": {
-			args:  []string{"--input", "pin=x"},
-			value: "x",
+			// Not `x`: the document spells `expression` as a key, so a
+			// one-rune sentinel has to be a letter no field name contains.
+			args:  []string{"--input", "pin=q"},
+			value: "q",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {

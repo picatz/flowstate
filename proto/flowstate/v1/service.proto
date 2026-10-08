@@ -181,6 +181,11 @@ message RunResponse {
     // in `kind`, and empty for every other failure, so a program can point at
     // the argument to fix without parsing `message`.
     string input = 3 [(buf.validate.field).string.max_bytes = 256];
+
+    // Expression says which operation failed and what it saw, when `kind` is
+    // `Expression` and the cause was an operator with no overload for its
+    // operands or a selection of a missing key. Unset for every other failure.
+    ExpressionFailure expression = 4;
   }
 
   // Status is where a run is in its lifecycle.

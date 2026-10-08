@@ -932,6 +932,12 @@ message HeldFailure {
   // would be re-derived from has been flattened by then, which is exactly what
   // `ErrRunFailed` exists to do.
   bool recorded_from_task = 5;
+
+  // Expression is the structured account of the expression failure this held
+  // failure ended on, when it did, so a run that suspended while holding it
+  // reports the same `RunResponse.error.expression` as one that raised it
+  // without suspending.
+  ExpressionFailure expression = 6;
 }
 
 // RunState is the durable workflow state used by the Temporal Run entrypoint.

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2833,4 +2834,64 @@ func TestPendingLoopCompensationsSurviveContinueAsNew(t *testing.T) {
 		"a rollout that suspended between iterations did not take back what earlier segments shifted")
 	require.Equal(t, test.Recorded, recorded(),
 		"the effects that happened, and their order, are not what unwinding a suspended rollout should have produced")
+}
+
+// TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers pins #1551's
+// second half: the fields a failed expression knew about itself (the operator,
+// the operand types, the subexpression) reach a program the same under either
+// driver, as `RunResponse.error.expression` does. The local run carries them on
+// the error chain; the durable run carries them as the run failure's detail, the
+// way the server reads them back.
+func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.T) {
+	wf := &v1.Workflow{
+		Name: "expression-failure-structured",
+		Steps: []*v1.Node{
+			{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
+			{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
+		},
+	}
+	want := &v1.ExpressionFailure{
+		Operator:      "+",
+		OperandTypes:  []string{"int", "string"},
+		Subexpression: `steps.n.value + "x"`,
+		Offset:        proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
+	}
+
+	t.Run("local", func(t *testing.T) {
+		_, err := v1.Run(t.Context(), wf)
+		require.Error(t, err)
+		require.Empty(t, cmp.Diff(want, v1.ExpressionFailureOf(err), protocmp.Transform()))
+	})
+
+	t.Run("durable", func(t *testing.T) {
+		testSuite := &testsuite.WorkflowTestSuite{}
+		env := testSuite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflow(engine.Run)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf})
+		require.True(t, env.IsWorkflowCompleted())
+
+		app, ok := errors.AsType[*temporal.ApplicationError](env.GetWorkflowError())
+		require.True(t, ok, "a terminal run failure must reach the client as an ApplicationError")
+
+		var (
+			marker string
+			got    v1.ExpressionFailure
+		)
+		require.NoError(t, app.Details(&marker, &got))
+		require.Equal(t, engine.RunFailureMarker, marker, "the marker still leads the details")
+		require.Empty(t, cmp.Diff(want, &got, protocmp.Transform()))
+	})
+
+	t.Run("a failure that is not an expression failure carries none", func(t *testing.T) {
+		_, err := v1.Run(t.Context(), &v1.Workflow{
+			Name:  "no-structured-account",
+			Steps: []*v1.Node{{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr(`[1][5]`)}}},
+		})
+		require.Error(t, err)
+		require.Nil(t, v1.ExpressionFailureOf(err), "an index out of bounds has no operator or key to report")
+	})
 }
