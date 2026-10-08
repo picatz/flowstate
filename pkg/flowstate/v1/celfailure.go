@@ -521,13 +521,15 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 	// only for single-width text. A wide or combining character before the caret
 	// would put it off its target, so the excerpt is omitted rather than drawn
 	// under the wrong character.
-	for i, r := range f.GetSubexpression() {
-		if utf8.RuneCountInString(f.GetSubexpression()[:i]) >= column {
+	seen := 0
+	for _, r := range f.GetSubexpression() {
+		if seen >= column {
 			break
 		}
 		if r < 0x20 || r >= 0x7f {
 			return ""
 		}
+		seen++
 	}
 
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
