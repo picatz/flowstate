@@ -704,8 +704,8 @@ which both drivers already enforce on the callee's answer, and a wait's `timed_o
 bool and its batch `count` an int. Each is the type the run stores, not the type the
 schema spells (the same projection `flow tasks` describes), and anything the definition
 leaves open stays `dyn`: a response's `json`, an `outputs:` the step shapes itself, an
-output with no declared `type:`. Like a `value:` step, a task, call or
-wait is typed only for positions written after it, and only when its id is unique. What a
+output with no declared `type:`. Like a `value:` step, a task, call, wait or
+loop is typed only for positions written after it, and only when its id is unique. What a
 loop's `as:` carries is typed just below.
 
 A `for_each` binds its `as:` name (`item` by default) with the element type of `items:`: over a
