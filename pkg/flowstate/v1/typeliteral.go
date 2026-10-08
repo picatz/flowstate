@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"math"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
@@ -88,8 +89,10 @@ func literalIsScalar(s Type_Scalar, literal *expr.Value) bool {
 	switch literal.GetKind().(type) {
 	case *expr.Value_StringValue:
 		return s == Type_SCALAR_STRING
-	case *expr.Value_Int64Value, *expr.Value_Uint64Value:
+	case *expr.Value_Int64Value:
 		return s == Type_SCALAR_INT
+	case *expr.Value_Uint64Value:
+		return s == Type_SCALAR_INT && !aboveLargestInt(literal)
 	case *expr.Value_DoubleValue:
 		return s == Type_SCALAR_DOUBLE
 	case *expr.Value_BoolValue:
@@ -101,4 +104,15 @@ func literalIsScalar(s Type_Scalar, literal *expr.Value) bool {
 	default:
 		return false
 	}
+}
+
+// aboveLargestInt reports whether a literal is an unsigned above the signed range:
+// it reads as an int in [inputTypeOf] and has no int to become (see
+// [NormalizeWireValue]), so no declaration of `int` admits it. Admitting it would
+// let a value the declaration calls an int reach arithmetic that cannot add to it
+// (#1432).
+func aboveLargestInt(literal *expr.Value) bool {
+	unsigned, ok := literal.GetKind().(*expr.Value_Uint64Value)
+
+	return ok && unsigned.Uint64Value > math.MaxInt64
 }
