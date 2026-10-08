@@ -458,6 +458,32 @@ func validateStepIDs(wf *v1.Workflow) Diagnostics {
 	return ds
 }
 
+// bindingNameDiagnostic is the one rule for a name an author chooses that an
+// expression then reads: `vars.<name>`, a step's bare `vars:` binding, a wait's
+// shaped `steps.<id>.<name>`. It must be a CEL identifier and not one of the
+// lexer's own words, and is refused where it is declared, naming the spelling
+// that would fail, rather than at a use site that can only say "unknown name"
+// (#1427). ref is how an expression would spell it, with %s for the name; bare
+// names are also refused a reserved word, which a selector after a root is not.
+//
+// Step ids, `inputs:` and `outputs:` names are held to the same grammar by
+// [v1.StepIDIssues] and the schema's pattern; this is the rule for the places
+// that had no such check.
+func bindingNameDiagnostic(step, field, ref, name string, bare bool) (Diagnostic, bool) {
+	spelled := fmt.Sprintf(ref, name)
+	var message string
+	switch {
+	case v1.IsCELUnusableStepID(name) || (bare && slices.Contains(celReservedIdentifiers, name)):
+		message = fmt.Sprintf("%q is punctuation or a reserved word in CEL rather than a name, so ${%s} cannot be parsed; choose another name", name, spelled)
+	case !v1.IsCELIdentifier(name):
+		message = fmt.Sprintf("%q is not a valid identifier, so ${%s} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore", name, spelled)
+	default:
+		return Diagnostic{}, false
+	}
+
+	return Diagnostic{Step: step, Field: field, Value: name, Message: message}, true
+}
+
 // validateWorkflowVars reports references in the workflow's own `vars:` block, where
 // the answer for every one of them is that it cannot resolve.
 //
@@ -476,6 +502,10 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
+		if d, bad := bindingNameDiagnostic("", v1.VarsRoot+"."+name, v1.VarsRoot+".%s", name, false); bad {
+			ds = append(ds, d)
+		}
+
 		parsed := wf.GetVars()[name].GetExpr()
 		if parsed == nil {
 			continue
@@ -1316,6 +1346,9 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 
 	for _, name := range slices.Sorted(maps.Keys(vars)) {
 		ds = append(ds, validateInputRefs(id, "vars."+name, vars[name], scope, index, wf)...)
+		if d, bad := bindingNameDiagnostic(id, "vars."+name, "%s", name, true); bad {
+			ds = append(ds, d)
+		}
 
 		switch {
 		case scope.locals[name]:
@@ -2511,6 +2544,9 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+			if d, bad := bindingNameDiagnostic(id, "outputs."+name, v1.StepsRoot+"."+id+".%s", name, false); bad {
+				ds = append(ds, d)
+			}
 		}
 	}
 
@@ -2543,6 +2579,9 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+			if d, bad := bindingNameDiagnostic(id, "outputs."+name, v1.StepsRoot+"."+id+".%s", name, false); bad {
+				ds = append(ds, d)
+			}
 		}
 	}
 
