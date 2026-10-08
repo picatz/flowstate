@@ -545,7 +545,7 @@ func failureLocation(path string, positions *flowfile.Positions, failure *v1.Exp
 	if failure.GetStep() == "" {
 		return ""
 	}
-	stepPath, ok := positions.StepPath(failure.GetStep())
+	stepPath, ok := positions.UniqueStepPath(failure.GetStep())
 	if !ok {
 		return ""
 	}
