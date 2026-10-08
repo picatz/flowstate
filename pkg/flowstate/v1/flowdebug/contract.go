@@ -581,11 +581,19 @@ func (s *Session) hold(
 		sensitive: s.sensitiveAt(ctx),
 	})
 	defer s.prompting(promptSubject{})
+	// The heading is written before the stop is published, not after: a front
+	// that waits for the held state and then writes its own prompt would
+	// otherwise put the prompt ahead of the line that says where the run is.
+	// A detach or an end that lands between this check and enterHeld costs one
+	// heading for a stop that is not held, which is harmless; the other order
+	// loses the heading's place at the prompt.
+	if s.cannotHold() {
+		return nil
+	}
+	announce()
 	if !s.enterHeld(occurrence, reason, hitIDs, failure) {
 		return nil
 	}
-
-	announce()
 
 	for {
 		line, ok, readErr := s.readCommand(ctx)
@@ -663,6 +671,15 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.bump()
 
 	return true
+}
+
+// cannotHold is whether a stop would be refused: the run has ended or the
+// debugger has detached.
+func (s *Session) cannotHold() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return terminal(s.contract.state) || s.contract.detached
 }
 
 // leaveHeld records that the run left its stop.
