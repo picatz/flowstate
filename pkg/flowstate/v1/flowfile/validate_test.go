@@ -372,7 +372,7 @@ steps:
             log:
               message: ${steps.left.result}
 `,
-			want: `unknown step "left"`,
+			want: `references step "left", which is not visible from here; it is declared in another branch of parallel "fan" (branches cannot read each other)`,
 		},
 		{
 			name: "step after a parallel block may reference branch outputs",
@@ -419,7 +419,7 @@ steps:
     log:
       message: ${steps.inner.result}
 `,
-			want: `unknown step "inner"`,
+			want: "references step \"inner\", which is not visible from here; it is declared inside the body of for_each \"each\" (read its values through `steps.each.results`)",
 		},
 		{
 			// A comprehension's variable is introduced by the expression itself,

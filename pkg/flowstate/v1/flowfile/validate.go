@@ -2674,11 +2674,112 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 			}}
 		}
 	}
+	if where, ok := hiddenStepScope(stepID, ref, wf); ok {
+		if where == "" {
+			return Diagnostics{{
+				Step: stepID, Field: inputName,
+				Message: fmt.Sprintf(
+					"references step %q, which runs later; steps can only reference steps defined before them", ref),
+				Code: v1.DiagnosticCodeUnresolvedReference,
+			}}
+		}
+		return Diagnostics{{
+			Step: stepID, Field: inputName,
+			Message: fmt.Sprintf("references step %q, which is not visible from here; it is declared %s", ref, where),
+			Code:    v1.DiagnosticCodeUnresolvedReference,
+		}}
+	}
 	return Diagnostics{{
 		Step: stepID, Field: inputName,
 		Message: fmt.Sprintf("references unknown step %q", ref),
 		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}}
+}
+
+// blockStep is one enclosing block on the way to a step: the block's node and which
+// of its bodies (a parallel branch, a switch case) the step sits in.
+type blockStep struct {
+	node *v1.Node
+	body int
+}
+
+// blockBodies are the step lists a block runs, in the order [blockStep.body]
+// indexes them; nil for a node that is not a block.
+func blockBodies(node *v1.Node) [][]*v1.Node {
+	switch kind := node.GetKind().(type) {
+	case *v1.Node_ForEach:
+		return [][]*v1.Node{kind.ForEach.GetBody()}
+	case *v1.Node_Loop:
+		return [][]*v1.Node{kind.Loop.GetBody()}
+	case *v1.Node_Parallel:
+		bodies := make([][]*v1.Node, 0, len(kind.Parallel.GetBranches()))
+		for _, branch := range kind.Parallel.GetBranches() {
+			bodies = append(bodies, branch.GetSteps())
+		}
+		return bodies
+	case *v1.Node_Switch:
+		return v1.SwitchBodies(kind.Switch)
+	}
+	return nil
+}
+
+// enclosingBlocks returns the blocks around the first step with this id, outermost
+// first, and whether the id was found at all. A top-level step has none.
+func enclosingBlocks(nodes []*v1.Node, id string) ([]blockStep, bool) {
+	for _, node := range nodes {
+		if node.GetId() == id {
+			return nil, true
+		}
+		for i, body := range blockBodies(node) {
+			if path, ok := enclosingBlocks(body, id); ok {
+				return append([]blockStep{{node, i}}, path...), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// hiddenStepScope says why a step that exists in the file cannot be read from the
+// step `from`, so the reference that missed it can say "declared, but not visible"
+// rather than "unknown". It returns ("", true) when the reason is order, not
+// scope, and false when no step has the id.
+//
+// The answer is relative to the referencing step: the first block around the
+// declaration that does not also hold the reader is the boundary. A loop or
+// for_each boundary hides the id behind its accumulated `results`; a different
+// branch or case of a block that holds the reader is a sibling the reader cannot
+// see; a parallel or switch that holds only the declaration lays its ids out after
+// the block, so a reader that could not see it is simply ahead of it, as is a
+// reader inside the very body that declares the id later. The first declaration in
+// document order wins when an id repeats.
+func hiddenStepScope(from, id string, wf *v1.Workflow) (string, bool) {
+	declared, ok := enclosingBlocks(wf.GetSteps(), id)
+	if !ok {
+		return "", false
+	}
+	reader, _ := enclosingBlocks(wf.GetSteps(), from)
+	for i, block := range declared {
+		name := block.node.GetId()
+		if i < len(reader) && reader[i].node == block.node {
+			if reader[i].body == block.body {
+				continue
+			}
+			switch block.node.GetKind().(type) {
+			case *v1.Node_Parallel:
+				return fmt.Sprintf("in another branch of parallel %q (branches cannot read each other)", name), true
+			default:
+				return fmt.Sprintf("in another case of switch %q (only that case's own steps can read it)", name), true
+			}
+		}
+		switch block.node.GetKind().(type) {
+		case *v1.Node_ForEach:
+			return fmt.Sprintf("inside the body of for_each %q (read its values through `steps.%s.results`)", name, name), true
+		case *v1.Node_Loop:
+			return fmt.Sprintf("inside the body of loop %q (read its values through `steps.%s.results`)", name, name), true
+		}
+		return "", true
+	}
+	return "", true
 }
 
 // toleratedErrorOutput is the output a step gains by being allowed to fail.

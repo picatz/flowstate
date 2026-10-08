@@ -85,7 +85,7 @@ func TestTheValidatorRefusesWhatCompletionMustNotOffer(t *testing.T) {
 			for _, d := range diags {
 				messages = append(messages, d.Message)
 			}
-			assert.Contains(t, strings.Join(messages, "\n"), `unknown step "sibling_a"`)
+			assert.Contains(t, strings.Join(messages, "\n"), `references step "sibling_a", which is not visible from here`)
 		})
 	}
 }
