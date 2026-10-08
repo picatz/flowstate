@@ -834,6 +834,36 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 
 		return markdownHover(b.String(), rng)
 	}
+	// A `call:` runs no task: its outputs are the callee's declared ones, so the
+	// answer comes from the callee's own declarations or is not given. Nothing is
+	// said about a name the callee does not declare; the validator reports it.
+	if target.callEntry != nil {
+		called, ok := callee(doc, target.callEntry.valueText())
+		if !ok {
+			return nil
+		}
+		if ref.output == "" {
+			names := make([]string, 0, len(called.workflow.GetDeclaredOutputs()))
+			for _, declared := range called.workflow.GetDeclaredOutputs() {
+				names = append(names, declared.GetName())
+			}
+			fmt.Fprintf(&b, "**`%s`** · step %d, a call to `%s`", rootedRef(target.id, ""), target.index+1, called.workflow.GetName())
+			if len(names) > 0 {
+				fmt.Fprintf(&b, "\n\nOutputs: `%s`", strings.Join(names, "`, `"))
+			}
+			return markdownHover(b.String(), rng)
+		}
+		declaration := called.output(ref.output)
+		if declaration == nil {
+			return nil
+		}
+		fmt.Fprintf(&b, "**`%s`** · `%s`\n\nOutput of step `%s` on line %d, declared by the workflow it calls, in `%s`.",
+			rootedRef(target.id, ref.output), declaration.TypeText(), target.id, target.rng.Start.Line+1, called.path)
+		if description := declaration.GetDescription(); description != "" {
+			fmt.Fprintf(&b, "\n\n%s", description)
+		}
+		return markdownHover(b.String(), rng)
+	}
 	// A `switch:` answers for itself too, for the reason a `value:` does: it
 	// runs no task, and its output set is the grammar's own — the observed
 	// discriminant and the case that took it.
@@ -960,9 +990,8 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 // constructOutputNode builds a minimal *v1.Node describing a for_each, loop,
 // or wait step from its syntactic model — enough for [v1.OutputNames] to
 // answer without the file needing to compile. nil for every other kind,
-// including a value: and switch: (handled above, before this is reached) and
-// call: (whose declared outputs live in another file this model does not
-// hold, a separate piece of work from #322's first slice).
+// including a value:, switch: and call: (handled above, before this is
+// reached; a call's outputs are the callee's declarations, read by [callee]).
 //
 // A wait's spellings — `sleep:`, `wait_until:`, `wait_for_signal:`, and
 // `wait_for_signals:` —

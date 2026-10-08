@@ -115,6 +115,27 @@ func callee(doc *document, target string) (calledWorkflow, bool) {
 	return calledWorkflow{workflow: workflow, path: located.Path}, true
 }
 
+// output returns the callee's declaration of one output, or nil when it declares
+// no such name.
+func (c calledWorkflow) output(name string) *v1.OutputDeclaration {
+	for _, declaration := range c.workflow.GetDeclaredOutputs() {
+		if declaration.GetName() == name {
+			return declaration
+		}
+	}
+	return nil
+}
+
+// callOutputDetail is the one-line form of a callee's output: its type and, when
+// it has one, its description.
+func callOutputDetail(declaration *v1.OutputDeclaration) string {
+	detail := declaration.TypeText()
+	if description := declaration.GetDescription(); description != "" {
+		detail += " · " + description
+	}
+	return detail
+}
+
 // input returns the callee's declaration of one input, or nil when it declares no
 // such name.
 func (c calledWorkflow) input(name string) *v1.InputDeclaration {

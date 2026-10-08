@@ -872,7 +872,7 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 			continue
 		}
 		seen[s.id] = true
-		scope.steps = append(scope.steps, stepCandidate(s, doc.tasks))
+		scope.steps = append(scope.steps, stepCandidate(doc, s, doc.tasks))
 	}
 
 	// A `vars:` on an enclosing block binds for that block's whole body, so a step
@@ -1037,7 +1037,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 }
 
 // stepCandidate describes one step as a reference candidate.
-func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
+func stepCandidate(doc *document, s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 	c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: s.kind()}
 
 	switch {
@@ -1083,6 +1083,22 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 					Name: n.Name,
 					Kind: celcomplete.KindField,
 					Docs: n.Description,
+				})
+			}
+		}
+
+	case s.callEntry != nil:
+		// A `call:` produces what the callee declares under `outputs:`, read from
+		// the callee the way the compiler reads it ([callee]), so a callee that
+		// does not compile offers nothing rather than names out of a broken file.
+		c.Detail = "call"
+		if called, ok := callee(doc, s.callEntry.valueText()); ok {
+			for _, declaration := range called.workflow.GetDeclaredOutputs() {
+				c.Members = append(c.Members, celcomplete.Candidate{
+					Name:   declaration.GetName(),
+					Kind:   celcomplete.KindField,
+					Detail: declaration.TypeText(),
+					Docs:   declaration.GetDescription(),
 				})
 			}
 		}
