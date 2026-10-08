@@ -790,7 +790,12 @@ applied
 (The lease line after each stop is left out here.)
 
 `flow debug attach` reads commands from the terminal or `--script`, and prints
-each answer as text; with `-o jsonl` each answer is a line of the schema's JSON,
+each answer as text. With text output at a terminal it is the same prompt as above: tab completes
+the commands, the step ids and the names in the held run's scope, asking the run
+for them, so a caller without the durable `workload.debug_inspect` action is
+offered commands and step ids and no names, and a run that does not answer in
+two seconds leaves the key with nothing to offer. A pipe or `--script` reads
+plain lines; with `-o jsonl` each answer is a line of the schema's JSON,
 and with `-o json` they are one array, written when the session ends; with
 either, the prompt goes to stderr. At a terminal a line that fails prints why
 and the prompt returns. A script's later lines assume its earlier ones did

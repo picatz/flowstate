@@ -5,6 +5,7 @@ import (
 	"context"
 	"slices"
 	"strings"
+	"unicode"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
@@ -282,7 +283,11 @@ func (d *Driver) rootNames(ctx context.Context, revision uint64) []Candidate {
 func offerNamesFrom(prefix string, names []string, detail string) Completion {
 	out := Completion{Prefix: prefix}
 	for _, name := range names {
-		if strings.HasPrefix(name, prefix) {
+		// A step id comes from the target, and an attached one is a server's to
+		// name. A name carrying a control character would be written to the
+		// terminal a completion is listed on, where it is an escape sequence and
+		// not a name, so it is not offered.
+		if strings.HasPrefix(name, prefix) && !slices.ContainsFunc([]rune(name), unicode.IsControl) {
 			out.add(Candidate{Text: name, Detail: detail}, neverWithheld)
 		}
 	}

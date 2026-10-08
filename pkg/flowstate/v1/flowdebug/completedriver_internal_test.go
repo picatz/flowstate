@@ -115,3 +115,18 @@ func TestARefusedRootListingIsNotRemembered(t *testing.T) {
 	require.Len(t, answer.Candidates, 1, "the refusal was remembered for the revision")
 	assert.Equal(t, "inputs", answer.Candidates[0].Text[:6])
 }
+
+// TestADriverNeverOffersANameThatIsAnEscapeSequence: an attached run's step and
+// breakpoint ids are its server's to name, and a completion list is written to
+// the terminal, so an id carrying a control character is not offered.
+func TestADriverNeverOffersANameThatIsAnEscapeSequence(t *testing.T) {
+	t.Parallel()
+
+	offered := offerNamesFrom("", []string{"price", "\x1b[2Jevil", "bell\a", "each/touch"}, "a step")
+
+	texts := make([]string, 0, len(offered.Candidates))
+	for _, c := range offered.Candidates {
+		texts = append(texts, c.Text)
+	}
+	assert.Equal(t, []string{"price", "each/touch"}, texts)
+}
