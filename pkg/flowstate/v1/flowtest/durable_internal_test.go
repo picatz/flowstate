@@ -22,6 +22,27 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 		}}}}}},
 		Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
 	}}}
+	runIdent := func() *expr.Expr {
+		return &expr.Expr{ExprKind: &expr.Expr_IdentExpr{IdentExpr: &expr.Expr_Ident{Name: "run"}}}
+	}
+	conditioned := func(e *expr.Expr) *v1.Workflow {
+		return &v1.Workflow{Name: "cond", Steps: []*v1.Node{{
+			Id:        "a",
+			Condition: &v1.Value{Kind: &v1.Value_Expr{Expr: &expr.ParsedExpr{Expr: e}}},
+			Kind:      &v1.Node_Task{Task: &v1.Task{Name: "log"}},
+		}}}
+	}
+	// run["local"]: an index, not a selection, which names the same fact.
+	readsIndexed := conditioned(&expr.Expr{ExprKind: &expr.Expr_CallExpr{CallExpr: &expr.Expr_Call{
+		Function: "_[_]",
+		Args: []*expr.Expr{runIdent(), {ExprKind: &expr.Expr_ConstExpr{ConstExpr: &expr.Constant{
+			ConstantKind: &expr.Constant_StringValue{StringValue: "local"},
+		}}}},
+	}}})
+	readsStartedAt := conditioned(&expr.Expr{ExprKind: &expr.Expr_SelectExpr{SelectExpr: &expr.Expr_Select{
+		Operand: runIdent(),
+		Field:   "started_at",
+	}}})
 	compensated := &v1.Workflow{Name: "saga", Steps: []*v1.Node{{
 		Id:   "a",
 		Kind: &v1.Node_Task{Task: &v1.Task{Name: "log"}},
@@ -36,6 +57,8 @@ func TestDurableIneligibleNamesWhyACaseStaysLocal(t *testing.T) {
 		want         string
 	}{
 		"nothing in the way":     {test: &Test{}, workflow: plain},
+		"reads run indexed":      {test: &Test{}, workflow: readsIndexed, want: "run.local"},
+		"reads run.started_at":   {test: &Test{}, workflow: readsStartedAt},
 		"signals":                {test: &Test{Signals: []SignalScript{{}}}, workflow: plain},
 		"reads run.local":        {test: &Test{}, workflow: readsLocal, want: "run.local"},
 		"faults":                 {test: &Test{Faults: []Fault{{}}}, workflow: plain, want: "injects faults"},

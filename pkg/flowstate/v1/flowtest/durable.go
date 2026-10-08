@@ -132,8 +132,9 @@ func durableIneligible(test *Test, workflow *v1.Workflow, compiled []compiledStu
 var divergentRunFacts = map[string]bool{"local": true, "identity": true, "workflow_id": true, "run_id": true}
 
 // readsRunFacts reports whether a workflow reads one of [divergentRunFacts] as
-// `run.<fact>` anywhere an expression can stand. Scope is not tracked: a name
-// shadowing `run` keeps the case local, which costs coverage and never soundness.
+// `run.<fact>` anywhere an expression can stand, or reaches `run` any other
+// way. Scope is not tracked: a name shadowing `run` keeps the case local, which
+// costs coverage and never soundness.
 func readsRunFacts(wf *v1.Workflow) bool {
 	found := false
 	v1.WalkWorkflow(wf, v1.Walk{Value: func(site v1.ValueSite) {
@@ -178,10 +179,15 @@ func exprReadsRunFacts(e *expr.Expr, depth int) bool {
 	}
 	var children []*expr.Expr
 	switch kind := e.GetExprKind().(type) {
+	case *expr.Expr_IdentExpr:
+		// `run` reached any way but a plain `run.<field>` below (indexed, bound
+		// to a name, passed on) cannot be told apart from a read of a fact that
+		// differs, so it keeps the case local.
+		return kind.IdentExpr.GetName() == "run"
 	case *expr.Expr_SelectExpr:
 		sel := kind.SelectExpr
-		if ident := sel.GetOperand().GetIdentExpr(); ident != nil && ident.GetName() == "run" && divergentRunFacts[sel.GetField()] {
-			return true
+		if ident := sel.GetOperand().GetIdentExpr(); ident != nil && ident.GetName() == "run" {
+			return divergentRunFacts[sel.GetField()]
 		}
 		children = append(children, sel.GetOperand())
 	case *expr.Expr_CallExpr:
