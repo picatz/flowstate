@@ -480,6 +480,26 @@ func TestRunWorkflowTaskOutputElementBound(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowTaskOutputSchema covers the local driver's half of #2507,
+// paired with the identically-named test in the engine package: a task's result
+// held to the output schema it declares, at the one function both drivers
+// reach, [v1.Task.EvalInScope].
+func TestRunWorkflowTaskOutputSchema(t *testing.T) {
+	baseURL := conformance.NewHTTPServer(t)
+	for _, test := range conformance.TaskOutputSchemaCases(baseURL) {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.Run(t.Context(), test.Workflow)
+			if test.ExpectFailure {
+				require.Error(t, err, "a result the declared schema refuses must fail the step")
+				require.Contains(t, err.Error(), "status_code")
+				return
+			}
+			require.NoError(t, err)
+			require.True(t, test.ExpectedOutputsPredicate(out), "unexpected outputs: %v", out)
+		})
+	}
+}
+
 // TestRunWorkflowTaskOutputDepth covers the local driver's half of #1947: a
 // task's own result carrying a [v1.Value_Structure] nested deeper than
 // [v1.MaxStructureDepth] — the shape [checkTaskOutputElementBound]'s
