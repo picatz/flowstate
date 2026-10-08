@@ -2856,6 +2856,7 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		Subexpression: `steps.n.value + "x"`,
 		Offset:        proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
 		Caret:         proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
+		Step:          "bad",
 	}
 
 	t.Run("local", func(t *testing.T) {
@@ -2885,6 +2886,49 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		require.NoError(t, app.Details(&marker, &got))
 		require.Equal(t, engine.RunFailureMarker, marker, "the marker still leads the details")
 		require.Empty(t, cmp.Diff(want, &got, protocmp.Transform()))
+	})
+
+	// A step id is only meaningful in the file that declares it, so a failure
+	// that crossed a call carries its step qualified by the callee on both
+	// drivers.
+	t.Run("a failure inside a callee is qualified by it", func(t *testing.T) {
+		callee := &v1.Workflow{
+			Name: "callee",
+			Steps: []*v1.Node{
+				{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
+				{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
+			},
+		}
+		caller := &v1.Workflow{
+			Name:  "caller",
+			Steps: []*v1.Node{{Id: "called", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}}},
+		}
+		qualified := proto.CloneOf(want)
+		qualified.Step = "callee/bad"
+
+		_, err := v1.Run(t.Context(), caller)
+		require.Error(t, err)
+		require.Empty(t, cmp.Diff(qualified, v1.ExpressionFailureOf(err), protocmp.Transform()), "local")
+
+		testSuite := &testsuite.WorkflowTestSuite{}
+		env := testSuite.NewTestWorkflowEnvironment()
+		env.RegisterWorkflow(engine.Run)
+		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: caller})
+		require.True(t, env.IsWorkflowCompleted())
+
+		app, ok := errors.AsType[*temporal.ApplicationError](env.GetWorkflowError())
+		require.True(t, ok)
+
+		var (
+			marker string
+			got    v1.ExpressionFailure
+		)
+		require.NoError(t, app.Details(&marker, &got))
+		require.Empty(t, cmp.Diff(qualified, &got, protocmp.Transform()), "durable")
 	})
 
 	t.Run("a failure that is not an expression failure carries none", func(t *testing.T) {

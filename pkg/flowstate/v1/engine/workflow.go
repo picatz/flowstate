@@ -317,6 +317,33 @@ func failedAt(err error, position string) error {
 	}
 }
 
+// attributeToStep names the step an expression failure happened in on its
+// structured account, whichever form the failure has by now: still the raw
+// error from the activity or the workflow-side evaluator, or already a run
+// failure carrying the account up from the node. The innermost step wins, so a
+// nested failure keeps the step it was raised in.
+func attributeToStep(err error, step string) error {
+	if inner, ok := errors.AsType[*ErrRunFailed](err); ok && inner.expression != nil {
+		inner.expression.AttributeStep(step)
+
+		return err
+	}
+
+	return v1.AttributeToStep(err, step)
+}
+
+// qualifyStep is [attributeToStep]'s counterpart at a `call:` boundary: the
+// failure keeps its step, qualified by the workflow it crossed into.
+func qualifyStep(err error, workflow string) error {
+	if inner, ok := errors.AsType[*ErrRunFailed](err); ok && inner.expression != nil {
+		inner.expression.QualifyStep(workflow)
+
+		return err
+	}
+
+	return v1.QualifyStepWithin(err, workflow)
+}
+
 // expressionOf finds the structured account of an expression failure: the one an
 // inner failure already carries, or the one [activityError] attached to the
 // application error's details. A failure with neither has none.

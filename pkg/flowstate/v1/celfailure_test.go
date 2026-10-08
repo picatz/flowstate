@@ -1,6 +1,7 @@
 package flowstatev1
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -328,4 +329,42 @@ func TestAnExpressionFailureDrawsACaretUnderItsOperator(t *testing.T) {
 	assert.Empty(t, (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(1)}).Excerpt(""))
 	assert.Empty(t, (&ExpressionFailure{Subexpression: "a", Caret: proto.Int32(1 << 30)}).Excerpt(""))
 	assert.Equal(t, "  ab\n   ^", (&ExpressionFailure{Subexpression: "ab", Caret: proto.Int32(1)}).Excerpt("  "))
+}
+
+// TestAttributeToStepKeepsTheInnermostStep pins that a failure raised in a
+// nested step keeps that step when an enclosing one wraps it.
+func TestAttributeToStepKeepsTheInnermostStep(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `steps.n.value + "x"`, map[string]any{
+		"steps": map[string]any{"n": map[string]any{"value": int64(2)}},
+	})
+	require.Error(t, err)
+
+	AttributeToStep(err, "inner")
+	AttributeToStep(err, "outer")
+	assert.Equal(t, "inner", ExpressionFailureOf(err).GetStep())
+
+	assert.NotPanics(t, func() { AttributeToStep(nil, "x") })
+	assert.Equal(t, "plain", AttributeToStep(errors.New("plain"), "x").Error())
+}
+
+// TestQualifyStepMarksAFailureThatCrossedACall pins that a callee's step is
+// prefixed with its workflow, so the caller's file cannot claim it, and that an
+// enclosing step does not overwrite it afterwards.
+func TestQualifyStepMarksAFailureThatCrossedACall(t *testing.T) {
+	t.Parallel()
+
+	_, err := evalInProfile(t, `steps.n.value + "x"`, map[string]any{
+		"steps": map[string]any{"n": map[string]any{"value": int64(2)}},
+	})
+	require.Error(t, err)
+
+	AttributeToStep(err, "first")
+	QualifyStepWithin(err, "callee")
+	AttributeToStep(err, "called")
+	assert.Equal(t, "callee/first", ExpressionFailureOf(err).GetStep())
+
+	var nilFailure *ExpressionFailure
+	assert.NotPanics(t, func() { nilFailure.QualifyStep("x"); nilFailure.AttributeStep("x") })
 }

@@ -534,3 +534,41 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
 }
+
+// AttributeToStep records on err's structured account the step it failed in,
+// when err carries one and no inner step claimed it first, so nesting names the
+// innermost. It returns err unchanged: both drivers call it where they wrap a
+// failure with the step's name, which is the one place the id is in hand.
+func AttributeToStep(err error, step string) error {
+	ExpressionFailureOf(err).AttributeStep(step)
+
+	return err
+}
+
+// AttributeStep sets the step the failure happened in unless an inner step
+// already did. It is safe on a nil receiver.
+func (f *ExpressionFailure) AttributeStep(step string) {
+	if f != nil && f.Step == "" {
+		f.Step = textbound.Cut(step, maxFailureFieldBytes)
+	}
+}
+
+// QualifyStep marks a failure as having crossed a `call:` into workflow, by
+// prefixing its step with `workflow/`. A step id is only meaningful within the
+// file that declares it, so a consumer holding the caller's file must not read a
+// callee's `first` as its own; the prefix cannot collide with an identifier and
+// so resolves to nothing there. It is safe on a nil receiver and on a failure
+// with no step.
+func (f *ExpressionFailure) QualifyStep(workflow string) {
+	if f != nil && f.Step != "" {
+		f.Step = textbound.Cut(workflow+"/"+f.Step, maxFailureFieldBytes)
+	}
+}
+
+// QualifyStepWithin is [ExpressionFailure.QualifyStep] on the account err
+// carries, and returns err unchanged.
+func QualifyStepWithin(err error, workflow string) error {
+	ExpressionFailureOf(err).QualifyStep(workflow)
+
+	return err
+}

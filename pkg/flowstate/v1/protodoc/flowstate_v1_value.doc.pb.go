@@ -234,5 +234,11 @@ func init() {
 				" text does not place the operator exactly, because a caret under the wrong\n" +
 				" character is worse than none.\n",
 		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.step",
+			Leading: " Step is the id of the step whose expression failed, the innermost one when\n" +
+				" steps nest, so a consumer that holds the Flowfile can find the line the\n" +
+				" sentence is about. Empty when the failure was raised outside any step.\n",
+		},
 	})
 }

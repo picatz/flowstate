@@ -519,7 +519,11 @@ type ExpressionFailure struct {
 	// failure the way a compiler does. Unset when the subexpression was cut or its
 	// text does not place the operator exactly, because a caret under the wrong
 	// character is worse than none.
-	Caret         *int32 `protobuf:"varint,7,opt,name=caret,proto3,oneof" json:"caret,omitempty"`
+	Caret *int32 `protobuf:"varint,7,opt,name=caret,proto3,oneof" json:"caret,omitempty"`
+	// Step is the id of the step whose expression failed, the innermost one when
+	// steps nest, so a consumer that holds the Flowfile can find the line the
+	// sentence is about. Empty when the failure was raised outside any step.
+	Step          string `protobuf:"bytes,8,opt,name=step,proto3" json:"step,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -601,6 +605,13 @@ func (x *ExpressionFailure) GetCaret() int32 {
 		return *x.Caret
 	}
 	return 0
+}
+
+func (x *ExpressionFailure) GetStep() string {
+	if x != nil {
+		return x.Step
+	}
+	return ""
 }
 
 // Error is why a value could not be produced.
@@ -908,7 +919,7 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"\tTYPE_EXPR\x10\a\x12\x0e\n" +
 	"\n" +
 	"TYPE_ERROR\x10\bB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xc7\x02\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\xe5\x02\n" +
 	"\x11ExpressionFailure\x12$\n" +
 	"\boperator\x18\x01 \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\boperator\x12-\n" +
 	"\roperand_types\x18\x02 \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\foperandTypes\x12.\n" +
@@ -918,7 +929,8 @@ const file_flowstate_v1_value_proto_rawDesc = "" +
 	"candidates\x18\x05 \x03(\tB\b\xbaH\x05\x92\x01\x02\x10\x10R\n" +
 	"candidates\x12$\n" +
 	"\x06offset\x18\x06 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x00R\x06offset\x88\x01\x01\x12\"\n" +
-	"\x05caret\x18\a \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x01R\x05caret\x88\x01\x01B\t\n" +
+	"\x05caret\x18\a \x01(\x05B\a\xbaH\x04\x1a\x02(\x00H\x01R\x05caret\x88\x01\x01\x12\x1c\n" +
+	"\x04step\x18\b \x01(\tB\b\xbaH\x05r\x03(\x80\x02R\x04stepB\t\n" +
 	"\a_offsetB\b\n" +
 	"\x06_caretB\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
