@@ -28,11 +28,6 @@ func TestReverseIsRefusedWhereItCannotHold(t *testing.T) {
 		require.Error(t, res.Err)
 		assert.Contains(t, res.Err.Error(), "add --debug")
 	})
-	t.Run("not at a terminal", func(t *testing.T) {
-		res := runFlowStdin(t, "step\n", "run", "local", path, "--debug", "--reverse")
-		require.Error(t, res.Err)
-		assert.Contains(t, res.Err.Error(), "terminal")
-	})
 	t.Run("an unknown mode", func(t *testing.T) {
 		res := runFlow(t, "run", "local", path, "--debug", "--reverse=sideways")
 		require.Error(t, res.Err)
@@ -215,4 +210,31 @@ outputs: {}
 	assert.GreaterOrEqual(t, strings.Count(revealed, "sk-live-0123456789"), 2,
 		"the opt-in did not reach the session before and after a rewind:\n"+revealed)
 	assert.NotContains(t, play(false), "sk-live-0123456789", "a value was shown without the opt-in")
+}
+
+// TestAScriptThatStepsBackReplaysToTheSameStops: what a session that stepped back
+// recorded is what replay plays back through the same front, so it reaches the
+// same stops and says the same things; and without --reverse a replay refuses
+// the script by name instead of carrying on from the wrong stop.
+func TestAScriptThatStepsBackReplaysToTheSameStops(t *testing.T) {
+	path := writeRunLocalDebugFixture(t)
+	recording := filepath.Join(t.TempDir(), "session.script")
+
+	typed := runFlowStdin(t, "step\nback\nstatus\ncontinue\n",
+		"run", "local", path, "--debug", "--reverse", "--record", recording)
+	require.NoError(t, typed.Err)
+	assert.Contains(t, typed.Stderr, "held at first", "the typed session did not step back:\n"+typed.Stderr)
+
+	got, err := os.ReadFile(recording)
+	require.NoError(t, err)
+	assert.Equal(t, "step\nback\nstatus\ncontinue\n", string(got), "the recording lost the rewind")
+
+	replayed := runFlow(t, "debug", "replay", recording, path, "--reverse")
+	require.NoError(t, replayed.Err)
+	assert.Equal(t, typed.Stderr, replayed.Stderr, "the replay reached other stops than the session it replays")
+
+	refused := runFlow(t, "debug", "replay", recording, path)
+	require.Error(t, refused.Err)
+	assert.Contains(t, refused.Err.Error(), "--reverse")
+	assert.Contains(t, refused.Err.Error(), `"back"`)
 }

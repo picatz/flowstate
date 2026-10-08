@@ -267,3 +267,33 @@ func TestTheReversibleFrontDoesNotRecordARefusedRewind(t *testing.T) {
 	assert.Equal(t, []string{"step"}, recording.lines)
 	assert.False(t, recording.truncated)
 }
+
+// TestTheReversibleFrontDoesNotReleaseTheRunOnAFailedRead: input that failed is
+// not input that ended. The case is ended and fails, rather than every
+// remaining stop resuming unattended.
+func TestTheReversibleFrontDoesNotReleaseTheRunOnAFailedRead(t *testing.T) {
+	dir := writeDebugFixture(t)
+	var out strings.Builder
+	reads := 0
+	front := &reversibleFront{
+		Path:  filepath.Join(dir, "workflow.test.yaml"),
+		Run:   flowtest.RunOptions{Select: func(name string) bool { return name == "the debugged case" }},
+		Steps: workflowStepList(filepath.Join(dir, "workflow.yaml")),
+		Out:   &out,
+		Next: func() (string, error) {
+			reads++
+			if reads == 1 {
+				return "step", nil
+			}
+
+			return "", bufio.ErrTooLong
+		},
+	}
+	result, err := front.run(t.Context())
+	require.NoError(t, err)
+
+	require.NotNil(t, result.Report)
+	assert.True(t, testReportFailed(result.Report), "a failed read released the run to a pass:\n"+out.String())
+	assert.Contains(t, out.String(), "input failed")
+	assert.NotContains(t, out.String(), "second completed", "the run resumed past a failed read")
+}
