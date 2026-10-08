@@ -24,6 +24,12 @@ type stubbedCase struct {
 	// the first time.
 	Speak func(text string, tone flowdebug.Tone)
 
+	// Shown, when set, is told which session is the one shown each time a run
+	// becomes it: the first run at once, a replay when it replaces the run
+	// before it. A host that sends a line to the session the person is looking
+	// at (`quit`) keeps the latest.
+	Shown func(*flowdebug.Session)
+
 	// Run executes the case with the debugger it is handed.
 	Run func(ctx context.Context, debugger v1.Debugger) flowtest.RunResult
 
@@ -68,7 +74,12 @@ func (c stubbedCase) launcher(runCtx context.Context) flowdebug.Launcher {
 
 		return &flowdebug.Run{
 			Session: session,
-			Live:    run.shown,
+			Live: func() {
+				run.shown()
+				if c.Shown != nil {
+					c.Shown(session)
+				}
+			},
 			Stop: func() {
 				// Cancelled before the session is released, which would
 				// otherwise let the run carry on through its remaining steps.

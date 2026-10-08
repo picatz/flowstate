@@ -841,3 +841,24 @@ func formatFrames(snapshot *v1.DebugSnapshot) string {
 func SourceName(uri string) string {
 	return filepath.Base(strings.TrimPrefix(uri, "file://"))
 }
+
+// MovesForward reports whether a line a [Driver] reads moves the run forward:
+// `step`, `continue`, `until` and their aliases. A host whose session already
+// writes the account of a forward movement — the break line and what each step
+// did — does not repeat it from the answer; a rewind is not one of these, since
+// the run it lands on was replayed in silence.
+func MovesForward(line string) bool {
+	verb, _ := split(strings.TrimSpace(line))
+	c, ok := resolveOn(verb, frontDriver)
+
+	return ok && c.effect == effectMoves && !c.rewinds
+}
+
+// StepsBack reports whether a line a [Driver] reads rewinds the run: `back`
+// and `reverse-continue`.
+func StepsBack(line string) bool {
+	verb, _ := split(strings.TrimSpace(line))
+	c, ok := resolveOn(verb, frontDriver)
+
+	return ok && c.rewinds
+}

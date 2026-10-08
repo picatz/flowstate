@@ -205,7 +205,11 @@ The forms a verb takes:
 - `pause` holds a running run at its next boundary; a run that completes before
   reaching one says so. `back` and `reverse-continue` (`rc`) return to the
   previous stop and to the nearest earlier breakpoint stop, for a target that can
-  step back; any other says so and does not move.
+  step back; any other says so and does not move. `flow test --debug` at a
+  terminal steps back too (a stubbed case, as under `flow dap`); `flow run
+  local --debug` and a script's session stay forward-only. A failed case is
+  held once more after its verdict, and `back` from there returns to its last
+  stop.
 - An empty line at the prompt is `step`.
 
 A condition is the step's own `if:`, evaluated where the breakpoint is: the
