@@ -1,0 +1,7 @@
+{
+  "name": "flowstate",
+  "version": "0.1.0",
+  "author": { "name": "picatz" },
+  "description": "Write, test, and debug Flowstate Flowfiles from Claude Code: the flow MCP server, authoring skills, and a live validation pane.",
+  "types": "./types/index.d.ts"
+}
