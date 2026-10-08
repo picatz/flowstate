@@ -2674,11 +2674,66 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 			}}
 		}
 	}
+	if where, ok := hiddenStepScope(ref, wf); ok {
+		return Diagnostics{{
+			Step: stepID, Field: inputName,
+			Message: fmt.Sprintf("references step %q, which is not visible from here; it is declared %s", ref, where),
+			Code:    v1.DiagnosticCodeUnresolvedReference,
+		}}
+	}
 	return Diagnostics{{
 		Step: stepID, Field: inputName,
 		Message: fmt.Sprintf("references unknown step %q", ref),
 		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}}
+}
+
+// hiddenStepScope says where a step with this id is declared when it sits inside a
+// block, so the reference that missed it can say "declared, but not visible" rather
+// than "unknown".
+//
+// The answer names the enclosing block and, where one exists, the way out: a loop's
+// or for_each's body ids are reachable only through its accumulated `results`. The
+// first declaration in document order wins; ids are unique per scope, not per file,
+// so a duplicate in two branches is described by the earlier one.
+func hiddenStepScope(id string, wf *v1.Workflow) (string, bool) {
+	var found string
+	var walk func([]*v1.Node) bool
+	walk = func(nodes []*v1.Node) bool {
+		for _, node := range nodes {
+			var bodies [][]*v1.Node
+			var where string
+			switch kind := node.GetKind().(type) {
+			case *v1.Node_ForEach:
+				bodies = [][]*v1.Node{kind.ForEach.GetBody()}
+				where = fmt.Sprintf("inside the body of for_each %q (read its values through `steps.%s.results`)", node.GetId(), node.GetId())
+			case *v1.Node_Loop:
+				bodies = [][]*v1.Node{kind.Loop.GetBody()}
+				where = fmt.Sprintf("inside the body of loop %q (read its values through `steps.%s.results`)", node.GetId(), node.GetId())
+			case *v1.Node_Parallel:
+				for _, branch := range kind.Parallel.GetBranches() {
+					bodies = append(bodies, branch.GetSteps())
+				}
+				where = fmt.Sprintf("in a branch of parallel %q (branches cannot read each other)", node.GetId())
+			case *v1.Node_Switch:
+				bodies = v1.SwitchBodies(kind.Switch)
+				where = fmt.Sprintf("in a case of switch %q (only that case's own steps can read it)", node.GetId())
+			}
+			for _, body := range bodies {
+				for _, inner := range body {
+					if inner.GetId() == id {
+						found = where
+						return true
+					}
+				}
+				if walk(body) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	return found, walk(wf.GetSteps())
 }
 
 // toleratedErrorOutput is the output a step gains by being allowed to fail.
