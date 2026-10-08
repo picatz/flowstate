@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"testing"
 	"time"
 
@@ -70,4 +72,16 @@ func TestAnAttachConsoleDoesNotHoldTheTerminalForASlowTarget(t *testing.T) {
 
 	assert.Empty(t, answer.Candidates, "a target that did not answer offered something")
 	assert.Less(t, time.Since(started), completionTimeout+2*time.Second, "the keystroke waited past its bound")
+}
+
+func TestOnlyAFailedTerminalReadIsAnErrorAtTheAttachPrompt(t *testing.T) {
+	t.Parallel()
+
+	assert.NoError(t, unexpectedPromptError(nil))
+	assert.NoError(t, unexpectedPromptError(io.EOF), "ctrl-D ends the session")
+	assert.NoError(t, unexpectedPromptError(flowdebug.ErrConsoleInterrupted), "ctrl-C ends the session")
+	assert.NoError(t, unexpectedPromptError(fmt.Errorf("wrapped: %w", io.EOF)))
+
+	failed := errors.New("input/output error")
+	assert.ErrorIs(t, unexpectedPromptError(failed), failed, "a terminal that cannot be read is not the person leaving")
 }
