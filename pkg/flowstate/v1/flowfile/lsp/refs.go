@@ -132,6 +132,7 @@ func forEachExpression(doc *document, fn func(from *parsedStep, ls loopScope, v 
 // resolves to it.
 func collectStepSites(doc *document, target *parsedStep) stepSites {
 	out := stepSites{target: target}
+	seen := map[lsp.Range]struct{}{}
 
 	if rng, ok := idNameRange(doc, target); ok {
 		out.sites = append(out.sites, stepSite{rng: rng, declaration: true})
@@ -148,7 +149,8 @@ func collectStepSites(doc *document, target *parsedStep) stepSites {
 					out.unplaced++
 					continue
 				}
-				if !slices.ContainsFunc(out.sites, func(s stepSite) bool { return s.rng == rng }) {
+				if _, dup := seen[rng]; !dup {
+					seen[rng] = struct{}{}
 					out.sites = append(out.sites, stepSite{rng: rng})
 				}
 			}
@@ -383,7 +385,7 @@ func idScalarRange(doc *document, s *parsedStep) (lsp.Range, bool) {
 // it is written bare.
 func yamlAmbiguous(name string) bool {
 	switch strings.ToLower(name) {
-	case "y", "n", "yes", "no", "on", "off":
+	case "y", "n", "yes", "no", "on", "off", "true", "false", "null":
 		return true
 	}
 	return false

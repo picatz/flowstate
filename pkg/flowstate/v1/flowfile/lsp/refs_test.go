@@ -142,10 +142,12 @@ steps:
 	assert.Contains(t, got, "steps.fetch.status_code")
 
 	// A name YAML would read as a boolean is quoted so it stays a string.
-	edit, err = renameAt(doc, positionOf(t, src, `"web"`, 2), "yes")
-	require.NoError(t, err)
-	got = applyEdits(t, src, edit.Changes["file:///refs.yaml"])
-	assert.Contains(t, got, `id: "yes"`)
+	for _, name := range []string{"yes", "True", "NULL"} {
+		edit, err = renameAt(doc, positionOf(t, src, `"web"`, 2), name)
+		require.NoError(t, err, name)
+		got = applyEdits(t, src, edit.Changes["file:///refs.yaml"])
+		assert.Contains(t, got, `id: "`+name+`"`, name)
+	}
 }
 
 func TestRenameRefusesWhatWouldLeaveAStaleReference(t *testing.T) {
