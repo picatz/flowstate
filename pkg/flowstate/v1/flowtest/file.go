@@ -1920,6 +1920,10 @@ func stubTargetKey(s *Stub) string {
 // shape was found coherent is noted; a targetless one was refused already.
 type stubTwins struct {
 	first map[string]stubTwin
+	// catchAll is, per target, the first unbounded stub with no `where:`: it
+	// answers every call to its target, so every later stub for that target is
+	// unreachable whatever filter it carries.
+	catchAll map[string]stubTwin
 }
 
 type stubTwin struct {
@@ -1927,7 +1931,9 @@ type stubTwin struct {
 	label string
 }
 
-func newStubTwins() *stubTwins { return &stubTwins{first: make(map[string]stubTwin)} }
+func newStubTwins() *stubTwins {
+	return &stubTwins{first: make(map[string]stubTwin), catchAll: make(map[string]stubTwin)}
+}
 
 // note records one stub, and reports the pair when an earlier stub in the
 // same list selected the same call the same way.
@@ -1935,6 +1941,7 @@ func (t *stubTwins) note(p *problems, at site, label string, s *Stub) {
 	key := stubTargetKey(s)
 	earlier, seen := t.first[key]
 	if !seen {
+		t.noteShadow(p, at, label, s)
 		// Only a stub with no times: at all: checkStubShape refused a
 		// times: at or below zero a moment ago, and a twin diagnostic on
 		// top of that refusal would be a second sentence about one mistake.
@@ -1955,6 +1962,31 @@ func (t *stubTwins) note(p *problems, at site, label string, s *Stub) {
 		"%s (%s, %s) selects the same call the same way as %s above; two stubs the same call would match "+
 			"cannot both be reached, so this one never answers — delete one, or give them different where: filters",
 		label, stubTarget(s), filter, earlier.label)
+}
+
+// noteShadow records a stub that is not a twin of an earlier one, and reports
+// it when an earlier unbounded stub with no `where:` already answers every call
+// to its target: the filter behind it can never be reached.
+func (t *stubTwins) noteShadow(p *problems, at site, label string, s *Stub) {
+	target := "task:" + s.Task
+	if s.Step != "" {
+		target = "step:" + s.Step
+	}
+	earlier, shadowed := t.catchAll[target]
+	switch {
+	case shadowed && s.Where != "":
+		p.report(earlier.at,
+			"%s (%s, no where:) answers every call to its target and has no times:, so %s below, "+
+				"which filters with where: %s, can never be reached — give the catch-all a times:, "+
+				"or move it after the filtered stubs",
+			earlier.label, stubTarget(s), label, s.Where)
+		p.report(at,
+			"%s (%s, where: %s) is behind %s above, which answers every call to its target and has no "+
+				"times:, so this one never answers — move the catch-all after the filtered stubs, or give it a times:",
+			label, stubTarget(s), s.Where, earlier.label)
+	case !shadowed && s.Where == "" && s.Times == nil:
+		t.catchAll[target] = stubTwin{at: at, label: label}
+	}
 }
 
 // checkOthers refuses an `expect.others:` value that is not the one thing the

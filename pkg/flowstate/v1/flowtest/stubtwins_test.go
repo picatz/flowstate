@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -136,4 +137,79 @@ func TestAFilteredCaseStubAheadOfACatchAllDefaultIsNotAWarning(t *testing.T) {
 	c := report.GetCases()[0]
 	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
 	assert.Empty(t, c.GetWarnings(), "a catch-all default is a fallthrough, not a shadow")
+}
+
+// A catch-all stub with no `times:` answers every call to its target, so a
+// filtered stub written after it can never be reached. It is refused at both
+// positions; the same two stubs in the other order are the ordinary ladder,
+// and a catch-all that drains (`times:`) lets the filtered stub answer after.
+func TestACatchAllAheadOfAFilteredStubShadowsIt(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, stubs string) *v1.TestReport {
+		t.Helper()
+
+		dir := t.TempDir()
+		writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+
+		return flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: the ladder
+    workflow: ./workflow.yaml
+    stubs:
+`+stubs+`
+    expect:
+      ran: [greet]
+`))
+	}
+
+	t.Run("catch-all first is refused", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		refused := report.GetRefused()
+		require.NotEmpty(t, refused)
+		assert.Contains(t, refused, `answers every call to its target and has no times:`)
+		assert.Contains(t, refused, `which filters with where: inputs.message == "hello", can never be reached`)
+		assert.Contains(t, refused, `is behind test "the ladder" stub 1 above`)
+		assert.Empty(t, report.GetCases())
+	})
+
+	t.Run("filtered first is the ordinary ladder", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+      - task: log
+        returns: {}`)
+		assert.Empty(t, report.GetRefused())
+	})
+
+	t.Run("a catch-all that drains lets the next answer", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        times: 1
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		assert.Empty(t, report.GetRefused())
+	})
+
+	t.Run("a different target is not shadowed", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - step: greet
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		assert.NotContains(t, report.GetRefused(), "can never be reached")
+	})
 }
