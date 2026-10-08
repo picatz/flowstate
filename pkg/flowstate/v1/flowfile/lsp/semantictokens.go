@@ -113,6 +113,11 @@ type celToken struct {
 	start, end int
 	kind       int
 	mods       uint32
+
+	// shadowed is set on a name a comprehension macro binds for the length of its
+	// call, so it is the author's own and not whatever the file declares under the
+	// same spelling. Navigation reads it; the colouring does not.
+	shadowed bool
 }
 
 // lexCEL splits src into the pieces worth colouring. It never fails: whatever it
@@ -147,7 +152,7 @@ func lexCEL(src string) []celToken {
 			if nl := strings.IndexByte(src[i:], '\n'); nl >= 0 {
 				end = i + nl
 			}
-			out = append(out, celToken{i, end, tokComment, 0})
+			out = append(out, celToken{start: i, end: end, kind: tokComment, mods: 0})
 			i = end
 
 		case isIdentStart(c):
@@ -158,7 +163,7 @@ func lexCEL(src string) []celToken {
 			// A string prefix: r, b, rb, br in either case, directly before a quote.
 			if j < len(src) && (src[j] == '"' || src[j] == '\'') && isStringPrefix(src[i:j]) {
 				end := stringEnd(src, j, strings.ContainsAny(src[i:j], "rR"))
-				out = append(out, celToken{i, end, tokString, 0})
+				out = append(out, celToken{start: i, end: end, kind: tokString, mods: 0})
 				i, afterDot = end, false
 				continue
 			}
@@ -186,7 +191,8 @@ func lexCEL(src string) []celToken {
 				tok.kind = tokKeyword
 			default:
 				tok.kind = tokVariable
-				if engineRoots[word] && !shadowed(word) {
+				tok.shadowed = shadowed(word)
+				if engineRoots[word] && !tok.shadowed {
 					tok.mods = modDefaultLibrary
 				}
 			}
@@ -195,12 +201,12 @@ func lexCEL(src string) []celToken {
 
 		case c == '"' || c == '\'':
 			end := stringEnd(src, i, false)
-			out = append(out, celToken{i, end, tokString, 0})
+			out = append(out, celToken{start: i, end: end, kind: tokString, mods: 0})
 			i, afterDot = end, false
 
 		case isDigit(c) || (c == '.' && i+1 < len(src) && isDigit(src[i+1]) && !afterDot):
 			end := numberEnd(src, i)
-			out = append(out, celToken{i, end, tokNumber, 0})
+			out = append(out, celToken{start: i, end: end, kind: tokNumber, mods: 0})
 			i, afterDot = end, false
 
 		case c == '.':
@@ -208,7 +214,7 @@ func lexCEL(src string) []celToken {
 			i++
 			// `.?` is the optional field selection: one operator, then a member.
 			if i < len(src) && src[i] == '?' {
-				out = append(out, celToken{i - 1, i + 1, tokOperator, 0})
+				out = append(out, celToken{start: i - 1, end: i + 1, kind: tokOperator, mods: 0})
 				i++
 			}
 
@@ -217,7 +223,7 @@ func lexCEL(src string) []celToken {
 			if j < len(src) && slices.Contains(twoByteOperators, src[i:j+1]) {
 				j++
 			}
-			out = append(out, celToken{i, j, tokOperator, 0})
+			out = append(out, celToken{start: i, end: j, kind: tokOperator, mods: 0})
 			i, afterDot = j, false
 
 		default:
@@ -469,4 +475,20 @@ func semanticTokens(doc *document) semanticTokensResult {
 	}
 
 	return semanticTokensResult{Data: data}
+}
+
+// freeNameAt reports whether the name that starts at offset start in src is a
+// free reference: a variable token, not text inside a string literal or a comment
+// and not a name a comprehension macro binds over it. Go-to-definition asks it
+// before resolving a name to a declaration, because the spelling alone cannot say.
+func freeNameAt(src string, start int) bool {
+	for _, t := range lexCEL(src) {
+		if t.start == start {
+			return t.kind == tokVariable && !t.shadowed
+		}
+		if t.start > start {
+			break
+		}
+	}
+	return false
 }

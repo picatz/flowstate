@@ -1250,6 +1250,11 @@ type reference struct {
 	// local is the bare name, empty for a rooted reference.
 	local string
 
+	// member is the name written after a bare root, as in `vars.region` or
+	// `inputs.n`: the key that selects into the root. Empty when nothing follows
+	// the dot yet, or for a step reference, which has step and output instead.
+	member string
+
 	// span is the byte span of the reference within the expression source.
 	span [2]int
 }
@@ -1300,7 +1305,11 @@ func referenceAt(src string, cursor int) reference {
 		if segments[0] == "" {
 			return reference{}
 		}
-		return reference{local: segments[0], span: [2]int{start, start + len(segments[0])}}
+		ref = reference{local: segments[0], span: [2]int{start, start + len(segments[0])}}
+		if len(segments) > 1 {
+			ref.member = segments[1]
+		}
+		return ref
 	}
 	if segments[1] == "" {
 		// `steps.` with nothing after it yet, which is what an author has typed the

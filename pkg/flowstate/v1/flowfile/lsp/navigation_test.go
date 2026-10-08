@@ -540,3 +540,118 @@ func TestDefinitionResolvesACallAgainstTheCallingFile(t *testing.T) {
 	require.Len(t, compiled.GetSteps(), 1)
 	assert.Equal(t, "the-real-one", compiled.GetSteps()[0].GetCall().GetWorkflow().GetName())
 }
+
+// A bare name or a `vars.`/`inputs.` member jumps to the key that declares it,
+// resolved the way hover reads it: a step's own var, then the blocks around it.
+func TestDefinitionFollowsVarsAndInputs(t *testing.T) {
+	t.Parallel()
+	const src = `name: names
+inputs:
+  region:
+    type: string
+vars:
+  base: https://example.com
+steps:
+  - id: web
+    vars:
+      path: /health
+    http:
+      url: ${vars.base + path}
+      headers:
+        x-region: ${inputs.region}
+  - id: later
+    log:
+      message: ${path}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///names.yaml"
+	c.open(uri, src)
+
+	for name, tc := range map[string]struct{ at, want string }{
+		"vars member":      {"base + path", "base"},
+		"vars root":        {"vars.base", "base"},
+		"a step's own var": {"path}", "path"},
+		"inputs member":    {"region}", "region"},
+		"inputs root":      {"inputs.region", "region"},
+	} {
+		off := 0
+		if name == "vars root" || name == "inputs root" {
+			off = 1
+		}
+		pos := positionOf(t, src, tc.at, off)
+		got := c.definition(uri, pos.Line, pos.Character)
+		require.Len(t, got, 1, name)
+		assert.Equal(t, tc.want, textInRange(src, got[0].Range), name)
+	}
+
+	// A var is visible to its own step, not to a later one.
+	pos := positionOf(t, src, "${path}", 2)
+	assert.Empty(t, c.definition(uri, pos.Line, pos.Character))
+
+	// The step's own vars are not bound in its own `if:` or in another var's
+	// value, where the validator refuses them, so there is nothing to jump to.
+	const unbound = `name: u
+steps:
+  - id: a
+    if: ${path != ""}
+    vars:
+      path: /x
+      other: ${path}
+    log:
+      message: ${path}
+`
+	c.open("file:///unbound.yaml", unbound)
+	for at, want := range map[string]bool{`${path != ""}`: false, "${path}\n    log": false, "message: ${path}": true} {
+		pos = positionOf(t, unbound, at, 2)
+		if at == "message: ${path}" {
+			pos = positionOf(t, unbound, at, len("message: ${"))
+		}
+		assert.Equal(t, want, len(c.definition("file:///unbound.yaml", pos.Line, pos.Character)) == 1, at)
+	}
+
+	// Text in a string literal, and a name a comprehension binds over the root,
+	// are not references to the declaration.
+	const notFree = `name: nf
+inputs:
+  region:
+    type: string
+  xs:
+    type: list
+steps:
+  - id: a
+    log:
+      message: ${'inputs.region'}
+  - id: b
+    log:
+      message: ${xs.exists(inputs, inputs.region)}
+  - id: c
+    log:
+      message: ${inputs.region}
+`
+	c.open("file:///notfree.yaml", notFree)
+	for at, want := range map[string]bool{
+		"'inputs.region'}":       false,
+		"inputs, inputs.region)": false,
+		"${inputs.region}":       true,
+	} {
+		pos = positionOf(t, notFree, at, len(at)-3)
+		if at == "${inputs.region}" {
+			pos = positionOf(t, notFree, at, len("${inputs.")+1)
+		}
+		assert.Equal(t, want, len(c.definition("file:///notfree.yaml", pos.Line, pos.Character)) == 1, at)
+	}
+
+	// A member nothing declares goes nowhere.
+	const missing = `name: m
+steps:
+  - id: a
+    log:
+      message: ${vars.nope} ${inputs.nope}
+`
+	c.open("file:///missing.yaml", missing)
+	for _, at := range []string{"vars.nope", "inputs.nope"} {
+		pos = positionOf(t, missing, at, len(at)-1)
+		assert.Empty(t, c.definition("file:///missing.yaml", pos.Line, pos.Character), at)
+	}
+}
