@@ -494,7 +494,7 @@ it reaches must show what the first time showed or the step is refused.
 
 Because that re-executes effects, `--reverse` is refused for a workflow with a
 task that may act outside the process. Only `log` is known not to; a plugin,
-`http` and `exec` are not, nor is a task not named here. `--reverse=unsafe` takes
+`http` and `exec` are not, nor is a task not named here. `--reverse=unsafe` (with the equals sign; `--reverse unsafe` is a positional argument) takes
 the risk and prints a warning. It also needs a terminal and `--debug`, and is
 refused with `--signal`, which is delivered once.
 
