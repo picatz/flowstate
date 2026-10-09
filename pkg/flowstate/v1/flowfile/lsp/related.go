@@ -85,8 +85,21 @@ func relatedFor(doc *document, c carriedDiagnostic) []relatedInformation {
 	switch {
 	case duplicateIDMessage.MatchString(msg):
 		id := duplicateIDMessage.FindStringSubmatch(msg)[1]
+		// Only declarations the anchor can collide with: sibling for_each and loop
+		// bodies may reuse an id, and listing one would present legal reuse as
+		// part of the error. Without an anchor there is no scope to judge by.
+		var anchor *parsedStep
 		for _, s := range doc.parsed.steps {
-			if s.id == id {
+			if rng, ok := idNameRange(doc, s); ok && s.id == id && overlaps(rng, c.published.Range) {
+				anchor = s
+				break
+			}
+		}
+		if anchor == nil {
+			return nil
+		}
+		for _, s := range doc.parsed.steps {
+			if s.id == id && s != anchor && sharesNamespace(anchor, s) {
 				add(s, "also declared here")
 			}
 		}

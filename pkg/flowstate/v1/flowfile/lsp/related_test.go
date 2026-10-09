@@ -76,3 +76,29 @@ func TestPublishedDiagnosticMarshalsFlat(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotContains(t, string(b), "relatedInformation", "a diagnostic with nothing related carries no empty field")
 }
+
+func TestDuplicateIDDoesNotListLegalReuseInASiblingLoop(t *testing.T) {
+	t.Parallel()
+	loop := func(id, inner string) string {
+		return "  - id: " + id + "\n    for_each:\n      items: ${[1]}\n      as: n\n      steps:\n        - id: " + inner +
+			"\n          log:\n            message: x\n"
+	}
+	// `dup` twice inside the first loop is the real collision; the second loop
+	// declaring `dup` is legal reuse and must not be listed.
+	src := "edition: v2026.4\nname: d\nsteps:\n" +
+		"  - id: one\n    for_each:\n      items: ${[1]}\n      as: n\n      steps:\n" +
+		"        - id: dup\n          log:\n            message: x\n" +
+		"        - id: dup\n          log:\n            message: y\n" +
+		loop("two", "dup")
+
+	var found bool
+	for msg, rel := range relatedIn(t, src) {
+		if len(msg) < 12 || msg[:12] != "duplicate id" {
+			continue
+		}
+		found = true
+		require.Len(t, rel, 1, "only the other declaration in the same loop body: %v", rel)
+		assert.Equal(t, 11, rel[0].Location.Range.Start.Line, "the second `dup` in the first loop")
+	}
+	assert.True(t, found, "the validator must report the real collision")
+}
