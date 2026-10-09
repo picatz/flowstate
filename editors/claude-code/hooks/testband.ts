@@ -1,4 +1,5 @@
 import { count } from './statusline'
+import { isTestFile } from './flowfile'
 import { clean } from './runs'
 import { chip, middleTruncate, statusFor } from './vocab'
 import type { Status } from './vocab'
@@ -20,6 +21,7 @@ export const MAX_CASES = 5000
 /** Failing cases named on the band. */
 export const MAX_FAILING = 3
 const MAX_NAME = 60
+const MAX_FILE = 80
 const MAX_REASON = 100
 
 export interface Failing {
@@ -28,6 +30,8 @@ export interface Failing {
   file: string
   line: number
   reason: string
+  /** The name and file are the CLI's own text, neither cleaned nor cut, so they may be handed back to it (see rerunArgv). */
+  exact?: boolean
 }
 
 export interface Band {
@@ -47,6 +51,9 @@ export interface Band {
   /** Why the outcome is what it is, when the counts do not say. */
   note: string
 }
+
+/** A string the CLI sent that `clean` left whole: non-empty, within the bound, no hidden character. */
+const unaltered = (v: unknown, max: number): boolean => typeof v === 'string' && v !== '' && v.length <= max && clean(v, max) === v
 
 const blank = (outcome: Band['outcome'], note: string, detailed = false): Band => ({
   outcome, detailed, passed: 0, failed: 0, skipped: 0, uncovered: 0, failing: [], more: 0, cut: false, note,
@@ -121,7 +128,7 @@ export const bandFor = ({ stdout, ok, unfinished, partial }: TestRun): Band => {
       unreadable++
       continue
     }
-    const name = clean(file.file, 80)
+    const name = clean(file.file, MAX_FILE)
     const why = clean(file.refused, MAX_REASON)
     if (typeof file.refused === 'string' && file.refused !== '') {
       refused++
@@ -146,6 +153,7 @@ export const bandFor = ({ stdout, ok, unfinished, partial }: TestRun): Band => {
         band.failing.push({
           name: clean(c.name, MAX_NAME) || 'unnamed case',
           file: name,
+          exact: unaltered(c.name, MAX_NAME) && unaltered(file.file, MAX_FILE),
           line,
           reason: clean(first?.message, MAX_REASON) || clean(c.error, MAX_REASON) || 'no reason given',
         })
@@ -194,3 +202,37 @@ export const bandText = (b: Band): string[] => [
   ...b.failing.map(f => `  ${failingLine(f)}`),
   ...(b.more > 0 ? [`  and ${count(b.more)} more`] : []),
 ]
+
+/** A test file the band may rerun: a plain path, not a flag, with no parent segment. */
+const RERUN_FILE = /^[A-Za-z0-9_./][A-Za-z0-9._/@+-]*$/
+
+/** `regexp.QuoteMeta`: `--run` takes a regular expression, and a case name is a literal. */
+export const quoteMeta = (s: string): string => s.replace(/[\\.+*?()|[\]{}^$]/g, '\\$&')
+
+/**
+ * The argv that reruns one failing case. `--run` is a Go regular expression
+ * matched anywhere in the name, so the name is quoted and anchored to select
+ * that case alone; it is one element in the `--run=` form, so a name starting
+ * with `-` is a value, not a flag; `--` precedes the file. `-o json` is what the
+ * band reads back. Undefined unless the band holds the case's name and file
+ * exactly as the CLI gave them (a cleaned or cut one would rerun another case,
+ * or none) and the file is a plain `*.test.yaml` path.
+ */
+export const rerunArgv = (flow: string, f: Failing): string[] | undefined => {
+  if (f.exact !== true || f.name === '' || f.name.length > MAX_NAME) return undefined
+  if (f.file === '' || f.file.length > MAX_FILE || !RERUN_FILE.test(f.file) || f.file.split('/').includes('..') || !isTestFile(f.file)) return undefined
+  return [flow, 'test', '-o', 'json', `--run=^${quoteMeta(f.name)}$`, '--', f.file]
+}
+
+/** What the first press asks, naming exactly what Confirm will run. */
+export const rerunQuestion = (f: Failing): string => `Rerun the case "${f.name}" of ${f.file} locally? Nothing runs until you confirm.`
+
+/** A rerun is stopped after this long and then reported as outcome unknown. */
+export const RERUN_TIMEOUT_MS = 60000
+
+/** The band after a rerun: the lone-test result of that one case, or unknown when it did not finish. */
+export const rerunBand = (ran: { exitCode: number; stdout: string; isStdoutTruncated?: boolean } | undefined, err?: unknown): Band => {
+  if (ran === undefined) return unknownBand(`rerun outcome unknown: ${clean(String(err), 80) || 'no answer'}`)
+  const b = bandFor({ stdout: ran.stdout, ok: ran.exitCode === 0, partial: ran.isStdoutTruncated === true })
+  return b.detailed && b.note === '' ? { ...b, note: 'rerun of one case' } : b
+}

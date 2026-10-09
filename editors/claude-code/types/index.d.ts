@@ -38,6 +38,8 @@ declare module 'claude-code' {
       runResult: { file: string; kind: '' | 'ok' | 'failed' | 'unknown' | 'notrun'; text: string; lines: string[]; cards: { cards: { title: string; type: string; help: string; status: { kind: string; symbol: string; tone: string; word: string }; fact: string; raw: string; cut: boolean }[]; more: number } | null }
       /** The output cards show the raw values (sensitive ones still hidden) instead of the labelled cards (hooks/outputs.ts). */
       outputsRaw: boolean
+      /** A Rerun press on a failing band case awaiting its Confirm: the case's file and name as the question named them. Nothing runs while this is set; empty file for none. */
+      rerunConfirm: { file: string; name: string }
       /** The `flow test` band above the prompt (hooks/testband.ts); null for none. Cleared when a Flowfile or test file is edited. */
       testBand: {
         outcome: 'passed' | 'failed' | 'unknown'
@@ -46,7 +48,7 @@ declare module 'claude-code' {
         failed: number
         skipped: number
         uncovered: number
-        failing: { name: string; file: string; line: number; reason: string }[]
+        failing: { name: string; file: string; line: number; reason: string; exact?: boolean }[]
         more: number
         cut: boolean
         note: string
