@@ -161,11 +161,11 @@ func TestShippedEgressPolicyExampleRateLimitsTheHostItNames(t *testing.T) {
 	require.NoError(t, err)
 
 	for i := range 10 {
-		require.NoError(t, policy.checkRate(t.Context(), target, target.String()),
+		require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false),
 			"request %d is inside the file's own limit of 10 per second", i+1)
 	}
 
-	err = policy.checkRate(t.Context(), target, target.String())
+	err = policy.checkRate(t.Context(), target, target.String(), false)
 	require.ErrorIs(t, err, ErrRateLimited)
 	require.NotErrorIs(t, err, ErrDenied,
 		"the file promises this is not a denial: the step comes back after the wait")
@@ -175,6 +175,6 @@ func TestShippedEgressPolicyExampleRateLimitsTheHostItNames(t *testing.T) {
 	other, err := url.Parse("https://partner-a.example.com/v1")
 	require.NoError(t, err)
 	for range 20 {
-		require.NoError(t, policy.checkRate(t.Context(), other, other.String()))
+		require.NoError(t, policy.checkRate(t.Context(), other, other.String(), false))
 	}
 }

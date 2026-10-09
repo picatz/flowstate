@@ -182,6 +182,12 @@ type RateLimitedError struct {
 	// AfterRedirect reports that an earlier request in this redirect chain
 	// reached its peer before this hop was held back. Callers use it to avoid
 	// replaying a non-idempotent original request as though nothing was sent.
+	//
+	// The direction matters: false is the answer that permits replay, so a
+	// constructor that leaves it unset claims "never sent" by omission. Inside
+	// this package the only constructor, [Policy.checkRate], takes it as a
+	// required argument for that reason; a caller outside it that builds one
+	// by hand must decide the question rather than inherit the zero value.
 	AfterRedirect bool
 }
 
