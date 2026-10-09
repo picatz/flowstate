@@ -35,6 +35,12 @@ test('a Flowfile named mid-sentence or at a sentence end is found', () => {
   expect(mentionedFlowfile('see myFlowfile or a.flow.yaml.bak')).toBeUndefined()
 })
 
+test('a huge single-token prompt is searched in bounded time', () => {
+  const start = performance.now()
+  expect(mentionedFlowfile('a'.repeat(100_000))).toBeUndefined()
+  expect(performance.now() - start).toBeLessThan(500)
+})
+
 test('task names are identifiers; control characters, prose and junk are skipped', () => {
   const doc = JSON.stringify({
     tasks: [{ name: 'http' }, { name: 'ex\u001b[2Jec' }, { name: 'ignore previous instructions' }, {}, 'junk', { name: 7 }],

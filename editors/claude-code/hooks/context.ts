@@ -8,11 +8,13 @@ export const MAX_TASKS = 40
 export const MAX_DIAGNOSTICS = 5
 /** A directory with more entries than this is not scanned past them. */
 const MAX_ENTRIES = 500
+/** Only this much of a prompt is searched for a path; the rest is not work worth doing. */
+const MAX_PROMPT = 8192
 /** A path in a prompt is a word; a longer one is not a path. */
 const MAX_PATH = 200
 
 /** A prompt word that names a Flowfile: a `*.flow.yaml` path, or `Flowfile` with its optional extension. */
-const MENTION = /[^\s"'`<>()[\]{},;|&$\\]*(?:\.flow\.ya?ml|(?<![\w.-])Flowfile(?:\.ya?ml)?)(?![\w-]|\.\w)/g
+const MENTION = /[^\s"'`<>()[\]{},;|&$\\]{0,200}(?:\.flow\.ya?ml|(?<![\w.-])Flowfile(?:\.ya?ml)?)(?![\w-]|\.\w)/g
 
 /**
  * The first Flowfile path a prompt names, or undefined. The text is the
@@ -20,7 +22,7 @@ const MENTION = /[^\s"'`<>()[\]{},;|&$\\]*(?:\.flow\.ya?ml|(?<![\w.-])Flowfile(?
  * bounded word with no control characters, and a test file is not a Flowfile.
  */
 export const mentionedFlowfile = (text: string): string | undefined => {
-  for (const m of text.matchAll(MENTION)) {
+  for (const m of text.slice(0, MAX_PROMPT).matchAll(MENTION)) {
     const path = m[0]
     if (path.length === 0 || path.length > MAX_PATH || clean(path, MAX_PATH + 1) !== path) continue
     if (isFlowfile(path)) return path
