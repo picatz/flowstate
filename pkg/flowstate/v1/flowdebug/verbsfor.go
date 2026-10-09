@@ -38,3 +38,30 @@ func VerbsFor(capabilities *v1.DebugCapabilities) []Verb {
 
 	return verbs
 }
+
+// LocalVerbsFor is [VerbsFor] for a run in the caller's own process. There the
+// capabilities are complete: a run that does not report [v1.DebugCapabilities.Reverse]
+// cannot step back at all, so the verbs that return to an earlier stop are left
+// out rather than offered to be refused. A durable run is different — its
+// engine answers them with the sentence that points at the history walk — which
+// is why [VerbsFor] keeps them.
+func LocalVerbsFor(capabilities *v1.DebugCapabilities) []Verb {
+	verbs := VerbsFor(capabilities)
+	if capabilities.GetReverse() || capabilities.GetHistory() {
+		return verbs
+	}
+
+	return slices.DeleteFunc(verbs, func(v Verb) bool { return rewindingVerb(v.Name) })
+}
+
+// rewindingVerb is whether the table marks the verb as returning to an earlier
+// stop.
+func rewindingVerb(name string) bool {
+	for _, c := range commandsOn(frontDriver) {
+		if c.verb == name {
+			return c.rewinds
+		}
+	}
+
+	return false
+}

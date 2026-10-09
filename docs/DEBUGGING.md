@@ -13,9 +13,9 @@ to the others:
 
 | You are | Reach for | What it drives |
 | --- | --- | --- |
-| a person, debugging a test case | `flow test --debug --run '<case>' <file>` | a prompt, over a stubbed run |
+| a person, debugging a test case | `flow test --debug --run '<case>' <file>` | [a screen](#the-default-is-a-full-screen-debugger) at a terminal, a prompt elsewhere, over a stubbed run |
 | a person, opening a failing simulation | `flow test --seed <N> --debug --run '<case>' <file>` | the seeded run itself, faults and order included |
-| a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
+| a person, debugging a real local run | `flow run local --debug <workflow>` | the same screen, over a real run |
 | a person, debugging a durable run | `flow debug attach <workflow-id>` | the same commands, over a run on a worker |
 | an editor | [`flow dap`](EDITORS.md#stepping-a-run-flow-dap), launch or attach | a local run, or a durable one |
 | an agent | the `flowstate_debug` tool, or the `flowstate_debug_session_*` tools | a scripted session, or one retained across calls |
@@ -61,6 +61,59 @@ flowchart LR
   class Case,Local,Durable runtime
   class Past durable
 ```
+
+## The default is a full-screen debugger
+
+At a terminal, `flow debug attach`, `flow run local --debug` (with or without
+`--reverse`) and `flow test --debug` open a full-screen debugger: the flow, the
+source, the steps, the scope and a console, driven by keys and the mouse. It is
+the same session as the prompt described under [The prompt](#the-prompt) and the
+same commands: a key, a click and a line typed at the console are one call with
+one answer and one refusal, and the screen draws only what the run answers, so a
+value the run withholds is withheld there too. The keys are listed under
+[the full-screen debugger](#the-full-screen-debugger), and `?` on the screen
+shows them.
+
+It opens when stdin and stdout are both terminals of at least 60 columns by 12
+rows, `TERM` is not `dumb` and `CI` is not set. `--tui=false` opts out and keeps
+the line editor on a terminal:
+
+```console
+$ flow run local --debug workflow.yaml             # the screen, at a terminal
+$ flow run local --debug workflow.yaml --tui=false # the line editor
+```
+
+**Machine output is untouched.** Everywhere the screen cannot or should not be
+drawn, the debugger is exactly the front it was before the screen existed, byte
+for byte on stdout and stderr, and it says nothing about the screen: a
+`--script`, a piped stdin or stdout (`flow test --debug < script.txt`, `flow run
+local --debug | jq`), a machine `-o json` or `-o jsonl`, a CI environment, and
+`TERM=dumb`. That is what lets a recorded session replay, an agent drive it and a
+pipeline read its answer. `--tui` spelled out is the one request that is
+answered: where it cannot be honoured it is declined with one sentence on
+stderr (`flow: --tui is not used: stdin is not a terminal; using the line
+editor`) and the command carries on without it, so a script that gains the flag
+keeps its output. A `CI` environment declines the default, not a request someone
+typed.
+
+Over a run in this process the screen owns the terminal for as long as the run is
+held, so what the run says in that time (its `log:` steps and narration) is kept
+and printed on stderr when the screen closes, and the run's answer follows on
+stdout as it always does. How you leave decides what happens to the run, as at
+the prompt: `q` or `detach` lets it finish unattended, `ctrl+d` leaves and does
+the same, and `ctrl+c` ends it as `quit` does. A run that cannot step back has no
+key for `back` or `reverse-continue`; `--reverse` gives it one that works. `--record`
+writes the commands the screen sent, up to a line breakpoint (which has no line a
+script could replay) or, outside `--reverse`, a step back.
+
+In the live view of `flow watch`, `d` hands the terminal to `flow debug attach
+<workflow-id> --run-id <run-id>` for the run being watched, with the server flags
+the watch was given, and returns to the watch when the debugger ends; the footer
+shows the key.
+
+The screen shows source lines for a durable attach given `--program`; over a
+local run it names steps by address. The line editor below is what you get with
+`--tui=false` and wherever the screen is not used.
 
 To try it, step through a loop yourself, or replay a recorded session over the
 same file:
@@ -336,7 +389,8 @@ test    a step that has run
 
 ## The prompt
 
-At a terminal, `debug>` is a real prompt rather than a reader: **tab completes**,
+With `--tui=false`, and wherever the [full-screen debugger](#the-default-is-a-full-screen-debugger)
+is not used, `debug>` at a terminal is a real prompt rather than a reader: **tab completes**,
 the editing keys work (ctrl-a, ctrl-e, ctrl-w, ctrl-u, ctrl-k, the arrows), and
 up and down walk the commands you have already typed in this session.
 
@@ -901,11 +955,11 @@ lines. Where a deployment runs its own copy of a workflow in place of the one
 submitted, the run executes that copy, so `--program` must name the deployed
 file.
 
-#### The full-screen debugger: `--tui`
+#### The full-screen debugger
 
-`flow debug attach <workflow-id> --tui` drives the same session from one screen
-instead of the line editor: the run, its steps and its scope, a console, and the
-keys below. It is opt-in, and every command still goes through the same driver,
+`flow debug attach <workflow-id>` drives the same session from one screen
+instead of the line editor, by [default at a terminal](#the-default-is-a-full-screen-debugger):
+the run, its steps and its scope, a console, and the keys below. Every command goes through the same driver,
 so a key, a click and a line typed at the console are one call with one answer
 and one refusal. The screen draws only what the run answers, so a value the run
 withholds is withheld here too. It follows the run by waiting on the run's own
@@ -913,10 +967,12 @@ revisions rather than a timer, so a stop that happens while you look at it
 appears without a key.
 
 It needs a terminal at least 60 columns by 12 rows on stdin and stdout, no
-`--script`, and no machine `-o` format. Where it cannot be drawn, `--tui` is
-declined with one sentence on stderr (`flow: --tui is not used: stdin is not a
-terminal; using the line editor`) and the attach runs exactly as it would have
-without the flag, so a script that gains the flag keeps its output.
+`--script`, no machine `-o` format, `TERM` not `dumb` and `CI` unset. Where it
+cannot be drawn the attach runs exactly as it did before the screen existed;
+`--tui=false` asks for that on a terminal, and `--tui` spelled out where it cannot
+be drawn is declined with one sentence on stderr (`flow: --tui is not used: stdin
+is not a terminal; using the line editor`), so a script that gains the flag keeps
+its output.
 
 | Key | Does |
 | --- | --- |
@@ -1393,8 +1449,8 @@ points refuse a move past them, and an answer for a point that was not asked for
 is a server fault, not a position.
 
 At a terminal it is `flow debug attach <workflow-id> --history --run-id <run-id>`, with the line
-editor, with `--script`, or with `--tui` for the full-screen debugger of
-[the full-screen debugger](#the-full-screen-debugger---tui). It is the same front that a live attach
+editor, with `--script`, or, by default at a terminal, in
+[the full-screen debugger](#the-full-screen-debugger). It is the same front that a live attach
 is, over a `Historical` target: `next`, `back`, `goto <point>` and a click on the timeline strip
 move among the points both ways, the top bar reads `reconstructed`, and nothing runs or is held.
 `--run-id` is required, because a point is a point of one execution, and `--session`, `--lease`

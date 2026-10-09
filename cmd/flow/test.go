@@ -224,8 +224,10 @@ flow test -o jsonl examples/`,
 			"exactly one selected case (narrow with `--run` when the file has more), and is "+
 			"refused with `--output json` and with `--seeds`. With `--seed N` it steps through "+
 			"that seed's own run — the faults it injects and the order it chose — which is how "+
-			"a reported violation is opened in the debugger")
+			"a reported violation is opened in the debugger. At a terminal of at least 60x12 it is "+
+			"the full-screen debugger unless --tui=false")
 	addRecordFlag(cmd)
+	addTUIFlag(cmd)
 
 	return cmd
 }
@@ -429,7 +431,7 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	)
 	restoreTerminal := func() {}
 	if debugging {
-		if session, front, restoreTerminal, err = debugSession(cmd, surface, machine, budget, files, selectCase); err != nil {
+		if session, front, restoreTerminal, err = debugSession(cmd, surface, format, budget, files, selectCase); err != nil {
 			return err
 		}
 		// A terminal the session put into raw mode, put back — before this

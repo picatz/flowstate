@@ -639,7 +639,9 @@ $ flow dap
 Run by hand it prints a banner saying so and waits — like `flow lsp`, it is meant
 to be launched by an editor rather than typed. For a terminal debugger, use
 `flow run local --debug` or `flow debug attach`, which are the same sessions
-behind the same commands.
+behind the same commands; at a terminal they open the
+[full-screen debugger](DEBUGGING.md#the-default-is-a-full-screen-debugger), and
+`--tui=false` keeps the line editor.
 
 A launch *runs* the workflow, so it takes the same deployment policy flags the
 worker and `flow run local` take. Pass `--egress-policy` and `--task-policy` in

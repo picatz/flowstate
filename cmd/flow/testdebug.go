@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -28,7 +29,7 @@ import (
 func debugSession(
 	cmd *cobra.Command,
 	surface *ui.UI,
-	machine bool,
+	format OutputFormat,
 	budget dst.Budget,
 	files []string,
 	selectCase func(string) bool,
@@ -40,7 +41,7 @@ func debugSession(
 	nothingToRestore := func() {}
 
 	switch {
-	case machine:
+	case format.Machine():
 		// A prompt and a document cannot share one stdout: the first
 		// `debug>` written into a JSON stream is a document nothing can
 		// parse.
@@ -83,6 +84,18 @@ func debugSession(
 	if len(matched) != 1 {
 		return nil, nil, nothingToRestore, fmt.Errorf("--debug steps through one case, and %d of this file's cases were "+
 			"selected: %s. Name one with --run", len(matched), quotedList(matched))
+	}
+
+	// At a terminal the full-screen debugger plays the case, through the same
+	// reversible front the line editor uses, so `back` is real there as well.
+	// What the case says while it owns the terminal is kept and printed when
+	// it closes.
+	open, note := debugScreen(cmd, cmd.InOrStdin(), surface.Out, "", format, os.Getenv)
+	fmt.Fprint(surface.Err, note)
+	if open {
+		front, restore := screenFront(cmd, surface, flowtest.WorkflowPath(files[0], &only))
+
+		return nil, front, restore, nil
 	}
 
 	console, out, restore := debugConsoleFor(cmd.InOrStdin(), surface.Out, surface.Theme)

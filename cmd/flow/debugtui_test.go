@@ -80,21 +80,29 @@ func TestTUIIsOptInAndDeclinedWithoutATerminal(t *testing.T) {
 	assert.Equal(t, attach("--script", script).Stdout, attach("--script", script, "--tui=false").Stdout)
 }
 
-func TestTUIDefaultsOff(t *testing.T) {
+func TestTUIIsTheDefault(t *testing.T) {
 	t.Parallel()
 
-	flag := flowCommand(t, "debug", "attach").Flags().Lookup("tui")
-	require.NotNil(t, flag)
-	assert.Equal(t, "false", flag.DefValue, "the full-screen debugger became the default")
-	assert.Contains(t, flag.Usage, "60x12")
+	for _, path := range [][]string{{"debug", "attach"}, {"run", "local"}, {"test"}} {
+		flag := flowCommand(t, path...).Flags().Lookup("tui")
+		require.NotNil(t, flag, "%v", path)
+		assert.Equal(t, "true", flag.DefValue, "%v: the full-screen debugger is not the default", path)
+		assert.Contains(t, flag.Usage, "60x12")
+		assert.Contains(t, flag.Usage, "--tui=false")
+	}
 }
 
 func TestOtherDebugCommandsHaveNoTUIFlag(t *testing.T) {
 	t.Parallel()
 
-	for _, path := range [][]string{{"debug", "get"}, {"debug", "do"}, {"debug", "history"}, {"debug", "replay"}} {
+	for _, path := range [][]string{{"debug", "get"}, {"debug", "do"}, {"debug", "history"}} {
 		assert.Nil(t, flowCommand(t, path...).Flags().Lookup("tui"), "%v", path)
 	}
+	// A replay takes the flag only because it is a local run, hides it, and
+	// never opens a screen: its commands come from the script.
+	replay := flowCommand(t, "debug", "replay").Flags().Lookup("tui")
+	require.NotNil(t, replay)
+	assert.True(t, replay.Hidden)
 	assert.Equal(t, 60, debugtui.MinWidth)
 }
 
