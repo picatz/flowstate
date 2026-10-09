@@ -78,3 +78,39 @@ func TestAChainOfModulesEndingInAFailureIsReadOncePerModule(t *testing.T) {
 	require.Error(t, err)
 	assert.LessOrEqual(t, *session.reads, 3, "bad, l2 and l1 are each read once")
 }
+
+// Four levels of sixteen-way fan-out, each file with steps, every leaf broken: the
+// report stays a few KiB and the reads stay at one per distinct module, where
+// embedding each child's whole error in its parent's grew it as 16^depth.
+func TestAFanOutOfFailingModulesKeepsItsReportSmall(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	body := "steps:\n  - id: a\n    log:\n      message: hi\n"
+	use := func(target string) string {
+		var b strings.Builder
+		b.WriteString("use:\n")
+		for i := range v1.MaxUsesPerFile {
+			fmt.Fprintf(&b, "  u%c:\n    path: ./%s\n", 'a'+i, target)
+		}
+
+		return b.String()
+	}
+	head := "edition: " + CurrentEdition + "\nname: m\n"
+	files := map[string]string{
+		"bad.yaml": head + "types:\n  T:\n    type: nope\n",
+		"l3.yaml":  head + use("bad.yaml") + body,
+		"l2.yaml":  head + use("l3.yaml") + body,
+		"l1.yaml":  head + use("l2.yaml") + body,
+		"w.yaml":   head + use("l1.yaml") + body,
+	}
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644))
+	}
+
+	session := newModuleSession()
+	_, _, err := parse([]byte(files["w.yaml"]), filepath.Join(dir, "w.yaml"), nil, new(int), session)
+	require.Error(t, err)
+	assert.Less(t, len(err.Error()), 8<<10, "the report does not grow with the fan-out")
+	assert.LessOrEqual(t, *session.reads, 4, "each distinct module is read once")
+}

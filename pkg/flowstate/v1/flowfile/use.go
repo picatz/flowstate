@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
@@ -209,8 +210,35 @@ func (c *compiler) useModules(f field) {
 	c.uses.aliases = make(map[string]usedModule, len(entries))
 	c.initTypeScope()
 	for _, e := range entries {
+		before := len(c.diags)
 		c.useModule(e, path)
+		if len(c.diags) > before {
+			// The first module that cannot be used is the one to fix; the rest of
+			// the block would only repeat it, and a block of failing modules would
+			// otherwise multiply its report by its fan-out at every level.
+			return
+		}
 	}
+}
+
+// maxFirstProblem bounds the part of a module's own error that a use of it repeats.
+const maxFirstProblem = 240
+
+// firstProblem is the first line of a module's error, cut to [maxFirstProblem]
+// bytes on a rune boundary: enough to say what to fix, and a size that does not
+// grow with how deeply modules use one another.
+func firstProblem(text string) string {
+	line, _, _ := strings.Cut(strings.TrimSpace(text), "\n")
+	line = strings.TrimSpace(line)
+	if len(line) <= maxFirstProblem {
+		return line
+	}
+	cut := maxFirstProblem
+	for cut > 0 && !utf8.RuneStart(line[cut]) {
+		cut--
+	}
+
+	return line[:cut] + "..."
 }
 
 // useModule compiles one `alias: {path: ...}` entry.
@@ -320,7 +348,7 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedM
 	module, positions, err := parse(data, resolved, ancestors, c.callBudget,
 		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads})
 	if err != nil {
-		return refuse("uses %q, which failed to compile:\n%s", target, indentLines(err.Error()))
+		return refuse("uses %q, which failed to compile; first problem: %s", target, firstProblem(err.Error()))
 	}
 
 	switch {
@@ -332,7 +360,7 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedM
 
 	if ds := ValidateModule(module); len(ds) > 0 {
 		positionDiagnostics(ds, positions)
-		return refuse("uses %q, which has %d problem%s:\n%s", target, len(ds), plural(len(ds)), indentLines(ds.Error()))
+		return refuse("uses %q, which has %d problem%s; first: %s", target, len(ds), plural(len(ds)), firstProblem(ds.Error()))
 	}
 
 	loaded := &loadedModule{workflow: module, digest: digest}
