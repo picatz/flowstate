@@ -4,7 +4,7 @@ import type { Engine, Register } from 'claude-code'
 import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
-import { UNCHECKED_BASH, UNCHECKED_EDIT, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
+import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, runLine, toListing } from './runs'
 import type { Listing } from './runs'
@@ -178,7 +178,7 @@ export const register: Register = (on, options) => {
         }
       }
       const findings = secretsIn(e.input, current)
-      return findings.length === 0 ? decided : { ...decided, decision: 'deny', reason: denyReason(path, findings) }
+      return findings.length === 0 ? decided : { ...decided, decision: 'deny', reason: denyReason(path, findings, alreadyPresent(current, findings)) }
     }).catch(async (_$, e, next) => {
       // Nothing has run yet, so a failed secret check refuses a Flowfile write rather than allowing it.
       const decided = await next(e)

@@ -1,10 +1,13 @@
 import {
   DEFAULT_ADDRESS,
+  EDIT_TOO_LARGE,
+  LONG_LINE,
   MAX_COMMAND,
   MAX_SCAN,
   UNCHECKED_BASH,
   UNCHECKED_EDIT,
   afterEdits,
+  alreadyPresent,
   analyzeCommand,
   askReason,
   denyReason,
@@ -318,7 +321,7 @@ const took = (run: () => unknown): number => {
 test('pathological secret text is bounded', () => {
   const spaces = 'password: a' + ' '.repeat(40_000) + 'b'
   expect(took(() => findSecrets(spaces))).toBeLessThan(500)
-  expect(findSecrets(spaces)).toEqual([])
+  expect(findSecrets(spaces).map(f => f.what)).toEqual([LONG_LINE])
 
   const manyLines = ('password: a' + ' '.repeat(4000) + 'b\n').repeat(60)
   expect(took(() => findSecrets(manyLines))).toBeLessThan(500)
@@ -332,7 +335,7 @@ test('pathological secret text is bounded', () => {
   expect(took(() => secretsIn({ content: huge }))).toBeLessThan(500)
 })
 
-test('over the cap a Flowfile edit is denied as too large to scan; a long line only shows a token in its head', async ($, on) => {
+test('over the cap a Flowfile edit is denied as too large to scan; a long line is read whole', async ($, on) => {
   decide(on)
   const big = 'x: 1\n'.repeat(MAX_SCAN / 5 + 10)
   const out = await $.tool.check(write('a.flow.yaml', big))
@@ -341,8 +344,15 @@ test('over the cap a Flowfile edit is denied as too large to scan; a long line o
 
   const token = `ghp_${'Abcdefghijklmnopqrstuvwxyz0123456789'}`
   expect(findSecrets(`x: ${token}${' '.repeat(5000)}`)).toHaveLength(1)
-  expect(findSecrets(`${' '.repeat(5000)}x: ${token}`)).toEqual([])
-  expect(findSecrets(`password: hunter2hunter2${' '.repeat(5000)}`)).toEqual([])
+  // A long line is read whole: a token after padding, or a credential key word anywhere, is not missed.
+  expect(flagged(`${' '.repeat(5000)}x: ${token}`)).toEqual(['a GitHub token'])
+  expect(findSecrets(`a: 1\npassword: hunter2hunter2${' '.repeat(5000)}`)).toEqual([{ line: 2, what: LONG_LINE }])
+  expect(findSecrets(`${' '.repeat(5000)}password: hunter2hunter2`)).toEqual([{ line: 1, what: LONG_LINE }])
+  expect(flagged(`${' '.repeat(5000)}x: -----BEGIN RSA PRIVATE KEY-----`)).toEqual(['a private key'])
+  // Without a credential word or a token shape, a long line is ignored.
+  expect(findSecrets(`note: ${'lorem ipsum '.repeat(500)}`)).toEqual([])
+  expect(findSecrets(`${'sk-'.repeat(80_000)}`)).toEqual([])
+  expect(took(() => findSecrets(`${'sk-ghp_'.repeat(35_000)}`))).toBeLessThan(500)
   expect(findSecrets('x: 1\n'.repeat(1000))).toEqual([])
 })
 
@@ -388,6 +398,14 @@ test('the binary behind a wrapper is found', () => {
     expect(verbs(command)).toEqual([verb])
   }
   for (const quiet of [
+    'cp flow run',
+    'mv flow signal',
+    'bun test flow run',
+    'npm test flow run',
+    'rm -f flow cancel',
+    'git commit -m "flow run local"',
+    'git commit -m "flow run x"',
+    'grep "flow run" .',
     'go run ./cmd/flow validate x',
     'ssh h flow list',
     'docker exec c flow run local x',
@@ -560,4 +578,116 @@ test('a guard that failed asks for a command naming flow and denies a Flowfile e
   expect(UNCHECKED_BASH).toContain('asks first')
   expect(UNCHECKED_EDIT).toContain('not made')
   expect(denyReason('a.flow.yaml', [{ line: 0, what: 'text too large to scan' }])).toContain('too large to scan')
+})
+
+test('a command line passed as one quoted word is read', () => {
+  for (const [command, verb] of [
+    ['ssh host "flow run x"', 'flow run'],
+    ["ssh host 'flow run x'", 'flow run'],
+    ['watch "flow run x"', 'flow run'],
+    ['su -c "flow run x"', 'flow run'],
+    ['env -S "flow run x"', 'flow run'],
+    ['ssh host "cd d && flow cancel wf"', 'flow cancel'],
+    ['git commit -m x && flow run y', 'flow run'],
+  ]) {
+    expect(verbs(command)).toEqual([verb])
+  }
+  for (const quiet of ['ssh host "flow run local x"', 'ssh host "ls -la"', 'git commit -m "flow run local"', 'grep "flow run" .', 'echo "flow run x"', 'ssh host "flow list"']) {
+    expect(analyzeCommand(quiet)).toEqual({ actions: [], uncertain: false })
+  }
+})
+
+test('a quoted word that starts with a redirection character is text, not a redirection', () => {
+  expect(verbs('bash -c ">x; flow run y"')).toEqual(['flow run'])
+  expect(verbs('bash -c "<f flow run y"')).toEqual(['flow run'])
+  expect(verbs('eval "<f flow run y"')).toEqual(['flow run'])
+  expect(verbs('eval ">x" "; flow run y"')).toEqual(['flow run'])
+  expect(verbs("sh -c '&>x; flow run y'")).toEqual(['flow run'])
+  expect(tokenize('a ">b" >c \\>d').quoted).toEqual([[false, true, false, true]])
+  // The real thing is still stripped.
+  expect(verbs('flow >out run x')).toEqual(['flow run'])
+  expect(verbs('>out flow run x')).toEqual(['flow run'])
+  // A dropped redirection target that holds a command's worth of text is uncertain.
+  expect(analyzeCommand('>"a; b" flow validate x').uncertain).toBe(false)
+  expect(analyzeCommand('>"a; flow run y"').uncertain).toBe(true)
+})
+
+test('a bare FLOWSTATE_ADDRESS assignment makes the address unknown, not the session address', () => {
+  const text = (c: string, session?: string) => askReason(analyzeCommand(c), session)
+  const bare = text('FLOWSTATE_ADDRESS=prod:1; flow run x', 'session:9')
+  expect(bare).toContain('address may be overridden in this command')
+  expect(bare).not.toContain('session:9')
+  expect(text('FLOWSTATE_ADDRESS=prod:1\nflow cancel wf', 'session:9')).toContain('address may be overridden')
+  // A known address, or no assignment, reads as before.
+  expect(text('FLOWSTATE_ADDRESS=prod:1; flow run --address a:1 x', 'session:9')).toContain('server a:1')
+  expect(text('FLOWSTATE_ADDRESS=prod:1 flow run x', 'session:9')).toContain('server prod:1')
+  expect(text('flow run x; FLOWSTATE_ADDRESS=prod:1', 'session:9')).toContain('server session:9')
+  expect(text('flow run x', 'session:9')).toContain('server session:9')
+})
+
+test('the fallback asks only when the binary is directly followed by a gated verb', () => {
+  for (const hidden of ['echo $(x); flow run y', 'sh -c "$(printf \'flow run x\')"', 'flow -v run $(f)', 'flow --address h:1 run $(f)', 'x=`a`; flow schedule delete n']) {
+    expect(analyzeCommand(hidden).uncertain).toBe(true)
+  }
+  for (const quiet of [
+    "git commit -m \"$(cat <<'EOF'\nFix flow run local startup\nEOF\n)\"",
+    'echo "$(x)" Teach flow to run workflows',
+    'git commit -m "$(cat <<\'EOF\'\nTeach flow to run workflows\nEOF\n)"',
+    'echo $(x) flow schedule list',
+    'echo $(x) flow validate run',
+  ]) {
+    expect(analyzeCommand(quiet).uncertain).toBe(false)
+  }
+})
+
+test('chained edits that grow the text are stopped before they are built', () => {
+  const edits = Array.from({ length: 24 }, () => ({ old_string: 'a', new_string: 'aa', replace_all: true }))
+  const original = 'a'.repeat(100)
+  let after: unknown
+  expect(took(() => (after = afterEdits(original, { edits })))).toBeLessThan(500)
+  expect(after).toBe(EDIT_TOO_LARGE)
+  expect(secretsIn({ edits }, original)).toEqual([{ line: 0, what: 'text too large to scan' }])
+  // One replace_all can multiply the text on its own.
+  const single = { old_string: 'a', new_string: 'b'.repeat(60_000), replace_all: true }
+  expect(afterEdits('a'.repeat(1000), single)).toBe(EDIT_TOO_LARGE)
+  // More than 64 edits, or a string over 64 KiB, is refused whatever it does.
+  const many = Array.from({ length: 65 }, () => ({ old_string: 'a', new_string: 'a' }))
+  expect(secretsIn({ edits: many }, original)).toEqual([{ line: 0, what: 'text too large to scan' }])
+  expect(secretsIn({ edits: many })).toEqual([{ line: 0, what: 'text too large to scan' }])
+  expect(afterEdits(original, { old_string: 'a', new_string: 'b'.repeat(64 * 1024 + 1) })).toBe(EDIT_TOO_LARGE)
+  expect(afterEdits(original, { old_string: 'a'.repeat(64 * 1024 + 1), new_string: 'b' })).toBe(EDIT_TOO_LARGE)
+  // Within the limits the same shape of edit still applies.
+  const few = Array.from({ length: 4 }, () => ({ old_string: 'a', new_string: 'aa', replace_all: true }))
+  expect(afterEdits('aaaa', { edits: few })).toBe('a'.repeat(64))
+  expect(afterEdits('aaaa', { edits: Array.from({ length: 64 }, () => ({ old_string: 'a', new_string: 'a' })) })).toBe('aaaa')
+})
+
+test('an edit to a file that already holds a secret says so and names the fix, not the secret', async ($, on) => {
+  decide(on)
+  on('fs.read', () => ({ value: 'name: x\npassword: hunter2hunter2\n' }))
+
+  const out = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: 'name: x', new_string: 'name: y' } })
+
+  expect(out.decision).toBe('deny')
+  expect(out.reason).toContain('already holds')
+  expect(out.reason).toContain("${secret('scheme:name')}")
+  expect(out.reason).toContain('line 2')
+  expect(out.reason).not.toContain('hunter2')
+
+  // Replacing the literal is the fix, and is allowed.
+  const fixed = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: 'hunter2hunter2', new_string: "${secret('env:P')}" } })
+  expect(fixed.decision).toBe('allow')
+})
+
+test('an edit that adds a secret to a clean file is not described as already there', async ($, on) => {
+  decide(on)
+  on('fs.read', () => ({ value: 'name: x\n' }))
+
+  const out = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: 'name: x', new_string: 'password: hunter2hunter2' } })
+
+  expect(out.decision).toBe('deny')
+  expect(out.reason).not.toContain('already')
+  expect(alreadyPresent('password: hunter2hunter2', [{ line: 1, what: 'the key password holding a literal value' }])).toBe(true)
+  expect(alreadyPresent('a: 1', [{ line: 1, what: 'the key password holding a literal value' }])).toBe(false)
+  expect(alreadyPresent(undefined, [{ line: 1, what: 'x' }])).toBe(false)
 })
