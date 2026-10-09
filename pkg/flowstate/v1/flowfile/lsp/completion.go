@@ -380,7 +380,11 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	word, replace := wordBefore(pos, before)
 
 	if valuePos {
-		// Nothing is offered in a value position any more. `libs:` was the only key
+		// The one value that is offered: a module's type or error after its alias.
+		if items := qualifiedValueCandidates(doc, path, key, before, pos); len(items) > 0 {
+			return list(items)
+		}
+		// Nothing else is offered in a value position any more. `libs:` was the only key
 		// whose values came from a closed set this package knew; every other value in
 		// a Flowfile is a URL, a duration, a message, or an expression, and guessing
 		// at those is how an editor starts getting in the way.

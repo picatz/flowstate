@@ -39,6 +39,10 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		return nil
 	}
 
+	if h := qualifiedHover(doc, pos); h != nil {
+		return h
+	}
+
 	step := doc.parsed.stepAt(pos)
 	if step == nil {
 		// An expression written above `steps:` — a workflow `vars:` value — before

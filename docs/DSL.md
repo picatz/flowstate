@@ -1647,11 +1647,15 @@ steps:
   rule calls reads as that rule changing. A finding lists the files among the paths given that `use:` the module, so the
   edit's blast radius is in the report; they are read from source, because an importer
   that no longer compiles is the one most worth naming.
-- **Not yet.** `flow test` function cases and the language server's cross-module parts
-  (which today offer hover and completion for qualified names, and go-to-definition from a
-  `use:` entry's `path:` to the module file; navigating from a qualified name into the
-  module's declaration, and a quick-fix that repins from the `module-pin-mismatch`
-  diagnostic, land with the cross-module language-server slice).
+- **In the editor.** The language server follows a qualified name (`ids.Uuid`,
+  `ids.isUuid(x)`, `ids.NotFound`) into the module's declaration, describes a module's
+  types and errors on hover, completes them after `ids.`, renames a declaration in the
+  module and every importer in the workspace folders (refusing when it cannot see every
+  use), offers a `use:` for an unresolved qualified name that a module beside the file
+  declares, offers the `module-pin-mismatch` repin (the rewrite `flow fix --repin` makes),
+  and lists module declarations for `workspace/symbol`.
+- **Not yet.** `flow test` function cases and an editor action that extracts a type into a
+  module.
 
 See `examples/use-modules/`.
 
