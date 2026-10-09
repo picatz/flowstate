@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/cel-go/common/types/ref"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -223,6 +224,25 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 	shallow.Tests = expanded
 	file = (&shallow).withDefaultsApplied()
 
+	// One suite's cases (and the fuzz, swarm and mutation runs each one
+	// fans out into) mostly name the same few workflows, and every one of them
+	// used to read and compile its workflow again. Each distinct path is parsed
+	// once per suite and every load takes a copy, so a case that rewrites its
+	// workflow (a mutant) cannot reach the next.
+	parsed := map[string]*parsedWorkflow{}
+	var parsedMu sync.Mutex
+	parsedFor := func(identity string) *parsedWorkflow {
+		parsedMu.Lock()
+		defer parsedMu.Unlock()
+		if p, ok := parsed[identity]; ok {
+			return p
+		}
+		p := &parsedWorkflow{}
+		p.workflow, p.positions, p.err = flowfile.ParseFile(identity)
+		parsed[identity] = p
+		return p
+	}
+
 	return runSuite(ctx, file, opts, func(test *Test) (loader, string) {
 		identity := workflowPathIn(dir, test)
 
@@ -246,17 +266,25 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 		var positions *flowfile.Positions
 		return loader{
 			load: func() (*v1.Workflow, error) {
-				workflow, parsed, err := flowfile.ParseFile(identity)
-				if err != nil {
-					return nil, fmt.Errorf("loading workflow %q: %w%s", test.Workflow, err, missingWorkflowRemedy(identity))
+				p := parsedFor(identity)
+				if p.err != nil {
+					return nil, fmt.Errorf("loading workflow %q: %w%s", test.Workflow, p.err, missingWorkflowRemedy(identity))
 				}
-				positions = parsed
-				return workflow, nil
+				positions = p.positions
+				return proto.Clone(p.workflow).(*v1.Workflow), nil
 			},
 			positions:    func() *flowfile.Positions { return positions },
 			deliveryPath: deliveryPathIn(dir, test),
 		}, identity
 	})
+}
+
+// parsedWorkflow is what [flowfile.ParseFile] answered for one path, kept for
+// the rest of the suite that asked.
+type parsedWorkflow struct {
+	workflow  *v1.Workflow
+	positions *flowfile.Positions
+	err       error
 }
 
 // loader is one case's way of producing the workflow it runs against, plus

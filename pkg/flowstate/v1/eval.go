@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 	"uuid"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/google/cel-go/common/types/traits"
 	"github.com/google/cel-go/interpreter"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // TypeAdapter is the default type adapter used for CEL evaluation in Flowstate.
@@ -890,23 +892,13 @@ func NewExpr(exprStr string) *Value {
 // what made the failure look like something particular to a few functions instead of
 // what it was.
 func newValueExprWithErr(exprStr string) (*Value, error) {
-	libs, err := ProfileLibraries(CurrentProfile)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve profile libraries: %w", err)
+	if cached, ok := parsedExprs.get(exprStr); ok {
+		return &Value{Kind: &Value_Expr{Expr: cached}}, nil
 	}
 
-	// CurrentProfile rather than a profile carried in from the caller: this is
-	// compilation, and a file compiled by this build is compiled in this build's
-	// language. What a *spec* pins is which profile evaluates it later, which is a
-	// different question and already answered by Workflow.profile.
-	base, err := DefaultEvaluator().Env(libs...)
+	env, err := parseEnv()
 	if err != nil {
-		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
-	}
-
-	env, err := base.Extend(cel.EnableMacroCallTracking())
-	if err != nil {
-		return nil, fmt.Errorf("failed to enable macro call tracking: %w", err)
+		return nil, err
 	}
 
 	ast, issues := env.Parse(exprStr)
@@ -918,12 +910,83 @@ func newValueExprWithErr(exprStr string) (*Value, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert AST to parsed expression: %w", err)
 	}
+	parsedExprs.put(exprStr, parsedExpr)
 
 	return &Value{
 		Kind: &Value_Expr{
 			Expr: parsedExpr,
 		},
 	}, nil
+}
+
+// parseEnv is the environment [newValueExprWithErr] parses in: the current
+// profile's libraries with macro call tracking, built once. Extending the
+// shared environment re-derives it on every call, and a file compiles
+// hundreds of expressions against the one profile.
+//
+// CurrentProfile rather than a profile carried in from the caller: this is
+// compilation, and a file compiled by this build is compiled in this build's
+// language. What a *spec* pins is which profile evaluates it later, which is a
+// different question and already answered by Workflow.profile.
+var parseEnv = sync.OnceValues(func() (*cel.Env, error) {
+	libs, err := ProfileLibraries(CurrentProfile)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve profile libraries: %w", err)
+	}
+	base, err := DefaultEvaluator().Env(libs...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create CEL environment: %w", err)
+	}
+	env, err := base.Extend(cel.EnableMacroCallTracking())
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable macro call tracking: %w", err)
+	}
+	return env, nil
+})
+
+// Bounds on [parsedExprs]: the key is text a workflow author supplies, so both
+// the number of entries and the size of one are capped, and a full cache is
+// emptied rather than grown.
+const (
+	parsedExprCacheEntries = 4096
+	parsedExprCacheMaxLen  = 1024
+)
+
+// parsedExprs remembers the parse of an expression's text. The same text is
+// parsed again for every compile of the same file, and parsing is pure in the
+// text (the environment is fixed), so a hit is a clone of the earlier tree,
+// never the tree itself: callers own what NewExpr returns.
+var parsedExprs = &parsedExprCache{entries: map[string]*expr.ParsedExpr{}}
+
+type parsedExprCache struct {
+	mu      sync.Mutex
+	entries map[string]*expr.ParsedExpr
+}
+
+func (c *parsedExprCache) get(text string) (*expr.ParsedExpr, bool) {
+	if len(text) > parsedExprCacheMaxLen {
+		return nil, false
+	}
+	c.mu.Lock()
+	hit, ok := c.entries[text]
+	c.mu.Unlock()
+	if !ok {
+		return nil, false
+	}
+	return proto.Clone(hit).(*expr.ParsedExpr), true
+}
+
+func (c *parsedExprCache) put(text string, parsed *expr.ParsedExpr) {
+	if len(text) > parsedExprCacheMaxLen {
+		return
+	}
+	stored := proto.Clone(parsed).(*expr.ParsedExpr)
+	c.mu.Lock()
+	if len(c.entries) >= parsedExprCacheEntries {
+		clear(c.entries)
+	}
+	c.entries[text] = stored
+	c.mu.Unlock()
 }
 
 // MapKeyTypeError is what [LiteralToGo] refuses a map key with: a Go

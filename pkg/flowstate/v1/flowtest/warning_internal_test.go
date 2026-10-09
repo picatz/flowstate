@@ -40,9 +40,13 @@ func TestSuiteWarningBudgetBoundsRetainedDiagnostics(t *testing.T) {
 // is the retained one.
 func TestSuiteWarningBudgetRetainsNothingSizedByWhatItDropped(t *testing.T) {
 	b := newSuiteWarningBudget()
+	// One message shared by every diagnostic: the budget counts a message's
+	// length, not its identity, and 100,000 private 4 KiB copies cost 400 MB of
+	// allocation per run for nothing the assertions read.
+	message := strings.Repeat("x", maxWarningMessageBytes)
 	flood := make([]*v1.Diagnostic, 100_000)
 	for i := range flood {
-		flood[i] = &v1.Diagnostic{Field: "stubs", Message: strings.Repeat("x", maxWarningMessageBytes)}
+		flood[i] = &v1.Diagnostic{Field: "stubs", Message: message}
 	}
 
 	got := b.take(flood)

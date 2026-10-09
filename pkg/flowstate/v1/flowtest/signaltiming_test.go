@@ -1,6 +1,7 @@
 package flowtest_test
 
 import (
+	"context"
 	"strconv"
 	"testing"
 	"time"
@@ -364,9 +365,15 @@ tests:
         attempted: 2
 `)
 
+	// Loaded once: the claim is about how the run orders the tied signals, which
+	// every iteration repeats, not about parsing the same suite 200 times.
+	path := dir + "/x.test.yaml"
+	suite, err := flowtest.Load(path)
+	require.NoError(t, err)
+
 	const iterations = 200
 	for i := range iterations {
-		report := flowtest.RunFile(dir + "/x.test.yaml")
+		report := flowtest.Run(context.Background(), suite, dir, flowtest.RunOptions{Label: path}).Report
 		require.Empty(t, report.GetRefused())
 		require.Len(t, report.GetCases(), 1)
 		c := report.GetCases()[0]
@@ -426,9 +433,15 @@ tests:
         attempted: 2
 `)
 
+	// Loaded once: the claim is about how the run orders the tied signals, which
+	// every iteration repeats, not about parsing the same suite 200 times.
+	path := dir + "/x.test.yaml"
+	suite, err := flowtest.Load(path)
+	require.NoError(t, err)
+
 	const iterations = 200
 	for i := range iterations {
-		report := flowtest.RunFile(dir + "/x.test.yaml")
+		report := flowtest.Run(context.Background(), suite, dir, flowtest.RunOptions{Label: path}).Report
 		require.Empty(t, report.GetRefused())
 		require.Len(t, report.GetCases(), 1)
 		c := report.GetCases()[0]
