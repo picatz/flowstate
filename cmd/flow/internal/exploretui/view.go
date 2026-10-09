@@ -69,6 +69,11 @@ type Screen struct {
 
 	Help    bool
 	HelpTop int
+
+	// Filter narrows the workflows to those whose name contains it. Filtering
+	// says keys are typing it, so the status line shows it as a prompt.
+	Filter    string
+	Filtering bool
 }
 
 // geometry is where the parts of the screen are.
@@ -154,6 +159,9 @@ func (s Screen) header(width int, st Style) string {
 }
 
 func (s Screen) statusNote(st Style) string {
+	if s.Filtering {
+		return st.Theme.Accent.Render("filter: " + ui.EscapeControl(s.Filter) + "▏")
+	}
 	if s.Loading {
 		return st.Theme.Warning.Render("reading…")
 	}
@@ -172,13 +180,22 @@ func (s Screen) graphView(cell pane.Rect, hits *pane.Hits, st Style) string {
 	}
 
 	note := "1 workflow"
-	if n := len(s.Index.Roots()); n != 1 {
+	n := len(s.Index.RootsNamed(s.Filter))
+	if n != 1 {
 		note = fmt.Sprintf("%d workflows", n)
+	}
+	if strings.TrimSpace(s.Filter) != "" {
+		note = fmt.Sprintf("%d of %d workflows match %q", n, len(s.Index.Roots()), ui.EscapeControl(s.Filter))
 	}
 	body := o
 	body.Height, body.Origin, body.Hits, body.Prefix = cell.H-1, pane.Rect{X: cell.X, Y: cell.Y + 1, W: cell.W, H: cell.H - 1}, hits, rowPrefix
 
-	return pane.Heading(paneGraph, note, cell.W, o) + "\n" + s.Tree.View(body, "no workflows: name a Flowfile or a directory of them")
+	empty := "no workflows: name a Flowfile or a directory of them"
+	if strings.TrimSpace(s.Filter) != "" && len(s.Index.Roots()) > 0 {
+		empty = "no workflow matches the filter: esc clears it"
+	}
+
+	return pane.Heading(paneGraph, note, cell.W, o) + "\n" + s.Tree.View(body, empty)
 }
 
 // detailsView is the inspector pane for the selected row.

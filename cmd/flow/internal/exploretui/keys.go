@@ -13,6 +13,7 @@ const (
 	bindPageDown  = "nav:pgdown"
 	bindHome      = "nav:home"
 	bindEnd       = "nav:end"
+	bindFilter    = "filter"
 	bindRefresh   = "refresh"
 	bindHelp      = "help"
 	bindQuit      = "quit"
@@ -32,6 +33,8 @@ func NewKeymap() (tui.Keymap, error) {
 		tui.Binding{Name: bindPageDown, Keys: []string{"pgdown"}, Help: "down a page", Group: "Move"},
 		tui.Binding{Name: bindHome, Keys: []string{"home"}, Help: "first row", Group: "Move"},
 		tui.Binding{Name: bindEnd, Keys: []string{"end", "G"}, Help: "last row", Group: "Move"},
+		tui.Binding{Name: bindFilter, Keys: []string{"f"}, Help: "filter workflows by name; enter keeps it, esc clears it",
+			Group: "Screen", Hint: true, Short: "filter"},
 		tui.Binding{Name: bindRefresh, Keys: []string{"r"}, Help: "read the files and the server again, keeping what is open",
 			Group: "Screen", Hint: true, Short: "refresh"},
 		tui.Binding{Name: bindHelp, Keys: []string{"?"}, Help: "show or hide this help", Group: "Screen", Hint: true, Short: "help"},

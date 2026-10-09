@@ -1,5 +1,5 @@
 flow explore fixtures                                                           
-→ help ? or esc closes ─────────────────────────────────────────────────────────
+→ help 1-16 of 17, up/down scrolls, ? or esc closes ────────────────────────────
 Move                                                                            
   up k      move up a row                                                       
   down j    move down a row                                                     
@@ -12,9 +12,9 @@ Move
   end G     last row                                                            
                                                                                 
 Screen                                                                          
+  f         filter workflows by name; enter keeps it, esc clears it             
   r         read the files and the server again, keeping what is open           
   ?         show or hide this help                                              
   q ctrl+d  leave                                                               
-  ctrl+c    leave at once                                                       
                                                                                 
-r refresh  ? help  q quit                                                       
+f filter  r refresh  ? help  q quit                                             

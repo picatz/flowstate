@@ -297,3 +297,66 @@ func TestTheExplorerImportsNoOtherClientAndNoTransport(t *testing.T) {
 		}
 	}
 }
+
+func TestFilteringNarrowsTheWorkflowsAsYouTypeAndEscClearsIt(t *testing.T) {
+	m, _ := started(t, fleet())
+
+	m = press(m, "f", "c", "h")
+	assert.True(t, m.Screen().Filtering)
+	assert.Equal(t, []string{"charge|", "checkout|1 FAILED, 2 RUNNING"}, rowsOf(m))
+	assert.Contains(t, view(m), `2 of 3 workflows match "ch"`)
+	assert.Contains(t, view(m), "filter: ch", "the prompt is on the status line")
+
+	m = press(m, "e", "c")
+	assert.Equal(t, []string{"checkout|1 FAILED, 2 RUNNING"}, rowsOf(m), "only checkout matches chec")
+	assert.Equal(t, "checkout", selectedLabel(m), "the selection moves to a row that is still there")
+
+	m = press(m, "backspace", "backspace", "enter")
+	assert.False(t, m.Screen().Filtering, "enter returns the keys to the tree")
+	assert.Equal(t, "ch", m.Screen().Filter, "and keeps the filter")
+	assert.Len(t, rowsOf(m), 2)
+
+	m = press(m, "esc")
+	assert.Empty(t, m.Screen().Filter)
+	assert.Len(t, rowsOf(m), 3)
+}
+
+func TestAFilterMatchesTheWorkflowNameAndNotItsKind(t *testing.T) {
+	m, _ := started(t, fleet())
+
+	m = press(m, "f", "W", "O", "R", "K")
+	assert.Empty(t, rowsOf(m), "the node id carries the kind but the name is what people type")
+	assert.Contains(t, view(m), "0 of 3 workflows match")
+
+	m = press(m, "ctrl+u", "A", "U", "D")
+	assert.Equal(t, []string{"audit|1 COMPLETED"}, rowsOf(m), "case is ignored")
+}
+
+func TestKeysTypedIntoTheFilterAreNotCommands(t *testing.T) {
+	m, l := started(t, fleet())
+
+	m = press(m, "f", "r", "q", "?")
+	assert.Equal(t, 1, l.calls, "r did not refresh")
+	assert.False(t, m.Done(), "q did not quit")
+	assert.False(t, m.Screen().Help, "? did not open help")
+	assert.Equal(t, "rq?", m.Screen().Filter)
+
+	m = press(m, "ctrl+c")
+	assert.True(t, m.Done(), "ctrl+c still leaves")
+}
+
+func TestAFilterKeepsWhatIsOpenAndIsBounded(t *testing.T) {
+	m, _ := started(t, fleet())
+	m = press(m, "j", "j", "enter")
+	opened := len(rowsOf(m))
+	require.Greater(t, opened, 3)
+
+	m = press(m, "f", "c", "enter")
+	assert.Len(t, rowsOf(m), opened-1, "charge and checkout match, audit goes, and checkout stays open")
+
+	m = press(m, "f")
+	for range 2 * maxFilter {
+		m = press(m, "x")
+	}
+	assert.Len(t, []rune(m.Screen().Filter), maxFilter)
+}

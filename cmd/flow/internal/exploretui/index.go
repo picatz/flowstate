@@ -120,12 +120,19 @@ func nodeOf(id string) (string, bool) {
 }
 
 // Roots are the workflows, in the graph's order.
-func (x *Index) Roots() []pane.Node {
+func (x *Index) Roots() []pane.Node { return x.RootsNamed("") }
+
+// RootsNamed are the workflows whose labels contain filter, ignoring case, in the
+// graph's order. An empty filter keeps every workflow.
+func (x *Index) RootsNamed(filter string) []pane.Node {
+	filter = strings.ToLower(strings.TrimSpace(filter))
+
 	var roots []pane.Node
 	for _, n := range x.graph.GetNodes() {
-		if n.GetKind() == v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW {
-			roots = append(roots, x.row(treeID("", n.GetId()), n.GetId(), nil))
+		if n.GetKind() != v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW || !strings.Contains(strings.ToLower(x.label(n.GetId())), filter) {
+			continue
 		}
+		roots = append(roots, x.row(treeID("", n.GetId()), n.GetId(), nil))
 	}
 
 	return roots
