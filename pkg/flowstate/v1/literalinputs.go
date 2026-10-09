@@ -181,16 +181,17 @@ func checkNodeLiteralFields(stepID, position string, task *Task, registry *Regis
 	if !found {
 		return nil
 	}
-	for _, violation := range LiteralFieldViolations(def.Inputs, task.GetInputs()) {
-		step := fmt.Sprintf("step %q", stepID)
-		if position != "" {
-			step = fmt.Sprintf("step %q %s", stepID, position)
-		}
-
-		return fmt.Errorf("%s: task %q input %q: %w", step, def.Name, violation.Input, violation)
+	violations := LiteralFieldViolations(def.Inputs, task.GetInputs())
+	if len(violations) == 0 {
+		return nil
 	}
 
-	return nil
+	step := fmt.Sprintf("step %q", stepID)
+	if position != "" {
+		step = fmt.Sprintf("step %q %s", stepID, position)
+	}
+
+	return fmt.Errorf("%s: task %q input %q: %w", step, def.Name, violations[0].Input, violations[0])
 }
 
 // literalNode is one place in a value an input was written as: either a Value
