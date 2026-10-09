@@ -293,6 +293,12 @@ func TestASpecificationThatStillNamesAScalarTypeIsRefused(t *testing.T) {
 			out.Type = v1.InputDeclaration_TYPE_STRUCT
 			out.ValueType = &v1.Type{Kind: &v1.Type_Message{Message: "Code"}}
 		},
+		"a function parameter typed by the name": func(wf *v1.Workflow) {
+			wf.DeclaredFunctions[0].Parameters[0].Type = &v1.Type{Kind: &v1.Type_Message{Message: "Code"}}
+		},
+		"a function result typed by the name": func(wf *v1.Workflow) {
+			wf.DeclaredFunctions[0].Result = &v1.Type{Kind: &v1.Type_List{List: &v1.Type{Kind: &v1.Type_Message{Message: "Code"}}}}
+		},
 		"a base with no rule":          func(wf *v1.Workflow) { wf.DeclaredTypes[0].Must = nil },
 		"a base and fields":            func(wf *v1.Workflow) { wf.DeclaredTypes[0].Fields = wf.DeclaredTypes[1].Fields },
 		"a base that is not a scalar":  func(wf *v1.Workflow) { wf.DeclaredTypes[0].Base = v1.InputDeclaration_TYPE_LIST.Enum() },

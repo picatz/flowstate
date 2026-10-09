@@ -96,16 +96,7 @@ func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.Type
 	b.WriteString(declarationDoc(path, declaration, provenance))
 	typ := declaration.DeclaredType()
 
-	if scalar := scalarTypeNamed(wf, declaration.GetTypeSource()); scalar != nil {
-		fmt.Fprintf(&b, "\n\nThe scalar type `%s`", scalar.GetName())
-		if description := scalar.GetDescription(); description != "" {
-			fmt.Fprintf(&b, ": %s", description)
-		}
-		fmt.Fprintf(&b, "\n\nA `%s` that must satisfy `%s`.", v1.TypeString(v1.TypeOfLegacy(scalar.GetBase())), cmp.Or(scalar.GetMustSource(), scalar.GetMust()))
-		if text, ok := declaredValueText(scalar.GetExample()); ok {
-			fmt.Fprintf(&b, "\n\nExample: `%s`.", text)
-		}
-	}
+	b.WriteString(scalarTypeDoc(wf, declaration))
 
 	if record := table[typ.GetMessage()]; record != nil {
 		fmt.Fprintf(&b, "\n\nThe record `%s`", record.GetName())
@@ -120,6 +111,29 @@ func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.Type
 			}
 			fmt.Fprintf(&b, "\n- `%s`: `%s`%s", field.GetName(), v1.TypeString(field.DeclaredType()), optional)
 		}
+	}
+
+	return b.String()
+}
+
+// scalarTypeDoc describes the constrained scalar a declaration is typed by: its
+// description, the rule every value is held to and its example. Empty for a
+// declaration that names none. Shared by every hover that documents a declaration,
+// so a callee's input is not described as unconstrained when its only rule is the
+// type's.
+func scalarTypeDoc(wf *v1.Workflow, declaration *v1.InputDeclaration) string {
+	scalar := scalarTypeNamed(wf, declaration.GetTypeSource())
+	if scalar == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "\n\nThe scalar type `%s`", scalar.GetName())
+	if description := scalar.GetDescription(); description != "" {
+		fmt.Fprintf(&b, ": %s", description)
+	}
+	fmt.Fprintf(&b, "\n\nA `%s` that must satisfy `%s`.", v1.TypeString(v1.TypeOfLegacy(scalar.GetBase())), cmp.Or(scalar.GetMustSource(), scalar.GetMust()))
+	if text, ok := declaredValueText(scalar.GetExample()); ok {
+		fmt.Fprintf(&b, "\n\nExample: `%s`.", text)
 	}
 
 	return b.String()

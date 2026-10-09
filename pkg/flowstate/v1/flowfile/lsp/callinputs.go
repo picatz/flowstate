@@ -253,7 +253,8 @@ func callInputDetail(declaration *v1.InputDeclaration) string {
 // came from is what makes the answer checkable.
 func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) string {
 	return declarationDoc(declaration.GetName(), declaration,
-		fmt.Sprintf("Input of workflow `%s`, declared in `%s`.", called.workflow.GetName(), called.path))
+		fmt.Sprintf("Input of workflow `%s`, declared in `%s`.", called.workflow.GetName(), called.path)) +
+		scalarTypeDoc(called.workflow, declaration)
 }
 
 // declarationDoc renders one input declaration the one way a hover says it,

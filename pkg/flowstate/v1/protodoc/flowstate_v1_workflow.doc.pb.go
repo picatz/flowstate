@@ -695,7 +695,10 @@ func init() {
 				" each `type: <name>` that uses one to this base and to `must` conjoined with\n" +
 				" the use's own, keeping the name in `InputDeclaration.type_source` and\n" +
 				" `OutputDeclaration.type_source`, so a [Type.message] never names one and a\n" +
-				" specification that does is refused.\n",
+				" specification that does is refused. A worker that predates `base` reads a\n" +
+				" scalar declaration as a record with no fields, so a workflow that declares one\n" +
+				" needs upgraded workers wherever it runs, including as a `call:` target, whose\n" +
+				" inputs are bound against its own declarations.\n",
 		},
 		{
 			Name: "flowstate.v1.TypeDeclaration.example",

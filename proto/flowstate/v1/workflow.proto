@@ -817,7 +817,10 @@ message TypeDeclaration {
   // each `type: <name>` that uses one to this base and to `must` conjoined with
   // the use's own, keeping the name in `InputDeclaration.type_source` and
   // `OutputDeclaration.type_source`, so a [Type.message] never names one and a
-  // specification that does is refused.
+  // specification that does is refused. A worker that predates `base` reads a
+  // scalar declaration as a record with no fields, so a workflow that declares one
+  // needs upgraded workers wherever it runs, including as a `call:` target, whose
+  // inputs are bound against its own declarations.
   optional InputDeclaration.Type base = 6 [(buf.validate.field).enum = {defined_only: true}];
 
   // Example is an illustrative value of the type, never applied at run time and

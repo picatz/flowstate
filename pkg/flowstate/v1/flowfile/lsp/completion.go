@@ -924,7 +924,7 @@ func declaredInputCandidates(doc *document) []celcomplete.Candidate {
 				if d.GetRequired() {
 					c.Detail += " (required)"
 				}
-				c.Docs = declarationDoc(e.key, d, "")
+				c.Docs = declarationDoc(e.key, d, "") + scalarTypeDoc(wf, d)
 			}
 		}
 		out = append(out, c)

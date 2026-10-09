@@ -799,8 +799,9 @@ inputs:
 A use is a base type and a rule, and nothing else, so the runtime never meets the name:
 the compiler lowers each `type: Slug` on an input, an output or a record field to the base type
 and `must` as the type's rule, expanded, conjoined with the use's own (`(isSlug rule) && (this !=
-"admin")`), which is all either driver evaluates, so a spec compiled with scalar types runs on
-a worker that predates them. The name is kept in `type_source` and the use's own `must` as written
+"admin")`), which is all either driver evaluates, so no run evaluates the name. A worker that predates
+`base` reads a scalar declaration as an empty record, so a workflow that declares one needs upgraded workers wherever it
+runs, including as a `call:` target. The name is kept in `type_source` and the use's own `must` as written
 in `must_source` (on `InputDeclaration` and `OutputDeclaration`; the type's own `base` and
 `example` are on `TypeDeclaration`), so `flow fmt` writes `type: Slug` and the author's rule back and
 is a fixed point over it, and hovering an input of the type names the type, its base, its

@@ -1177,7 +1177,10 @@ type TypeDeclaration struct {
 	// each `type: <name>` that uses one to this base and to `must` conjoined with
 	// the use's own, keeping the name in `InputDeclaration.type_source` and
 	// `OutputDeclaration.type_source`, so a [Type.message] never names one and a
-	// specification that does is refused.
+	// specification that does is refused. A worker that predates `base` reads a
+	// scalar declaration as a record with no fields, so a workflow that declares one
+	// needs upgraded workers wherever it runs, including as a `call:` target, whose
+	// inputs are bound against its own declarations.
 	Base *InputDeclaration_Type `protobuf:"varint,6,opt,name=base,proto3,enum=flowstate.v1.InputDeclaration_Type,oneof" json:"base,omitempty"`
 	// Example is an illustrative value of the type, never applied at run time and
 	// checked when the specification compiles against the base and `must`, the

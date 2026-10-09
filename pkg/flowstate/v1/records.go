@@ -366,6 +366,17 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		}
 	}
 
+	for _, function := range wf.GetDeclaredFunctions() {
+		for _, parameter := range function.GetParameters() {
+			if err := checkNoScalarRefs(parameter.GetType(), scalars); err != nil {
+				return fmt.Errorf("function %q parameter %q: %w", function.GetName(), parameter.GetName(), err)
+			}
+		}
+		if err := checkNoScalarRefs(function.GetResult(), scalars); err != nil {
+			return fmt.Errorf("function %q result: %w", function.GetName(), err)
+		}
+	}
+
 	for _, declaration := range wf.GetDeclaredInputs() {
 		if err := checkNoScalarRefs(declaration.GetValueType(), scalars); err != nil {
 			return fmt.Errorf("input %q: %w", declaration.GetName(), err)
