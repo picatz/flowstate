@@ -30,6 +30,8 @@ export interface Gate {
   signal: string
   /** What the gate asks, cleaned; empty where the author wrote none. */
   prompt: string
+  /** The prompt shown is part of the question: the server cut it, or this card did. */
+  promptCut: boolean
   /** The workflow declares a `signals:` policy for this name. */
   policed: boolean
   /** When the wait lapses of its own accord; empty for a gate that waits for a person. */
@@ -42,9 +44,15 @@ export interface Gate {
 
 export interface Gates {
   gates: Gate[]
-  /** Gates read beyond the ones shown. */
+  /** Gates reported beyond the ones shown. */
   more: number
+  /** The run holds more gates than it reported (`pendingWaitsTruncated`): `more` is a floor. */
+  atLeast: boolean
 }
+
+/** The line that says gates are not shown, or empty when all are. */
+export const moreText = (g: Gates): string =>
+  g.more > 0 ? `and ${g.atLeast ? 'at least ' : ''}${g.more} more gates; \`flow get\` with the id above lists them` : g.atLeast ? 'and more gates the run did not report; `flow get` with the id above shows what it holds' : ''
 
 /**
  * Reads `flow get -o json` for `progress.pendingWaits`. Anything that is not
@@ -54,14 +62,18 @@ export interface Gates {
  */
 export const parseGates = (stdout: string): Gates => {
   let waits: unknown
+  let progress: { pendingWaitsTruncated?: unknown } | undefined
   try {
-    waits = (JSON.parse(stdout) as { progress?: { pendingWaits?: unknown } } | null)?.progress?.pendingWaits
+    progress = (JSON.parse(stdout) as { progress?: { pendingWaits?: unknown; pendingWaitsTruncated?: unknown } } | null)?.progress
+    waits = progress?.pendingWaits
   } catch {
-    return { gates: [], more: 0 }
+    return { gates: [], more: 0, atLeast: false }
   }
-  if (!Array.isArray(waits)) return { gates: [], more: 0 }
+  if (!Array.isArray(waits)) return { gates: [], more: 0, atLeast: false }
   const gates: Gate[] = []
-  for (const w of waits.slice(0, MAX_GATES * 4)) {
+  // Bounded: only the first few entries are read; the rest are counted, not parsed.
+  const scanned = Math.min(waits.length, MAX_GATES * 4)
+  for (const w of waits.slice(0, scanned)) {
     if (typeof w !== 'object' || w === null || typeof w.signalName !== 'string') continue
     const needed = Number.isFinite(w.approvalsNeeded) ? Math.trunc(w.approvalsNeeded) : 0
     const got = Number.isFinite(w.approvals) ? Math.max(0, Math.trunc(w.approvals)) : 0
@@ -69,24 +81,28 @@ export const parseGates = (stdout: string): Gates => {
       step: clean(w.stepId, 60),
       signal: clean(w.signalName, 128),
       prompt: clean(w.prompt, MAX_PROMPT),
+      promptCut: w.promptTruncated === true || (typeof w.prompt === 'string' && w.prompt.length > MAX_PROMPT),
       policed: w.policed === true,
       deadline: clean(w.deadline, 40),
       quorum: needed > 0 ? `${got} of ${needed} approvals` : '',
       refused: SIGNAL_NAME.test(w.signalName) ? '' : 'its signal name is not one `flow signal` accepts',
     })
   }
-  return { gates: gates.slice(0, MAX_GATES), more: Math.max(0, gates.length - MAX_GATES) }
+  const shown = gates.slice(0, MAX_GATES)
+  return { gates: shown, more: Math.max(0, waits.length - scanned) + (gates.length - shown.length), atLeast: progress?.pendingWaitsTruncated === true }
 }
 
 /** The address a send is aimed at, or why none can be trusted. */
 export type Target = { address: string } | { refused: string }
 
 /**
- * `FLOWSTATE_ADDRESS` as read: unset means the CLI's own default, and a value
+ * `FLOWSTATE_ADDRESS` as read: null is a lookup that failed (the target is unknown, never the default), unset means the CLI's own default, and a value
  * that is not a plain address is refused rather than trimmed into another one.
  */
-export const targetOf = (env: string | undefined): Target =>
-  env === undefined || env === ''
+export const targetOf = (env: string | undefined | null): Target =>
+  env === null
+    ? { refused: 'FLOWSTATE_ADDRESS could not be read, so the target server is not known' }
+    : env === undefined || env === ''
     ? { address: '' }
     : SERVER_ADDRESS.test(env)
       ? { address: env }
@@ -119,6 +135,12 @@ export const signalArgv = (flow: string, address: string, id: string, name: stri
 /** What the card asks before anything is sent: the verb, the signal, the run and the server. */
 export const confirmText = (id: string, name: string, address: string): string =>
   `Send signal "${clean(name, 128)}" to run ${clean(id, 256)} on server ${where(address)}? Nothing is sent until you confirm.`
+
+/** A run that threw or timed out proves nothing: the server may have taken the signal. */
+export const unknownOutcome = (err: unknown, id: string, name: string): { ok: boolean; text: string } => ({
+  ok: false,
+  text: `delivery unknown for ${clean(name, 128)} on ${clean(id, 256)}: ${clean(String(err), 100) || 'no answer'}; check the timeline before sending again`,
+})
 
 /** The one-line answer to a press: what `flow signal` did, or the server's own refusal, cleaned and bounded. */
 export const outcomeOf = (ran: { exitCode: number; stderr: string }, id: string, name: string): { ok: boolean; text: string } =>

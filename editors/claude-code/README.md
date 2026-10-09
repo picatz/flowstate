@@ -39,8 +39,11 @@ These are settings under the plugin's `/plugin` config screen.
 
 When the pressed run is running or waiting, the detail card also reads
 `flow get -o json` (5 s timeout) and draws each signal gate the run is parked on
-(`progress.pendingWaits`, at most 5): the signal name, the waiting step, the
-gate's prompt if its author wrote one, quorum progress, when it lapses, and
+(`progress.pendingWaits`, at most 5, with "and N more gates", or "and at least
+N more" when the run says it holds more than it reported): the signal name, the
+waiting step, the gate's prompt if its author wrote one (marked `[prompt
+truncated]` whenever the server or the card's 160-character bound cut it, so a
+partial question is never presented as whole), quorum progress, when it lapses, and
 whether the workflow declares who may act. The gate comes from `flow get`
 because `flow timeline` names only the waiting step, never the signal name that
 `flow signal` takes. No gate, no button: a run waiting on a timer, a finished
@@ -53,7 +56,12 @@ until you confirm.` with `Confirm: send <name>` and `Cancel`. Only Confirm runs
 `flow signal [--address=<address>] -- <workflow-id> <signal-name>`. The address
 is `FLOWSTATE_ADDRESS` when set (and then passed explicitly, so the argv targets
 the server the question names), else the CLI's default `localhost:9233`, said
-so. If the address changes between the question and Confirm, nothing is sent.
+so. If `FLOWSTATE_ADDRESS` cannot be read at all, the target is unknown and the
+card offers no button (it never falls back to the default). If the address
+changes or cannot be read between the question and Confirm, nothing is sent.
+Send, Confirm and Cancel are keyed per gate, and a Confirm acts only while the
+pending question is still for its own gate and run; two quick Confirm presses
+send one signal.
 There is no auto-send, no default-confirm and no retry. Closing the card or
 selecting another run drops a pending question.
 
@@ -64,14 +72,16 @@ argv builder takes an optional payload as a single `--data=<json>` element, read
 for when a gate declares one.
 
 Everything from the server is data: names, ids, prompts and the server's
-refusal are cleaned (control characters dropped) and bounded before they are
+refusal are cleaned (control characters and invisible format characters such as zero-width and bidi marks dropped) and bounded before they are
 drawn. A signal name or workflow id outside a strict allowlist (letters, digits,
 `-` and `_` for a name, as the schema requires; plain id characters for an id)
 is refused with the reason shown and no button, never rewritten into another
 target. A `FLOWSTATE_ADDRESS` that is not a plain address is refused the same way.
 
-If `flow signal` fails, the card shows `not sent:` and the CLI's message (cleaned,
-at most 240 characters). Who may act is decided by the server, from the
+If `flow signal` exits non-zero, the card shows `not sent:` and the CLI's message
+(cleaned, at most 240 characters). If it times out or cannot run, that proves
+nothing about the server, so the card says `delivery unknown` and to check the
+timeline before sending again. Who may act is decided by the server, from the
 workflow's `signals:` policy and the caller's credentials; the mod enforces
 nothing of its own and shows the server's refusal as it is. On success the card
 says `delivered` and refreshes from the timeline and `flow get`; "delivered"

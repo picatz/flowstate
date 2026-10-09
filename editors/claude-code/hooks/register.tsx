@@ -10,7 +10,7 @@ import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } 
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed } from './detail'
-import { WORKFLOW_ID, confirmText, getArgv, outcomeOf, parseGates, signalArgv, targetOf } from './signal'
+import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from './verify'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusOf, story } from './vocab'
@@ -29,7 +29,7 @@ const confirm = atom({ plugin: 'flowstate', key: 'confirm' } as const, NO_CONFIR
 /** What the last Confirm did, kept for the card: the server's refusal verbatim (cleaned), or the delivery. */
 const NO_OUTCOME = { id: '', signal: '', ok: false, text: '' }
 const outcome = atom({ plugin: 'flowstate', key: 'outcome' } as const, NO_OUTCOME)
-const NO_GATES: Gates = { gates: [], more: 0 }
+const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
 
@@ -108,12 +108,12 @@ const readGates = async ($: Engine, flow: string, address: string, id: string): 
   }
 }
 
-/** `FLOWSTATE_ADDRESS` as the session sees it; unset, or a lookup that fails, reads as unset (the CLI's own default). */
-const envAddress = async ($: Engine): Promise<string | undefined> => {
+/** `FLOWSTATE_ADDRESS` as the session sees it: undefined when unset, null when the lookup fails (the target is then unknown, not the default). */
+const envAddress = async ($: Engine): Promise<string | undefined | null> => {
   try {
     return await $.env.get('FLOWSTATE_ADDRESS')
   } catch {
-    return undefined
+    return null
   }
 }
 
@@ -422,7 +422,8 @@ export const register: Register = (on, options) => {
                     {'  '}
                     <Text color={COLOR.wait}>◔</Text> Gate <Text bold>{g.signal}</Text> {g.step && `(step ${g.step}) `}waits for a signal
                   </Text>
-                  {g.prompt !== '' && <Text>      {g.prompt}</Text>}
+                  {g.prompt !== '' && <Text>      {g.prompt}{g.promptCut ? ' [prompt truncated]' : ''}</Text>}
+                  {g.prompt === '' && g.promptCut && <Text>      [prompt truncated]</Text>}
                   {g.quorum !== '' && <Text dimColor>      {g.quorum}</Text>}
                   <Text dimColor>
                     {'      '}
@@ -452,7 +453,7 @@ export const register: Register = (on, options) => {
                       <Text dimColor>      The server decides whether you may act, and says so if not.</Text>
                       <Box>
                         <Button
-                          key="confirm-signal"
+                          key={`confirm-signal:${g.signal}`}
                           label={`Confirm: send ${g.signal}`}
                           plain
                           onPress={async () => {
@@ -460,6 +461,8 @@ export const register: Register = (on, options) => {
                             sending = true
                             try {
                               const c = await read($, confirm)
+                              // This button was drawn for one gate: if the question has moved on, it acts on nothing.
+                              if (c.id !== id || c.signal !== g.signal) return
                               await update($, confirm, () => NO_CONFIRM)
                               // The target is read again: if it moved since the question was asked, nothing is sent.
                               const t = targetOf(await envAddress($))
@@ -469,7 +472,7 @@ export const register: Register = (on, options) => {
                               try {
                                 result = outcomeOf(await $.process.run(argv, { timeoutMs: 10000 }), c.id, c.signal)
                               } catch (err) {
-                                result = { ok: false, text: `not sent: ${clean(String(err), 100) || 'no answer'}` }
+                                result = unknownOutcome(err, c.id, c.signal)
                               }
                               await update($, outcome, () => ({ id: c.id, signal: c.signal, ...result }))
                             } finally {
@@ -479,7 +482,7 @@ export const register: Register = (on, options) => {
                         >
                           Confirm: send {g.signal}
                         </Button>
-                        <Button key="cancel-signal" label="Cancel" plain onPress={() => update($, confirm, () => NO_CONFIRM)}>
+                        <Button key={`cancel-signal:${g.signal}`} label="Cancel" plain onPress={() => update($, confirm, () => NO_CONFIRM)}>
                           Cancel
                         </Button>
                       </Box>
@@ -488,7 +491,7 @@ export const register: Register = (on, options) => {
                 </Box>
               )
             })}
-            {found.more > 0 && <Text dimColor>  and {found.more} more gates; `flow get` with the id above lists them</Text>}
+            {moreText(found) !== '' && <Text dimColor>  {moreText(found)}</Text>}
             {last.id === id && last.text !== '' && (
               <Text color={last.ok ? COLOR.ok : COLOR.fail}>
                 {'  '}

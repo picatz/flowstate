@@ -1,5 +1,6 @@
-import { SIGNAL_NAME, WORKFLOW_ID, getArgv, parseGates, signalArgv, targetOf } from '../hooks/signal'
-import { expect, mock, test } from 'claude-code/testing'
+import { clean } from '../hooks/runs'
+import { SIGNAL_NAME, WORKFLOW_ID, getArgv, moreText, parseGates, signalArgv, targetOf } from '../hooks/signal'
+import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
 const mount = ($: any) => $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
@@ -26,18 +27,23 @@ interface Answers {
   list?: Reply
   timeline?: Reply
   get?: Reply
-  signal?: Reply
+  signal?: Reply | 'deny'
 }
 
 // Answer each flow verb separately, record every argv, and pin FLOWSTATE_ADDRESS.
+// What FLOWSTATE_ADDRESS answers right now: a string, null for unset, 'fail' for a lookup that errors.
+const env: { address: string | null } = { address: null }
+
 const stub = (on: any, answers: Answers, seen: string[][] = [], address: string | null = 'prod.example:9233') => {
   on('process.run', (_$: unknown, e: { argv: string[] }) => {
     seen.push(e.argv)
     const reply = answers[e.argv[1] as keyof Answers] ?? fail(`no ${e.argv[1]} stubbed`)
+    if (reply === 'deny') return { deny: 'timed out' }
     return { value: { ...reply, isStdoutTruncated: false, isStderrTruncated: false } }
   })
   on('ui.status', () => ({ value: undefined }))
-  mock.env(on, address === null ? {} : { FLOWSTATE_ADDRESS: address })
+  env.address = address
+  on('env.get', () => (env.address === 'fail' ? { deny: 'unavailable' } : { value: env.address ?? undefined }))
   return seen
 }
 const signals = (seen: string[][]) => seen.filter(a => a[1] === 'signal')
@@ -109,7 +115,7 @@ test('without FLOWSTATE_ADDRESS the question names the default server the CLI wi
   expect(seen.some(a => a.join(' ') === 'flow get -o json -- wf-1')).toBe(true)
   await ui.press({ key: 'signal:deploy-approved' })
   expect(await ui.find({ type: 'Text', text: /on server localhost:9233 \(the default; FLOWSTATE_ADDRESS is unset\)/ })).toBeDefined()
-  await ui.press({ key: 'confirm-signal' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
   expect(signals(seen)).toEqual([['flow', 'signal', '--', 'wf-1', 'deploy-approved']])
   await ui.unmount()
 })
@@ -117,7 +123,7 @@ test('without FLOWSTATE_ADDRESS the question names the default server the CLI wi
 test('Cancel runs nothing and takes the question away', async ($, on) => {
   const { ui, seen } = await open($, on, {})
   await ui.press({ key: 'signal:deploy-approved' })
-  await ui.press({ key: 'cancel-signal' })
+  await ui.press({ key: 'cancel-signal:deploy-approved' })
 
   expect(signals(seen)).toEqual([])
   expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
@@ -129,7 +135,7 @@ test('Confirm runs exactly one flow signal with the expected argv, then the card
   const { ui, seen } = await open($, on, {})
   await ui.press({ key: 'signal:deploy-approved' })
   const before = seen.filter(a => a[1] === 'timeline').length
-  await ui.press({ key: 'confirm-signal' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
 
   expect(signals(seen)).toEqual([['flow', 'signal', '--address=prod.example:9233', '--', 'wf-1', 'deploy-approved']])
   expect(await ui.find({ type: 'Text', text: /✓ delivered deploy-approved to wf-1/ })).toBeDefined()
@@ -143,7 +149,7 @@ test('a failing flow signal shows the server\'s refusal, cleaned and bounded, an
   const refusal = `ERROR\npermission denied: the starter of a run may not approve it\u001b[31m ${'x'.repeat(600)}\n\nNEXT\n  ask someone else`
   const { ui, seen } = await open($, on, { signal: fail(refusal) })
   await ui.press({ key: 'signal:deploy-approved' })
-  await ui.press({ key: 'confirm-signal' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
 
   expect(signals(seen)).toHaveLength(1)
   const shown = await ui.find({ type: 'Text', text: /✗ not sent: permission denied: the starter of a run may not approve it/ })
@@ -157,7 +163,7 @@ test('a failing flow signal shows the server\'s refusal, cleaned and bounded, an
 test('a flow signal that fails with nothing on stderr still says it was not sent', async ($, on) => {
   const { ui } = await open($, on, { signal: fail('') })
   await ui.press({ key: 'signal:deploy-approved' })
-  await ui.press({ key: 'confirm-signal' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
   expect(await ui.find({ type: 'Text', text: /✗ not sent: no server answered/ })).toBeDefined()
   await ui.unmount()
 })
@@ -237,11 +243,127 @@ test('the argv is plain: the payload is one element, and ids and names outside t
 })
 
 test('parseGates reads only pendingWaits and bounds its work', () => {
-  expect(parseGates('{}')).toEqual({ gates: [], more: 0 })
-  expect(parseGates('{"progress":{"pendingWaits":[null,1,{"stepId":"s"}]}}')).toEqual({ gates: [], more: 0 })
+  expect(parseGates('{}')).toEqual({ gates: [], more: 0, atLeast: false })
+  expect(parseGates('{"progress":{"pendingWaits":[null,1,{"stepId":"s"}]}}')).toEqual({ gates: [], more: 0, atLeast: false })
   const many = JSON.stringify({ progress: { pendingWaits: Array.from({ length: 500 }, (_, i) => ({ signalName: `g${i}` })) } })
   const parsed = parseGates(many)
   expect(parsed.gates).toHaveLength(5)
   expect(parsed.more).toBeGreaterThan(0)
-  expect(parsed.more).toBeLessThan(20)
+  expect(parsed.more).toBe(495)
+})
+
+test('if the address changes between the question and Confirm, nothing is sent', async ($, on) => {
+  const { ui, seen } = await open($, on, {})
+  await ui.press({ key: 'signal:deploy-approved' })
+  env.address = 'other.example:9233'
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+  expect(signals(seen)).toEqual([])
+  await ui.unmount()
+})
+
+test('if the address cannot be read at Confirm, nothing is sent', async ($, on) => {
+  const { ui, seen } = await open($, on, {})
+  await ui.press({ key: 'signal:deploy-approved' })
+  env.address = 'fail'
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+  expect(signals(seen)).toEqual([])
+  await ui.unmount()
+})
+
+test('an address lookup that fails is an unknown target, not the default: no get, no button, and it says why', async ($, on) => {
+  const { ui, seen } = await open($, on, {}, 'wf-1', 'fail')
+  expect(await ui.find({ type: 'Button', text: /Send signal/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /No signal button: FLOWSTATE_ADDRESS could not be read, so the target server is not known/ })).toBeDefined()
+  expect(seen.some(a => a[1] === 'get' || a[1] === 'signal')).toBe(false)
+  await ui.unmount()
+})
+
+test('two Confirm presses at once send exactly one signal', async ($, on) => {
+  const { ui, seen } = await open($, on, {})
+  await ui.press({ key: 'signal:deploy-approved' })
+  await Promise.all([ui.press({ key: 'confirm-signal:deploy-approved' }), ui.press({ key: 'confirm-signal:deploy-approved' })])
+  expect(signals(seen)).toHaveLength(1)
+  await ui.unmount()
+})
+
+const two = ok(JSON.stringify({ runs: ['wf-a', 'wf-b'].map(workflowId => ({ workflowId, runId: 'r', status: 'STATUS_RUNNING', name: '', startTime: '2026-10-09T10:00:00Z', closeTime: null })) }))
+
+test('a question asked on one run is gone when that run is selected again', async ($, on) => {
+  const { ui, seen } = await open($, on, { list: two }, 'wf-a')
+  await ui.press({ key: 'signal:deploy-approved' })
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeDefined()
+  await ui.press({ key: 'run:wf-b' })
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  await ui.press({ key: 'run:wf-a' })
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Send signal deploy-approved/ })).toBeDefined()
+  expect(signals(seen)).toEqual([])
+  await ui.unmount()
+})
+
+test('Send on gate B then a Confirm drawn for gate A sends nothing for A', async ($, on) => {
+  const { ui, seen } = await open($, on, { get: got(wait({ signalName: 'gate-a' }), wait({ signalName: 'gate-b', stepId: 'second' })) })
+  await ui.press({ key: 'signal:gate-a' })
+  expect(await ui.find({ type: 'Button', text: /Confirm: send gate-a/ })).toBeDefined()
+  await ui.press({ key: 'signal:gate-b' })
+  // The question moved to B: A's Confirm is no longer drawn, and pressing it sends nothing.
+  await expect(ui.press({ key: 'confirm-signal:gate-a' })).rejects.toThrow()
+  expect(signals(seen)).toEqual([])
+  expect(await ui.find({ type: 'Button', text: /Confirm: send gate-b/ })).toBeDefined()
+  await ui.press({ key: 'confirm-signal:gate-b' })
+  expect(signals(seen)).toEqual([['flow', 'signal', '--address=prod.example:9233', '--', 'wf-1', 'gate-b']])
+  await ui.unmount()
+})
+
+test('a signal that times out or cannot run is "delivery unknown", never "not sent"', async ($, on) => {
+  const { ui, seen } = await open($, on, { signal: 'deny' })
+  await ui.press({ key: 'signal:deploy-approved' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+  expect(signals(seen)).toHaveLength(1)
+  const shown = await ui.find({ type: 'Text', text: /delivery unknown for deploy-approved on wf-1/ })
+  expect(shown?.text).toMatch(/check the timeline before sending again/)
+  expect(shown?.text).not.toMatch(/not sent/)
+  await ui.unmount()
+})
+
+test('a prompt the server cut, or this card cut, is marked as partial', async ($, on) => {
+  const server = await open($, on, { get: got(wait({ promptTruncated: true })) })
+  expect(await server.ui.find({ type: 'Text', text: /Ship build 41 to production\? \[prompt truncated\]/ })).toBeDefined()
+  await server.ui.unmount()
+})
+
+test('a prompt this card cuts at its own bound is marked as partial', async ($, on) => {
+  const { ui } = await open($, on, { get: got(wait({ prompt: 'q'.repeat(400) })) })
+  expect(await ui.find({ type: 'Text', text: /q{160} \[prompt truncated\]/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a whole prompt carries no marker', async ($, on) => {
+  const { ui } = await open($, on, {})
+  expect(await texts(ui)).not.toMatch(/prompt truncated/)
+  await ui.unmount()
+})
+
+test('gates beyond the ones shown are counted from the whole answer, and a truncated answer says "at least"', () => {
+  const waits = Array.from({ length: 64 }, (_, i) => ({ signalName: `g${i}` }))
+  const all = parseGates(JSON.stringify({ progress: { pendingWaits: waits } }))
+  expect(all.gates).toHaveLength(5)
+  expect(all.more).toBe(59)
+  expect(all.atLeast).toBe(false)
+  expect(moreText(all)).toMatch(/^and 59 more gates/)
+
+  const cut = parseGates(JSON.stringify({ progress: { pendingWaits: waits, pendingWaitsTruncated: true } }))
+  expect(cut.more).toBe(59)
+  expect(moreText(cut)).toMatch(/^and at least 59 more gates/)
+
+  const exact = parseGates(JSON.stringify({ progress: { pendingWaits: waits.slice(0, 3), pendingWaitsTruncated: true } }))
+  expect(exact.more).toBe(0)
+  expect(moreText(exact)).toMatch(/^and more gates the run did not report/)
+  expect(moreText(parseGates(JSON.stringify({ progress: { pendingWaits: waits.slice(0, 3) } })))).toBe('')
+})
+
+test('clean drops zero-width and bidi format characters', () => {
+  const hostile = 'ap\u202eprove\u200b\u200f\u2066x\u2069\ufeff'
+  expect(clean(hostile)).toBe('approvex')
+  expect(clean('ünï — ok')).toBe('ünï — ok')
 })

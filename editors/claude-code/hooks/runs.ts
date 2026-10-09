@@ -9,10 +9,10 @@ export type Listing = { runs: RunSummary[] } | { offline: string }
 /**
  * A name, an id and a server's error text come from other parties, and the pane
  * writes them to a terminal: drop C0/C1 controls (an ESC starts an escape
- * sequence) and bound the length.
+ * sequence) and the invisible format characters that reorder or hide text (zero-width and bidi marks, BOM) and bound the length.
  */
 export const clean = (value: unknown, max = 80): string =>
-  typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, max) : ''
+  typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '').slice(0, max) : ''
 
 /** The first line of what `flow list` said when it could not reach a server. */
 export const reason = (stderr: string): string => {
