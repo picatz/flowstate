@@ -34,6 +34,8 @@ interface World {
   /** Directory listings by path ('' is the working directory). */
   dirs?: Record<string, ReturnType<typeof entry>[]>
   compile?: Reply | 'deny'
+  /** The reply to `--schema=outputs`; no declared outputs by default. */
+  outputs?: Reply | 'deny'
   run?: Reply | 'deny'
 }
 
@@ -42,11 +44,11 @@ const world: World = {}
 const limits: unknown[] = []
 
 const stub = (on: any, w: World, seen: string[][] = []) => {
-  Object.assign(world, { dirs: { '': [entry('deploy.flow.yaml')] }, compile: DEPLOY, run: ok('COMPLETED workflow x\n'), ...w })
+  Object.assign(world, { dirs: { '': [entry('deploy.flow.yaml')] }, compile: DEPLOY, outputs: schemaOf({}), run: ok('COMPLETED workflow x\n'), ...w })
   on('process.run', (_$: unknown, e: { argv: string[]; init?: { timeoutMs?: number }; timeoutMs?: number }) => {
     seen.push(e.argv)
     if (e.argv[1] === 'run') limits.push(e.init?.timeoutMs ?? e.timeoutMs)
-    const reply = e.argv[1] === 'compile' ? world.compile : e.argv[1] === 'run' ? world.run : fail(`no ${e.argv[1]} stubbed`)
+    const reply = e.argv[1] === 'compile' ? (e.argv.includes('--schema=outputs') ? world.outputs : world.compile) : e.argv[1] === 'run' ? world.run : fail(`no ${e.argv[1]} stubbed`)
     if (reply === 'deny') return { deny: 'timed out' }
     return { value: { ...reply!, isStdoutTruncated: false, isStderrTruncated: false } }
   })
