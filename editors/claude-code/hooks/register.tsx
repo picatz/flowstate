@@ -2,8 +2,9 @@ import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
+import type { RunSummary } from '../types/flowstate'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
-import { clean, runLine, toListing } from './runs'
+import { MAX_PAGES, MAX_RUNS, clean, parsePage, runLine, toListing } from './runs'
 import type { Listing } from './runs'
 
 const PANE = 'flowstate'
@@ -28,12 +29,27 @@ const validate = async (
   }
 }
 
-/** Asks the server for its runs. A failure to answer is a state of the pane, never an error. */
+/**
+ * Asks the server for its newest runs. A bounded scan can come back short with
+ * a continuation token, so it follows the token a few pages until it has enough.
+ * A failure to answer is a state of the pane, never an error.
+ */
 const listRuns = async ($: Engine, flow: string): Promise<Listing> => {
+  const runs: RunSummary[] = []
+  let token = ''
   try {
-    return toListing(await $.process.run([flow, 'list', '-o', 'jsonl'], { timeoutMs: 5000 }))
+    for (let page = 0; page < MAX_PAGES && runs.length < MAX_RUNS; page++) {
+      const argv = [flow, 'list', '-o', 'json', ...(token ? ['--page-token', token] : [])]
+      const ran = await $.process.run(argv, { timeoutMs: 5000 })
+      if (ran.exitCode !== 0) return toListing(ran)
+      const got = parsePage(ran.stdout)
+      runs.push(...got.runs)
+      token = got.next
+      if (!token) break
+    }
+    return { runs: runs.slice(0, MAX_RUNS) }
   } catch (err) {
-    return { offline: clean(String(err), 100) || 'no server answered' }
+    return { offline: clean(String(err), 100) || 'no answer' }
   }
 }
 
@@ -81,7 +97,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Text bold>Runs</Text>
         {'offline' in runs ? (
-          <Text dimColor>  No server answering ({runs.offline}). Local runs need none; set FLOWSTATE_ADDRESS to see a server's.</Text>
+          <Text dimColor>  Runs unavailable ({runs.offline}). Local runs need no server; set FLOWSTATE_ADDRESS to list a server's.</Text>
         ) : runs.runs.length === 0 ? (
           <Text dimColor>  No runs yet.</Text>
         ) : (

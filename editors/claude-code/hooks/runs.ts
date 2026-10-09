@@ -20,29 +20,42 @@ const reason = (stderr: string): string => {
   return clean(lines[0], 100) || 'no server answered'
 }
 
-/**
- * Reads `flow list -o jsonl`: one protojson RunSummary per line. A line that is
- * not one, or names no run, is skipped, so a stray line cannot hide the rest.
- */
-export const parseRuns = (stdout: string): RunSummary[] => {
-  const runs: RunSummary[] = []
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue
-    try {
-      const run = JSON.parse(line) as Partial<RunSummary>
-      if (typeof run.workflowId === 'string' && run.workflowId !== '') {
-        runs.push(run as RunSummary)
-      }
-    } catch {
-      // not a run
-    }
-  }
-  return runs.slice(0, MAX_RUNS)
+/** A page-walk stops after this many calls: a bounded scan can return short pages, but the pane never walks a whole history. */
+export const MAX_PAGES = 4
+
+/** One page of `flow list -o json`: its runs, and the token that continues it. */
+export interface Page {
+  runs: RunSummary[]
+  next: string
 }
 
-/** Local by default: a failed `flow list` means no server is configured or answering, not an error. */
+/**
+ * Reads one `flow list -o json` document (`{runs, nextPageToken}`). A run that
+ * names no workflow is skipped, so a stray entry cannot hide the rest, and a
+ * document that is not JSON is an empty page.
+ */
+export const parsePage = (stdout: string): Page => {
+  try {
+    const doc = JSON.parse(stdout) as { runs?: unknown; nextPageToken?: unknown }
+    const runs = Array.isArray(doc.runs) ? doc.runs : []
+    return {
+      runs: runs.filter(
+        (r): r is RunSummary => typeof r?.workflowId === 'string' && r.workflowId !== '',
+      ),
+      next: typeof doc.nextPageToken === 'string' ? doc.nextPageToken : '',
+    }
+  } catch {
+    return { runs: [], next: '' }
+  }
+}
+
+/**
+ * Local by default, but not every failure is "no server": `flow list` also
+ * exits non-zero for a refused credential or a bad flag. The pane says the runs
+ * are unavailable and shows what `flow` said.
+ */
 export const toListing = (run: { exitCode: number; stdout: string; stderr: string }): Listing =>
-  run.exitCode === 0 ? { runs: parseRuns(run.stdout) } : { offline: reason(run.stderr) }
+  run.exitCode === 0 ? { runs: parsePage(run.stdout).runs.slice(0, MAX_RUNS) } : { offline: reason(run.stderr) }
 
 /** `RUNNING`, `FAILED`, ...: the schema's name without its `STATUS_` prefix. */
 export const statusLabel = (run: RunSummary): string =>
