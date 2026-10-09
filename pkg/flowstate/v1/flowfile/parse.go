@@ -687,6 +687,13 @@ type compiler struct {
 	// already reported, since every later use would report it again.
 	expandedNodes       int
 	expansionOverflowed bool
+
+	// functionsRead is set once the `functions:` block has been read, and
+	// deferredMusts holds the `must:` texts met before then: a record type is
+	// read first, because a function's parameter may be one, so its musts wait
+	// for the names they may call. See [compiler.must].
+	functionsRead bool
+	deferredMusts []deferredMust
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -923,6 +930,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	if f, found := fields.get("functions"); found {
 		workflow.DeclaredFunctions = c.declaredFunctions(f.value, "functions", ref{path: "functions", label: "functions"})
 	}
+	c.settleMusts()
 
 	// What the run takes, read first because it is what a reader meets first: a
 	// declaration is in scope for everything below it, and nothing below it can
@@ -1289,8 +1297,11 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 	}
 	if f, found := fields.get("must"); found {
 		p := fieldPath(path, "must")
-		if v, ok := c.text(f.value, p, ref{path: p, label: noun + " " + e.name + " must"}); ok {
-			declaration.Must = proto.String(v)
+		mustRef := ref{path: p, label: noun + " " + e.name + " must"}
+		if v, ok := c.text(f.value, p, mustRef); ok {
+			c.must(v, spanOfNode(c.resolveQuiet(f.value)), mustRef, func(must string, source *string) {
+				declaration.Must, declaration.MustSource = proto.String(must), source
+			})
 		}
 	}
 	return declaration
@@ -1447,8 +1458,11 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 
 	if f, found := fields.get("must"); found {
 		p := fieldPath(path, "must")
-		if v, ok := c.text(f.value, p, ref{path: p, label: "output " + e.name + " must"}); ok {
-			declaration.Must = proto.String(v)
+		mustRef := ref{path: p, label: "output " + e.name + " must"}
+		if v, ok := c.text(f.value, p, mustRef); ok {
+			c.must(v, spanOfNode(c.resolveQuiet(f.value)), mustRef, func(must string, source *string) {
+				declaration.Must, declaration.MustSource = proto.String(must), source
+			})
 		}
 	}
 	if f, found := fields.get("sensitive"); found {

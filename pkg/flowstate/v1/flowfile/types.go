@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"cmp"
 	"fmt"
 
 	yaml "github.com/goccy/go-yaml"
@@ -106,8 +107,11 @@ func (c *compiler) declaredType(e entry, parent string) *v1.TypeDeclaration {
 
 	if f, found := fields.get("must"); found {
 		mustPath := fieldPath(path, "must")
-		if must, ok := c.text(f.value, mustPath, ref{path: mustPath, label: "type " + e.name + " must"}); ok {
-			declaration.Must = proto.String(must)
+		mustRef := ref{path: mustPath, label: "type " + e.name + " must"}
+		if must, ok := c.text(f.value, mustPath, mustRef); ok {
+			c.must(must, spanOfNode(c.resolveQuiet(f.value)), mustRef, func(must string, source *string) {
+				declaration.Must, declaration.MustSource = proto.String(must), source
+			})
 		}
 	}
 
@@ -137,7 +141,7 @@ func declaredTypesToYAML(declared []*v1.TypeDeclaration) (yaml.MapSlice, error) 
 			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(d.GetDescription())})
 		}
 		if d.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(d.GetMust())})
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(cmp.Or(d.GetMustSource(), d.GetMust()))})
 		}
 		if len(d.GetFields()) > 0 {
 			fields, err := declaredInputsToYAML(d.GetFields())

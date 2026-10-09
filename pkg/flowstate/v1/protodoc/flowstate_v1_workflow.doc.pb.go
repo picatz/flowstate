@@ -675,6 +675,15 @@ func init() {
 				" record it holds, at most 4096 evaluations per value.\n",
 		},
 		{
+			Name: "flowstate.v1.TypeDeclaration.must_source",
+			Leading: " MustSource is `must` as the author wrote it, set only when it differs: a\n" +
+				" `must` that calls a declared function (`FunctionDeclaration`) is stored\n" +
+				" expanded in `must`, so the runtime evaluates plain CEL, and written here in\n" +
+				" the call form, so `flow fmt` and Marshal write the file back as it was\n" +
+				" authored. Never evaluated, compiled or checked; a specification that carries\n" +
+				" one without a matching expansion is read by `must` alone.\n",
+		},
+		{
 			Name: "flowstate.v1.Concurrency",
 			Leading: " Concurrency is \"at most one run of this workflow per key\", answered at submit.\n" +
 				"\n" +
@@ -1129,6 +1138,15 @@ func init() {
 				" enforcement points, which an expression reading the clock cannot promise.\n",
 		},
 		{
+			Name: "flowstate.v1.InputDeclaration.must_source",
+			Leading: " MustSource is `must` as the author wrote it, set only when it differs: a\n" +
+				" `must` that calls a declared function (`FunctionDeclaration`) is stored\n" +
+				" expanded in `must`, so the runtime evaluates plain CEL, and written here in\n" +
+				" the call form, so `flow fmt` and Marshal write the file back as it was\n" +
+				" authored. Never evaluated, compiled or checked; a specification that carries\n" +
+				" one without a matching expansion is read by `must` alone.\n",
+		},
+		{
 			Name: "flowstate.v1.InputDeclaration.values",
 			Leading: " Values is the closed set of strings a `type: enum` value may be. Only the\n" +
 				" per-declaration shape lives here: that they are non-empty, bounded, and\n" +
@@ -1227,6 +1245,15 @@ func init() {
 				" `InputDeclaration.must`: compiled and type-checked when the specification\n" +
 				" loads, evaluated under the standard CEL cost bound, and refused if it\n" +
 				" references `now` or calls anything else nondeterministic.\n",
+		},
+		{
+			Name: "flowstate.v1.OutputDeclaration.must_source",
+			Leading: " MustSource is `must` as the author wrote it, set only when it differs: a\n" +
+				" `must` that calls a declared function (`FunctionDeclaration`) is stored\n" +
+				" expanded in `must`, so the runtime evaluates plain CEL, and written here in\n" +
+				" the call form, so `flow fmt` and Marshal write the file back as it was\n" +
+				" authored. Never evaluated, compiled or checked; a specification that carries\n" +
+				" one without a matching expansion is read by `must` alone.\n",
 		},
 		{
 			Name: "flowstate.v1.OutputDeclaration.sensitive",

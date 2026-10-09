@@ -304,3 +304,48 @@ func TestFunctionSetDefinitionsShareOneExpansionBudget(t *testing.T) {
 	require.Less(t, len(set.Names()), len(declared))
 	require.Contains(t, set.Names(), "f0")
 }
+
+// ExpandText writes an expansion as plain CEL that, evaluated with no function
+// declared, answers what the expansion does, whatever the nesting, the aliasing of
+// an argument spelled like a parameter, and the operators around a call.
+func TestExpandTextIsPlainCELThatAnswersAsTheExpansionDoes(t *testing.T) {
+	t.Parallel()
+
+	set, errs := v1.NewFunctionSet(v1.CurrentProfile, []*v1.FunctionDeclaration{
+		fn("inc", "n + 1", tInt, param("n", tInt)),
+		fn("add", "inc(a) + b", tInt, param("a", tInt), param("b", tInt)),
+	})
+	require.Empty(t, errs)
+
+	for _, test := range []struct {
+		src  string
+		want any
+	}{
+		{"add(this, 1) * 2", float64(10)},
+		{"inc(inc(this)) == 5 && add(1, this) > 0", true},
+		{"add(this, this)", float64(7)},
+		{"add(1, inc(a))", float64(6)},
+		{"!(inc(this) > 100)", true},
+	} {
+		t.Run(test.src, func(t *testing.T) {
+			text, nodes, err := set.ExpandText(test.src)
+			require.NoError(t, err)
+			require.Positive(t, nodes)
+			require.NotContains(t, text, "inc(")
+			require.NotContains(t, text, "add(")
+
+			got := evalExpanded(t, set, text, map[string]any{"this": int64(3), "a": int64(3)})
+			require.Equal(t, test.want, got)
+			require.Equal(t, evalExpanded(t, set, test.src, map[string]any{"this": int64(3), "a": int64(3)}), got)
+		})
+	}
+
+	text, nodes, err := set.ExpandText("this > 1")
+	require.NoError(t, err)
+	require.Equal(t, "this > 1", text)
+	require.Zero(t, nodes)
+
+	text, _, err = set.ExpandText("this >")
+	require.NoError(t, err, "source that does not parse is the caller's own compile to report")
+	require.Equal(t, "this >", text)
+}

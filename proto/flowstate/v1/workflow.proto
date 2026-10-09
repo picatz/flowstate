@@ -798,6 +798,14 @@ message TypeDeclaration {
   // `now` or call anything nondeterministic. A value is held to the rules of every
   // record it holds, at most 4096 evaluations per value.
   optional string must = 4;
+
+  // MustSource is `must` as the author wrote it, set only when it differs: a
+  // `must` that calls a declared function (`FunctionDeclaration`) is stored
+  // expanded in `must`, so the runtime evaluates plain CEL, and written here in
+  // the call form, so `flow fmt` and Marshal write the file back as it was
+  // authored. Never evaluated, compiled or checked; a specification that carries
+  // one without a matching expansion is read by `must` alone.
+  optional string must_source = 5;
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -1397,6 +1405,14 @@ message InputDeclaration {
   // enforcement points, which an expression reading the clock cannot promise.
   optional string must = 16;
 
+  // MustSource is `must` as the author wrote it, set only when it differs: a
+  // `must` that calls a declared function (`FunctionDeclaration`) is stored
+  // expanded in `must`, so the runtime evaluates plain CEL, and written here in
+  // the call form, so `flow fmt` and Marshal write the file back as it was
+  // authored. Never evaluated, compiled or checked; a specification that carries
+  // one without a matching expansion is read by `must` alone.
+  optional string must_source = 19;
+
   // Values is the closed set of strings a `type: enum` value may be. Only the
   // per-declaration shape lives here: that they are non-empty, bounded, and
   // distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
@@ -1493,6 +1509,14 @@ message OutputDeclaration {
   // loads, evaluated under the standard CEL cost bound, and refused if it
   // references `now` or calls anything else nondeterministic.
   optional string must = 4;
+
+  // MustSource is `must` as the author wrote it, set only when it differs: a
+  // `must` that calls a declared function (`FunctionDeclaration`) is stored
+  // expanded in `must`, so the runtime evaluates plain CEL, and written here in
+  // the call form, so `flow fmt` and Marshal write the file back as it was
+  // authored. Never evaluated, compiled or checked; a specification that carries
+  // one without a matching expansion is read by `must` alone.
+  optional string must_source = 9;
 
   // Sensitive marks this output's value the way `InputDeclaration.sensitive`
   // marks an input's: display etiquette, never containment. See that field's

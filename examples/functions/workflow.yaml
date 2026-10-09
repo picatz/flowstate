@@ -16,6 +16,11 @@
 # `flow run local` and on Temporal, on a worker that has never heard of `functions:`.
 # `flow fmt` writes the file back with the definitions and the calls as written.
 #
+# A function is also callable in a `must:`, on an input, an output, a record field or a
+# record type (`tag`, `path`, `Author` and its `handle` below), so a rule an input
+# and a field share is written once. The compiler expands it there too and the run checks
+# the plain predicate; `flow fmt` keeps the call as written.
+#
 # A function may call another, and may not call itself, directly or through another.
 # A name the language already has (`size`, `has`, `sum`) is refused, so a definition
 # can never change what an existing expression means.
@@ -23,6 +28,15 @@
 #   flow run local examples/functions/workflow.yaml --input title="Hello, World"
 edition: v2026.4
 name: functions
+types:
+  Author:
+    description: Who wrote the post.
+    must: isWord(this.handle)
+    fields:
+      handle:
+        type: string
+        required: true
+        must: isWord(this)
 functions:
   slug:
     description: A title as it appears in a URL.
@@ -44,6 +58,18 @@ functions:
       limit: int
     returns: bool
     body: ${size(title.trim()) > limit}
+  isPath:
+    description: Whether text is an absolute path on the site.
+    params:
+      text: string
+    returns: bool
+    body: ${text.startsWith("/") && !text.endsWith("/")}
+  isWord:
+    description: Whether a name is one lowercase word, as a section or a handle is.
+    params:
+      name: string
+    returns: bool
+    body: ${name.matches("^[a-z]+$")}
 inputs:
   title:
     type: string
@@ -52,10 +78,16 @@ inputs:
   section:
     type: string
     default: posts
+  tag:
+    type: string
+    default: news
+    must: isWord(this)
+  author:
+    type: Author
 steps:
   - id: publish
     log:
-      message: ${"publishing " + postPath(inputs.section, inputs.title)}
+      message: ${"publishing " + postPath(inputs.section, inputs.title) + " under " + inputs.tag}
   # The predicate is written once and used here and in the output below.
   - id: shorten
     if: ${isLong(inputs.title, 20)}
@@ -66,6 +98,7 @@ outputs:
     value: ${postPath(inputs.section, inputs.title)}
     type: string
     description: the URL path the post is published at
+    must: isPath(this)
   long:
     value: ${isLong(inputs.title, 20)}
     type: bool
