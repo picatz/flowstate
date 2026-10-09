@@ -1,9 +1,12 @@
 package flowstatev1_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
@@ -54,4 +57,41 @@ func TestRunWorkflowCredentialBindingsRefused(t *testing.T) {
 			require.Empty(t, out.GetStepValues(), "a step ran before the refusal")
 		})
 	}
+}
+
+// TestRunWorkflowRefusesABindingThatExpandsPastTheSizeLimit is the boundary the
+// size check has to be asked at twice: the specification as written fits, and the
+// binding copied into its step does not. The server asks again after expanding,
+// and a rehearsal that did not would run what production refuses.
+func TestRunWorkflowRefusesABindingThatExpandsPastTheSizeLimit(t *testing.T) {
+	registerBoundCredentialTask(t)
+
+	build := func(padding int) *v1.Workflow {
+		wf := boundWorkflow(useStep("a", map[string]*v1.Value{"note": v1.NewLiteral(strings.Repeat("x", padding))}))
+
+		return wf
+	}
+	size := func(wf *v1.Workflow) int { return proto.Size(&v1.RunState{Workflow: wf}) }
+
+	// Pad until the workflow sits just under the limit with room for less than
+	// the binding's expansion. Stepped, because the length prefix changes width.
+	padding := v1.MaxSpecBytes - 1000
+	for size(build(padding)) > v1.MaxSpecBytes-10 {
+		padding--
+	}
+	for size(build(padding+1)) <= v1.MaxSpecBytes-10 {
+		padding++
+	}
+	wf := build(padding)
+	require.LessOrEqual(t, size(wf), v1.MaxSpecBytes, "the case must fit as written")
+
+	_, err := v1.RunWithInputs(t.Context(), wf, nil)
+	require.ErrorContains(t, err, "bytes together, over the")
+	require.NotContains(t, wf.GetSteps()[0].GetTask().GetInputs(), "token", "the caller's workflow was expanded")
+
+	// And the same workflow without the binding to expand is not refused for size.
+	wf.PluginRequirements[0].Credentials = nil
+	wf.GetSteps()[0].GetTask().Inputs["token"] = &v1.Value{Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "env", Name: "T"}}}
+	_, err = v1.RunWithInputs(t.Context(), wf, nil)
+	require.NotContains(t, fmt.Sprint(err), "bytes together")
 }

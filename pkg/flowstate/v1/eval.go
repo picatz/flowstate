@@ -1272,9 +1272,15 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		// Expanded on a copy, as the server's admission expands the specification
 		// it owns: this driver is handed a workflow the caller keeps, and one that
 		// binds no credential is not copied.
-		spec := copyIfBindsCredentials(w)
+		spec := CopyIfBindsPluginCredentials(w)
 		if err := BindPluginCredentials(spec, registry); err != nil {
 			return nil, err
+		}
+		// The expansion adds bytes, so the size is asked again as the server does.
+		if spec != w {
+			if err := CheckSubmissionSize(spec, bound); err != nil {
+				return nil, err
+			}
 		}
 		if err := CheckInputClaims(spec, registry); err != nil {
 			return nil, err

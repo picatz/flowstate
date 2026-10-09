@@ -253,3 +253,35 @@ steps:
 	require.NoError(t, err)
 	require.Len(t, wf.GetPluginRequirements()[0].GetCredentials(), 1)
 }
+
+// TestValidateExpandsBindingsOnAHandBuiltWorkflow: Validate is handed workflows
+// that never went through Parse, so a binding it meets unexpanded is judged as
+// the step it will become, and one that cannot be expanded is the finding.
+func TestValidateExpandsBindingsOnAHandBuiltWorkflow(t *testing.T) {
+	registerBoundPlugin(t)
+
+	build := func(credentials map[string]*v1.Value) *v1.Workflow {
+		return &v1.Workflow{
+			Name:               "hand-built",
+			Profile:            v1.CurrentProfile,
+			PluginRequirements: []*v1.PluginRequirement{conformance.BoundCredentialRequirement(credentials)},
+			Steps: []*v1.Node{{Id: "send", Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: conformance.BoundCredentialTaskName, Inputs: map[string]*v1.Value{"note": v1.NewLiteral("a")},
+			}}}},
+		}
+	}
+	ref := &v1.Value{Kind: &v1.Value_SecretRef{SecretRef: &v1.SecretRef{Scheme: "env", Name: "T"}}}
+
+	wf := build(map[string]*v1.Value{conformance.BoundCredentialName: ref})
+	require.Empty(t, flowfile.Validate(wf), "a valid binding was reported as an unwritten input")
+	require.NotContains(t, wf.GetSteps()[0].GetTask().GetInputs(), "token", "Validate expanded the caller's workflow")
+
+	ds := flowfile.Validate(build(map[string]*v1.Value{conformance.BoundCredentialName: v1.NewLiteral("plain-text")}))
+	require.Len(t, ds, 1)
+	require.Contains(t, ds[0].Message, "must be bound to a whole secret reference")
+	require.NotContains(t, ds[0].Message, "plain-text")
+
+	ds = flowfile.Validate(build(nil))
+	require.NotEmpty(t, ds)
+	require.Contains(t, ds[0].Message, "receives the plugin's credential")
+}

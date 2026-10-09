@@ -70,6 +70,17 @@ func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error
 	reflectMsg := msg.ProtoReflect()
 	fields := reflectMsg.Descriptor().Fields()
 
+	// A credential-claimed field the inputs leave out is refused too: the claim
+	// promises the host delivered one, and an omitted key is not that.
+	for i := range fields.Len() {
+		field := fields.Get(i)
+		if _, supplied := inputs[string(field.Name())]; !supplied {
+			if err := checkCredentialValue(field, nil); err != nil {
+				return fmt.Errorf("input %q: %w", field.Name(), err)
+			}
+		}
+	}
+
 	for name, value := range inputs {
 		field := fields.ByName(protoreflect.Name(name))
 		if field == nil {

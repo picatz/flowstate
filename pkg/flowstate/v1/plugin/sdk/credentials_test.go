@@ -160,6 +160,16 @@ func TestDecodeInputsRefusesACredentialThatIsNotTheResolvedString(t *testing.T) 
 		})
 	}
 
+	t.Run("an omitted credential field is refused", func(t *testing.T) {
+		t.Parallel()
+
+		in := credentialInput(t, "Omitted", &flowstatev1.InputOptions{Credential: "bot_token"})
+		err := DecodeInputs(map[string]*flowstatev1.Value{}, in)
+		if err == nil || !strings.Contains(err.Error(), `credential "bot_token"`) || !strings.Contains(err.Error(), "no value") {
+			t.Fatalf("DecodeInputs error = %v, want a refusal of the missing credential", err)
+		}
+	})
+
 	t.Run("the resolved string is decoded", func(t *testing.T) {
 		t.Parallel()
 

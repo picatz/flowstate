@@ -581,9 +581,10 @@ refused when the file is validated and again when a specification is submitted. 
 binding is only ever a whole `${secret(...)}` reference, never a literal, an
 expression or a `${credential(...)}`, and it names a credential the plugin
 declares. The compiler and the server expand the binding into the per-step
-references before a run exists, so a plugin and a worker only ever see the
-reference on the step, and the string the host resolved it to: `sdk.DecodeInputs`
-refuses a claimed field that holds anything else. A caller's binding does not
+references before a run exists, so execution reads the per-step reference (the
+stored workflow keeps both the binding and the expansion) and a plugin receives
+the string the host resolved it to: `sdk.DecodeInputs` refuses a claimed field
+that holds anything else, or that is missing. A caller's binding does not
 cross a `call:`; a callee binds its own.
 
 ## Where the contract catches authors out

@@ -347,11 +347,11 @@ func listNames(names []string) string {
 	return strings.Join(names, ", ")
 }
 
-// copyIfBindsCredentials returns wf, or a deep copy of it when wf or a workflow
+// CopyIfBindsPluginCredentials returns wf, or a deep copy of it when wf or a workflow
 // it calls binds any credential under `plugins:`, so a caller that must not
 // change its argument copies only when [BindPluginCredentials] would write. A
 // specification that cannot be walked is copied: the binding is what refuses it.
-func copyIfBindsCredentials(wf *Workflow) *Workflow {
+func CopyIfBindsPluginCredentials(wf *Workflow) *Workflow {
 	if bindsPluginCredentials(wf) {
 		return proto.Clone(wf).(*Workflow)
 	}

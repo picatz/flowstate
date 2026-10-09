@@ -839,9 +839,9 @@ func init() {
 				" A binding is only ever a SecretRef; any other kind of value is refused,\n" +
 				" because a binding is a reference and never a value. At most 8, the bound on\n" +
 				" a plugin's declarations. Admission and the compiler both expand the binding\n" +
-				" into the per-step inputs ([BindPluginCredentials]), so the specification a\n" +
-				" driver executes is the one that wrote the reference on every step, and\n" +
-				" neither driver reads this field.\n",
+				" into the per-step inputs ([BindPluginCredentials]), so execution reads the\n" +
+				" per-step references, as if the file had written one on every step, and\n" +
+				" neither driver reads this field. The stored specification keeps both forms.\n",
 		},
 		{
 			Name: "flowstate.v1.ResolvedPlugin",

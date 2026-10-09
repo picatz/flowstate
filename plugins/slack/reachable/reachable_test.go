@@ -63,14 +63,34 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 
 	// This assertion comes from the manifest delivered by the real process. It
 	// is the author-time half of the host's repeated pre-dispatch enforcement.
+	// The binding is a reference and nothing else: a literal there is refused
+	// where it is written, without echoing it.
 	literal := strings.Replace(string(source), "${secret('env:SLACK_BOT_TOKEN')}", "literal-token", 1)
 	diags, err := flowfile.ValidateSource([]byte(literal))
-	if err != nil {
-		t.Fatalf("validating literal credential mutation: %v", err)
+	// The compiler refuses the binding itself, so the refusal arrives as the
+	// error and not as a validation diagnostic.
+	if err == nil {
+		t.Fatalf("a literal binding was accepted: %s", diagnosticText(diags))
 	}
-	text := diagnosticText(diags)
+	text := err.Error()
+	if !strings.Contains(text, "plugins.slack.credentials.bot_token") || !strings.Contains(text, "must be bound to a whole secret reference") || strings.Contains(text, "literal-token") {
+		t.Fatalf("literal binding diagnostics = %q, want redacted whole-secret refusal at the binding", text)
+	}
+
+	// A step's own input overrides the binding, and is held to the same claim
+	// the host repeats before dispatch: a literal there is refused too.
+	override := strings.Replace(string(source), "      channel: ${inputs.channel}\n      idempotency_key: ${inputs.request_message_key}\n",
+		"      channel: ${inputs.channel}\n      idempotency_key: ${inputs.request_message_key}\n      token: literal-token\n", 1)
+	if override == string(source) {
+		t.Fatal("the override mutation did not apply to the example")
+	}
+	diags, err = flowfile.ValidateSource([]byte(override))
+	if err != nil {
+		t.Fatalf("validating literal override mutation: %v", err)
+	}
+	text = diagnosticText(diags)
 	if !strings.Contains(text, "whole secret reference") || strings.Contains(text, "literal-token") {
-		t.Fatalf("literal-token diagnostics = %q, want redacted whole-secret refusal", text)
+		t.Fatalf("literal override diagnostics = %q, want redacted whole-secret refusal", text)
 	}
 
 	p, ok := host.Lookup("slack")

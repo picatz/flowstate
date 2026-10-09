@@ -325,7 +325,7 @@ func TestFlowfileShapedLiteralsDecodeIntoNestedInputs(t *testing.T) {
 	}})
 	var in slackv1.PostInputs
 	err := sdk.DecodeInputs(map[string]*flowstatev1.Value{
-		"channel": flowstatev1.NewValue("C123APPROVAL"), "idempotency_key": flowstatev1.NewValue(testIdempotencyKey), "card": approval,
+		"token": flowstatev1.NewValue("xoxb-test"), "channel": flowstatev1.NewValue("C123APPROVAL"), "idempotency_key": flowstatev1.NewValue(testIdempotencyKey), "card": approval,
 	}, &in)
 	if err != nil {
 		t.Fatalf("decoding an approval card: %v", err)
@@ -343,7 +343,7 @@ func TestFlowfileShapedLiteralsDecodeIntoNestedInputs(t *testing.T) {
 
 	var native slackv1.PostInputs
 	err = sdk.DecodeInputs(map[string]*flowstatev1.Value{
-		"channel": flowstatev1.NewValue("C123APPROVAL"), "idempotency_key": flowstatev1.NewValue(testIdempotencyKey),
+		"token": flowstatev1.NewValue("xoxb-test"), "channel": flowstatev1.NewValue("C123APPROVAL"), "idempotency_key": flowstatev1.NewValue(testIdempotencyKey),
 		"blocks": flowstatev1.NewValue([]any{
 			map[string]any{"header": map[string]any{"text": map[string]any{"plain": "Release"}}},
 			map[string]any{"section": map[string]any{
@@ -368,6 +368,7 @@ func TestFlowfileShapedLiteralsDecodeIntoNestedInputs(t *testing.T) {
 
 	// A misspelt member is refused by name instead of vanishing.
 	err = sdk.DecodeInputs(map[string]*flowstatev1.Value{
+		"token":  flowstatev1.NewValue("xoxb-test"),
 		"blocks": flowstatev1.NewValue([]any{map[string]any{"sectoin": map[string]any{}}}),
 	}, &slackv1.PostInputs{})
 	if err == nil || !strings.Contains(err.Error(), "sectoin") {

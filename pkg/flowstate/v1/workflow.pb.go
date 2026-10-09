@@ -1367,9 +1367,9 @@ type PluginRequirement struct {
 	// A binding is only ever a SecretRef; any other kind of value is refused,
 	// because a binding is a reference and never a value. At most 8, the bound on
 	// a plugin's declarations. Admission and the compiler both expand the binding
-	// into the per-step inputs ([BindPluginCredentials]), so the specification a
-	// driver executes is the one that wrote the reference on every step, and
-	// neither driver reads this field.
+	// into the per-step inputs ([BindPluginCredentials]), so execution reads the
+	// per-step references, as if the file had written one on every step, and
+	// neither driver reads this field. The stored specification keeps both forms.
 	Credentials   map[string]*Value `protobuf:"bytes,3,rep,name=credentials,proto3" json:"credentials,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
