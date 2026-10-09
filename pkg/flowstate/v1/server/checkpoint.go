@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"connectrpc.com/connect"
@@ -53,15 +52,20 @@ func (s *FlowstateServer) GetCheckpoint(
 	}
 
 	return connect.NewResponse(&v1.GetCheckpointResponse{Result: &v1.GetCheckpointResponse_Checkpoint{
-		Checkpoint: &v1.CheckpointInfo{
-			WorkflowId: execution.GetWorkflowId(),
-			RunId:      execution.GetRunId(),
-			Segment:    state.GetSegment(),
-			Step:       v1.CheckpointStep(state),
-			SpecHash:   v1.CanonicalDigest(state.GetWorkflow()),
-			SizeBytes:  int64(v1.RunStateEncodedSize(state)),
-		},
+		Checkpoint: checkpointInfo(execution.GetWorkflowId(), execution.GetRunId(), state),
 	}}), nil
+}
+
+// checkpointInfo describes the checkpoint state is, for the segment it started.
+func checkpointInfo(workflowID, runID string, state *v1.RunState) *v1.CheckpointInfo {
+	return &v1.CheckpointInfo{
+		WorkflowId: workflowID,
+		RunId:      runID,
+		Segment:    state.GetSegment(),
+		Step:       v1.CheckpointStep(state),
+		SpecHash:   v1.CanonicalDigest(state.GetWorkflow()),
+		SizeBytes:  int64(v1.RunStateEncodedSize(state)),
+	}
 }
 
 // unavailable is the answer for a segment that is not a legal starting state.
@@ -71,12 +75,8 @@ func unavailable(reason string) *connect.Response[v1.GetCheckpointResponse] {
 	})
 }
 
-// unavailableReason is the sentence a caller reads for a position that is not a
-// legal starting state.
+// unavailableReason is the sentence a caller reads for a segment that is not a
+// legal starting state. The checkpoint errors already say which rule refused.
 func unavailableReason(err error) string {
-	if errors.Is(err, v1.ErrCheckpointUnsupported) {
-		return "the segment starts inside a call, a loop or concurrent work; only a position between top-level steps can be started from"
-	}
-
 	return err.Error()
 }

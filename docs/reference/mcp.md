@@ -32,6 +32,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_get` | via a server | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
 | `flowstate_get_timeline` | via a server | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
 | `flowstate_get_checkpoint` | via a server | `flowstate.v1.GetCheckpointRequest` | `flowstate.v1.GetCheckpointResponse` |
+| `flowstate_resume_run` | via a server | `flowstate.v1.ResumeRunRequest` | `flowstate.v1.ResumeRunResponse` |
 | `flowstate_signal` | via a server | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
 | `flowstate_get_gate` | via a server | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
 | `flowstate_list_gates` | via a server | `flowstate.v1.ListGatesRequest` | `flowstate.v1.ListGatesResponse` |
@@ -122,6 +123,14 @@ GetCheckpoint reports whether a run segment started from a point a new run could
 Every segment's start input is the run's complete carried state, so the answer is read from history and changes nothing. It describes the point without returning the state, which holds the run's inputs and outputs in full; see `CheckpointInfo`. A segment whose position is inside a call, a loop or concurrent work is reported unavailable with the reason, because only a position between top-level steps is a legal starting state.
 
 `run_id` names the segment, as in `GetTimeline`; empty reads the latest.
+
+## `flowstate_resume_run`
+
+ResumeRun starts a new run from the checkpoint a run segment started from, optionally with a patched workflow, and links it to its origin.
+
+The new run is an ordinary run: its own workflow id, executed by an ordinary driver, with the origin recorded in its memo (origin run, step and the digest of the patch). It carries the origin's inputs, vars, outputs and pending signals exactly; a patch may replace only the steps after the position, see `Checkpoint`. Only a position `GetCheckpoint` reports available can be resumed.
+
+Authorized as starting work (`workload.run`), and additionally requires `workload.read` on the origin because the new run inherits its state. The caller must be the principal the origin run acts as: the carried identity is not changeable, so any other caller would otherwise borrow it. A patched workflow passes the same specification admission as a submitted one, and the workflow's `manual:` policy decides whether this caller may start it.
 
 ## `flowstate_signal`
 

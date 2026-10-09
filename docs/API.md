@@ -15,7 +15,7 @@ build on today.
 | --- | --- |
 | Authoring (execute nothing) | `Validate`, `Compile`, `GetCatalog` |
 | Identity | `Whoami`, which answers with the caller's own principal and needs no `actions:` entry (`flow auth whoami`) |
-| Runs | `Run`, `Get`, `GetTimeline`, `GetCheckpoint`, `List`, `Signal`, `SignalWithStart`, `Cancel`, `Terminate` |
+| Runs | `Run`, `Get`, `GetTimeline`, `GetCheckpoint`, `ResumeRun`, `List`, `Signal`, `SignalWithStart`, `Cancel`, `Terminate` |
 | Schedules | `CreateSchedule`, `ListSchedules`, `DescribeSchedule`, `DeleteSchedule`, `PauseSchedule`, `ResumeSchedule`, `TriggerSchedule` |
 | Debugging a durable run | `DebugAttach`, `DebugGet`, `DebugResume`, `DebugSetBreakpoints`, `DebugInspect`, and `DebugHistory` to read a run at a past point — see [Debugging](DEBUGGING.md#debugging-a-durable-run) |
 

@@ -55,6 +55,9 @@ const (
 	// WorkflowServiceGetCheckpointProcedure is the fully-qualified name of the WorkflowService's
 	// GetCheckpoint RPC.
 	WorkflowServiceGetCheckpointProcedure = "/flowstate.v1.WorkflowService/GetCheckpoint"
+	// WorkflowServiceResumeRunProcedure is the fully-qualified name of the WorkflowService's ResumeRun
+	// RPC.
+	WorkflowServiceResumeRunProcedure = "/flowstate.v1.WorkflowService/ResumeRun"
 	// WorkflowServiceCancelProcedure is the fully-qualified name of the WorkflowService's Cancel RPC.
 	WorkflowServiceCancelProcedure = "/flowstate.v1.WorkflowService/Cancel"
 	// WorkflowServiceTerminateProcedure is the fully-qualified name of the WorkflowService's Terminate
@@ -249,6 +252,23 @@ type WorkflowServiceClient interface {
 	//
 	// `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
 	GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error)
+	// ResumeRun starts a new run from the checkpoint a run segment started from,
+	// optionally with a patched workflow, and links it to its origin.
+	//
+	// The new run is an ordinary run: its own workflow id, executed by an
+	// ordinary driver, with the origin recorded in its memo (origin run, step and
+	// the digest of the patch). It carries the origin's inputs, vars, outputs and
+	// pending signals exactly; a patch may replace only the steps after the
+	// position, see [Checkpoint]. Only a position [GetCheckpoint] reports
+	// available can be resumed.
+	//
+	// Authorized as starting work (`workload.run`), and additionally requires
+	// `workload.read` on the origin because the new run inherits its state. The
+	// caller must be the principal the origin run acts as: the carried identity
+	// is not changeable, so any other caller would otherwise borrow it. A patched
+	// workflow passes the same specification admission as a submitted one, and the
+	// workflow's `manual:` policy decides whether this caller may start it.
+	ResumeRun(context.Context, *connect.Request[v1.ResumeRunRequest]) (*connect.Response[v1.ResumeRunResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -465,6 +485,12 @@ func NewWorkflowServiceClient(httpClient connect.HTTPClient, baseURL string, opt
 			connect.WithSchema(workflowServiceMethods.ByName("GetCheckpoint")),
 			connect.WithClientOptions(opts...),
 		),
+		resumeRun: connect.NewClient[v1.ResumeRunRequest, v1.ResumeRunResponse](
+			httpClient,
+			baseURL+WorkflowServiceResumeRunProcedure,
+			connect.WithSchema(workflowServiceMethods.ByName("ResumeRun")),
+			connect.WithClientOptions(opts...),
+		),
 		cancel: connect.NewClient[v1.CancelRequest, v1.CancelResponse](
 			httpClient,
 			baseURL+WorkflowServiceCancelProcedure,
@@ -593,6 +619,7 @@ type workflowServiceClient struct {
 	list                *connect.Client[v1.ListRequest, v1.ListResponse]
 	getTimeline         *connect.Client[v1.GetTimelineRequest, v1.GetTimelineResponse]
 	getCheckpoint       *connect.Client[v1.GetCheckpointRequest, v1.GetCheckpointResponse]
+	resumeRun           *connect.Client[v1.ResumeRunRequest, v1.ResumeRunResponse]
 	cancel              *connect.Client[v1.CancelRequest, v1.CancelResponse]
 	terminate           *connect.Client[v1.TerminateRequest, v1.TerminateResponse]
 	debugAttach         *connect.Client[v1.DebugAttachRequest, v1.DebugAttachResponse]
@@ -657,6 +684,11 @@ func (c *workflowServiceClient) GetTimeline(ctx context.Context, req *connect.Re
 // GetCheckpoint calls flowstate.v1.WorkflowService.GetCheckpoint.
 func (c *workflowServiceClient) GetCheckpoint(ctx context.Context, req *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error) {
 	return c.getCheckpoint.CallUnary(ctx, req)
+}
+
+// ResumeRun calls flowstate.v1.WorkflowService.ResumeRun.
+func (c *workflowServiceClient) ResumeRun(ctx context.Context, req *connect.Request[v1.ResumeRunRequest]) (*connect.Response[v1.ResumeRunResponse], error) {
+	return c.resumeRun.CallUnary(ctx, req)
 }
 
 // Cancel calls flowstate.v1.WorkflowService.Cancel.
@@ -892,6 +924,23 @@ type WorkflowServiceHandler interface {
 	//
 	// `run_id` names the segment, as in [GetTimeline]; empty reads the latest.
 	GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error)
+	// ResumeRun starts a new run from the checkpoint a run segment started from,
+	// optionally with a patched workflow, and links it to its origin.
+	//
+	// The new run is an ordinary run: its own workflow id, executed by an
+	// ordinary driver, with the origin recorded in its memo (origin run, step and
+	// the digest of the patch). It carries the origin's inputs, vars, outputs and
+	// pending signals exactly; a patch may replace only the steps after the
+	// position, see [Checkpoint]. Only a position [GetCheckpoint] reports
+	// available can be resumed.
+	//
+	// Authorized as starting work (`workload.run`), and additionally requires
+	// `workload.read` on the origin because the new run inherits its state. The
+	// caller must be the principal the origin run acts as: the carried identity
+	// is not changeable, so any other caller would otherwise borrow it. A patched
+	// workflow passes the same specification admission as a submitted one, and the
+	// workflow's `manual:` policy decides whether this caller may start it.
+	ResumeRun(context.Context, *connect.Request[v1.ResumeRunRequest]) (*connect.Response[v1.ResumeRunResponse], error)
 	// Cancel asks a run to stop and lets it clean up on the way out.
 	//
 	// Prefer Cancel to [Terminate]: a cancelled run still releases what it holds,
@@ -1104,6 +1153,12 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 		connect.WithSchema(workflowServiceMethods.ByName("GetCheckpoint")),
 		connect.WithHandlerOptions(opts...),
 	)
+	workflowServiceResumeRunHandler := connect.NewUnaryHandler(
+		WorkflowServiceResumeRunProcedure,
+		svc.ResumeRun,
+		connect.WithSchema(workflowServiceMethods.ByName("ResumeRun")),
+		connect.WithHandlerOptions(opts...),
+	)
 	workflowServiceCancelHandler := connect.NewUnaryHandler(
 		WorkflowServiceCancelProcedure,
 		svc.Cancel,
@@ -1238,6 +1293,8 @@ func NewWorkflowServiceHandler(svc WorkflowServiceHandler, opts ...connect.Handl
 			workflowServiceGetTimelineHandler.ServeHTTP(w, r)
 		case WorkflowServiceGetCheckpointProcedure:
 			workflowServiceGetCheckpointHandler.ServeHTTP(w, r)
+		case WorkflowServiceResumeRunProcedure:
+			workflowServiceResumeRunHandler.ServeHTTP(w, r)
 		case WorkflowServiceCancelProcedure:
 			workflowServiceCancelHandler.ServeHTTP(w, r)
 		case WorkflowServiceTerminateProcedure:
@@ -1319,6 +1376,10 @@ func (UnimplementedWorkflowServiceHandler) GetTimeline(context.Context, *connect
 
 func (UnimplementedWorkflowServiceHandler) GetCheckpoint(context.Context, *connect.Request[v1.GetCheckpointRequest]) (*connect.Response[v1.GetCheckpointResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.GetCheckpoint is not implemented"))
+}
+
+func (UnimplementedWorkflowServiceHandler) ResumeRun(context.Context, *connect.Request[v1.ResumeRunRequest]) (*connect.Response[v1.ResumeRunResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("flowstate.v1.WorkflowService.ResumeRun is not implemented"))
 }
 
 func (UnimplementedWorkflowServiceHandler) Cancel(context.Context, *connect.Request[v1.CancelRequest]) (*connect.Response[v1.CancelResponse], error) {

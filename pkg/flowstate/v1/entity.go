@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 )
@@ -143,4 +144,10 @@ func EntityWorkflowID(namespace, entityKey string) (string, error) {
 	}
 
 	return id, nil
+}
+
+// IsEntityWorkflowID reports whether id addresses a run by an entity key, as
+// [EntityWorkflowID] builds it.
+func IsEntityWorkflowID(id string) bool {
+	return strings.HasPrefix(id, entityWorkflowIDPrefix)
 }
