@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -141,6 +142,13 @@ func (d *recordDiff) field(at string, was, now *v1.InputDeclaration, depth int) 
 			d.add(at, "weakened its type from %s to %s", v1.TypeString(oldType), v1.TypeString(newType))
 		case was.GetMust() != "" && was.GetMust() != now.GetMust():
 			d.add(at, "its `must:` was removed or changed")
+		default:
+			// A caller switching on the field has not seen a member added.
+			if _, isEnum := oldType.GetKind().(*v1.Type_Enum); isEnum {
+				if added := removedValues(now.GetValues(), was.GetValues()); len(added) > 0 {
+					d.add(at, "widened its declared values (added: %s)", strings.Join(added, ", "))
+				}
+			}
 		}
 	} else {
 		switch {

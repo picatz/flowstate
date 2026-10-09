@@ -748,3 +748,32 @@ func TestBreakingThroughRecordsFindsTheRecordInsideAList(t *testing.T) {
 	require.Contains(t, ds[0].Message, "record Line")
 	require.Contains(t, ds[0].Message, "now must be supplied")
 }
+
+// TestBreakingThroughRecordEnumMembers: a member added to an enum field widens
+// what an output can answer with, which a caller switching on it has not seen,
+// and only narrows an input when one is removed.
+func TestBreakingThroughRecordEnumMembers(t *testing.T) {
+	with := func(values string) string {
+		return recordFile("      id: {type: string, required: true}\n      kind: {type: enum, values: [" + values + "]}\n")
+	}
+	messages := func(oldValues, newValues string) (in, out string) {
+		for _, d := range diffFixtures(t, with(oldValues), with(newValues)) {
+			switch d.Field {
+			case "inputs.order":
+				in = d.Message
+			case "outputs.receipt":
+				out = d.Message
+			}
+		}
+
+		return in, out
+	}
+
+	in, out := messages("a", "a, b")
+	require.Empty(t, in, "a member added to an input only admits more")
+	require.Contains(t, out, "widened its declared values (added: b)")
+
+	in, out = messages("a, b", "a")
+	require.Contains(t, in, "values removed: b")
+	require.Empty(t, out, "a member removed from an output only promises less variety")
+}
