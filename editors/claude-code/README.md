@@ -224,7 +224,28 @@ expectation and its reason (`✗ failed wrong output (w.test.yaml:18): ...`, and
   exit status and output off as the tests', so it reads `? unknown · chained command;
   run flow test on its own`. Names and
   reasons are cleaned and bounded like every CLI-derived text. The mod starts no
-  process for the band.
+  process for the band itself.
+- Each failing case has a **Rerun** button. The first press only asks ("Rerun the
+  case ... of w.test.yaml locally? Nothing runs until you confirm."); Confirm runs
+  `flow test -o json --run=^<name>$ -- <file>` once, as an argv with no shell.
+  `--run` is a regular expression matched anywhere in the case name, so the name is
+  quoted and anchored to select that case alone; it is one `--run=` element, so a
+  name starting with `-` is a value, never a flag. The case is rerun only if its name
+  and file reached the band exactly as the CLI sent them (nothing cleaned or cut:
+  names up to 60 and files up to 80 characters) and the file is a plain
+  `*.test.yaml` path with no parent segment; otherwise there is no button. The
+  file is the one the band recorded, read again at Confirm. The result replaces the
+  suite's verdict stays: the headline, counts and other failures are kept, and the
+  rerun is one labelled line (`rerun of <name> with default flags (the run's own
+  flags are not carried): ✓ passed`); a failed rerun also refreshes that case's
+  detail. It is passed or failed only when its JSON was read: a timeout (60 s), a
+  failure to start, empty, text or unreadable output reads `? unknown`, whatever
+  the exit status. A rerun whose band moved meanwhile (edit, Hide, a new `flow
+  test`) writes nothing, and any band change drops an open question. No button
+  when the file repeats the case's name (`--run` would select both), when the
+  scan was cut, or unless the file ends `.test.yaml`/`.test.yml` (not
+  `testdefaults.yaml` or `x.test.yaml.bak`). There is no Open
+  button for `file:line`: the mod API offers no way to open a file in an editor.
 - Editing a Flowfile or a `*.test.yaml` through Edit, Write or MultiEdit clears
   it (an edit made by a shell command is not seen), and so does the Hide button.
   State: `$.state` `flowstate.testBand`.

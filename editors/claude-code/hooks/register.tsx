@@ -13,7 +13,7 @@ import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
-import { bandFor, bandText, headOf, summaryOf, unknownBand } from './testband'
+import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, applyRerun, rerunLine, rerunQuestion, summaryOf, unknownBand } from './testband'
 import type { Band } from './testband'
 import { NO_SEEN, seenFrom, statusText } from './statusline'
 import type { Seen } from './statusline'
@@ -31,6 +31,9 @@ const selected = atom({ plugin: 'flowstate', key: 'selected' } as const, '')
 const summary = atom({ plugin: 'flowstate', key: 'summary' } as const, { name: '', status: '', startTime: '', closeTime: '' })
 const filter = atom({ plugin: 'flowstate', key: 'filter' } as const, '')
 const testBand = atom({ plugin: 'flowstate', key: 'testBand' } as const, null as Band | null)
+/** The Rerun press that awaits its Confirm: the case's file and name as the band showed them. Empty file for none. */
+const NO_RERUN = { file: '', name: '' }
+const rerunConfirm = atom({ plugin: 'flowstate', key: 'rerunConfirm' } as const, NO_RERUN)
 const verify = atom({ plugin: 'flowstate', key: 'verify' } as const, EMPTY)
 /** The Send press that awaits its Confirm: which run, which signal, and the server it was aimed at. Empty id for none. */
 const NO_CONFIRM = { id: '', signal: '', address: '' }
@@ -52,6 +55,14 @@ const outputsRaw = atom({ plugin: 'flowstate', key: 'outputsRaw' } as const, fal
 const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
+/** Bumped by every write of the band, so a slow rerun can tell the band moved while it ran. */
+const bandWrites = { n: 0 }
+/** Every band write goes through here: it moves the count and takes any open Rerun question away. */
+const setBand = async ($: Engine, value: Band | null): Promise<void> => {
+  bandWrites.n++
+  await update($, testBand, () => value)
+  await update($, rerunConfirm, () => NO_RERUN)
+}
 
 const validate = async (
   $: Engine,
@@ -232,6 +243,8 @@ export const register: Register = (on, options) => {
   let sending = false
   /** One local run at a time, the same way. */
   let running = false
+  /** One rerun at a time, the same way. */
+  let rerunning = false
   /** Schemas by file and modification time, so typing in a control does not recompile the file on every key. */
   const schemas = new Map<string, InputsParsed>()
   /** The same for the declared outputs, read once after a confirmed run succeeds. */
@@ -299,7 +312,7 @@ export const register: Register = (on, options) => {
       const ran = await next(e)
       if (ran.deny === undefined && ran.isError !== true) {
         // A result for the old files must not stand as current.
-        if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await update($, testBand, () => null).catch(() => undefined)
+        if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await setBand($, null).catch(() => undefined)
         if (nudges) {
           await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
           await refreshStatus($, nudges, heard)
@@ -323,7 +336,7 @@ export const register: Register = (on, options) => {
       const verdict = isLoneTest((e as { command?: unknown }).command, flow)
         ? bandFor({ stdout, ok: passed, unfinished, partial: result?.persistedOutputPath !== undefined })
         : unknownBand('chained command; run flow test on its own')
-      await update($, testBand, () => verdict).catch(() => undefined)
+      await setBand($, verdict).catch(() => undefined)
     }
     if (!nudges) return ran
     await update($, verify, s => recordCheck(s, check, passed)).catch(() => undefined)
@@ -360,8 +373,8 @@ export const register: Register = (on, options) => {
     if (band === null || e.props.hasSurvey) return next(e)
     const { Box, Button, Text } = $.ui.resolve(e)
     const head = headOf(band)
-    const rest = bandText(band).slice(1)
     const sum = summaryOf(band)
+    const asking = await read($, rerunConfirm).catch(() => NO_RERUN)
     return (
       <Box flexDirection="column">
         <Box>
@@ -369,11 +382,81 @@ export const register: Register = (on, options) => {
             test <Text color={COLOR[head.tone]}>{head.symbol} {head.word}</Text>
             {sum === '' ? '' : ` · ${sum}`}{' '}
           </Text>
-          <Button key="hide" label="Hide" onPress={() => update($, testBand, () => null)} />
+          <Button key="hide" label="Hide" onPress={() => setBand($, null)} />
         </Box>
-        {rest.map((line, i) => (
-          <Text key={i} dimColor={!line.includes('✗')}>{line}</Text>
-        ))}
+        {band.failing.map((f, i) => {
+          const argv = rerunArgv(flow, f)
+          const asked = argv !== undefined && asking.file === f.file && asking.name === f.name
+          return (
+            <Box key={`case:${i}`} flexDirection="column">
+              <Text>{`  ${failingLine(f)}`}</Text>
+              {argv !== undefined && !asked && (
+                <Button
+                  key={`rerun:${i}`}
+                  label={`Rerun ${f.name}`}
+                  plain
+                  onPress={async () => {
+                    // The first press only asks: nothing runs until Confirm.
+                    await update($, rerunConfirm, () => ({ file: f.file, name: f.name }))
+                  }}
+                >
+                  Rerun
+                </Button>
+              )}
+              {asked && (
+                <Box flexDirection="column">
+                  <Text color={COLOR.wait}>      {rerunQuestion(f)}</Text>
+                  <Text dimColor>      A rerun is stopped after {RERUN_TIMEOUT_MS / 1000} seconds and then reported as outcome unknown.</Text>
+                  <Box>
+                    <Button
+                      key={`confirm-rerun:${i}`}
+                      label="Confirm: rerun"
+                      plain
+                      onPress={async () => {
+                        if (rerunning) return
+                        rerunning = true
+                        try {
+                          const c = await read($, rerunConfirm)
+                          // This button was drawn for one question: if it has moved on, it acts on nothing.
+                          if (c.file === '' || c.file !== f.file || c.name !== f.name) return
+                          await update($, rerunConfirm, () => NO_RERUN)
+                          // The argv is built again from the band as it stands, never from the question.
+                          const now = await read($, testBand)
+                          const again = now?.failing.find(x => x.file === c.file && x.name === c.name)
+                          const run = again === undefined ? undefined : rerunArgv(flow, again)
+                          if (run === undefined) return
+                          const started = bandWrites.n
+                          let ran: Awaited<ReturnType<typeof $.process.run>> | undefined
+                          let failure: unknown
+                          try {
+                            ran = await $.process.run(run, { timeoutMs: RERUN_TIMEOUT_MS })
+                          } catch (err) {
+                            failure = err
+                          }
+                          // The band may have been cleared, hidden or replaced while this ran: then this result is for nothing.
+                          if (bandWrites.n !== started) return
+                          const current = await read($, testBand)
+                          // A write that landed during the read above makes `current` a newer band: leave it alone.
+                          if (current === null || bandWrites.n !== started) return
+                          await setBand($, applyRerun(current, again!, ran, failure))
+                        } finally {
+                          rerunning = false
+                        }
+                      }}
+                    >
+                      Confirm: rerun
+                    </Button>
+                    <Button key={`cancel-rerun:${i}`} label="Cancel" plain onPress={() => update($, rerunConfirm, () => NO_RERUN)}>
+                      Cancel
+                    </Button>
+                  </Box>
+                </Box>
+              )}
+            </Box>
+          )
+        })}
+        {band.more > 0 && <Text dimColor>{`  and ${band.more} more`}</Text>}
+        {rerunLine(band).map(l => <Text key="rerun" dimColor>{l}</Text>)}
       </Box>
     )
   })
