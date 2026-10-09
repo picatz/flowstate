@@ -958,9 +958,10 @@ type CredentialDeclaration struct {
 	// Description says what the credential is for, shown wherever the plugin is
 	// listed.
 	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	// Federated says a `${credential('target')}` reference may stand in for a
-	// stored secret here, resolved to a bearer token by the deployment's
-	// federation broker. False, the default, is a stored secret only.
+	// Federated records that a `${credential('target')}` reference is intended to
+	// be able to stand in for a stored secret here. It is declaration metadata
+	// only until the binding slice enforces it; nothing refuses or permits a
+	// reference on its strength yet.
 	Federated     bool `protobuf:"varint,3,opt,name=federated,proto3" json:"federated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -437,9 +437,10 @@ message CredentialDeclaration {
   // listed.
   string description = 2 [(buf.validate.field).string = {max_len: 256}];
 
-  // Federated says a `${credential('target')}` reference may stand in for a
-  // stored secret here, resolved to a bearer token by the deployment's
-  // federation broker. False, the default, is a stored secret only.
+  // Federated records that a `${credential('target')}` reference is intended to
+  // be able to stand in for a stored secret here. It is declaration metadata
+  // only until the binding slice enforces it; nothing refuses or permits a
+  // reference on its strength yet.
   bool federated = 3;
 }
 

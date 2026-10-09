@@ -466,7 +466,7 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 			// to resolve.
 			SecretSchemes:    p.Schemes(),
 			Tasks:            tasks,
-			Credentials:      manifest.GetCredentials(),
+			Credentials:      cloneCredentials(manifest.GetCredentials()),
 			ProtocolVersion:  uint32(p.ProtocolVersion()),
 			TaskSchemaDigest: flowstatev1.ContentDigest(schemaBytes),
 			ClaimsDigest:     flowstatev1.ContentDigest(claimsBytes),
@@ -547,4 +547,15 @@ func (h *Host) CheckHealth(ctx context.Context) map[string]Health {
 	wg.Wait()
 
 	return results
+}
+
+// cloneCredentials copies declarations out of the shared manifest, so a caller
+// mutating the catalog it was handed cannot change what later digests hash.
+func cloneCredentials(in []*flowstatev1.CredentialDeclaration) []*flowstatev1.CredentialDeclaration {
+	out := make([]*flowstatev1.CredentialDeclaration, len(in))
+	for i, c := range in {
+		out[i] = proto.Clone(c).(*flowstatev1.CredentialDeclaration)
+	}
+
+	return out
 }

@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"regexp"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
 
@@ -15,7 +16,7 @@ import (
 // [Validate] but a descriptor built in process is not.
 const MaxPluginCredentials = 8
 
-// maxCredentialDescription matches the max_len rule on
+// maxCredentialDescription, in characters (protovalidate counts code points), matches the max_len rule on
 // [CredentialDeclaration].description.
 const maxCredentialDescription = 256
 
@@ -72,8 +73,8 @@ func CheckPluginCredentials(declarations []*CredentialDeclaration, tasks []proto
 		if !ValidCredentialName(name) {
 			return fmt.Errorf("credential %q is not a name matching %s", textbound.Truncate(name, 64), credentialName)
 		}
-		if len(d.GetDescription()) > maxCredentialDescription {
-			return fmt.Errorf("credential %q has a description of %d bytes, more than %d", name, len(d.GetDescription()), maxCredentialDescription)
+		if utf8.RuneCountInString(d.GetDescription()) > maxCredentialDescription {
+			return fmt.Errorf("credential %q has a description of %d characters, more than %d", name, utf8.RuneCountInString(d.GetDescription()), maxCredentialDescription)
 		}
 		if _, dup := used[name]; dup {
 			return fmt.Errorf("credential %q is declared twice", name)

@@ -246,3 +246,26 @@ func TestACatalogMustAgreeAboutCredentials(t *testing.T) {
 	_, err = TaskDefsFromCatalog(catalog(described(map[string]string{"token": "elsewhere"}), "bot_token"), Config{})
 	require.ErrorContains(t, err, "credential_inputs does not match")
 }
+
+// TestACatalogDoesNotAliasTheManifestsCredentials: the declarations the claims
+// digest hashes live in the shared manifest, so what a catalog hands out must be
+// a copy a caller can mutate without changing the next digest.
+func TestACatalogDoesNotAliasTheManifestsCredentials(t *testing.T) {
+	t.Parallel()
+
+	manifest := &pluginv1.PluginManifest{Credentials: credentialDeclarations("bot_token")}
+	digest := func() string {
+		raw, err := proto.MarshalOptions{Deterministic: true}.Marshal(&flowstatev1.PluginDescription{Credentials: manifest.GetCredentials()})
+		require.NoError(t, err)
+
+		return flowstatev1.ContentDigest(raw)
+	}
+	before := digest()
+
+	handed := cloneCredentials(manifest.GetCredentials())
+	require.True(t, proto.Equal(manifest.GetCredentials()[0], handed[0]))
+	handed[0].Federated = true
+	handed[0].Name = "changed"
+
+	assert.Equal(t, before, digest(), "mutating the handed-out declarations changed the manifest's")
+}

@@ -463,9 +463,10 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.CredentialDeclaration.federated",
-			Leading: " Federated says a `${credential('target')}` reference may stand in for a\n" +
-				" stored secret here, resolved to a bearer token by the deployment's\n" +
-				" federation broker. False, the default, is a stored secret only.\n",
+			Leading: " Federated records that a `${credential('target')}` reference is intended to\n" +
+				" be able to stand in for a stored secret here. It is declaration metadata\n" +
+				" only until the binding slice enforces it; nothing refuses or permits a\n" +
+				" reference on its strength yet.\n",
 		},
 		{
 			Name:    "flowstate.v1.PluginDescription",

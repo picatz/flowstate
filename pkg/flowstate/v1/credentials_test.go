@@ -288,3 +288,15 @@ func TestCurrentClaimsSchemaVersionCoversTheCredentialClaim(t *testing.T) {
 	// first that enforces it, so a catalog from a version 3 build is refused.
 	assert.GreaterOrEqual(t, v1.CurrentClaimsSchemaVersion, uint32(4))
 }
+
+func TestCredentialDescriptionLengthCountsCharactersNotBytes(t *testing.T) {
+	t.Parallel()
+
+	// 256 two-byte runes are 512 bytes and within the rule; 257 are not.
+	ok := &v1.CredentialDeclaration{Name: "bot_token", Description: strings.Repeat("é", 256)}
+	require.NoError(t, v1.CheckPluginCredentials([]*v1.CredentialDeclaration{ok}, []protoreflect.MessageDescriptor{
+		credMessage(t, "Runes", credToken(&v1.InputOptions{Credential: "bot_token"}))}))
+
+	long := &v1.CredentialDeclaration{Name: "bot_token", Description: strings.Repeat("é", 257)}
+	require.ErrorContains(t, v1.CheckPluginCredentials([]*v1.CredentialDeclaration{long}, nil), "description")
+}
