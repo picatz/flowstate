@@ -649,3 +649,102 @@ func TestBreakingContainerOutputWeakened(t *testing.T) {
 
 	require.Empty(t, diffFixtures(t, out("list(dyn)"), out("list(string)")))
 }
+
+// recordFile is a workflow whose input and output are both the record Order, so
+// one edit to Order is read in both directions.
+func recordFile(fields string) string {
+	return fixtureHeader() + "types:\n  Order:\n    fields:\n" + fields +
+		"inputs:\n  order:\n    type: Order\n    required: true\n" +
+		"steps:\n  - id: noop\n    log:\n      message: done\n" +
+		"outputs:\n  receipt:\n    type: Order\n    value: ${inputs.order}\n"
+}
+
+const orderFields = "      id: {type: string, required: true}\n      note: {type: string}\n"
+
+// TestBreakingThroughRecordFields: two files that both say `Order` have not
+// agreed on what `Order` is. Each edit below changes what the record accepts or
+// promises, and the rows say which direction reports it.
+func TestBreakingThroughRecordFields(t *testing.T) {
+	base := recordFile(orderFields)
+
+	for name, tc := range map[string]struct {
+		fields string
+		input  string // substring of the input's break, "" for silent
+		output string // substring of the output's break, "" for silent
+	}{
+		"a new required field": {
+			fields: orderFields + "      total: {type: int, required: true}\n",
+			input:  `field "total" is new and must be supplied`,
+		},
+		"a new optional field": {
+			fields: orderFields + "      total: {type: int}\n",
+		},
+		"an optional field made required": {
+			fields: "      id: {type: string, required: true}\n      note: {type: string, required: true}\n",
+			input:  "now must be supplied",
+		},
+		"a required field made optional": {
+			fields: "      id: {type: string}\n      note: {type: string}\n",
+			output: "is no longer required",
+		},
+		"a field removed": {
+			fields: "      id: {type: string, required: true}\n",
+			input:  `field "note" was removed, so a caller still sending it is refused`,
+			output: `field "note" was removed`,
+		},
+		"a field's type narrowed": {
+			fields: "      id: {type: string, required: true}\n      note: {type: enum, values: [a]}\n",
+			input:  "narrowed its type",
+		},
+		"an unchanged record": {
+			fields: orderFields,
+		},
+		"a field's bound tightened": {
+			fields: "      id: {type: string, required: true, min_len: 3}\n      note: {type: string}\n",
+			input:  "narrowed its constraint (min_len raised)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ds := diffFixtures(t, base, recordFile(tc.fields))
+
+			var in, out string
+			for _, d := range ds {
+				switch d.Field {
+				case "inputs.order":
+					in = d.Message
+				case "outputs.receipt":
+					out = d.Message
+				}
+			}
+
+			if tc.input == "" {
+				require.Empty(t, in)
+			} else {
+				require.Contains(t, in, tc.input)
+				require.Contains(t, in, "record Order")
+			}
+			if tc.output == "" {
+				require.Empty(t, out)
+			} else {
+				require.Contains(t, out, tc.output)
+			}
+		})
+	}
+}
+
+// TestBreakingThroughRecordsFindsTheRecordInsideAList follows a field typed
+// `list(Line)` to the record it holds, and names the path to the field.
+func TestBreakingThroughRecordsFindsTheRecordInsideAList(t *testing.T) {
+	file := func(line string) string {
+		return fixtureHeader() + "types:\n  Line:\n    fields:\n" + line +
+			"  Order:\n    fields:\n      lines: {type: \"list(Line)\"}\n" +
+			"inputs:\n  order:\n    type: Order\n" + fixtureStep
+	}
+
+	ds := diffFixtures(t,
+		file("      sku: {type: string}\n"),
+		file("      sku: {type: string, required: true}\n"))
+	require.Len(t, ds, 1)
+	require.Contains(t, ds[0].Message, "record Line")
+	require.Contains(t, ds[0].Message, "now must be supplied")
+}
