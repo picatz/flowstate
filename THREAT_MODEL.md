@@ -46,6 +46,8 @@ The boundaries, in the order an attacker meets them:
 - **Editor and agent tooling to workspace.** `flow lsp`, `flow validate`, `flow fix`
   and `flow mcp` run on an author's machine against files an author may not have
   written.
+- **Agent host to checkout.** The plugins and hooks an agent host runs for this
+  repository are trusted as much as the checkout itself, and no more.
 
 ## 2. Assets
 
@@ -735,6 +737,39 @@ takes scope from where the engine evaluates a thing.
 **Limits.** Opening a repository runs the language server against files the author
 did not write. The bound is that nothing is executed and nothing is fetched, not
 that the content is trusted.
+
+### Agent host to checkout
+
+**Today.** An agent host that reads this repository's `.claude/settings.json` enables
+two plugins by name from the `anthropics/claude-plugins-official` marketplace, and runs
+four hooks (`genguard`, `gofmtcheck`, `pidguard`, `mergeguard`) that SessionStart builds
+from this tree into the checkout-local, ignored `.claude/hooks/.bin` directory and a
+launcher then invokes by path ([docs/agents/README.md](docs/agents/README.md#claude-code)).
+
+**Accepted risk.** Two scanner findings about this boundary are recorded here as
+accepted, not open, so a later scan can be compared against them (#2043):
+
+1. *Enabled plugins execute upstream code that is not pinned to a revision.* What runs
+   is what the marketplace publishes when the session starts.
+2. *Hook binaries are not verified against a digest.* The binary at the launcher's path
+   is trusted to be the one the build produced. The launcher rebuilds a binary whose
+   source identity is stale, which keeps it current with the tree; it does not
+   authenticate it.
+
+**Why no mechanism.** An agent host that can run plugins and hooks at all can already
+read and write the checkout, so neither finding grants an attacker anything this
+boundary does not already grant. That holds for the host and its users; it does not hold
+for the plugin publisher. If the marketplace or a publisher were compromised, an unpinned
+update would put newly published code in front of a checkout with no repository change,
+and a revision pin would block that path until a maintainer chose to move it. The pin is
+declined because of what it costs, not because it adds nothing: it freezes the plugin's
+own security fixes behind a manual bump, and trusts whoever wrote the pin. A hook digest
+is written by the same build, into the same tree, as the binary it vouches for, so it
+authenticates nothing and would read to a maintainer as an assurance it does not provide.
+
+**Limits.** This is the position for the agent host's checkout, not for the engine: a
+Flowfile or a plugin a *workflow* names is governed by the boundaries above. If a pin or
+a digest is proposed, the proposal should say what it is trusted against.
 
 ## 5. Prompt injection through agent surfaces
 

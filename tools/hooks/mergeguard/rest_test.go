@@ -27,7 +27,6 @@ func ccrThreadsServer(t *testing.T, status int, body string) *httptest.Server {
 		w.WriteHeader(status)
 		w.Write([]byte(body))
 	}))
-	server.Client()
 	return server
 }
 
