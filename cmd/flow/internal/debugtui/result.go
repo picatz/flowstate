@@ -41,12 +41,12 @@ func (m *Model) inspected(line string, result *flowdebug.DriveResult) {
 		case offset > 0 && held && m.screen.Result != nil:
 			// The next page of the inspection already shown. A page that does not
 			// start where the held ones end is dropped by the tree.
-			m.screen.Tree.Fill(root, offset, childNodes(answer, root), int(answer.GetTotal()))
+			m.screen.Tree.Fill(root, offset, childNodes(m.screen.Frame, answer, root), int(answer.GetTotal()))
 			m.keepResult(root)
 			m.screen.Tree.Select(root)
 			m.revealSelection()
 		case offset == 0:
-			m.setResult(expr, answer.GetValue(), childNodes(answer, root), int(answer.GetTotal()))
+			m.setResult(expr, answer.GetValue(), childNodes(m.screen.Frame, answer, root), int(answer.GetTotal()))
 		}
 	}
 }
@@ -55,10 +55,15 @@ func (m *Model) inspected(line string, result *flowdebug.DriveResult) {
 // has so far.
 func (m *Model) setResult(expr string, value *v1.DebugValue, children []pane.Node, total int) {
 	text := fmt.Sprintf("{%d}", total)
+	// An answer that listed children and named no value is still an expression
+	// that was asked for and answered, so it is badged as one.
+	answered := &v1.DebugValue{}
 	if value != nil {
-		text = valueText(value)
+		text, answered = valueText(value), value
 	}
-	root := pane.Node{ID: resultPrefix + expr, Label: expr, Value: text, Children: children, Total: total}
+	root := pane.Node{
+		ID: resultPrefix + expr, Label: expr, Value: text, Badge: badgeOf(m.screen.Frame, answered, true), Children: children, Total: total,
+	}
 	group := pane.Node{ID: groupResult, Label: "result", Value: "{1}", Children: []pane.Node{root}}
 	m.screen.Result = &group
 
@@ -84,7 +89,7 @@ func (m *Model) keepResult(parent string) {
 
 // fill adds the page an `expand` answered to the row it was started from.
 func (m *Model) fill(req pane.Request, answer *v1.DebugInspectResponse) {
-	m.screen.Tree.Fill(req.Parent, req.Offset, childNodes(answer, req.Parent), int(answer.GetTotal()))
+	m.screen.Tree.Fill(req.Parent, req.Offset, childNodes(m.screen.Frame, answer, req.Parent), int(answer.GetTotal()))
 	m.keepResult(req.Parent)
 	m.revealSelection()
 }

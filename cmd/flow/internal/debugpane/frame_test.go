@@ -234,3 +234,57 @@ func TestAPaneDrawsNoControlSequenceAStepIdCarried(t *testing.T) {
 	assert.NotContains(t, text, "\x07")
 	assert.Contains(t, text, "build")
 }
+
+// recordedScope is a recorded run held at one point whose scope has a value and a
+// name that could not be read.
+func recordedScope(_ context.Context, event int64, inspections ...*v1.DebugHistoryInspection) (*v1.DebugHistoryResponse, error) {
+	answer := &v1.DebugHistoryResponse{
+		EventId: 3, Boundaries: []int64{3}, Fidelity: v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED,
+		Snapshot: &v1.DebugSnapshot{
+			Revision: 3, State: v1.DebugRunState_DEBUG_RUN_STATE_HELD, Session: &v1.DebugSession{SessionId: "recorded"},
+		},
+	}
+	for _, asked := range inspections {
+		result := &v1.DebugInspectResponse{}
+		switch asked.GetExpression() {
+		case "":
+			result.Total = 1
+			result.Children = []*v1.DebugVariable{{Name: "steps", Value: &v1.DebugValue{Type: "scope", Children: 2, Expression: "@scope:steps"}}}
+		default:
+			result.Total = 2
+			result.Children = []*v1.DebugVariable{
+				{Name: "build", Value: &v1.DebugValue{Type: "int", Rendered: "7", Expression: "steps.build"}},
+				{Name: "lost", Value: &v1.DebugValue{Type: "error", Rendered: "no such key", Expression: "steps.lost"}},
+			}
+		}
+		answer.Inspected = append(answer.Inspected, &v1.DebugHistoryInspected{Result: result})
+	}
+
+	return answer, nil
+}
+
+// TestAPaneDrawsHowARecordedValueIsKnown: at a recorded point every scope row
+// carries its mark as words, so the pane reads the same without colour, and a
+// live stop's rows carry none.
+func TestAPaneDrawsHowARecordedValueIsKnown(t *testing.T) {
+	t.Parallel()
+
+	history, err := flowdebug.OpenHistorical(t.Context(), recordedScope)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = history.Close() })
+
+	frame, text := fromTarget(t, history, flowdebug.FrameOptions{})
+	require.Len(t, frame.Bindings, 2)
+	assert.Equal(t, []string{"rec", "n/a"}, []string{frame.Bindings[0].Badge, frame.Bindings[1].Badge})
+	assert.Contains(t, text, "[rec] 7")
+	assert.Contains(t, text, "[n/a] (no such key)")
+
+	// The other direction: a live stop is not a reconstruction, and says nothing of one.
+	session := heldAt(t, map[string]*v1.Value{"region": v1.NewLiteral("eu-west-1")}, "deploy", nil)
+	live, text := fromTarget(t, session, flowdebug.FrameOptions{})
+	for _, binding := range live.Bindings {
+		assert.Empty(t, binding.Badge)
+	}
+	assert.NotContains(t, text, "[rec]")
+	assert.NotContains(t, text, "[n/a]")
+}

@@ -57,7 +57,13 @@ type Config struct {
 	Documents []Document
 
 	// Verbs is what the front answers; empty means [flowdebug.DriverVerbs].
+	// [flowdebug.VerbsFor] narrows it to what a target can do, so a recorded run
+	// has no key for a verb it can only refuse.
 	Verbs []flowdebug.Verb
+
+	// Record says the target is a recorded run walked point by point (#2248):
+	// nothing is held or released by leaving it, and the exit keys say so.
+	Record bool
 
 	Style Style
 
@@ -186,7 +192,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 	if len(cfg.Verbs) == 0 {
 		cfg.Verbs = flowdebug.DriverVerbs()
 	}
-	keys, err := NewKeymap(cfg.Verbs)
+	keys, err := newKeymap(cfg.Verbs, cfg.Record)
 	if err != nil {
 		return Model{}, err
 	}
@@ -657,7 +663,7 @@ func (m Model) pageCmd(req pane.Request) tea.Cmd {
 	if group, ok := strings.CutPrefix(req.Parent, "g:"); ok {
 		expression = "@scope:" + group
 	}
-	target, ctx, revision := m.cfg.Target, m.ctx, m.frameRev
+	target, ctx, revision, frame := m.cfg.Target, m.ctx, m.frameRev, m.screen.Frame
 
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(ctx, readTimeout)
@@ -671,7 +677,7 @@ func (m Model) pageCmd(req pane.Request) tea.Cmd {
 		if reason := answer.GetError(); reason != "" {
 			return pageMsg{rev: revision, req: req, err: errors.New(reason)}
 		}
-		nodes := childNodes(answer, req.Parent)
+		nodes := childNodes(frame, answer, req.Parent)
 
 		return pageMsg{rev: revision, req: req, nodes: nodes, total: int(answer.GetTotal())}
 	}

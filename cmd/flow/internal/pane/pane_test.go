@@ -378,3 +378,50 @@ func TestATreePaintsItsValuesOnlyWhenAskedTo(t *testing.T) {
 	assert.Contains(t, painted, "<true>")
 	assert.Equal(t, plain, strings.NewReplacer("<", "", ">", "").Replace(painted))
 }
+
+// TestATreeDrawsABadgeBesideItsValue: the badge sits between the label and the
+// value in a column as wide as the widest one in view, a row without one keeps
+// its value in line with the others, the painter styles only the badge, and a
+// tree with no badges draws the bytes it always did.
+func TestATreeDrawsABadgeBesideItsValue(t *testing.T) {
+	t.Parallel()
+
+	plain := options(50, 5, colorprofile.NoTTY, true)
+	nodes := func(badges ...string) []pane.Node {
+		return []pane.Node{
+			{ID: "a", Label: "alpha", Value: "1", Badge: badges[0]},
+			{ID: "b", Label: "beta", Value: "2", Badge: badges[1]},
+			{ID: "c", Label: "gamma", Value: "3"},
+		}
+	}
+
+	view := pane.NewTree(nodes("[rec]", "[hyp]")).View(plain, "")
+	rows := strings.Split(view, "\n")
+	require.Len(t, rows, 3)
+	assert.Contains(t, rows[0], "alpha  [rec] 1")
+	assert.Contains(t, rows[1], "beta   [hyp] 2")
+	assert.Contains(t, rows[2], "gamma        3", "a row with no badge keeps its value in the column")
+	column := func(row, cell string) int { return lipgloss.Width(row[:strings.Index(row, cell)]) }
+	assert.Equal(t, column(rows[0], "1"), column(rows[2], "3"))
+
+	// Without any badge the row is the one drawn before the column existed.
+	bare := pane.NewTree(nodes("", "")).View(plain, "")
+	assert.NotContains(t, bare, "[")
+	assert.Contains(t, bare, "alpha  1")
+
+	painted := plain
+	painted.PaintBadge = func(b string) string { return "<" + b + ">" }
+	out := pane.NewTree(nodes("[rec]", "[n/a]")).View(painted, "")
+	assert.Contains(t, out, "<[rec]> 1")
+	assert.Contains(t, out, "<[n/a]> 2")
+	assert.NotContains(t, out, "<3>", "a row with no badge was handed to the painter")
+
+	// A badge is text like any other: a control character is shown, not sent,
+	// and the row never outgrows the pane.
+	hostile := pane.NewTree([]pane.Node{{ID: "x", Label: "x", Value: "v", Badge: "\x1b[31mred"}})
+	view = hostile.View(options(12, 2, colorprofile.NoTTY, true), "")
+	assert.NotContains(t, view, "\x1b")
+	for line := range strings.SplitSeq(view, "\n") {
+		assert.LessOrEqual(t, lipgloss.Width(line), 12)
+	}
+}
