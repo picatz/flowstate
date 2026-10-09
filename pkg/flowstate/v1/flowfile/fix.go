@@ -446,6 +446,11 @@ type fixer struct {
 	// movedVars are the retired steps whose values are on their way into `vars:`.
 	movedVars []movedVar
 
+	// credentialSites are the step inputs that claim a plugin credential and hold a
+	// whole reference, collected by the step walk and consolidated into a
+	// `plugins:` binding once the document has been seen. See fixcredential.go.
+	credentialSites []credentialSite
+
 	// blockEndBytesScanned sums the length of every line [fixer.blockEnd]
 	// inspects (plus its terminator), across every call a fix makes to it
 	// over this document. Nothing bounds this walk by itself —
@@ -896,6 +901,8 @@ func (f *fixer) workflow(n ast.Node) {
 		}
 	}
 
+	f.consolidateCredentials(mapping)
+
 	if !declared {
 		f.stampEdition(mapping)
 	}
@@ -1198,6 +1205,8 @@ func (f *fixer) step(n ast.Node, scope stepScope) {
 			// grammar does. The case literals themselves are never expressions,
 			// so nothing in them is a rewrite candidate.
 			f.switchBodies(v.Value, inner)
+		default:
+			f.collectCredentialSites(name, v)
 		}
 	}
 }
