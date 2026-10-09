@@ -435,21 +435,35 @@ type workspace struct {
 // is one, else the file read within the usual bounds.
 func (w workspace) document(path string) (*document, bool) {
 	if w.open != nil {
-		if doc, ok := w.open(path); ok && doc.parsed != nil {
-			return doc, true
+		for _, p := range []string{path, canonicalPath(path)} {
+			if doc, ok := w.open(p); ok && doc.parsed != nil {
+				return doc, true
+			}
 		}
 	}
 
 	return loadModule(path)
 }
 
+// canonicalPath is path with symlinks followed, or path itself when they cannot
+// be: the one spelling a file is keyed by, so a workspace reached through a
+// symlinked directory yields each file once and finds its open buffer.
+func canonicalPath(path string) string {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		return real
+	}
+
+	return filepath.Clean(path)
+}
+
 // flowfiles lists the Flowfile-shaped YAML files under dir, in walk order.
 //
 // Bounded twice: by directory entries visited and by files returned. truncated
 // reports that either bound stopped the walk, which the callers that edit refuse
-// on. A symlink is never followed, a hidden directory is not entered, and a test
-// suite is not a Flowfile.
-func flowfiles(dir string) (paths []string, truncated bool) {
+// on. A symlink is never followed, `.git` and `node_modules` are not entered, a
+// hidden directory is entered only when hidden is set, and a test suite is not a
+// Flowfile.
+func flowfiles(dir string, hidden bool) (paths []string, truncated bool) {
 	visits := 0
 	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -461,7 +475,7 @@ func flowfiles(dir string) (paths []string, truncated bool) {
 		}
 		name := d.Name()
 		if d.IsDir() {
-			if path != dir && (strings.HasPrefix(name, ".") || name == "node_modules") {
+			if path != dir && (name == ".git" || name == "node_modules" || (!hidden && strings.HasPrefix(name, "."))) {
 				return filepath.SkipDir
 			}
 			return nil
@@ -496,7 +510,7 @@ func isModule(doc *document) bool {
 // moduleFiles lists the modules under dir, cheaply rejecting a file that declares
 // nothing before parsing it.
 func (w workspace) moduleFiles(dir string) (modules []*document, truncated bool) {
-	paths, truncated := flowfiles(dir)
+	paths, truncated := flowfiles(dir, false)
 	for _, path := range paths {
 		doc, ok := w.document(path)
 		if !ok || !(declaresKey(doc.text, "types") || declaresKey(doc.text, "errors") || declaresKey(doc.text, "functions")) {
@@ -638,6 +652,10 @@ func addUseActions(doc *document, params codeActionParams) []codeAction {
 // written in a shape the edit cannot extend (flow style) or there is nowhere to
 // put it.
 func useEdit(doc *document, alias, path string) (lsp.TextEdit, bool) {
+	eol := "\n"
+	if strings.Contains(doc.text, "\r\n") {
+		eol = "\r\n"
+	}
 	var block *entry
 	for _, e := range doc.parsed.entries {
 		if e.key == "use" {
@@ -653,7 +671,7 @@ func useEdit(doc *document, alias, path string) (lsp.TextEdit, bool) {
 
 		return lsp.TextEdit{
 			Range:   lsp.Range{Start: at, End: at},
-			NewText: fmt.Sprintf("use:\n  %s:\n    path: %s\n", alias, path),
+			NewText: fmt.Sprintf("use:%[3]s  %[1]s:%[3]s    path: %[2]s%[3]s", alias, path, eol),
 		}, true
 	}
 
@@ -680,7 +698,7 @@ func useEdit(doc *document, alias, path string) (lsp.TextEdit, bool) {
 
 	return lsp.TextEdit{
 		Range:   lsp.Range{Start: at, End: at},
-		NewText: fmt.Sprintf("%s%s:\n%spath: %s\n", indent, alias, inner, path),
+		NewText: fmt.Sprintf("%s%s:%s%spath: %s%s", indent, alias, eol, inner, path, eol),
 	}, true
 }
 
@@ -797,22 +815,36 @@ func renameQualified(doc *document, w workspace, pos lsp.Position, newName strin
 	var candidates []*document
 	seen := map[string]bool{}
 	consider := func(d *document) {
-		if p, ok := d.filesystemPath(); ok && !seen[p] {
-			seen[p] = true
+		if p, ok := d.filesystemPath(); ok && !seen[canonicalPath(p)] {
+			seen[canonicalPath(p)] = true
 			candidates = append(candidates, d)
 		}
 	}
 	consider(doc)
 	for _, root := range w.roots {
-		paths, truncated := flowfiles(root)
+		paths, truncated := flowfiles(canonicalPath(root), true)
 		if truncated {
 			return refuse("the workspace has more than %d Flowfiles; open a narrower folder so every importer of `%s` is seen", maxWorkspaceFiles, site.module.written)
 		}
 		for _, p := range paths {
-			if !seen[p] {
-				if d, ok := w.document(p); ok && strings.Contains(d.text, site.name) {
-					consider(d)
+			if seen[canonicalPath(p)] {
+				continue
+			}
+			d, ok := w.document(p)
+			if !ok {
+				// A file the server cannot read as a Flowfile might still be an
+				// importer, so it is a reason unless it provably is not one.
+				raw, readable := readCalleeSource(p)
+				switch {
+				case !readable:
+					return refuse("%s cannot be read within the %d byte bound, so it cannot be ruled out as an importer of `%s`", p, maxDocumentBytes, site.module.written)
+				case strings.Contains(string(raw), site.name):
+					return refuse("%s mentions `%s` but does not parse, so it cannot be renamed safely; fix it or rename by hand", p, site.name)
 				}
+				continue
+			}
+			if strings.Contains(d.text, site.name) {
+				consider(d)
 			}
 		}
 	}

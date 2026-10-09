@@ -108,7 +108,7 @@ func (f workspaceFolders) uris() []lsp.DocumentURI {
 
 // workspace is what a request that reads beyond its own document may read.
 func (s *FlowfileServer) workspace() workspace {
-	w := workspace{open: func(path string) (*document, bool) { return s.docs.getByFilesystemPath(path) }}
+	w := workspace{open: s.docs.getByFilesystemPath}
 	if roots := s.roots.Load(); roots != nil {
 		w.roots = *roots
 	}

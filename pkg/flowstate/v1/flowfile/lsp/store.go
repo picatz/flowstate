@@ -752,6 +752,17 @@ func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
 	defer s.mu.Unlock()
 	uri, ok := s.localByPath[filepath.Clean(path)]
 	if !ok {
+		// The client may have opened the file through a symlinked directory; the
+		// same file under its real path is the same buffer.
+		want := canonicalPath(path)
+		for p, u := range s.localByPath {
+			if canonicalPath(p) == want {
+				uri, ok = u, true
+				break
+			}
+		}
+	}
+	if !ok {
 		return nil, false
 	}
 	doc, ok := s.docs[uri]
