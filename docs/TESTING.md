@@ -298,6 +298,12 @@ signals:
 | `ran` | Steps that must have run. Checked on failed runs too. |
 | `skipped` | Steps that must not have run. |
 | `others: skipped` | Closes `ran:`: every step not listed there must have been skipped, so a step added later fails the case until the case mentions it. |
+| `compensated` | The steps whose `undo:` ran. |
+| `denied_signals` | Signals the case sends that the workflow's `signals:` policy must refuse. Each needs at least one scripted delivery denied by the same check the server's Signal door runs; a signal another sender got through still counts. A name the workflow has no policy for, or the case never sends, is refused when the case loads. |
+| `invocations` | How often tasks ran, and in what order. See below. |
+| `check` | CEL claims over the finished run. See below. |
+| `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
+| `response` | For a case with a webhook `trigger:` whose webhook declares `respond_within:`: the document its receiver would answer with. `status:` is `completed`, `failed` or `running`; `outputs:` (completed only) must equal the declared outputs exactly, a sensitive one as the withheld marker. |
 
 A bare `failed: true` is satisfied by any failure. To pin the failure down, name
 where it happened and what it was, in the vocabulary `errors:` declares:
@@ -314,12 +320,6 @@ through a `call:`, it is the `call:` step. A name that is neither declared nor
 built in fails the case with the names it could have been.
 [`examples/declared-errors`](../examples/declared-errors/workflow.test.yaml)
 uses it.
-| `compensated` | The steps whose `undo:` ran. |
-| `denied_signals` | Signals the case sends that the workflow's `signals:` policy must refuse. Each needs at least one scripted delivery denied by the same check the server's Signal door runs; a signal another sender got through still counts. A name the workflow has no policy for, or the case never sends, is refused when the case loads. |
-| `invocations` | How often tasks ran, and in what order. See below. |
-| `check` | CEL claims over the finished run. See below. |
-| `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
-| `response` | For a case with a webhook `trigger:` whose webhook declares `respond_within:`: the document its receiver would answer with. `status:` is `completed`, `failed` or `running`; `outputs:` (completed only) must equal the declared outputs exactly, a sensitive one as the withheld marker. |
 
 An `expect:` with nothing in it is refused, because a case that asserts nothing
 passes whatever the run did.

@@ -6,6 +6,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -153,4 +154,47 @@ tests:
 		require.Contains(t, c.GetError(), "does not bind a secret")
 		require.Contains(t, c.GetError(), "env:TOKEN")
 	}
+}
+
+// A failure a called workflow raises is the caller's `call:` step to name, not
+// the callee's private step.
+func TestFailedNamesTheCallStep(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/callee.yaml", `
+edition: v2026.4
+name: callee
+errors:
+  Broken: {}
+steps:
+  - id: inside
+    fail:
+      error: Broken
+      message: broken
+`)
+	writeFile(t, dir+"/workflow.yaml", `
+edition: v2026.4
+name: caller
+steps:
+  - id: delegate
+    call: ./callee.yaml
+`)
+	run := func(failed string) *v1.TestCase {
+		writeFile(t, dir+"/workflow.test.yaml", `
+tests:
+  - name: case
+    workflow: ./workflow.yaml
+    expect:
+      failed: `+failed+`
+`)
+		report := flowtest.RunFile(dir + "/workflow.test.yaml")
+		require.Len(t, report.GetCases(), 1, report.GetRefused())
+
+		return report.GetCases()[0]
+	}
+
+	require.True(t, run("{step: delegate}").GetPassed())
+	c := run("{step: inside}")
+	require.False(t, c.GetPassed(), "the callee's own step is not the caller's to name")
 }

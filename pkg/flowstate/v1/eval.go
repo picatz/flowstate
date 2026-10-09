@@ -2183,7 +2183,7 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 		//
 		// Carrying what the callee withholds, for a debugger rendering it at
 		// the caller (#2210). Empty, and so nothing, without one.
-		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), WithFailureSensitiveValues(QualifyStepWithin(err, callee.GetName()), ExecutingSensitiveFromContext(calleeCtx)))
+		return nil, &CalleeError{Workflow: callee.GetName(), Err: WithFailureSensitiveValues(QualifyStepWithin(err, callee.GetName()), ExecutingSensitiveFromContext(calleeCtx))}
 	}
 
 	// The callee's outputs are computed from its own scope, so both what they

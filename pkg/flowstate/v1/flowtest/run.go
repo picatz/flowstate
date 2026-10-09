@@ -1,7 +1,6 @@
 package flowtest
 
 import (
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -3097,7 +3096,7 @@ func assertFailedHow(want *FailedClaim, spec *v1.Workflow, runErr error, rendere
 			Step:  want.Step,
 			Field: "expect.failed.step",
 			Message: fmt.Sprintf("expected the run to fail in step %q, but it failed in %s (error: %s)",
-				want.Step, cmp.Or(strconv.Quote(got), "no step"), renderedRunErr),
+				want.Step, stepOrNone(got), renderedRunErr),
 		})
 	}
 
@@ -3145,4 +3144,13 @@ func freshCaseRegistry(test *Test, workflow *v1.Workflow, boundaries map[string]
 	}
 
 	return caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow, unanswered)
+}
+
+// stepOrNone names the step a failure happened in, or says there was none.
+func stepOrNone(step string) string {
+	if step == "" {
+		return "no step"
+	}
+
+	return strconv.Quote(step)
 }
