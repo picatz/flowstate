@@ -18,6 +18,12 @@
       "title": "Validate after edits",
       "description": "Run flow validate after Claude edits a Flowfile and tell the model what is wrong.",
       "default": true
+    },
+    "guardServerActions": {
+      "type": "boolean",
+      "title": "Confirm server actions",
+      "description": "Ask before Claude runs a flow verb that changes a server (run, signal, cancel, terminate, schedule changes), naming the verb and the server address.",
+      "default": true
     }
   }
 }
