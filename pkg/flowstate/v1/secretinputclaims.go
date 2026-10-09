@@ -50,7 +50,8 @@ type InputClaim struct {
 // A credential claim implies SECRET_REQUIRED and so has the whole-value shape
 // rule; it is an error beside SECRET_WHOLE_VALUE or SECRET_NESTED, which say the
 // same thing less strictly, beside a literal claim, and with a name that is not
-// a [ValidCredentialName].
+// a [ValidCredentialName]. A credential claim on a field below the top level
+// is refused too, because only top-level fields are read.
 func InputClaims(md protoreflect.MessageDescriptor) ([]InputClaim, error) {
 	if md == nil {
 		return nil, nil

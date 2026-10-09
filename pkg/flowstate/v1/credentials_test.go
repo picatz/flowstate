@@ -300,3 +300,52 @@ func TestCredentialDescriptionLengthCountsCharactersNotBytes(t *testing.T) {
 	long := &v1.CredentialDeclaration{Name: "bot_token", Description: strings.Repeat("é", 257)}
 	require.ErrorContains(t, v1.CheckPluginCredentials([]*v1.CredentialDeclaration{long}, nil), "description")
 }
+
+// TestInputClaimsRefusesACredentialClaimBelowTheTopLevel: only top-level fields
+// are read, so a nested credential claim would look protected and be ignored,
+// and a top-level claim of the same name would hide it from the unused check.
+func TestInputClaimsRefusesACredentialClaimBelowTheTopLevel(t *testing.T) {
+	t.Parallel()
+
+	str := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	nested := func(options *v1.InputOptions) *descriptorpb.FieldDescriptorProto {
+		o := &descriptorpb.FieldOptions{}
+		proto.SetExtension(o, v1.E_Input, options)
+
+		return &descriptorpb.FieldDescriptorProto{Name: proto.String("token"), Number: proto.Int32(1), Label: opt.Enum(), Type: str.Enum(), Options: o}
+	}
+	build := func(t *testing.T, name string, inner *descriptorpb.FieldDescriptorProto) protoreflect.MessageDescriptor {
+		t.Helper()
+
+		file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+			Name: proto.String("creds/v1/" + name + ".proto"), Package: proto.String("creds.v1"), Syntax: proto.String("proto3"),
+			Dependency: []string{"flowstate/v1/schema.proto"},
+			MessageType: []*descriptorpb.DescriptorProto{
+				{Name: proto.String(name + "Inner"), Field: []*descriptorpb.FieldDescriptorProto{inner}},
+				{Name: proto.String(name), Field: []*descriptorpb.FieldDescriptorProto{{
+					Name: proto.String("auth"), Number: proto.Int32(1), Label: opt.Enum(),
+					Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(".creds.v1." + name + "Inner"),
+				}}},
+			},
+		}, protoregistry.GlobalFiles)
+		require.NoError(t, err)
+
+		return file.Messages().ByName(protoreflect.Name(name))
+	}
+
+	md := build(t, "Nested", nested(&v1.InputOptions{Credential: "bot_token"}))
+	_, err := v1.InputClaims(md)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `field "auth.token" claims credential "bot_token" below the top level`)
+
+	// Declared and also claimed at the top level elsewhere: still refused.
+	top := credMessage(t, "TopToo", credToken(&v1.InputOptions{Credential: "bot_token"}))
+	require.NoError(t, v1.CheckPluginCredentials([]*v1.CredentialDeclaration{declaration("bot_token")}, []protoreflect.MessageDescriptor{top}))
+	require.Error(t, v1.CheckPluginCredentials([]*v1.CredentialDeclaration{declaration("bot_token")}, []protoreflect.MessageDescriptor{top, md}))
+
+	// A nested field with no credential claim is still fine.
+	plain := build(t, "Plain3", nested(&v1.InputOptions{}))
+	_, err = v1.InputClaims(plain)
+	require.NoError(t, err)
+}
