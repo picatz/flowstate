@@ -1,3 +1,4 @@
+import { clean } from '../hooks/runs'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -56,4 +57,15 @@ test('terminal control characters in a name or an error never reach the pane', a
   expect(await ui.find({ type: 'Text', text: /running a\[31mred \(w1\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /[\u001b\u009b]/ })).toBeUndefined()
   await ui.unmount()
+})
+
+// The pane cleans a rejected `flow list` with this same helper (the engine skips a
+// stub that throws, so the rejection path cannot be driven through a mount).
+test('clean strips controls and bounds server text', () => {
+  const hostile = 'spawn failed \u001b]0;x\u0007\u009b31m' + 'y'.repeat(10_000)
+  const out = clean(`Error: ${hostile}`, 100)
+
+  expect(out).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
+  expect(out.length).toBe(100)
+  expect(clean(42)).toBe('')
 })

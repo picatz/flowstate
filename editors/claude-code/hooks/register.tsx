@@ -3,7 +3,7 @@ import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
-import { runLine, toListing } from './runs'
+import { clean, runLine, toListing } from './runs'
 import type { Listing } from './runs'
 
 const PANE = 'flowstate'
@@ -33,7 +33,7 @@ const listRuns = async ($: Engine, flow: string): Promise<Listing> => {
   try {
     return toListing(await $.process.run([flow, 'list', '-o', 'jsonl'], { timeoutMs: 5000 }))
   } catch (err) {
-    return { offline: String(err) }
+    return { offline: clean(String(err), 100) || 'no server answered' }
   }
 }
 
@@ -95,12 +95,12 @@ export const register: Register = (on, options) => {
               {r.failure ? 'could not check' : r.diagnostics.length === 0 ? 'valid' : 'invalid'}{' '}
               {r.file}
             </Text>
-            {r.failure && <Text dimColor>  {r.failure}</Text>}
+            {r.failure && <Text dimColor>  {clean(r.failure, 120)}</Text>}
             {r.diagnostics.slice(0, 8).map(d => (
               <Text dimColor>
                 {'  '}
                 {d.line > 0 ? `${d.line}:${d.column} ` : ''}
-                {d.message.slice(0, 120)}
+                {clean(d.message, 120)}
               </Text>
             ))}
           </Box>
