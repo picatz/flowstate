@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
 func moduleSpec() *v1.Workflow {
@@ -41,21 +42,16 @@ func TestAModuleIsDerivedFromTheSpec(t *testing.T) {
 	assert.False(t, v1.IsModule(nil))
 }
 
-// TestEveryEntryRefusesASpecWithNoSteps is the fail-closed half, on a spec built
-// by hand rather than compiled from a file: the schema and the local driver both
-// turn a module away, and say it is a module.
-func TestEveryEntryRefusesASpecWithNoSteps(t *testing.T) {
+// TestNoStepsCasesLocally runs the shared no-steps cases through the local
+// driver; engine/module_test.go runs the same cases durably. The schema refuses
+// the same specs independently.
+func TestNoStepsCasesLocally(t *testing.T) {
 	t.Parallel()
 
-	spec := moduleSpec()
+	require.Error(t, v1.Validate(moduleSpec()), "the schema requires a step")
 
-	require.Error(t, v1.Validate(spec), "the schema requires a step")
-
-	_, err := v1.RunWithInputs(t.Context(), spec, nil)
-	require.ErrorIs(t, err, v1.ErrModule)
-	assert.Contains(t, err.Error(), `workflow "ids" is a module (no steps)`)
-
-	_, err = v1.RunWithInputs(t.Context(), &v1.Workflow{Name: "empty"}, nil)
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, v1.ErrModule, "an empty workflow is not called a module")
+	conformance.AssertNoStepsCases(t, func(w *v1.Workflow) error {
+		_, err := v1.RunWithInputs(t.Context(), w, nil)
+		return err
+	})
 }

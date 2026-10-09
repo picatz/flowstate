@@ -1537,9 +1537,10 @@ functions:
 
 - **Derived, not declared.** There is no `kind:` key and no new proto field. A module is a
   `Workflow` with no steps that declares at least one type, function or error and sets
-  nothing else (`v1.IsModule`). Inputs, vars, outputs, triggers, signals, labels and the
-  rest make a steps-less file a workflow with no steps, which is still refused with
-  `workflow has no steps`; a file that declares nothing is not promoted to a module, so
+  nothing else (`v1.IsModule`). Any inputs, vars, outputs, triggers, signals or labels content,
+  and any step, makes a steps-less file a workflow with no steps, which is still refused with
+  `workflow has no steps` (an empty block such as `inputs: {}` has no content and is
+  ignored); a file that declares nothing is not promoted to a module, so
   an empty file is still a mistake the author hears about.
 - **Accepted wherever a file is read or edited.** `flow validate`, `flow fmt` (a byte for
   byte round trip), `flow lint`, `flow fix` and the language server accept a module. The

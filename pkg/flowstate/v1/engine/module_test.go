@@ -3,29 +3,22 @@ package engine_test
 import (
 	"testing"
 
-	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/internal/conformance"
 )
 
-// TestTheDurableDriverRefusesAModule is the second driver's half of
-// TestEveryEntryRefusesASpecWithNoSteps: a spec that reaches a worker with no
-// steps fails the run and says it is a module, rather than completing empty.
-func TestTheDurableDriverRefusesAModule(t *testing.T) {
+// TestNoStepsCasesDurably runs the shared no-steps cases through the durable
+// driver; module_test.go in the parent package runs the same cases locally.
+func TestNoStepsCasesDurably(t *testing.T) {
 	t.Parallel()
 
-	env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
-	engine.Register(env)
-
-	env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: &v1.Workflow{
-		Name:           "ids",
-		DeclaredErrors: []*v1.ErrorDeclaration{{Name: "NotFound"}},
-	}})
-
-	require.True(t, env.IsWorkflowCompleted())
-	err := env.GetWorkflowError()
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "is a module (no steps); import it with use:, don't run it")
+	conformance.AssertNoStepsCases(t, func(w *v1.Workflow) error {
+		env := (&testsuite.WorkflowTestSuite{}).NewTestWorkflowEnvironment()
+		engine.Register(env)
+		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: w})
+		return env.GetWorkflowError()
+	})
 }

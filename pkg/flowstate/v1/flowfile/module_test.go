@@ -165,4 +165,9 @@ func TestOnlyDeclarationsMakeAModule(t *testing.T) {
 		DeclaredErrors: []*v1.ErrorDeclaration{{Name: "Gone"}},
 		Steps:          []*v1.Node{{Id: "a"}},
 	}), "a spec with steps is never a module, whatever else it declares")
+
+	// An empty block carries no content, so it does not disqualify a module.
+	empty, err := flowfile.Unmarshal([]byte("edition: " + flowfile.CurrentEdition + "\nname: m\ninputs: {}\nerrors:\n  Gone: {}\n"))
+	require.NoError(t, err)
+	assert.True(t, v1.IsModule(empty), "inputs: {} beside a declaration is still a module")
 }

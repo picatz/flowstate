@@ -30,6 +30,10 @@ var moduleFields = map[protoreflect.Name]bool{
 // marker to set on something that has steps. Both drivers and the submit path
 // refuse a spec with no steps whether or not it is a module.
 //
+// "Nothing that runs" is judged on content: an empty `inputs: {}` compiles to the
+// same message as no `inputs:` at all, so an empty block is ignored. That is
+// harmless, since it carries no behavior and the file is still unrunnable.
+//
 // Everything beyond [moduleFields] disqualifies the file, so a field added to
 // [Workflow] later makes a file that uses it a broken workflow rather than a
 // silently valid module. A file declaring nothing at all is not a module either:
