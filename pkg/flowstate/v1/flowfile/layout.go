@@ -89,7 +89,7 @@ func flowSurvives(elements []any, candidate styledScalar) bool {
 				return nil, false
 			}
 			var back any
-			if err := yaml.Unmarshal(encoded, &back); err != nil {
+			if err := readBack(encoded, &back); err != nil {
 				return nil, false
 			}
 			return back, true

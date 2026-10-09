@@ -1702,3 +1702,10 @@ func quorumToYAML(quorum *v1.SignalQuorum) (yaml.MapSlice, error) {
 
 	return mapping, nil
 }
+
+// readBack decodes YAML this package just wrote, to prove a candidate spelling
+// round-trips. It is not a reader for authored documents, so it lives beside
+// the other read-back checks in this file.
+func readBack(encoded []byte, into any) error {
+	return strictyaml.Unmarshal(encoded, into)
+}
