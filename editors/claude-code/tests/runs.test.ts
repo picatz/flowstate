@@ -28,8 +28,8 @@ test('the pane lists the runs a server reports', async ($, on) => {
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
 
   expect(seen[0]).toEqual(['flow', 'list', '-o', 'json'])
-  expect(await ui.find({ type: 'Text', text: /running nightly-etl \(nightly-1\)/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /failed w-2/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /running nightly-etl \(nightly-1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /failed w-2/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -40,7 +40,7 @@ test('a short page with a token is followed until the pane has enough', async ($
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
 
   expect(seen[1]).toEqual(['flow', 'list', '-o', 'json', '--page-token', 't1'])
-  expect(await ui.find({ type: 'Text', text: /running mine/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /running mine/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /No runs yet/ })).toBeUndefined()
   await ui.unmount()
 })
@@ -69,9 +69,9 @@ test('an entry that is not a run does not hide the others and the list stays bou
   stub(on, [ok(page(['"junk"', '{}', ...many]))])
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
 
-  expect(await ui.find({ type: 'Text', text: /completed w0$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /completed w7$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /completed w8$/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /succeeded w0$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /succeeded w7$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /succeeded w8$/ })).toBeUndefined()
   await ui.unmount()
 })
 
@@ -79,7 +79,7 @@ test('terminal control characters in a name never reach the pane', async ($, on)
   stub(on, [ok(page([run('w1', 'STATUS_RUNNING', 'a\u001b[31mred\u009b')]))])
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
 
-  expect(await ui.find({ type: 'Text', text: /running a\[31mred \(w1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /running a\[31mred \(w1\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /[\u001b\u009b]/ })).toBeUndefined()
   await ui.unmount()
 })

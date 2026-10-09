@@ -15,10 +15,33 @@ export const clean = (value: unknown, max = 80): string =>
   typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').slice(0, max) : ''
 
 /** The first line of what `flow list` said when it could not reach a server. */
-const reason = (stderr: string): string => {
+export const reason = (stderr: string): string => {
   const lines = stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR')
   return clean(lines[0], 100) || 'no server answered'
 }
+
+/**
+ * The CLI's whole message for a rejected filter: its error wraps over several
+ * lines (the CEL position and a caret) before the blank line that precedes any
+ * `NEXT` hint, and the first line alone would cut it off mid-sentence.
+ */
+export const rejection = (stderr: string): string => {
+  const body: string[] = []
+  for (const l of stderr.split('\n').map(x => x.trim())) {
+    if (l === 'ERROR' && body.length === 0) continue
+    if (l === '' || l === 'NEXT') break
+    body.push(l)
+  }
+  return clean(body.join(' '), 240) || 'no server answered'
+}
+
+/**
+ * What a successful `flow timeline` said on stderr (it explains a gap in the
+ * account, such as a step waiting out a retry backoff), cleaned and bounded;
+ * empty when it said nothing.
+ */
+export const stderrNote = (stderr: string): string =>
+  clean(stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR').join(' '), 240)
 
 /** A page-walk stops after this many calls: a bounded scan can return short pages, but the pane never walks a whole history. */
 export const MAX_PAGES = 4
@@ -54,13 +77,7 @@ export const parsePage = (stdout: string): Page => {
  * exits non-zero for a refused credential or a bad flag. The pane says the runs
  * are unavailable and shows what `flow` said.
  */
-export const toListing = (run: { exitCode: number; stdout: string; stderr: string }): Listing =>
-  run.exitCode === 0 ? { runs: parsePage(run.stdout).runs.slice(0, MAX_RUNS) } : { offline: reason(run.stderr) }
-
-/** `RUNNING`, `FAILED`, ...: the schema's name without its `STATUS_` prefix. */
-export const statusLabel = (run: RunSummary): string =>
-  clean(run.status ?? 'STATUS_UNSPECIFIED', 24).replace(/^STATUS_/, '').toLowerCase()
-
-/** One row: the status, the declared name when there is one, and the id `flow get` takes. */
-export const runLine = (run: RunSummary): string =>
-  [statusLabel(run), run.name ? `${clean(run.name)} (${clean(run.workflowId)})` : clean(run.workflowId)].join(' ')
+export const toListing = (run: { exitCode: number; stdout: string; stderr: string }, filtered = false): Listing =>
+  run.exitCode === 0
+    ? { runs: parsePage(run.stdout).runs.slice(0, MAX_RUNS) }
+    : { offline: filtered ? rejection(run.stderr) : reason(run.stderr) }
