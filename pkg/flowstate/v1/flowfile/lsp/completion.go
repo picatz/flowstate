@@ -1457,6 +1457,50 @@ func taskCandidates(prefix string, replace lsp.Range, tasks *v1.Registry) []lsp.
 	return items
 }
 
+// snippetizeTasks turns each task-name candidate into a snippet that also writes
+// the task's required inputs as tabstops, so choosing `http` leaves the cursor on
+// `url:` instead of on a line the author then has to look up.
+//
+// A separate pass over the list rather than a second set of candidates: the
+// plain candidate is what a client without snippet support gets, and both are the
+// same item. A task with no required inputs is left alone, because a snippet that
+// adds nothing is only a way for a client to treat the item differently.
+//
+// The indentation inside the snippet is relative (two spaces). The protocol has
+// the client adjust it to the line the snippet is inserted on.
+func snippetizeTasks(list *lsp.CompletionList, tasks *v1.Registry) {
+	for i, item := range list.Items {
+		if item.Kind != lsp.CIKFunction || item.TextEdit == nil || item.TextEdit.NewText != item.Label+": " {
+			continue
+		}
+		def, ok := tasks.Lookup(item.Label)
+		if !ok || def.Inputs == nil {
+			continue
+		}
+
+		var b strings.Builder
+		fields := def.Inputs.Fields()
+		n := 0
+		for j := range fields.Len() {
+			fd := fields.Get(j)
+			if !required(fd) {
+				continue
+			}
+			n++
+			if n == 1 {
+				b.WriteString(def.Name + ":")
+			}
+			fmt.Fprintf(&b, "\n  %s: $%d", fd.Name(), n)
+		}
+		if n == 0 {
+			continue
+		}
+
+		list.Items[i].TextEdit = &lsp.TextEdit{Range: item.TextEdit.Range, NewText: b.String()}
+		list.Items[i].InsertTextFormat = lsp.ITFSnippet
+	}
+}
+
 // inputCandidates offers the inputs the enclosing step's task declares, required
 // ones first, omitting those already written.
 func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks *v1.Registry) []lsp.CompletionItem {
