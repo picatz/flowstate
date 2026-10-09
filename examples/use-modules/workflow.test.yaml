@@ -1,0 +1,68 @@
+# What a module's declarations are worth is that they hold where they are used, so
+# these cases cross the boundary in both directions: a value the module's types admit
+# runs, one they refuse never starts, and a function and an error the module declares
+# decide a step the way a local one would.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a customer the module's types admit is billed
+    inputs:
+      customer:
+        id: 123e4567-e89b-42d3-a456-426614174000
+        email: ada@example.com
+    expect:
+      ran: [domain, bill]
+      skipped: [screen]
+      outputs:
+        billed: 123e4567-e89b-42d3-a456-426614174000
+
+  - name: a function the module declares decides a step, and its error is the failure
+    inputs:
+      customer:
+        id: 123e4567-e89b-42d3-a456-426614174000
+        email: eve@blocked.example
+    expect:
+      failed: {step: screen, error: ids.NotFound}
+      error_contains: no one at blocked.example may be billed
+
+  - name: the module's scalar type refuses an id that is not a UUID
+    inputs:
+      customer:
+        id: not-a-uuid
+        email: ada@example.com
+    expect:
+      failed: true
+      error_contains: id
+
+  - name: the module's record refuses an email with no @
+    inputs:
+      customer:
+        id: 123e4567-e89b-42d3-a456-426614174000
+        email: ada.example.com
+    expect:
+      failed: true
+      error_contains: email
+
+  - name: a use adds its own rule to the module's type
+    inputs:
+      customer:
+        id: 123e4567-e89b-42d3-a456-426614174000
+        email: ada@example.com
+      referrer: 00000000-0000-1000-8000-000000000000
+    expect:
+      failed: true
+      error_contains: 'input "referrer" must satisfy'
+
+  - name: the module's scalar type holds on an input a use declares
+    inputs:
+      customer:
+        id: 123e4567-e89b-42d3-a456-426614174000
+        email: ada@example.com
+      referrer: someone
+    expect:
+      failed: true
+      error_contains: 'input "referrer" must satisfy'

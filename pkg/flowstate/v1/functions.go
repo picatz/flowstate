@@ -175,8 +175,8 @@ func (s *FunctionSet) Calls(parsed *exprpb.ParsedExpr) bool {
 	}
 	found := false
 	walkParsed(parsed.GetExpr(), func(e *exprpb.Expr) {
-		if call := e.GetCallExpr(); call != nil && call.GetTarget() == nil {
-			if _, ok := s.checked[call.GetFunction()]; ok {
+		if call := e.GetCallExpr(); call != nil {
+			if _, ok := s.checked[calleeName(call)]; ok {
 				found = true
 			}
 		}
@@ -207,8 +207,8 @@ func (s *FunctionSet) Retains(parsed *exprpb.ParsedExpr) bool {
 		return false
 	}
 	for _, e := range parsed.GetSourceInfo().GetMacroCalls() {
-		if call := e.GetCallExpr(); call != nil && call.GetTarget() == nil {
-			if _, ok := s.checked[call.GetFunction()]; ok {
+		if call := e.GetCallExpr(); call != nil {
+			if _, ok := s.checked[calleeName(call)]; ok {
 				return true
 			}
 		}
@@ -265,8 +265,8 @@ func profileFunctionNames(env *cel.Env) map[string]bool {
 func brokenCallee(f *FunctionDeclaration, broken map[string]bool) (string, bool) {
 	var callee string
 	walkParsed(f.GetBody().GetExpr(), func(e *exprpb.Expr) {
-		if call := e.GetCallExpr(); callee == "" && call != nil && call.GetTarget() == nil && broken[call.GetFunction()] {
-			callee = call.GetFunction()
+		if call := e.GetCallExpr(); callee == "" && call != nil && broken[calleeName(call)] {
+			callee = calleeName(call)
 		}
 	})
 	return callee, callee != ""
@@ -322,14 +322,33 @@ func calledFunctions(f *FunctionDeclaration, byName map[string]*FunctionDeclarat
 	var callees []string
 	walkParsed(f.GetBody().GetExpr(), func(e *exprpb.Expr) {
 		call := e.GetCallExpr()
-		if call == nil || call.GetTarget() != nil {
+		if call == nil {
 			return
 		}
-		if _, ok := byName[call.GetFunction()]; ok && !slices.Contains(callees, call.GetFunction()) {
-			callees = append(callees, call.GetFunction())
+		name := calleeName(call)
+		if _, ok := byName[name]; ok && !slices.Contains(callees, name) {
+			callees = append(callees, name)
 		}
 	})
 	return callees
+}
+
+// calleeName is the name a call is declared under: the function alone for a
+// global call, and `alias.function` when the receiver is one bare identifier, which
+// is how a module's function is called (`ids.isUuid(x)`). Any other receiver
+// (`inputs.name.upperAscii()`) makes a member call, which names no declared
+// function, so it returns a name no declaration can have.
+func calleeName(call *exprpb.Expr_Call) string {
+	target := call.GetTarget()
+	if target == nil {
+		return call.GetFunction()
+	}
+	ident := target.GetIdentExpr()
+	if ident == nil {
+		return "." + call.GetFunction()
+	}
+
+	return ident.GetName() + "." + call.GetFunction()
 }
 
 // walkParsed calls visit for every node of an expression tree, parents before
@@ -400,8 +419,8 @@ func (s *FunctionSet) plainText(parsed *exprpb.ParsedExpr) (string, error) {
 	parsed = proto.Clone(parsed).(*exprpb.ParsedExpr)
 	macros := parsed.GetSourceInfo().GetMacroCalls()
 	for id, call := range macros {
-		if c := call.GetCallExpr(); c != nil && c.GetTarget() == nil {
-			if _, declared := s.checked[c.GetFunction()]; declared {
+		if c := call.GetCallExpr(); c != nil {
+			if _, declared := s.checked[calleeName(c)]; declared {
 				delete(macros, id)
 			}
 		}
@@ -447,6 +466,50 @@ func (s *FunctionSet) plainText(parsed *exprpb.ParsedExpr) (string, error) {
 	})
 
 	return cel.AstToString(cel.ParsedExprToAst(parsed))
+}
+
+// Inlined returns the body of a declared function as plain CEL: every call it makes
+// to another function of the set is already replaced by that function's body, and
+// nothing in the result names a declared function. ok is false for a name the set
+// does not hold.
+//
+// What a module hands to a workflow that uses it. The module's own bodies call each
+// other by the names the module knows them by, which mean nothing in the workflow,
+// so the workflow is given the expansion and not the source: a body that depends on
+// no other declaration can be carried under any name.
+func (s *FunctionSet) Inlined(name string) (*exprpb.ParsedExpr, bool) {
+	if s == nil {
+		return nil, false
+	}
+	checked, ok := s.checked[name]
+	if !ok {
+		return nil, false
+	}
+	parsed, err := cel.AstToParsedExpr(checked.body)
+	if err != nil {
+		return nil, false
+	}
+	// An expansion records each call it replaced so the expression can be written
+	// back as authored; here the authored form is the module's, and it must not
+	// reach a workflow that has no such function.
+	for id, call := range parsed.GetSourceInfo().GetMacroCalls() {
+		if c := call.GetCallExpr(); c != nil {
+			if _, declared := s.checked[calleeName(c)]; declared {
+				delete(parsed.GetSourceInfo().GetMacroCalls(), id)
+			}
+		}
+	}
+
+	return parsed, true
+}
+
+// ParsedNodeCount is the number of CEL nodes in an expression, the unit of the
+// expansion budget ([MaxFunctionExpansionNodes]).
+func ParsedNodeCount(parsed *exprpb.ParsedExpr) int {
+	nodes := 0
+	walkParsed(parsed.GetExpr(), func(*exprpb.Expr) { nodes++ })
+
+	return nodes
 }
 
 // NodeCount is the number of CEL nodes src parses to, 0 for source that does not

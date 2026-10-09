@@ -252,7 +252,7 @@ func lookupFunction(byName map[string]v1.LibraryFunction, word, last string) (v1
 // compile declares nothing, so the fence under the cursor is compiled as `null`:
 // the declarations are the part of the file the author is not editing.
 func declaredFunction(doc *document, f fence, name string) (*v1.FunctionDeclaration, bool) {
-	if !slices.ContainsFunc(doc.parsed.entries, func(e *entry) bool { return e.key == "functions" }) {
+	if !slices.ContainsFunc(doc.parsed.entries, func(e *entry) bool { return e.key == "functions" || e.key == "use" }) {
 		return nil, false
 	}
 

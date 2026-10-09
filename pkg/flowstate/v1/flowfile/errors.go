@@ -48,15 +48,22 @@ func (c *compiler) declaredErrors(n ast.Node, path string, r ref) []*v1.ErrorDec
 	}
 
 	// Bounded before anything is built, because the file is the sender's.
-	if len(entries) > v1.MaxDeclaredErrors {
+	if len(c.uses.errors)+len(entries) > v1.MaxDeclaredErrors {
 		c.report(spanOfNode(c.resolveQuiet(n)), r,
-			"declares %d errors; the most a workflow declares is %d", len(entries), v1.MaxDeclaredErrors)
+			"declares %d errors%s; the most a workflow declares is %d",
+			len(entries), c.uses.carriedCount("error", len(c.uses.errors)), v1.MaxDeclaredErrors)
 
 		return nil
 	}
 
 	declarations := make([]*v1.ErrorDeclaration, 0, len(entries))
 	for _, e := range entries {
+		if v1.IsCarried(e.name) {
+			c.report(spanOfNode(e.key), ref{path: fieldPath(path, e.name), label: "error " + e.name},
+				"is named with a dot, which is how a module's errors are named (`ids.NotFound`); an error this file declares is a single word")
+
+			continue
+		}
 		declarations = append(declarations, c.declaredError(e, path))
 	}
 

@@ -2488,8 +2488,9 @@ func (s *FlowstateServer) get(ctx context.Context, req *connect.Request[v1.GetRe
 }
 
 // declaredKindName is the shape of a name `errors:` may declare, checked before a
-// failure's type is looked up among a run's declarations.
-var declaredKindName = regexp.MustCompile(`^[A-Z][A-Za-z0-9_]{0,127}$`)
+// failure's type is looked up among a run's declarations. An error a module
+// declares is carried under its module's alias, `ids.NotFound`.
+var declaredKindName = regexp.MustCompile(`^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\.)?[A-Z][A-Za-z0-9_]{0,127}$`)
 
 // expressionDetail reads the structured account of an expression failure the
 // run's own failure carries after its marker (#1551), or nil when it carries

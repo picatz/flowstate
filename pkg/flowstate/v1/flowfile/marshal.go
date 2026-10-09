@@ -86,10 +86,18 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "plugins", Value: plugins})
 	}
 
+	// The modules the file uses, above everything that can name what they declare:
+	// the order the parser reads them in. What they declare is not written below:
+	// the file that declares it is the place for that, so a declaration whose name
+	// has a module's alias on it is left out.
+	if written := useToYAML(wf.GetModules()); len(written) > 0 {
+		doc = append(doc, yaml.MapItem{Key: "use", Value: written})
+	}
+
 	// The record types, above everything that can name one: the order the parser
 	// reads them in.
-	if len(wf.GetDeclaredTypes()) > 0 {
-		written, err := declaredTypesToYAML(wf.GetDeclaredTypes())
+	if types := ownDeclarations(wf.GetDeclaredTypes(), (*v1.TypeDeclaration).GetName); len(types) > 0 {
+		written, err := declaredTypesToYAML(types)
 		if err != nil {
 			return nil, err
 		}
@@ -97,14 +105,14 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	}
 
 	// The errors a file may raise, in the order the parser reads them.
-	if len(wf.GetDeclaredErrors()) > 0 {
-		doc = append(doc, yaml.MapItem{Key: "errors", Value: declaredErrorsToYAML(wf.GetDeclaredErrors())})
+	if errs := ownDeclarations(wf.GetDeclaredErrors(), (*v1.ErrorDeclaration).GetName); len(errs) > 0 {
+		doc = append(doc, yaml.MapItem{Key: "errors", Value: declaredErrorsToYAML(errs)})
 	}
 
 	// The functions, above everything that can call one: the order the parser reads
 	// them in.
-	if len(wf.GetDeclaredFunctions()) > 0 {
-		written, err := declaredFunctionsToYAML(wf.GetDeclaredFunctions())
+	if functions := ownDeclarations(wf.GetDeclaredFunctions(), (*v1.FunctionDeclaration).GetName); len(functions) > 0 {
+		written, err := declaredFunctionsToYAML(functions)
 		if err != nil {
 			return nil, err
 		}

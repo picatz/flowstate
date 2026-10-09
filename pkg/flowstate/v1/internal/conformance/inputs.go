@@ -199,6 +199,18 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedOutputs: held("show"),
 		},
 		{
+			// A type a module declares is lowered where it is used, exactly as one the
+			// file declares, so a run on either driver evaluates the plain rule and
+			// never reads the module.
+			Name:     "a module's scalar type admits a value its rule accepts",
+			Workflow: useModuleWorkflow("inputs-module-type"),
+			Inputs: map[string]*v1.Value{
+				"id":  v1.NewLiteral("abc-12"),
+				"tag": v1.NewLiteralMap(map[string]any{"code": "xyz-99"}),
+			},
+			ExpectedOutputs: held("show"),
+		},
+		{
 			// A record field's default is filled where the value is bound, so a step
 			// reads the field whether or not the caller sent it, on both drivers.
 			Name: "a record field left out takes its default",
@@ -969,6 +981,24 @@ func InputRefusalCases() []Refusal {
 				"alias": v1.NewLiteral("nope"),
 			},
 			Contains: `input "alias" must satisfy`,
+		},
+		{
+			Name:     "a module's scalar type refuses a value its rule rejects",
+			Workflow: useModuleWorkflow("inputs-module-type-refused"),
+			Inputs: map[string]*v1.Value{
+				"id":  v1.NewLiteral("ABC-12"),
+				"tag": v1.NewLiteralMap(map[string]any{"code": "xyz-99"}),
+			},
+			Contains: `input "id" must satisfy`,
+		},
+		{
+			Name:     "a module's scalar type is held on a record field the module declares",
+			Workflow: useModuleWorkflow("inputs-module-type-field"),
+			Inputs: map[string]*v1.Value{
+				"id":  v1.NewLiteral("abc-12"),
+				"tag": v1.NewLiteralMap(map[string]any{"code": "nope"}),
+			},
+			Contains: "the field at .code must satisfy",
 		},
 		{
 			Name:     "a scalar type's rule is held on a record field",

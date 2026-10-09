@@ -41,6 +41,7 @@ headings below, not this list.*
   - [Edition v2026.4: a type is a CEL type expression *(landed)*](#edition-v20264-a-type-is-a-cel-type-expression-landed)
   - [`functions:`: a computation named once *(landed)*](#functions-a-computation-named-once-landed)
   - [A file with no steps is a module *(landed)*](#a-file-with-no-steps-is-a-module-landed)
+  - [`use:`: a module imported by an alias *(landed)*](#use-a-module-imported-by-an-alias-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -1514,8 +1515,7 @@ parameters.
 A Flowfile that declares only `types:`, `functions:` and `errors:` (beside `edition:`,
 `name:` and `description:`) and no `steps:` is a **module**: the vocabulary several
 workflows would share, kept in one file. This is the first step of multi-file reuse. The
-file kind lands before the `use:` that imports it, so a module can be written, checked
-and edited as a first-class file now and cannot be imported yet.
+file kind landed before the `use:` that imports it (next section).
 
 ```yaml
 edition: v2026.4
@@ -1554,8 +1554,62 @@ functions:
   item), and both drivers say it is a module. A `*.test.yaml` case naming a module as its
   `workflow:` fails with the same sentence; function cases against a module come with the
   rest of the module design.
-- **What this is not yet.** No `use:`, no qualified names and no cross-file reference: a
-  module is complete as a file and unreachable from any other.
+- **Imported with `use:`.** See the next section. A module cannot be run, called with
+  `call:`, or reached from another file any other way.
+
+### `use:`: a module imported by an alias *(landed)*
+
+A file names the modules it uses under a top-level `use:`. Each entry is an alias and a
+`path:`; the module's types, functions and errors are then available **only through the
+alias**.
+
+```yaml
+# bill.yaml, beside lib/ids.yaml (the module above)
+use:
+  ids:
+    path: ./lib/ids.yaml
+inputs:
+  customer:
+    type: ids.Customer     # a type, scalar types included
+    required: true
+steps:
+  - id: check
+    if: ${!ids.isUuid(inputs.customer.id)}   # a function, wherever a call expands
+    fail:
+      error: ids.NotFound                    # an error
+```
+
+- **Qualified, never bare.** There is no bare import, no re-export and no wildcard. A name
+  says where it is declared, so a module can add a declaration without changing what any
+  file that uses it means. Two modules may declare the same bare name; they are
+  `a.Id` and `b.Id`. A file's own types, functions and errors stay bare and may not contain
+  a dot. An alias is a lowerCamel word of at most 32 letters and digits, and may not be a
+  root (`inputs`, `steps`, `vars`, ...), a CEL literal or type, the namespace of a built-in
+  library (`math`), or the id of a step or the name of an input, var, output or function
+  of the file that uses it.
+- **Resolved like `call:`.** The path is relative to the file that writes it, never
+  absolute, never above that file's directory as written or through a symlink, and local
+  only: nothing is fetched. A path that names a workflow (a file with steps) is refused
+  with the instruction to write `call:` on a step instead; a file that is neither is not a
+  module.
+- **Bounded.** Modules may use modules to a depth of 4; a file names at most 16; a
+  workflow's modules together are at most 64 (a module two files reach is compiled once).
+  A cycle, direct or through other modules, is refused where it closes. Inlined function
+  bodies share the file's expansion budget.
+- **Inlined, as a local declaration is.** A use of a module's constrained scalar type is
+  lowered to its base type and plain rule, and a call to its function is replaced by the
+  body, so both drivers run plain CEL and never read the module.
+- **Provenance only.** The compiled workflow records `modules` (`alias`, `source`,
+  `source_digest`, the digest of the bytes read) and carries the imported declarations
+  under their qualified names (`ids.Customer`; one reached through another module is
+  `a_b.Name`, which a file cannot write). Nothing evaluates `modules`; the server refuses a
+  specification whose qualified name has no recorded module. `flow fmt` writes the `use:`
+  block back and not the carried declarations, and is a fixed point.
+- **Not yet.** Pinning a module's digest (`digest:` on an entry) and repinning it, and the
+  cross-module parts of `flow breaking`, `flow test` function cases and the language server
+  (which today offers hover, completion and go-to-definition for qualified names).
+
+See `examples/use-modules/`.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 

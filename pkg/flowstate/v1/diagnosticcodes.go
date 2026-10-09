@@ -102,6 +102,12 @@ const (
 	// its failure, so reaching the value at all is refused, derived or not.
 	DiagnosticCodeSensitiveInFailMessage DiagnosticCode = "sensitive-in-fail-message"
 
+	// DiagnosticCodeModuleRefused marks a `use:` that names a module this file may
+	// not take declarations from: a path outside what a `use:` may read, a file that
+	// is not a module, a cycle, a bound crossed, or a module that has errors of its
+	// own.
+	DiagnosticCodeModuleRefused DiagnosticCode = "module-refused"
+
 	// DiagnosticCodeExpectationUnmet marks a claim a test file made that the run
 	// contradicted — a step the case said would run and did not, a `check:` that
 	// came back false, an outcome `expect.failed` named and the run did not
@@ -225,6 +231,12 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Description: "A `fail:` step's `message:` reaches an input declared `sensitive:`, or " +
 				"holds a secret reference; the message is recorded in the run's history, so " +
 				"write it without that value in it.",
+		},
+		{
+			Code: DiagnosticCodeModuleRefused,
+			Description: "A `use:` names a module the file may not take declarations from: a path " +
+				"outside what it may read, a file that is a workflow and not a module, a cycle " +
+				"of modules, a bound crossed, or a module that has errors of its own.",
 		},
 	}
 }

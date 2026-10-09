@@ -1,0 +1,46 @@
+# A module: the vocabulary several workflows share, declared once.
+#
+# A module is a Flowfile with no `steps:`. It declares `types:`, `functions:` and
+# `errors:` and nothing else, and it cannot be run: `flow run` refuses it and says to
+# import it. A workflow reaches it with `use:` and names what it declares through the
+# alias, as `ids.Uuid`, `ids.isUuid(x)` and `ids.NotFound`. Every declaration is
+# public; a module is read whole, so there is no private marker to learn.
+#
+# Inside the module a declaration is named as it is written here: the rule of `Uuid`
+# calls `isUuid`, and `Customer` has a field typed `Uuid`. The qualified names exist
+# only where the module is used.
+edition: v2026.4
+name: ids
+description: Identifiers and the customer record that billing workflows share.
+types:
+  Uuid:
+    description: A version 1 to 5 UUID in its lowercase, hyphenated form.
+    type: string
+    must: isUuid(this)
+    example: 123e4567-e89b-42d3-a456-426614174000
+  Customer:
+    description: Who is billed.
+    fields:
+      id:
+        type: Uuid
+        required: true
+      email:
+        type: string
+        required: true
+        must: this.contains("@")
+errors:
+  NotFound:
+    description: No customer may be billed under this address.
+functions:
+  isUuid:
+    description: Whether text is a lowercase, hyphenated UUID of version 1 to 5.
+    params:
+      text: string
+    returns: bool
+    body: ${text.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")}
+  domain:
+    description: The part of an email address after the @.
+    params:
+      email: string
+    returns: string
+    body: ${email.substring(email.indexOf("@") + 1)}

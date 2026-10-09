@@ -274,10 +274,11 @@ func formatType(t *v1.Type, depth int) (string, error) {
 	case *v1.Type_Enum:
 		return "", errors.New("enum is spelled `enum` with its members in `values:`, not as a type expression")
 	case *v1.Type_Message:
-		// A record the file declares is spelled by its name. A descriptor-backed
-		// message, whose name is qualified, has no spelling until `.proto` import
-		// gives it one.
-		if strings.Contains(k.Message, ".") {
+		// A record the file declares is spelled by its name, and one a module declared
+		// by its alias and its name (`ids.Customer`). A descriptor-backed message,
+		// whose name is a Protobuf package path, has no spelling until `.proto`
+		// import gives it one.
+		if strings.Contains(k.Message, ".") && !v1.IsModuleName(k.Message) {
 			return "", errors.New("a descriptor-backed message type has no Flowfile spelling yet")
 		}
 		return k.Message, nil

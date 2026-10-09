@@ -3,6 +3,7 @@ package flowfile
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 
 	yaml "github.com/goccy/go-yaml"
@@ -74,9 +75,10 @@ func (c *compiler) declaredFunctions(n ast.Node, path string, r ref) []*v1.Funct
 
 	// Bounded before anything is checked: every name costs a declared overload and
 	// a checked body, and the file is the sender's.
-	if len(entries) > v1.MaxFunctions {
+	if len(c.uses.functions)+len(entries) > v1.MaxFunctions {
 		c.report(spanOfNode(c.resolveQuiet(n)), r,
-			"declares %d functions; the most a workflow declares is %d", len(entries), v1.MaxFunctions)
+			"declares %d functions%s; the most a workflow declares is %d",
+			len(entries), c.uses.carriedCount("function", len(c.uses.functions)), v1.MaxFunctions)
 
 		return nil
 	}
@@ -92,9 +94,16 @@ func (c *compiler) declaredFunctions(n ast.Node, path string, r ref) []*v1.Funct
 		}
 	}
 
-	set, errs := v1.NewFunctionSet(v1.CurrentProfile, declared)
+	// The functions a module declared are in the set ahead of this file's own, so a
+	// body here may call `ids.isUuid` as an expression may.
+	set, errs := v1.NewFunctionSet(v1.CurrentProfile, slices.Concat(c.uses.functions, declared))
 	for _, fe := range errs {
-		where := spans[fe.Function]
+		where, own := spans[fe.Function]
+		if !own {
+			// A module's function that cannot be checked here was checked where it was
+			// declared, so this is a name this file's own function collides with.
+			where.key = c.uses.span
+		}
 		span := where.key
 		message := fe.Err.Error()
 		if strings.HasPrefix(message, "body ") && where.body.Start.Line > 0 {
@@ -171,7 +180,7 @@ func (c *compiler) declaredFunction(e entry, parent string) (*v1.FunctionDeclara
 		if text, ok := c.text(f.value, returnsPath, returnsRef); ok {
 			c.pos.record(returnsPath, spanOfNode(c.resolveQuiet(f.value)))
 			if t, err := parseType(c.typeEnv, text); err != nil {
-				c.report(spanOfNode(f.value), returnsRef, "is %q, which is not a type: %s", text, err)
+				c.report(spanOfNode(f.value), returnsRef, "is %q, which is not a type: %s", text, c.typeProblem(text, err))
 				complete = false
 			} else if name := c.scalarIn(t); name != "" {
 				c.report(spanOfNode(f.value), returnsRef, "names the constrained scalar %s; a function is typed by built-in types, so write its base", name)
@@ -243,7 +252,7 @@ func (c *compiler) functionParameters(n ast.Node, path, function string) ([]*v1.
 		}
 		t, err := parseType(c.typeEnv, text)
 		if err != nil {
-			c.report(spanOfNode(e.value), paramRef, "is %q, which is not a type: %s", text, err)
+			c.report(spanOfNode(e.value), paramRef, "is %q, which is not a type: %s", text, c.typeProblem(text, err))
 			complete = false
 			continue
 		}
@@ -266,6 +275,9 @@ func (c *compiler) functionParameters(n ast.Node, path, function string) ([]*v1.
 // form is the expansion and is still a fixed point of the round trip through
 // Marshal.
 func (c *compiler) expandFunctions(val *v1.Value, span Span, r ref) *v1.Value {
+	if !c.checkQualifiedCalls(val.GetExpr(), span, r) {
+		return nil
+	}
 	if c.functions == nil || !c.functions.Calls(val.GetExpr()) {
 		return val
 	}
@@ -352,7 +364,7 @@ func (c *compiler) settleMusts() {
 }
 
 func (c *compiler) expandMust(m deferredMust) {
-	if c.functions == nil {
+	if !c.checkQualifiedText(m.text, m.span, m.r) || c.functions == nil {
 		return
 	}
 
@@ -381,6 +393,9 @@ func (c *compiler) expandMust(m deferredMust) {
 // asked of the expansion by [validatePolicyRules], because the expansion is what
 // runs.
 func (c *compiler) expandPredicate(text string, span Span, r ref) (string, *string, bool) {
+	if !c.checkQualifiedText(text, span, r) {
+		return "", nil, false
+	}
 	if c.functions == nil {
 		return text, nil, true
 	}

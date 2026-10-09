@@ -593,6 +593,66 @@ message Workflow {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).repeated = {max_items: 64}
   ];
+
+  // Modules record the files whose declarations this workflow carries, one entry
+  // per `use:` in the file and one per module those files use in turn.
+  //
+  // A module is a Flowfile with no steps that declares types, functions and
+  // errors. The compiler reads it, as it reads a `call:` target, and carries what
+  // it declares into [declared_types], [declared_functions] and [declared_errors]
+  // under the module's alias and a dot (`ids.Uuid`), inlined at each use exactly
+  // as a declaration written in this file is. Nothing here is resolved or
+  // evaluated again: this is provenance, so a run can state which module bytes
+  // it was built from, and it travels across every Continue-As-New unchanged.
+  //
+  // The alias of a module the file uses itself is a single word; a module that
+  // module uses is recorded under both aliases joined by `_` (`ids_core`), and its
+  // record types are carried under that name. Only the first kind is written back
+  // by `flow fmt`.
+  //
+  // Bounded at 64 entries, which is also the bound on a compiled workflow's
+  // modules however deep they nest.
+  repeated Module modules = 23 [
+    (google.api.field_behavior) = OPTIONAL,
+    (buf.validate.field).repeated = {max_items: 64}
+  ];
+}
+
+// Module records one file a workflow's declarations were carried from, mirroring
+// what [Call] records of its callee ([Call.source], [Call.source_digest]).
+//
+// Provenance only. Nothing reads `source` back to a file, and a specification
+// that names a module whose bytes it does not match is not refused for it: the
+// declarations it carries are what run. The digest is what an operator audits.
+message Module {
+  // Alias is the word the declarations are qualified by: `ids` for `ids.Uuid`.
+  // A lowerCamel identifier of at most 32 characters, with no underscore, so it
+  // can never be the `_`-joined alias of a module reached through another.
+  string alias = 1 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {
+      min_len: 1
+      max_len: 131
+      pattern: "^[a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}$"
+    }
+  ];
+
+  // Source is where the module was read from, as written in the `use:` that
+  // named it, relative to the file that wrote it.
+  string source = 2 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {min_len: 1 max_len: 1024}
+  ];
+
+  // SourceDigest is a content digest of the module file's bytes, taken at the
+  // same moment the resolver reads them, formatted `sha256:<hex>`.
+  string source_digest = 3 [
+    (buf.validate.field).required = true,
+    (google.api.field_behavior) = REQUIRED,
+    (buf.validate.field).string = {max_len: 128}
+  ];
 }
 
 // ErrorDeclaration names one failure a workflow may raise with a `fail:` step.
@@ -613,14 +673,15 @@ message Workflow {
 message ErrorDeclaration {
   // Name is the kind. Capitalised and an identifier, like a record type's name,
   // and not one of the built-in kinds (`Timeout`, `Upstream`, ...), which a
-  // declaration could otherwise redefine.
+  // declaration could otherwise redefine. An error a module declared is carried
+  // under the module's alias and a dot (`ids.NotFound`); see [Workflow.modules].
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 128
-      pattern: "^[A-Z][A-Za-z0-9_]*$"
+      max_len: 260
+      pattern: "^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$"
     }
   ];
 
@@ -682,14 +743,15 @@ message Fail {
 message FunctionDeclaration {
   // Name is what an expression calls: lowerCamel, and never a name the profile
   // already has (`size`, `has`, `sum`), so a definition can never change what an
-  // existing expression means.
+  // existing expression means. A function a module declared is carried under the
+  // module's alias and a dot (`ids.isUuid`); see [Workflow.modules].
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 64
-      pattern: "^[a-z][A-Za-z0-9]*$"
+      max_len: 196
+      pattern: "^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[a-z][A-Za-z0-9]{0,63}$"
     }
   ];
 
@@ -766,13 +828,16 @@ message TypeDeclaration {
   // Name is what the type is called: `type: <name>`, and the [Type.message] of
   // every declaration that uses it. Capitalised and an identifier, so it cannot be
   // spelled like a scalar (`string`), a legacy word (`struct`) or a field.
+  //
+  // A name a module declared is carried under the module's alias and a dot
+  // (`ids.Uuid`); see [Workflow.modules]. One alias prefix, never two.
   string name = 1 [
     (buf.validate.field).required = true,
     (google.api.field_behavior) = REQUIRED,
     (buf.validate.field).string = {
       min_len: 1
-      max_len: 128
-      pattern: "^[A-Z][A-Za-z0-9_]*$"
+      max_len: 260
+      pattern: "^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$"
     }
   ];
 
@@ -2542,7 +2607,7 @@ message StepPolicy {
   repeated string tolerated_kinds = 5 [(buf.validate.field).repeated = {
     max_items: 64
     unique: true
-    items: {string: {min_len: 1 max_len: 128 pattern: "^[A-Z][A-Za-z0-9_]*$"}}
+    items: {string: {min_len: 1 max_len: 260 pattern: "^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$"}}
   }];
 }
 
@@ -2579,7 +2644,7 @@ message RetryPolicy {
   repeated string only = 5 [(buf.validate.field).repeated = {
     max_items: 64
     unique: true
-    items: {string: {min_len: 1 max_len: 128 pattern: "^[A-Z][A-Za-z0-9_]*$"}}
+    items: {string: {min_len: 1 max_len: 260 pattern: "^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$"}}
   }];
 
   // 6 was `except`, the complement of `only`; one list says it, so it is gone.

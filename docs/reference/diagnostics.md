@@ -23,6 +23,7 @@ everything else is `general`, and that is documented rather than pretended away.
 | `stub-unmatched` | A case invoked a task no stub it declared answered — a hole in the case's own scaffolding rather than a disagreement about the run. |
 | `sensitive-in-prompt` | A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or holds a secret reference; a prompt is rendered to whoever is being asked to approve, so ask the question without that value in it. |
 | `sensitive-in-fail-message` | A `fail:` step's `message:` reaches an input declared `sensitive:`, or holds a secret reference; the message is recorded in the run's history, so write it without that value in it. |
+| `module-refused` | A `use:` names a module the file may not take declarations from: a path outside what it may read, a file that is a workflow and not a module, a cycle of modules, a bound crossed, or a module that has errors of its own. |
 
 ## Shape
 

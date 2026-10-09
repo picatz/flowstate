@@ -138,6 +138,9 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	if doc.parsed == nil {
 		return nil
 	}
+	if locations := useDefinition(doc, pos); locations != nil {
+		return locations
+	}
 	from := doc.parsed.stepAt(pos)
 	if from == nil {
 		// Outside every step, the one place that reads a step is the workflow's
@@ -315,6 +318,35 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 	}
 
 	return siblingFlowfile(doc, target)
+}
+
+// useDefinition resolves the `path:` of a `use:` entry, when the cursor is on it, to
+// the module it names. A `use:` is the second place this language names another
+// file, and it is resolved by the same [flowfile.ResolveCallTarget] a call is, so
+// the editor and the compiler cannot disagree about which file a path means.
+// Navigating to a declaration inside the module is a later slice; this lands on the
+// file.
+func useDefinition(doc *document, pos lsp.Position) []lsp.Location {
+	for _, e := range doc.parsed.entries {
+		if e.key != "use" {
+			continue
+		}
+		for _, alias := range nestedEntries(e) {
+			for _, field := range nestedEntries(alias) {
+				if field.key != "path" || !contains(field.valueRange(), pos) {
+					continue
+				}
+				target, err := flowfile.LiteralText(field.valueText())
+				if target == "" || err != nil {
+					return nil
+				}
+
+				return siblingFlowfile(doc, target)
+			}
+		}
+	}
+
+	return nil
 }
 
 // siblingFlowfile resolves a `call:` target the way the compiler does — the

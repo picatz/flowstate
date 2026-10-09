@@ -326,6 +326,7 @@ var examplesNeedingAFile = map[string]bool{
 	"fan-out-calls":                  true,
 	"pinned-call":                    true,
 	"progressive-rollout":            true,
+	"use-modules":                    true,
 }
 
 func TestEveryExampleResourceIsAValidFlowfile(t *testing.T) {

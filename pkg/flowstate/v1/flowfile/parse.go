@@ -85,7 +85,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "types", "errors", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "use", "types", "errors", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -478,7 +478,7 @@ func StepTaskKeys(keys []string) []string {
 // refused with a diagnostic saying so. Use [ParseFile] to compile a file that
 // may contain one.
 func Parse(data []byte) (*v1.Workflow, *Positions, error) {
-	wf, pos, err := parse(data, "", nil, new(int))
+	wf, pos, err := parse(data, "", nil, new(int), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -497,7 +497,7 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	wf, pos, err := parse(data, path, nil, new(int))
+	wf, pos, err := parse(data, path, nil, new(int), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -513,7 +513,7 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 // from disk, because a callee is a *different* file's content and this
 // function has no in-memory version of it to prefer.
 func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
-	wf, pos, err := parse(data, path, nil, new(int))
+	wf, pos, err := parse(data, path, nil, new(int), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -525,7 +525,7 @@ func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
 // already being compiled, for cycle detection across files, and the running
 // total of nodes a call has compiled so far, shared across the whole tree —
 // see call.go.
-func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.Workflow, *Positions, error) {
+func parse(data []byte, path string, callStack []string, callBudget *int, session *moduleSession) (*v1.Workflow, *Positions, error) {
 	if len(data) > maxBytes {
 		return nil, nil, Diagnostics{{
 			Line:   1,
@@ -541,12 +541,20 @@ func parse(data []byte, path string, callStack []string, callBudget *int) (*v1.W
 		return nil, nil, YAMLSyntaxDiagnostics(data, err)
 	}
 
+	// A workflow, or a `call:`'s callee, starts the account of the modules it uses;
+	// a module it uses continues that account, so one workflow's modules are bounded
+	// together however they nest.
+	if session == nil {
+		session = newModuleSession()
+	}
+
 	c := &compiler{
 		pos:        newPositions(),
 		anchors:    make(map[string]ast.Node),
 		filePath:   path,
 		callStack:  callStack,
 		callBudget: callBudget,
+		session:    session,
 	}
 	workflow := c.compile(file)
 	if len(c.diags) > 0 {
@@ -702,6 +710,11 @@ type compiler struct {
 	scalarNames map[string]bool
 	scalarTypes map[string]*v1.TypeDeclaration
 	scalarUses  []scalarUse
+
+	// session is the account of the modules the workflow being compiled uses, and
+	// uses holds what this file's own `use:` brought in. See use.go.
+	session *moduleSession
+	uses    usedModules
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -921,9 +934,20 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// The record types the file names, read before anything that can use one: an
 	// input or an output says `type: Order`, and the name has to be known to
 	// read it. See flowfile/types.go.
+	// The modules the file uses, read before anything that can name what one
+	// declares: `use:` is where a qualified name (`ids.Uuid`) gets its meaning, and
+	// what a module declares is carried in ahead of what this file declares itself.
+	// See flowfile/use.go.
+	if f, found := fields.get("use"); found {
+		c.useModules(f)
+	}
+	workflow.Modules = c.uses.records
+
 	if f, found := fields.get("types"); found {
 		workflow.DeclaredTypes = c.declaredTypes(f.value, "types", ref{path: "types", label: "types"})
 	}
+	c.ensureTypeEnv()
+	workflow.DeclaredTypes = c.uses.withTypes(workflow.DeclaredTypes)
 
 	// The failures the file may raise, by name. Read after the types so a later
 	// slice can hold a record, and before the steps so a `fail:` can be checked
@@ -931,6 +955,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	if f, found := fields.get("errors"); found {
 		workflow.DeclaredErrors = c.declaredErrors(f.value, "errors", ref{path: "errors", label: "errors"})
 	}
+	workflow.DeclaredErrors = c.uses.withErrors(workflow.DeclaredErrors)
 
 	// The functions the file names, read before anything that can call one: each
 	// expression is expanded as it is compiled, so the names have to be known first.
@@ -938,6 +963,8 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	if f, found := fields.get("functions"); found {
 		workflow.DeclaredFunctions = c.declaredFunctions(f.value, "functions", ref{path: "functions", label: "functions"})
 	}
+	c.carriedFunctionSet()
+	workflow.DeclaredFunctions = c.uses.withFunctions(workflow.DeclaredFunctions)
 	c.settleMusts()
 
 	// What the run takes, read first because it is what a reader meets first: a
@@ -1217,7 +1244,7 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an input can have: %s; the types are %s",
-					text, err, strings.Join(declarableTypeNames(), ", "))
+					text, c.typeProblem(text, err), strings.Join(declarableTypeNames(), ", "))
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural
@@ -1451,7 +1478,7 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 			if err != nil {
 				c.report(spanOfNode(f.value), typeRef,
 					"is %q, which is not a type an output can have: %s; the types are %s",
-					text, err, strings.Join(declarableTypeNames(), ", "))
+					text, c.typeProblem(text, err), strings.Join(declarableTypeNames(), ", "))
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural

@@ -109,7 +109,7 @@ func TestFormatTypeRefusesWhatHasNoSpelling(t *testing.T) {
 
 	for _, bad := range []*v1.Type{
 		{Kind: &v1.Type_Enum{Enum: true}},
-		{Kind: &v1.Type_Message{Message: "a.B"}},
+		{Kind: &v1.Type_Message{Message: "a.b.C"}},
 		{Kind: &v1.Type_Dyn{Dyn: false}},
 		{},
 	} {

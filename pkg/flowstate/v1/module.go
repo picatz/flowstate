@@ -19,6 +19,7 @@ var moduleFields = map[protoreflect.Name]bool{
 	"declared_types":     true,
 	"declared_functions": true,
 	"declared_errors":    true,
+	"modules":            true,
 }
 
 // IsModule reports whether w is a module: a Flowfile that declares types,

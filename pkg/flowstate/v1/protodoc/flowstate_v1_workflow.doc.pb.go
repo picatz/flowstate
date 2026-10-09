@@ -455,6 +455,27 @@ func init() {
 				" spell one of them. See [ErrorDeclaration].\n",
 		},
 		{
+			Name: "flowstate.v1.Workflow.modules",
+			Leading: " Modules record the files whose declarations this workflow carries, one entry\n" +
+				" per `use:` in the file and one per module those files use in turn.\n" +
+				"\n" +
+				" A module is a Flowfile with no steps that declares types, functions and\n" +
+				" errors. The compiler reads it, as it reads a `call:` target, and carries what\n" +
+				" it declares into [declared_types], [declared_functions] and [declared_errors]\n" +
+				" under the module's alias and a dot (`ids.Uuid`), inlined at each use exactly\n" +
+				" as a declaration written in this file is. Nothing here is resolved or\n" +
+				" evaluated again: this is provenance, so a run can state which module bytes\n" +
+				" it was built from, and it travels across every Continue-As-New unchanged.\n" +
+				"\n" +
+				" The alias of a module the file uses itself is a single word; a module that\n" +
+				" module uses is recorded under both aliases joined by `_` (`ids_core`), and its\n" +
+				" record types are carried under that name. Only the first kind is written back\n" +
+				" by `flow fmt`.\n" +
+				"\n" +
+				" Bounded at 64 entries, which is also the bound on a compiled workflow's\n" +
+				" modules however deep they nest.\n",
+		},
+		{
 			Name: "flowstate.v1.Workflow.StepOutputs",
 			Leading: " StepOutputs is a map of step IDs to their outputs. Each step's outputs are\n" +
 				" represented as a map of named values, allowing for structured outputs that\n" +
@@ -499,6 +520,31 @@ func init() {
 				" the only place anything writes it.\n",
 		},
 		{
+			Name: "flowstate.v1.Module",
+			Leading: " Module records one file a workflow's declarations were carried from, mirroring\n" +
+				" what [Call] records of its callee ([Call.source], [Call.source_digest]).\n" +
+				"\n" +
+				" Provenance only. Nothing reads `source` back to a file, and a specification\n" +
+				" that names a module whose bytes it does not match is not refused for it: the\n" +
+				" declarations it carries are what run. The digest is what an operator audits.\n",
+		},
+		{
+			Name: "flowstate.v1.Module.alias",
+			Leading: " Alias is the word the declarations are qualified by: `ids` for `ids.Uuid`.\n" +
+				" A lowerCamel identifier of at most 32 characters, with no underscore, so it\n" +
+				" can never be the `_`-joined alias of a module reached through another.\n",
+		},
+		{
+			Name: "flowstate.v1.Module.source",
+			Leading: " Source is where the module was read from, as written in the `use:` that\n" +
+				" named it, relative to the file that wrote it.\n",
+		},
+		{
+			Name: "flowstate.v1.Module.source_digest",
+			Leading: " SourceDigest is a content digest of the module file's bytes, taken at the\n" +
+				" same moment the resolver reads them, formatted `sha256:<hex>`.\n",
+		},
+		{
 			Name: "flowstate.v1.ErrorDeclaration",
 			Leading: " ErrorDeclaration names one failure a workflow may raise with a `fail:` step.\n" +
 				"\n" +
@@ -520,7 +566,8 @@ func init() {
 			Name: "flowstate.v1.ErrorDeclaration.name",
 			Leading: " Name is the kind. Capitalised and an identifier, like a record type's name,\n" +
 				" and not one of the built-in kinds (`Timeout`, `Upstream`, ...), which a\n" +
-				" declaration could otherwise redefine.\n",
+				" declaration could otherwise redefine. An error a module declared is carried\n" +
+				" under the module's alias and a dot (`ids.NotFound`); see [Workflow.modules].\n",
 		},
 		{
 			Name: "flowstate.v1.ErrorDeclaration.description",
@@ -583,7 +630,8 @@ func init() {
 			Name: "flowstate.v1.FunctionDeclaration.name",
 			Leading: " Name is what an expression calls: lowerCamel, and never a name the profile\n" +
 				" already has (`size`, `has`, `sum`), so a definition can never change what an\n" +
-				" existing expression means.\n",
+				" existing expression means. A function a module declared is carried under the\n" +
+				" module's alias and a dot (`ids.isUuid`); see [Workflow.modules].\n",
 		},
 		{
 			Name: "flowstate.v1.FunctionDeclaration.parameters",
@@ -648,7 +696,10 @@ func init() {
 			Name: "flowstate.v1.TypeDeclaration.name",
 			Leading: " Name is what the type is called: `type: <name>`, and the [Type.message] of\n" +
 				" every declaration that uses it. Capitalised and an identifier, so it cannot be\n" +
-				" spelled like a scalar (`string`), a legacy word (`struct`) or a field.\n",
+				" spelled like a scalar (`string`), a legacy word (`struct`) or a field.\n" +
+				"\n" +
+				" A name a module declared is carried under the module's alias and a dot\n" +
+				" (`ids.Uuid`); see [Workflow.modules]. One alias prefix, never two.\n",
 		},
 		{
 			Name: "flowstate.v1.TypeDeclaration.description",

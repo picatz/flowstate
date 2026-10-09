@@ -1348,6 +1348,7 @@ func TestHoverDocumentsEveryDSLKey(t *testing.T) {
 	src := "edition: " + flowfile.CurrentEdition + "\n" + `name: all-keys
 labels: {}
 description: everything
+use: {}
 types: {}
 errors:
   Refused: {}
