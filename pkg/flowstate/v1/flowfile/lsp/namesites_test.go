@@ -207,3 +207,14 @@ func TestRenameVarFollowsAnOptionalSelection(t *testing.T) {
 	assert.Contains(t, got, `vars.?salute.orValue`)
 	assert.NotContains(t, got, "greeting")
 }
+
+func TestRenameRefusesCELReservedWords(t *testing.T) {
+	t.Parallel()
+	for _, word := range []string{"true", "null", "in", "as", "function"} {
+		_, err := renameTo(t, namesSource, "as: n", len("as: "), word)
+		require.Error(t, err, word)
+		assert.Contains(t, err.Error(), "reserved", word)
+		_, err = renameTo(t, namesSource, "greeting: hello", 0, word)
+		require.Error(t, err, word)
+	}
+}

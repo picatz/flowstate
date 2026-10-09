@@ -8,6 +8,7 @@ import (
 	"github.com/sourcegraph/go-lsp"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Step ids are not the only names an author declares and reads back. A loop binds
@@ -364,6 +365,8 @@ func (ns nameSites) checkRename(doc *document, newName string) error {
 	switch {
 	case !v1.IsCELIdentifier(newName):
 		return renameError(fmt.Sprintf("%q is not a valid %s name: use letters, digits and underscores, starting with a letter or underscore", newName, ns.kind))
+	case flowfile.IsCELReservedIdentifier(newName):
+		return renameError(fmt.Sprintf("%q is a reserved word in CEL and cannot name a %s", newName, ns.kind))
 	case v1.IsDeclarationRoot(newName):
 		return renameError(v1.ShadowsRootMessage(ns.kind.String(), newName))
 	}
