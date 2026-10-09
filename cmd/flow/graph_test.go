@@ -191,3 +191,47 @@ func TestGraphLiveSaysWhenTheFilterCouldNotBeEvaluatedForSomeRuns(t *testing.T) 
 	assert.True(t, g.GetPartial(), "an undercount must not read as complete")
 	assert.Contains(t, g.GetNotes()[0], "5 runs were left out because --filter could not be evaluated")
 }
+
+func TestGraphWorkflowZoomsToOneWorkflowsSteps(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "approval-gate")
+
+	res := runFlow(t, "graph", dir, "--workflow", "approval-gate")
+	require.NoError(t, res.Err, res.Stderr)
+	assert.Equal(t, `approval-gate
+  steps
+    request  task "log"
+    settle  wait
+    approval  wait_for_signal "deploy-approved"
+    decision  switch
+      deploy  task "log"  @ decision?0/deploy
+      rejected  task "log"  @ decision?1/rejected
+      undecided  task "log"  @ decision?2/undecided
+`, res.Stdout)
+
+	asJSON := runFlow(t, "graph", dir, "--workflow", "approval-gate", "-o", "json")
+	require.NoError(t, asJSON.Err, asJSON.Stderr)
+	var g v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(asJSON.Stdout), &g))
+	require.NoError(t, v1.Validate(&g))
+	var addresses []string
+	for _, n := range g.GetNodes() {
+		if n.GetKind() == v1.GraphNodeKind_GRAPH_NODE_KIND_STEP {
+			addresses = append(addresses, n.GetAddress())
+		}
+	}
+	assert.Contains(t, addresses, "decision?1/rejected", "a step carries the address the debugger writes")
+}
+
+func TestGraphWorkflowNamesWhatTheFilesDeclareWhenTheNameIsWrong(t *testing.T) {
+	res := runFlow(t, "graph", filepath.Join("..", "..", "examples", "approval-gate"), "--workflow", "nope")
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), `no workflow named "nope"; the files declare: approval-gate`)
+}
+
+func TestGraphWorkflowIsRefusedWithLiveBeforeAnyRequest(t *testing.T) {
+	res := runFlow(t, "graph", "--live", "--workflow", "x")
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "--workflow shows the steps a file declares")
+}

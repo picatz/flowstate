@@ -23,8 +23,10 @@ func Text(w io.Writer, g *v1.Graph) error {
 		out[e.GetFrom()] = append(out[e.GetFrom()], e)
 	}
 	labels := map[string]string{}
+	nodes := map[string]*v1.GraphNode{}
 	for _, n := range g.GetNodes() {
 		labels[n.GetId()] = n.GetLabel()
+		nodes[n.GetId()] = n
 	}
 
 	// Run state, by node, in the layer's own order.
@@ -48,7 +50,15 @@ func Text(w io.Writer, g *v1.Graph) error {
 		if state := runs[n.GetId()]; len(state) > 0 {
 			fmt.Fprintf(&sb, "  runs  %s\n", strings.Join(state, ", "))
 		}
-		edges := slices.Clone(out[n.GetId()])
+		var held []*v1.GraphEdge
+		edges := slices.DeleteFunc(slices.Clone(out[n.GetId()]), func(e *v1.GraphEdge) bool {
+			if e.GetKind() != v1.GraphEdgeKind_GRAPH_EDGE_KIND_CONTAINS {
+				return false
+			}
+			held = append(held, e)
+
+			return true
+		})
 		// Calls first, then waits, then tasks: what a workflow depends on, then
 		// what it can be told, then what it does.
 		slices.SortStableFunc(edges, func(a, b *v1.GraphEdge) int {
@@ -60,6 +70,10 @@ func Text(w io.Writer, g *v1.Graph) error {
 				count = fmt.Sprintf(" x%d", e.GetCount())
 			}
 			fmt.Fprintf(&sb, "  %-5s %s%s\n", verb(e.GetKind()), clean(labels[e.GetTo()]), count)
+		}
+		if len(held) > 0 {
+			sb.WriteString("  steps\n")
+			writeSteps(&sb, held, out, nodes, 2, 0)
 		}
 	}
 	if workflows == 0 {
@@ -75,6 +89,41 @@ func Text(w io.Writer, g *v1.Graph) error {
 	_, err := io.WriteString(w, sb.String())
 
 	return err
+}
+
+// maxStepDepth bounds how deep the step tree is written, so a hand-built graph
+// whose containment is a cycle ends rather than recurses without end.
+const maxStepDepth = 130
+
+// writeSteps writes the steps a node holds, in the order the edges give, each
+// indented under its container: its label, what it does, and where it is when
+// that is not just its label.
+func writeSteps(sb *strings.Builder, held []*v1.GraphEdge, out map[string][]*v1.GraphEdge, nodes map[string]*v1.GraphNode, indent, depth int) {
+	if depth >= maxStepDepth {
+		return
+	}
+	for _, e := range held {
+		n := nodes[e.GetTo()]
+		if n == nil {
+			continue
+		}
+		fmt.Fprintf(sb, "%s%s", strings.Repeat("  ", indent), clean(n.GetLabel()))
+		if n.GetDetail() != "" {
+			fmt.Fprintf(sb, "  %s", clean(n.GetDetail()))
+		}
+		if n.GetAddress() != "" && n.GetAddress() != n.GetLabel() {
+			fmt.Fprintf(sb, "  @ %s", clean(n.GetAddress()))
+		}
+		sb.WriteString("\n")
+
+		var inner []*v1.GraphEdge
+		for _, c := range out[n.GetId()] {
+			if c.GetKind() == v1.GraphEdgeKind_GRAPH_EDGE_KIND_CONTAINS {
+				inner = append(inner, c)
+			}
+		}
+		writeSteps(sb, inner, out, nodes, indent+1, depth+1)
+	}
 }
 
 // EdgeRank orders edge kinds the way every renderer lists them: calls first,
@@ -99,6 +148,8 @@ func verb(k v1.GraphEdgeKind) string {
 		return "waits"
 	case v1.GraphEdgeKind_GRAPH_EDGE_KIND_USES:
 		return "uses"
+	case v1.GraphEdgeKind_GRAPH_EDGE_KIND_CONTAINS:
+		return "holds"
 	default:
 		return "?"
 	}

@@ -95,6 +95,18 @@ func init() {
 				" text, so a renderer must treat it as untrusted.\n",
 		},
 		{
+			Name: "flowstate.v1.GraphNode.address",
+			Leading: " Address is where the node is in the program, for a STEP: the debug address\n" +
+				" `FormatDebugAddress` writes, so a step the explorer shows opens at the same\n" +
+				" place in the debugger. Other kinds have none.\n",
+		},
+		{
+			Name: "flowstate.v1.GraphNode.detail",
+			Leading: " Detail is what a STEP does, in the words the debugger uses for it: `task\n" +
+				" \"http\"`, `wait_for_signal \"approved\"`, `loop`. It is author-controlled text,\n" +
+				" so a renderer must treat it as untrusted.\n",
+		},
+		{
 			Name:    "flowstate.v1.GraphEdge",
 			Leading: " GraphEdge is one relation between two nodes.\n",
 		},
@@ -171,6 +183,10 @@ func init() {
 			Leading: " A signal channel a workflow waits on, by name.\n",
 		},
 		{
+			Name:    "flowstate.v1.GRAPH_NODE_KIND_STEP",
+			Leading: " A step of a workflow, by the id the author gave it. Its address says where.\n",
+		},
+		{
 			Name:    "flowstate.v1.GraphEdgeKind",
 			Leading: " GraphEdgeKind says how two nodes are related.\n",
 		},
@@ -185,6 +201,11 @@ func init() {
 		{
 			Name:    "flowstate.v1.GRAPH_EDGE_KIND_WAITS",
 			Leading: " A workflow waits for a signal.\n",
+		},
+		{
+			Name: "flowstate.v1.GRAPH_EDGE_KIND_CONTAINS",
+			Leading: " A workflow or a step holds a step: the workflow its top-level steps, a\n" +
+				" loop, a parallel branch or a switch arm the steps in its body.\n",
 		},
 	})
 }

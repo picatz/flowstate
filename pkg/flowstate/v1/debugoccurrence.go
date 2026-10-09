@@ -357,8 +357,10 @@ type DebugStaticSite struct {
 	Site *DebugSite
 
 	// Chain is every container from the root workflow's top level down,
-	// including calls, as segments without indices: a segment's Index is zero
-	// and meaningless here.
+	// including calls, as segments. A `parallel:` branch and a `switch:` arm
+	// carry their index, which the program fixes; an iteration's Index is zero,
+	// because which iteration a run is in is not known statically, and so is a
+	// call's.
 	Chain []*DebugSegment
 
 	// Locals are the bare names bound where the site's `if:` is evaluated,
@@ -471,9 +473,9 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 			if len(chain) >= MaxDebugSegments {
 				continue
 			}
-			into := func(kind DebugSegmentKind) []*DebugSegment {
+			into := func(kind DebugSegmentKind, index int) []*DebugSegment {
 				return append(slices.Clip(chain), &DebugSegment{
-					Kind: kind, StepId: node.GetId(), Workflow: workflow.GetName(),
+					Kind: kind, StepId: node.GetId(), Workflow: workflow.GetName(), Index: int32(index),
 				})
 			}
 
@@ -491,24 +493,25 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 
 			switch kind := node.GetKind().(type) {
 			case *Node_ForEach:
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.ForEach.GetBody(), depth, serial && !ConcurrentForEach(kind.ForEach))
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, 0), inner, kind.ForEach.GetBody(), depth, serial && !ConcurrentForEach(kind.ForEach))
 			case *Node_Loop:
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION), inner, kind.Loop.GetBody(), depth, serial)
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_ITERATION, 0), inner, kind.Loop.GetBody(), depth, serial)
 			case *Node_Parallel:
-				for _, branch := range kind.Parallel.GetBranches() {
-					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH), inner, branch.GetSteps(), depth, false)
+				for i, branch := range kind.Parallel.GetBranches() {
+					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_BRANCH, i), inner, branch.GetSteps(), depth, false)
 				}
 			case *Node_Switch:
-				for _, arm := range kind.Switch.GetCases() {
-					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, arm.GetSteps(), depth, serial)
+				for i, arm := range kind.Switch.GetCases() {
+					walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, i), inner, arm.GetSteps(), depth, serial)
 				}
-				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE), inner, kind.Switch.GetDefault().GetSteps(), depth, serial)
+				// The default arm is numbered after the cases, as [SwitchArmIndex] does.
+				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, len(kind.Switch.GetCases())), inner, kind.Switch.GetDefault().GetSteps(), depth, serial)
 			case *Node_Call:
 				if depth >= MaxCallDepth {
 					continue
 				}
 				callee := kind.Call.GetWorkflow()
-				call := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL)
+				call := into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL, 0)
 				call[len(call)-1].Callee = callee.GetName()
 				// Isolated: a callee sees its own arguments and none of
 				// the caller's bare names ([CallScope]).

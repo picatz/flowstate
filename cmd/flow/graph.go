@@ -67,6 +67,9 @@ flow graph examples/call-a-workflow/workflow.yaml
 # The same graph for a program or an agent:
 flow graph examples -o json | jq '.edges[] | select(.count > 1)'
 
+# The steps of one workflow, each with its debugger address:
+flow graph examples --workflow deploy
+
 # What is running now, over what the files declare:
 flow graph examples --live
 
@@ -77,6 +80,7 @@ flow graph --live --filter 'status == "FAILED" && name == "billing"'`,
 	addServerFlags(cmd)
 	cmd.Flags().Bool("live", false, "also show the runs on the server at --address, counted by workflow and status")
 	cmd.Flags().String("filter", "", "with --live, a CEL expression over runs, as `flow list --filter` takes")
+	cmd.Flags().String("workflow", "", "zoom in on the named workflow: its own steps, each with the address the debugger uses for it")
 
 	return cmd
 }
@@ -110,6 +114,9 @@ type graphSources struct {
 	paths  []string
 	live   bool
 	filter string
+
+	// workflow, when set, zooms from the fleet to that workflow's own steps.
+	workflow string
 }
 
 // graphSourcesOf reads the sources the command line names, and refuses a
@@ -127,7 +134,12 @@ func graphSourcesOf(cmd *cobra.Command, paths []string) (graphSources, error) {
 		return graphSources{}, err
 	}
 
-	return graphSources{paths: paths, live: live, filter: filter}, nil
+	workflow, _ := cmd.Flags().GetString("workflow")
+	if workflow != "" && live {
+		return graphSources{}, errors.New("--workflow shows the steps a file declares; it cannot be combined with --live")
+	}
+
+	return graphSources{paths: paths, live: live, filter: filter, workflow: workflow}, nil
 }
 
 // build reads the sources into one graph.
@@ -164,6 +176,10 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 		workflows = append(workflows, wf)
 	}
 
+	if s.workflow != "" {
+		return stepsOf(workflows, skipped, s.workflow)
+	}
+
 	g := graph.Static(workflows...)
 	if len(skipped) > 0 {
 		g.Partial = true
@@ -173,6 +189,39 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 
 	if s.live {
 		return withLiveRuns(cmd, g, s.filter)
+	}
+
+	return g, nil
+}
+
+// stepsOf is the graph of one workflow's steps, by the name it declares. A name
+// no file declares is answered with the names that are, so a misspelling is one
+// glance from its fix; files that did not compile are named in the graph, since
+// the workflow wanted may be one of them.
+func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph, error) {
+	i := slices.IndexFunc(workflows, func(wf *v1.Workflow) bool { return wf.GetName() == name })
+	if i < 0 {
+		names := make([]string, 0, len(workflows))
+		for _, wf := range workflows {
+			names = append(names, wf.GetName())
+		}
+		slices.Sort(names)
+		names = slices.Compact(names)
+		if len(names) > 10 {
+			names = append(names[:10], "...")
+		}
+		if len(names) == 0 {
+			return nil, fmt.Errorf("no workflow named %q: no Flowfile compiled", name)
+		}
+
+		return nil, fmt.Errorf("no workflow named %q; the files declare: %s", name, strings.Join(names, ", "))
+	}
+
+	g := graph.Steps(workflows[i])
+	if len(skipped) > 0 {
+		g.Partial = true
+		g.Notes = append(skipped[:min(len(skipped), 100)], g.Notes...)
+		g.Notes = g.Notes[:min(len(g.Notes), 100)]
 	}
 
 	return g, nil
