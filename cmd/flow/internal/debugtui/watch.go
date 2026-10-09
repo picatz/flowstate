@@ -25,7 +25,7 @@ const MaxWatches = 16
 // Watch is an expression the person asked to see at every stop.
 //
 // A watch is the screen's own: the target never hears of it. What it holds of
-// the run is what [Target.Inspect] answered, so a value the target withholds is
+// the run is what [flowdebug.Target.Inspect] answered, so a value the target withholds is
 // withheld here and nothing in a watch is evaluated by the client.
 type Watch struct {
 	// Expr is the expression, as typed.
@@ -86,8 +86,8 @@ const (
 	// outcomeError: the target could not evaluate the expression.
 	outcomeError
 	// outcomeSkipped: the run moved or let go before the answer, which says
-	// nothing about the expression. The watch keeps what it had; the read that
-	// follows the move evaluates it again.
+	// nothing about the expression. The watch reads as pending, keeping only what
+	// the console has said; the read that follows the move evaluates it again.
 	outcomeSkipped
 	// outcomeNotHeld: the run was not held, so nothing could be asked.
 	outcomeNotHeld
