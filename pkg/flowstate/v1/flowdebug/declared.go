@@ -140,18 +140,29 @@ func pathSegments(expression string) ([]pathSegment, bool) {
 			segments = append(segments, pathSegment{key: name})
 			rest = after
 		case '[':
+			if quoted, err := strconv.QuotedPrefix(rest[1:]); err == nil {
+				// The key is read as a quoted string whole, so a `]` or an escaped
+				// quote inside it is part of the key, as [childrenOf] writes it.
+				key, err := strconv.Unquote(quoted)
+				if err != nil || !strings.HasPrefix(rest[1+len(quoted):], "]") {
+					return nil, false
+				}
+				segments = append(segments, pathSegment{key: key})
+				rest = rest[len(quoted)+2:]
+
+				continue
+			}
+
 			end := strings.IndexByte(rest, ']')
 			if end < 0 {
 				return nil, false
 			}
 			inside := rest[1:end]
-			if n, err := strconv.Atoi(inside); err == nil && n >= 0 {
-				segments = append(segments, pathSegment{key: inside, index: true})
-			} else if key, err := strconv.Unquote(inside); err == nil && strings.HasPrefix(inside, `"`) {
-				segments = append(segments, pathSegment{key: key})
-			} else {
+			n, err := strconv.Atoi(inside)
+			if err != nil || n < 0 {
 				return nil, false
 			}
+			segments = append(segments, pathSegment{key: inside, index: true})
 			rest = rest[end+1:]
 		default:
 			return nil, false

@@ -1,6 +1,7 @@
 package flowdebug
 
 import (
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,4 +36,23 @@ func TestRecordAtReadsOnlyPlainPathsOfTheExecutingWorkflow(t *testing.T) {
 	assert.Empty(t, shapes.recordAt("inputs.order + 1", ""))
 	assert.Empty(t, shapes.recordAt("inputs.?order", ""))
 	assert.Empty(t, (*declaredShapes)(nil).recordAt("inputs.order", ""))
+}
+
+func TestRecordAtReadsAQuotedKeyWholeWhateverItHolds(t *testing.T) {
+	t.Parallel()
+
+	record := func(name string) *v1.Type { return &v1.Type{Kind: &v1.Type_Message{Message: name}} }
+	shapes := shapesOf(&v1.Workflow{
+		Name:          "main",
+		DeclaredTypes: []*v1.TypeDeclaration{{Name: "Line"}},
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name: "rows", ValueType: &v1.Type{Kind: &v1.Type_Map_{Map: &v1.Type_Map{Value: record("Line")}}},
+		}},
+	})
+
+	for _, key := range []string{"a]b", `say "hi"`, `back\slash`, "plain"} {
+		assert.Equal(t, "Line", shapes.recordAt("inputs.rows["+strconv.Quote(key)+"]", ""), key)
+	}
+	assert.Empty(t, shapes.recordAt(`inputs.rows["a"]x`, ""))
+	assert.Empty(t, shapes.recordAt(`inputs.rows["a"`, ""))
 }

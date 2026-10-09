@@ -1244,6 +1244,13 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 			held = spec()
 		}
 		sensitive := d.sensitiveAt(held, scope, d.held.callers)
+		// A record is named only where the stop is in the workflow that was
+		// submitted, as the local session does: a hold inside a callee reads
+		// the callee's `inputs`, which the labelling does not follow.
+		var shapesFrom *v1.Workflow
+		if root := spec(); root == nil || held.GetName() == root.GetName() {
+			shapesFrom = held
+		}
 		var (
 			redactText  func(string) string
 			redactValue func(any) any
@@ -1256,6 +1263,6 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		evalCtx, cancel := context.WithTimeout(context.Background(), debugInspectTimeout)
 		defer cancel()
 
-		return flowdebug.InspectScope(evalCtx, scope, held, redactText, redactValue, req, d.carry.GetRevision())
+		return flowdebug.InspectScope(evalCtx, scope, shapesFrom, redactText, redactValue, req, d.carry.GetRevision())
 	})
 }
