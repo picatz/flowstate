@@ -719,10 +719,6 @@ func SignalPolicyClosedPrincipals(policy *SignalPolicy) (principals []string, cl
 	return slices.Sorted(maps.Keys(analysis.principals)), true
 }
 
-// closedOfCall is the closed-principal rule for one call node, given the
-// results of its operands in sets (keyed by node ID, filled by the walk in
-// operand-first order). ok is false when the call admits a sender it cannot
-// name.
 // closedOfBind passes the closed set of a `cel.bind(name, value, result)` through
 // to the comprehension node, because that is what a declared function's expansion
 // is (see [FunctionSet.ExpandText]) and wrapping a comparison in a function must
@@ -776,6 +772,10 @@ func boundPrincipal(e celast.NavigableExpr, isPrincipal func(celast.Expr) bool) 
 	}
 }
 
+// closedOfCall is the closed-principal rule for one call node, given the
+// results of its operands in sets (keyed by node ID, filled by the walk in
+// operand-first order). ok is false when the call admits a sender it cannot
+// name.
 func closedOfCall(call celast.CallExpr, sets map[int64]map[string]struct{}, isPrincipal func(celast.Expr) bool) (map[string]struct{}, bool) {
 	args := call.Args()
 
