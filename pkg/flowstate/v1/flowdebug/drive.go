@@ -421,7 +421,14 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 		return result, nil
 	}
 
-	result.Snapshot, err = d.waitForStop(ctx, receipt.GetRevision())
+	if _, settled := d.target.(settledMover); settled {
+		// The target is already at the stop when it says the movement was applied,
+		// and its receipt names that stop's revision: waiting for one after it
+		// would wait for a move nobody is going to make.
+		result.Snapshot, err = d.target.Snapshot(ctx)
+	} else {
+		result.Snapshot, err = d.waitForStop(ctx, receipt.GetRevision())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -430,10 +437,26 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	return result, nil
 }
 
+// settledMover marks a [Target] whose movements are over when their receipt is
+// applied, because a movement is a read of another place and not a run: a
+// [Historical]. Its receipt carries the revision it moved to, so the driver
+// reads the stop rather than waiting past it.
+type settledMover interface{ settled() }
+
 // errCannotStepBack is what a session that was not built to be replayed from
 // its start says to `back` and `reverse-continue`, at its prompt and through a
 // [Driver] alike.
 var errCannotStepBack = errors.New("this session cannot step back: only a run replayed from its start can")
+
+// errLiveDurableCannotStepBack is the same refusal for a live durable run,
+// which holds its run where it is and has no earlier stop to return to: its
+// record is the way back, read by a debugger opened over the history.
+var errLiveDurableCannotStepBack = errors.New("a live durable run cannot step back: " +
+	"`flow debug attach --history --run-id …` walks its record")
+
+// errLiveDurableCannotTravel is [errLiveDurableCannotStepBack] for `goto`.
+var errLiveDurableCannotTravel = errors.New("a live durable run cannot go to a point on its timeline: " +
+	"`flow debug attach --history --run-id …` walks its record")
 
 // back returns to an earlier stop through a target that can step back. It is
 // a movement like any other: the expected revision, or the current one when
@@ -443,6 +466,10 @@ var errCannotStepBack = errors.New("this session cannot step back: only a run re
 func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, error) {
 	reverser, ok := d.target.(Reverser)
 	if !ok {
+		if _, live := d.target.(*Remote); live {
+			return nil, errLiveDurableCannotStepBack
+		}
+
 		return nil, errCannotStepBack
 	}
 	back := reverser.Back
@@ -459,6 +486,10 @@ func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, err
 func (d *Driver) goTo(ctx context.Context, rest string) (*DriveResult, error) {
 	traveler, ok := d.target.(Traveler)
 	if !ok {
+		if _, live := d.target.(*Remote); live {
+			return nil, errLiveDurableCannotTravel
+		}
+
 		return nil, errCannotTravel
 	}
 	point, err := strconv.ParseInt(rest, 10, 32)

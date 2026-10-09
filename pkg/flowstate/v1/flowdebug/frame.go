@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"errors"
+	"strings"
 
 	"connectrpc.com/connect"
 
@@ -59,6 +60,13 @@ type Frame struct {
 	// Partial reports that the target dropped observations, so any state
 	// derived from them understates what the run did.
 	Partial bool
+
+	// Fidelity is how the run's state at this stop is known: unspecified for a
+	// live stop, and [v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED] when the
+	// target is a recorded run walked point by point. It is the label for the
+	// frame as a whole; [Frame.ValueFidelity] says how one value read at it is
+	// known.
+	Fidelity v1.DebugFidelity
 
 	// Overlay is what the snapshot's observations and held occurrence say the
 	// run did at each static site of its program, for a view of the program's
@@ -171,6 +179,7 @@ func ReadFrame(ctx context.Context, t Target, opts FrameOptions) (Frame, error) 
 		SourceMap: opts.SourceMap,
 		Partial:   snapshot.GetObservationsDropped() > 0 || len(snapshot.GetObservations()) >= MaxObservations,
 		Overlay:   overlayOf(snapshot),
+		Fidelity:  fidelityOf(snapshot),
 	}
 	if opts.Source != nil && opts.Program != nil {
 		// An empty window is the cheap way to the redactor the session captured.
@@ -225,6 +234,87 @@ func ReadFrame(ctx context.Context, t Target, opts FrameOptions) (Frame, error) 
 	readScope(ctx, t, &frame, min(cmp.Or(opts.MaxValues, MaxFrameValues), MaxFrameValues))
 
 	return frame, nil
+}
+
+// fidelityOf is how a snapshot's state is known: what the timeline says of the
+// point it stands at, and otherwise reconstructed for a target that advertises a
+// recorded history. A live stop is neither, and is unspecified.
+func fidelityOf(snapshot *v1.DebugSnapshot) v1.DebugFidelity {
+	timeline := snapshot.GetTimeline()
+	if at := int(timeline.GetCurrent()); at >= 0 && at < len(timeline.GetPoints()) {
+		if fidelity := timeline.GetPoints()[at].GetFidelity(); fidelity != v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED {
+			return fidelity
+		}
+	}
+	if snapshot.GetCapabilities().GetHistory() {
+		return v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED
+	}
+
+	return v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED
+}
+
+// ValueFidelity is how a value read at this frame is known, which is what a row
+// that shows it labels it with (#2248).
+//
+// A live frame has no fidelity to speak of, so the answer is unspecified and a
+// row carries no badge. At a recorded point, a name in the scope is what the
+// replay held there (the frame's own fidelity), an expression somebody typed, or
+// a watch, is evaluated now over that reconstructed scope and never happened in
+// the run (hypothetical, as [v1.DebugHistoryInspected] says), and a value that
+// could not be produced is unavailable. typed says that the expression was asked
+// for rather than listed from the scope.
+func (f Frame) ValueFidelity(value *v1.DebugValue, typed bool) v1.DebugFidelity {
+	switch {
+	case f.Fidelity == v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED:
+		return v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED
+	case value == nil || value.GetType() == "error":
+		return v1.DebugFidelity_DEBUG_FIDELITY_UNAVAILABLE
+	case typed:
+		return v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL
+	default:
+		return f.Fidelity
+	}
+}
+
+// FidelityBadge is the short mark a row carries for how its value is known, in
+// words that read the same without colour: "rec" for a value the replay held or
+// the history recorded, "hyp" for one computed now that the run never held, and
+// "n/a" for one that cannot be known at the point. A live value has none, and
+// the empty string is the answer for it.
+func FidelityBadge(fidelity v1.DebugFidelity) string {
+	switch fidelity {
+	case v1.DebugFidelity_DEBUG_FIDELITY_RECONSTRUCTED, v1.DebugFidelity_DEBUG_FIDELITY_RECORDED:
+		return "rec"
+	case v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL:
+		return "hyp"
+	case v1.DebugFidelity_DEBUG_FIDELITY_UNAVAILABLE:
+		return "n/a"
+	default:
+		return ""
+	}
+}
+
+// FidelityName is a fidelity as a sentence names it: "reconstructed", or empty
+// for a live stop.
+func FidelityName(fidelity v1.DebugFidelity) string {
+	if fidelity == v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED {
+		return ""
+	}
+
+	return strings.ToLower(strings.TrimPrefix(fidelity.String(), "DEBUG_FIDELITY_"))
+}
+
+// NoScopeHere is why a recorded point has no scope: the run held no debug
+// session there (before its first workflow task installed one), so there is
+// nothing to list and nothing to evaluate. It is a [Frame.ScopeNote], which a
+// pane draws in place of the scope rather than leaving it blank.
+const NoScopeHere = "no scope at this point: the run held no debug session here, so only its progress is shown"
+
+// noSession reports that snapshot is a recorded point of a run that held no
+// debug session there: a history snapshot that names no session. A session's own
+// snapshot always does.
+func noSession(snapshot *v1.DebugSnapshot) bool {
+	return snapshot.GetCapabilities().GetHistory() && snapshot.GetSession() == nil
 }
 
 // joinedLabels is the text each row is drawn as when it carries a qualifier:
@@ -381,6 +471,11 @@ func StepWindowAround(n, at, budget int) (first, last int) {
 // readScope fills frame.Scope and frame.Values through t.Inspect, within
 // budget evaluations.
 func readScope(ctx context.Context, t Target, frame *Frame, budget int) {
+	if noSession(frame.Snapshot) {
+		frame.ScopeNote = NoScopeHere
+
+		return
+	}
 	if capabilities := frame.Snapshot.GetCapabilities(); capabilities != nil && !capabilities.GetInspect() {
 		frame.ScopeNote = "inspect is not permitted for this session"
 
