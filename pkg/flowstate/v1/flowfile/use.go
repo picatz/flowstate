@@ -467,7 +467,7 @@ func (c *compiler) carry(used usedModule, digest string, pathNode ast.Node, r re
 			renameMessages(parameter.Type, names)
 			carried.Parameters = append(carried.Parameters, parameter)
 		}
-		weight += v1.ParsedNodeCount(body)
+		weight += v1.ExprNodeCount(body)
 		functions = append(functions, carried)
 	}
 

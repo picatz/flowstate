@@ -396,7 +396,7 @@ func init() {
 			Name: "flowstate.v1.Workflow.source_digest",
 			Leading: " SourceDigest is a content digest of the bytes this workflow was compiled\n" +
 				" from, formatted `sha256:<hex>`, when a client compiled it from a file. It\n" +
-				" is the root's counterpart of [Call.source_digest], recorded by the same\n" +
+				" is the root's counterpart of `Call.source_digest`, recorded by the same\n" +
 				" compiler from the same read.\n" +
 				"\n" +
 				" Recorded rather than verified, and never a basis for trust: nothing\n" +
@@ -522,7 +522,7 @@ func init() {
 		{
 			Name: "flowstate.v1.Module",
 			Leading: " Module records one file a workflow's declarations were carried from, mirroring\n" +
-				" what [Call] records of its callee ([Call.source], [Call.source_digest]).\n" +
+				" what [Call] records of its callee (`Call.source`, `Call.source_digest`).\n" +
 				"\n" +
 				" Provenance only. Nothing reads `source` back to a file, and a specification\n" +
 				" that names a module whose bytes it does not match is not refused for it: the\n" +

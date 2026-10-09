@@ -503,9 +503,9 @@ func (s *FunctionSet) Inlined(name string) (*exprpb.ParsedExpr, bool) {
 	return parsed, true
 }
 
-// ParsedNodeCount is the number of CEL nodes in an expression, the unit of the
+// ExprNodeCount is the number of CEL nodes in an expression, the unit of the
 // expansion budget ([MaxFunctionExpansionNodes]).
-func ParsedNodeCount(parsed *exprpb.ParsedExpr) int {
+func ExprNodeCount(parsed *exprpb.ParsedExpr) int {
 	nodes := 0
 	walkParsed(parsed.GetExpr(), func(*exprpb.Expr) { nodes++ })
 

@@ -573,7 +573,7 @@ type Workflow struct {
 	ResolvedCapabilityBindings []*ResolvedCapabilityBinding `protobuf:"bytes,18,rep,name=resolved_capability_bindings,json=resolvedCapabilityBindings,proto3" json:"resolved_capability_bindings,omitempty"`
 	// SourceDigest is a content digest of the bytes this workflow was compiled
 	// from, formatted `sha256:<hex>`, when a client compiled it from a file. It
-	// is the root's counterpart of [Call.source_digest], recorded by the same
+	// is the root's counterpart of `Call.source_digest`, recorded by the same
 	// compiler from the same read.
 	//
 	// Recorded rather than verified, and never a basis for trust: nothing
@@ -833,7 +833,7 @@ func (x *Workflow) GetModules() []*Module {
 }
 
 // Module records one file a workflow's declarations were carried from, mirroring
-// what [Call] records of its callee ([Call.source], [Call.source_digest]).
+// what [Call] records of its callee (`Call.source`, `Call.source_digest`).
 //
 // Provenance only. Nothing reads `source` back to a file, and a specification
 // that names a module whose bytes it does not match is not refused for it: the
