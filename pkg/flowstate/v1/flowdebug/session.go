@@ -617,6 +617,10 @@ type promptSubject struct {
 	step string
 	kind string
 
+	// shapes names the record types the program's inputs are declared as, so
+	// an inspection can label a value by its type. Nil where none is known.
+	shapes *declaredShapes
+
 	// workflow is which workflow's steps those are — see [Position.Workflow].
 	// Empty at an autopsy, and empty on a run carrying no runtime position.
 	workflow string
