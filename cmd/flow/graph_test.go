@@ -260,3 +260,13 @@ func TestGraphWorkflowSaysWhichFilesDidNotCompileWhenTheNameIsNotFound(t *testin
 	assert.Contains(t, res.Err.Error(), "the files declare: good")
 	assert.Contains(t, res.Err.Error(), "does not compile and was left out", "a broken file is not mistaken for a misspelling")
 }
+
+func TestGraphWorkflowNeverWritesAControlCharacterFromAFileName(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad\x1b[31m.flow.yaml"), []byte("name: wanted\nsteps: [\n"), 0o600))
+
+	res := runFlow(t, "graph", dir, "--workflow", "wanted")
+
+	require.Error(t, res.Err)
+	assert.NotContains(t, res.Err.Error(), "\x1b")
+}

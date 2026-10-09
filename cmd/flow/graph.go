@@ -10,6 +10,7 @@ import (
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/graph"
@@ -236,7 +237,7 @@ func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph
 func noWorkflowNamed(workflows []*v1.Workflow, skipped []string, name string) error {
 	names := make([]string, 0, len(workflows))
 	for _, wf := range workflows {
-		names = append(names, wf.GetName())
+		names = append(names, ui.EscapeControl(wf.GetName()))
 	}
 	slices.Sort(names)
 	names = slices.Compact(names)
@@ -249,7 +250,11 @@ func noWorkflowNamed(workflows []*v1.Workflow, skipped []string, name string) er
 		message += "; the files declare: " + strings.Join(names, ", ")
 	}
 	if len(skipped) > 0 {
-		shown := skipped[:min(len(skipped), 3)]
+		shown := slices.Clone(skipped[:min(len(skipped), 3)])
+		// A file name is another party's text, and this reaches a terminal.
+		for i := range shown {
+			shown[i] = ui.EscapeControl(shown[i])
+		}
 		message += "; " + strings.Join(shown, "; ")
 		if len(skipped) > len(shown) {
 			message += fmt.Sprintf("; and %d more that did not compile", len(skipped)-len(shown))
