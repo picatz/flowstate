@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/goccy/go-yaml/ast"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -160,9 +161,12 @@ func (f *fixer) consolidateCredentials(workflow *ast.MappingNode) {
 	if len(f.credentialSites) == 0 {
 		return
 	}
+	f.credentialChanges[0] = len(f.changes)
+	defer func() { f.credentialChanges[1] = len(f.changes) }()
 
 	// Plugin, then credential, so the result is the same on every run.
 	type key struct{ plugin, credential string }
+	blocked := f.credentialUsersThatWouldInherit(workflow)
 	groups := make(map[key][]credentialSite)
 	for _, site := range f.credentialSites {
 		k := key{site.plugin, site.credential}
@@ -181,6 +185,16 @@ func (f *fixer) consolidateCredentials(workflow *ast.MappingNode) {
 	var plugins []string
 	for _, k := range keys {
 		sites := groups[k]
+
+		// A binding is inherited by every task that claims the credential and does
+		// not write it, wherever in the file it is. One that would start receiving a
+		// secret it never wrote is a change of meaning, not a consolidation.
+		if blocked[[2]string{k.plugin, k.credential}] {
+			f.note(sites[0].line, 1, "the %s plugin's %s credential is repeated on several steps but not consolidated: another task in the file claims it without writing it (or in a shape this cannot read), and would start inheriting the binding",
+				k.plugin, k.credential)
+
+			continue
+		}
 
 		counts := make(map[string]int)
 		for _, site := range sites {
@@ -392,4 +406,131 @@ func (f *fixer) bindInPlugins(workflow *ast.MappingNode, plugin string, entries 
 	}
 
 	return names, true
+}
+
+// credentialUsersThatWouldInherit finds, over the whole document and not only the
+// steps the rewrite walks (`undo:`, flow style and anything else included), each
+// plugin credential claimed by a task that does not write the input as a block
+// mapping entry. Binding that credential would hand such a task the secret, so the
+// result is the set to leave alone. A task it cannot read (a null value, flow
+// style, an alias) counts: not knowing is the closed direction.
+func (f *fixer) credentialUsersThatWouldInherit(root ast.Node) map[[2]string]bool {
+	blocked := make(map[[2]string]bool)
+
+	var walk func(n ast.Node, depth int)
+	walk = func(n ast.Node, depth int) {
+		if depth > 256 {
+			return
+		}
+		switch node := n.(type) {
+		case *ast.AnchorNode:
+			walk(node.Value, depth+1)
+		case *ast.SequenceNode:
+			for _, v := range node.Values {
+				walk(v, depth+1)
+			}
+		case *ast.MappingValueNode:
+			f.inheritingTask(node, blocked)
+			walk(node.Value, depth+1)
+		case *ast.MappingNode:
+			for _, v := range node.Values {
+				f.inheritingTask(v, blocked)
+				walk(v.Value, depth+1)
+			}
+		}
+	}
+	walk(root, 0)
+
+	return blocked
+}
+
+// inheritingTask records the credentials a task-keyed entry claims but does not
+// visibly write.
+func (f *fixer) inheritingTask(entry *ast.MappingValueNode, blocked map[[2]string]bool) {
+	name, ok := keyNameOf(entry.Key)
+	if !ok {
+		return
+	}
+	plugin, _, qualified := strings.Cut(name, ".")
+	if !qualified || plugin == "" {
+		return
+	}
+	def, known := v1.LookupTask(name)
+	if !known || def.Inputs == nil {
+		return
+	}
+	claims, err := v1.TaskCredentialInputs(def)
+	if err != nil {
+		return
+	}
+	block, isBlock := unwrapAnchor(entry.Value).(*ast.MappingNode)
+	for input, credential := range claims {
+		written := false
+		if isBlock && !block.IsFlowStyle {
+			for _, v := range block.Values {
+				if n, named := keyNameOf(v.Key); named && n == input {
+					written = true
+				}
+			}
+		}
+		if !written {
+			blocked[[2]string{plugin, credential}] = true
+		}
+	}
+}
+
+// verifyCredentialConsolidation holds the consolidation to what it promises: the
+// file with it and the file without it must compile to the same steps, bindings
+// expanded. The consolidation's edits are recorded as changes [from, to); on any
+// difference, or if either side does not compile (so nothing can be proved), they
+// are dropped and the file keeps its repeated references.
+func (f *fixer) verifyCredentialConsolidation(from, to int) {
+	if to <= from {
+		return
+	}
+
+	saved := make(map[int]lineEdit)
+	for _, change := range f.changes[from:to] {
+		if edit, ok := f.edits[change.Line]; ok {
+			saved[change.Line] = edit
+		}
+	}
+
+	with := f.apply()
+	for line := range saved {
+		delete(f.edits, line)
+	}
+	without := f.apply()
+
+	if sameCompiledSteps(with, without) {
+		maps.Copy(f.edits, saved)
+
+		return
+	}
+
+	f.changes = slices.Delete(f.changes, from, to)
+	f.note(1, 1, "a repeated plugin credential was not consolidated: the file with the binding could not be shown to compile to the same steps as the file without it")
+}
+
+// sameCompiledSteps reports whether both documents compile and their steps are
+// equal once bindings are expanded.
+func sameCompiledSteps(a, b []byte) bool {
+	first, _, err := Parse(a)
+	if err != nil {
+		return false
+	}
+	second, _, err := Parse(b)
+	if err != nil {
+		return false
+	}
+	if len(first.GetSteps()) != len(second.GetSteps()) {
+		return false
+	}
+	for i := range first.GetSteps() {
+		if !proto.Equal(first.GetSteps()[i], second.GetSteps()[i]) {
+			return false
+		}
+	}
+
+	return true
 }

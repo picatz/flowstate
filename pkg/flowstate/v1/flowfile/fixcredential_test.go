@@ -271,3 +271,78 @@ steps:
 	require.NoError(t, err)
 	require.Equal(t, in, string(got.Source), "with no plugin there is no credential to read, so nothing moves")
 }
+
+// A binding is inherited by every task that claims the credential and does not
+// write it, wherever it sits. These are the shapes that must stop the rewrite
+// rather than start handing a secret to a task that never wrote one.
+func TestFixDoesNotBindWhereAnotherTaskWouldInheritIt(t *testing.T) {
+	const repeated = `  - id: a
+    bound.use:
+      token: ${secret('env:BOUND_TOKEN')}
+  - id: b
+    bound.use:
+      token: ${secret('env:BOUND_TOKEN')}
+`
+	cases := map[string]string{
+		"a step that omits the input (unbound today)": repeated + `  - id: c
+    bound.use:
+      note: omitted
+`,
+		"an undo step that omits the input": repeated + `  - id: c
+    log:
+      message: x
+    undo:
+      bound.use:
+        note: omitted
+`,
+		"an undo step with a flow-style body": repeated + `  - id: c
+    log:
+      message: x
+    undo:
+      bound.use: {note: omitted}
+`,
+		"a step with no body": repeated + `  - id: c
+    bound.use:
+`,
+	}
+	for name, steps := range cases {
+		t.Run(name, func(t *testing.T) {
+			in := repeatedHeader + "plugins:\n  bound: v0.1.0\nsteps:\n" + steps
+			got := fixBound(t, in)
+			require.Equal(t, in, string(got.Source), "a binding would have been inherited by a task that never wrote one")
+			require.False(t, got.Changed())
+		})
+	}
+}
+
+func TestFixStillBindsWhenAnUndoStepWritesItsOwn(t *testing.T) {
+	in := repeatedHeader + `plugins:
+  bound: v0.1.0
+steps:
+  - id: a
+    bound.use:
+      token: ${secret('env:BOUND_TOKEN')}
+  - id: b
+    bound.use:
+      token: ${secret('env:BOUND_TOKEN')}
+    undo:
+      bound.use:
+        token: ${secret('env:OVERRIDE_TOKEN')}
+`
+	got := fixBound(t, in)
+	require.True(t, got.Changed(), "an undo step that writes its own reference inherits nothing")
+	require.Contains(t, string(got.Source), "api_token: ${secret('env:BOUND_TOKEN')}")
+	require.Contains(t, string(got.Source), "token: ${secret('env:OVERRIDE_TOKEN')}")
+}
+
+// The equality guard is what withdraws a consolidation nothing else caught: steps
+// that differ once compiled, or a document that does not compile at all, prove
+// nothing and so are not the same.
+func TestFixCredentialGuardComparesCompiledSteps(t *testing.T) {
+	doc := func(message string) []byte {
+		return []byte(repeatedHeader + "steps:\n  - id: a\n    log:\n      message: " + message + "\n")
+	}
+	require.True(t, flowfile.SameCompiledStepsForTest(doc("one"), doc("one")))
+	require.False(t, flowfile.SameCompiledStepsForTest(doc("one"), doc("two")), "different steps were called the same")
+	require.False(t, flowfile.SameCompiledStepsForTest(doc("one"), []byte("not: [a flowfile")), "a document that does not compile proved equality")
+}
