@@ -202,6 +202,26 @@ owed leg is `flow test` instead, since a passing `flow test` covers validation.
 - It is advice, not a gate: every leg fails open, and a second attempt to finish
   always succeeds.
 
+## Status line
+
+`$.ui.status` takes one plain string, so the line is text and never colour: each
+status is a symbol and a word from `hooks/vocab.ts`. It is built by the pure
+`statusText` in `hooks/statusline.ts` from state the mod already holds, and
+drawing it starts no process:
+
+`flowstate: validate ✗ 2 errors a.flow.yaml · run ✓ succeeded b.flow.yaml · ◔ owes flow test · server host:9233 ✗ 1 need attention at 14:02`
+
+- `validate`: the newest `flow validate` result and its file. `run`: the last
+  local run from the run form (`✓ succeeded`, `✗ failed`, `– not run`, `? unknown`).
+  `◔ owes ...`: the leg verify-before-done still owes (`hooks/verify.ts`).
+- `server`: shown only when the Runs pane's unfiltered listing was answered in the
+  last two minutes and some listed run is failed, timed out or terminated; it names the address
+  (`FLOWSTATE_ADDRESS`, else the default) and the time it was read, since the line
+  is redrawn on events, not by a clock. `flow list` reports a run parked on a signal or timer as running, so waiting gates are not counted here (the run card shows them). A server that did not answer, an unreadable
+  address, or a filtered listing adds nothing. Counts show up to `99+`.
+- With nothing known it reads `flowstate: nothing checked yet, run /flowstate`.
+  File names and addresses are cleaned and bounded like every other CLI-derived text.
+
 ## Evals: does the plugin help?
 
 `evals/` holds five small cases that measure what the plugin adds over a bare

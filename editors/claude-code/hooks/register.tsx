@@ -12,7 +12,9 @@ import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
-import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from './verify'
+import { EMPTY, checkOf, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
+import { NO_SEEN, seenFrom, statusText } from './statusline'
+import type { Seen } from './statusline'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from './vocab'
 import { MAX_SCAN, MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
 import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
@@ -194,11 +196,35 @@ const findInCwd = async ($: Engine): Promise<string | undefined> => {
   }
 }
 
+/**
+ * Redraws the status line from state the hooks and the pane already hold. It
+ * runs no process, and a failed read leaves the line as it was.
+ */
+const refreshStatus = async ($: Engine, nudges: boolean, seen: Seen) => {
+  try {
+    const [list, run, owed] = await Promise.all([read($, reports), read($, runResult), read($, verify)])
+    let suite = false
+    if (nudges && owed.edited.length > 0) {
+      try {
+        suite = hasTestFile((await $.fs.list()).filter(f => f.kind === 'file').map(f => f.name))
+      } catch {
+        suite = false
+      }
+    }
+    const owes = nudges ? missingLeg(owed, suite) : undefined
+    $.ui.status(statusText({ report: list.at(-1), run, owes, seen, now: Date.now() }))
+  } catch {
+    // The line is a convenience; a failure to draw it must never fail a hook.
+  }
+}
+
 export const register: Register = (on, options) => {
   const flow = typeof options.flowBinary === 'string' && options.flowBinary ? options.flowBinary : 'flow'
   const isEnabled = options.validateOnEdit !== false
   const guardsServer = options.guardServerActions !== false
   const nudges = options.verifyBeforeDone !== false
+  /** What a server last said to the Runs pane (render only caches it, as the schemas below; the status line shows it while fresh). */
+  let heard: Seen = NO_SEEN
   /** One Confirm at a time: a second press while a send is in flight sends nothing. */
   let sending = false
   /** One local run at a time, the same way. */
@@ -249,7 +275,7 @@ export const register: Register = (on, options) => {
         [...list.filter(r => r.file !== report.file), report].slice(-MAX_REPORTS),
       )
       const broken = report.diagnostics.length > 0 || report.failure !== undefined
-      $.ui.status(broken ? `flowstate: ${report.diagnostics.length || '!'} problem(s)` : undefined)
+      await refreshStatus($, nudges, heard)
 
       return broken ? { ...ran, context: [...(ran.context ?? []), summarize(report)] } : ran
     })
@@ -261,6 +287,7 @@ export const register: Register = (on, options) => {
   on('turn.start', async ($, e, next) => {
     const out = await next(e)
     if (nudges) await update($, verify, () => EMPTY).catch(() => undefined)
+    await refreshStatus($, nudges, heard)
     return out
   })
 
@@ -269,6 +296,7 @@ export const register: Register = (on, options) => {
       const ran = await next(e)
       if (nudges && ran.deny === undefined && ran.isError !== true) {
         await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
+        await refreshStatus($, nudges, heard)
       }
       return ran
     })
@@ -282,6 +310,7 @@ export const register: Register = (on, options) => {
     const result = 'result' in ran ? (ran.result as { interrupted?: boolean; backgroundTaskId?: string } | undefined) : undefined
     const passed = ran.deny === undefined && ran.isError !== true && result?.interrupted !== true && result?.backgroundTaskId === undefined
     await update($, verify, s => recordCheck(s, check, passed)).catch(() => undefined)
+    await refreshStatus($, nudges, heard)
     return ran
   })
 
@@ -381,6 +410,11 @@ export const register: Register = (on, options) => {
     const head = statusOf(known?.status)
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
+    // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
+    const seen = 'runs' in runs && expr === '' && 'address' in target ? seenFrom(runs.runs, target.address, Date.now()) : NO_SEEN
+    const changed = seen.failed !== heard.failed || seen.address !== heard.address || seen.at - heard.at > 30_000 || (seen.at === 0) !== (heard.at === 0)
+    heard = seen
+    if (changed) await refreshStatus($, nudges, heard)
     const parkable = id !== '' && (facts.waitingOn !== undefined || ['running', 'waiting'].includes(head.kind))
     const idOk = WORKFLOW_ID.test(id)
     const found = parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
@@ -411,6 +445,11 @@ export const register: Register = (on, options) => {
     const questioned = file !== '' && asking.file === file && JSON.stringify(asking.inputs) === JSON.stringify(sent)
     const ranLast = await read($, runResult)
     const rawView = await read($, outputsRaw)
+    /** Every change to the last run's result goes through here, so the status line never keeps showing an older one. */
+    const setRun = async (next: typeof NO_RUN_RESULT) => {
+      await update($, runResult, () => next)
+      await refreshStatus($, nudges, heard)
+    }
     /** A change to the form takes any pending question away: Confirm only ever runs what the question named. */
     const setValue = async (name: string, v: string) => {
       await update($, runConfirm, () => NO_RUN_CONFIRM)
@@ -605,7 +644,7 @@ export const register: Register = (on, options) => {
               schemas.clear()
               outSchemas.clear()
               await update($, runConfirm, () => NO_RUN_CONFIRM)
-              await update($, runResult, () => NO_RUN_RESULT)
+              await setRun(NO_RUN_RESULT)
               await update($, runValues, () => ({}))
               await update($, runFile, () => v)
             }}
@@ -666,7 +705,7 @@ export const register: Register = (on, options) => {
                     // The first press only asks: nothing runs until Confirm.
                     const now = await read($, runValues)
                     if (checkForm(fields, now).blocked !== '') return
-                    await update($, runResult, () => NO_RUN_RESULT)
+                    await setRun(NO_RUN_RESULT)
                     await update($, runConfirm, () => ({ file, inputs: submission(fields, now) }))
                   }}
                 >
@@ -695,7 +734,7 @@ export const register: Register = (on, options) => {
                         // This button was drawn for one question: if it has moved on, it acts on nothing.
                         if (c.file === '' || c.file !== file) return
                         await update($, runConfirm, () => NO_RUN_CONFIRM)
-                        const stop = (why: string) => update($, runResult, () => ({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [], cards: null }))
+                        const stop = (why: string) => setRun({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [], cards: null })
                         // Everything is read again: the file must still be a listed Flowfile and its declaration must still accept exactly these values.
                         const listed = await listFlowfiles($)
                         if (!listed.files.includes(c.file)) return stop('the file is no longer listed')
@@ -742,7 +781,7 @@ export const register: Register = (on, options) => {
                             }
                           }
                         }
-                        await update($, runResult, () => ({ file: c.file, ...result, lines, cards }))
+                        await setRun({ file: c.file, ...result, lines, cards })
                       } finally {
                         running = false
                       }
