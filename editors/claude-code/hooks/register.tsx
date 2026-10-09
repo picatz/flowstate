@@ -10,6 +10,7 @@ import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } 
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed } from './detail'
+import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from './verify'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusOf, story } from './vocab'
 
 const PANE = 'flowstate'
@@ -19,6 +20,7 @@ const reports = atom({ plugin: 'flowstate', key: 'reports' } as const, [])
 const selected = atom({ plugin: 'flowstate', key: 'selected' } as const, '')
 const summary = atom({ plugin: 'flowstate', key: 'summary' } as const, { name: '', status: '', startTime: '', closeTime: '' })
 const filter = atom({ plugin: 'flowstate', key: 'filter' } as const, '')
+const verify = atom({ plugin: 'flowstate', key: 'verify' } as const, EMPTY)
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
 
@@ -115,6 +117,7 @@ export const register: Register = (on, options) => {
   const flow = typeof options.flowBinary === 'string' && options.flowBinary ? options.flowBinary : 'flow'
   const isEnabled = options.validateOnEdit !== false
   const guardsServer = options.guardServerActions !== false
+  const nudges = options.verifyBeforeDone !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -162,6 +165,57 @@ export const register: Register = (on, options) => {
       return broken ? { ...ran, context: [...(ran.context ?? []), summarize(report)] } : ran
     })
   }
+
+  // Verify before done. `turn.complete` can only caption an answer already given, so the nudge rides
+  // `classic.Stop`, whose `block` hands the model a reason and a chance to run the check. Every leg
+  // below fails open: a nudge is advice, never a gate.
+  on('turn.start', async ($, e, next) => {
+    const out = await next(e)
+    if (nudges) await update($, verify, () => EMPTY).catch(() => undefined)
+    return out
+  })
+
+  for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
+    on('tool.call', { tool }, async ($, e, next) => {
+      const ran = await next(e)
+      if (nudges && ran.deny === undefined && ran.isError !== true) {
+        await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
+      }
+      return ran
+    })
+  }
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (!nudges) return ran
+    const check = checkOf((e as { command?: unknown }).command, flow)
+    if (check === undefined) return ran
+    const result = 'result' in ran ? (ran.result as { interrupted?: boolean; backgroundTaskId?: string } | undefined) : undefined
+    const passed = ran.deny === undefined && ran.isError !== true && result?.interrupted !== true && result?.backgroundTaskId === undefined
+    await update($, verify, s => recordCheck(s, check, passed)).catch(() => undefined)
+    return ran
+  })
+
+  on('classic.Stop', async ($, e, next) => {
+    const out = await next(e)
+    // The model was already sent back once by a Stop hook: never loop.
+    if (!nudges || e.stop_hook_active) return out
+    try {
+      const state = await read($, verify)
+      let suite = false
+      try {
+        suite = hasTestFile((await $.fs.list()).filter(f => f.kind === 'file').map(f => f.name))
+      } catch {
+        suite = false
+      }
+      const text = nudgeFor(state, suite)
+      if (text === undefined) return out
+      await update($, verify, s => ({ ...s, nudged: true }))
+      return { ...out, block: text }
+    } catch {
+      return out
+    }
+  })
 
   // The decision comes after the rules and settings hooks have spoken, so a
   // `deny` is final here and an `allow` is tightened to a question, never loosened.

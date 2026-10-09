@@ -33,6 +33,33 @@ These are settings under the plugin's `/plugin` config screen.
 | `flowBinary` | `flow` | The executable the mod runs; set it when `flow` is not on `PATH`. |
 | `validateOnEdit` | `true` | Turn the after-edit validation off. |
 | `guardServerActions` | `true` | Turn off the confirmation before a server-changing `flow` verb. The secret refusal has no option. |
+| `verifyBeforeDone` | `true` | Turn off the once-per-turn reminder to verify an edited Flowfile before finishing. |
+
+## Verify before done
+
+If Claude edits a Flowfile (the guard's own `isFlowfile` decides what that is)
+and no passing `flow validate` has run since, the mod sends the model one
+reminder as it is about to finish, naming the missing leg and the edited files
+(at most five named). When the working directory holds a `*.test.yaml` suite the
+owed leg is `flow test` instead, since a passing `flow test` covers validation.
+
+- The event is `classic.Stop`, not `turn.complete`: `turn.complete` only captions
+  an answer already given, while a Stop hook's `block` hands the model the reason
+  and a chance to run the check. The reminder is fenced as plugin guidance with
+  the file names marked as data, and a `stop_hook_active` stop is never blocked,
+  so it fires at most once per turn and cannot loop. `turn.start` resets the state
+  (`$.state` `flowstate.verify`).
+- A check counts only when the Bash tool result succeeded (not errored,
+  interrupted, or backgrounded) for a command that is a plain `flow validate` or
+  `flow test`, optionally chained with `&&` (`cd svc && flow validate`).
+  A pipe, `;`, `||`, `&`, a substitution, a here-document, `--help`, a command
+  over 64 KiB or one the tokenizer did not follow earns no credit, because the
+  exit status would not speak for the check. Any passing `flow validate` counts
+  for every edited file, whatever paths it names. The mod runs nothing for
+  this; the after-edit validation above does not count, since only a check the
+  model ran is evidence it looked.
+- It is advice, not a gate: every leg fails open, and a second attempt to finish
+  always succeeds.
 
 ## Evals: does the plugin help?
 

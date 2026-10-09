@@ -7,7 +7,7 @@ export const MAX_TASKS = 40
 /** A handful of diagnostics is enough to start on; `flow validate` has the rest. */
 export const MAX_DIAGNOSTICS = 5
 /** A directory with more entries than this is not scanned past them. */
-const MAX_ENTRIES = 500
+export const MAX_ENTRIES = 500
 /** Only this much of a prompt is searched for a path; the rest is not work worth doing. */
 const MAX_PROMPT = 8192
 /** A path in a prompt is a word; a longer one is not a path. */
