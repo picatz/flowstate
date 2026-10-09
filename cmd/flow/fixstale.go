@@ -92,6 +92,20 @@ func (s stalePin) diagnostic(applied bool) flowfile.Diagnostic {
 	if s.pin.Step != "" {
 		where = fmt.Sprintf("the `digest:` pin on step %q", s.pin.Step)
 	}
+	if s.pin.Alias != "" {
+		// A module's pin has a command that adopts it, because the author is
+		// meant to read the module and then say so; a call's is pasted.
+		return flowfile.Diagnostic{
+			Line:   s.pin.Line,
+			Column: s.pin.Column,
+			Message: fmt.Sprintf(
+				"this run %s %s, so the `digest:` pin on module `%s` %s names the bytes it pins; read what "+
+					"changed in that file and then run `flow fix --repin` on this one, or write `digest: %s`, "+
+					"to adopt it — a pin is the caller saying it read those bytes, so only that command or a "+
+					"person re-stamps one",
+				rewrote, s.pin.Call, s.pin.Alias, longer, s.now),
+		}
+	}
 
 	return flowfile.Diagnostic{
 		Line:   s.pin.Line,

@@ -54,17 +54,27 @@ import (
 // (that is what `flow fix` is for) and must report what it can see rather than
 // fail on the first thing it cannot.
 
-// A CallPin is one `digest:` pin written in a Flowfile, with the call it pins.
+// A CallPin is one `digest:` pin written in a Flowfile, with the file it pins:
+// the callee of a step's `call:`, or the module of a `use:` entry.
 //
 // Read from source, so Call and Digest are exactly the text the author wrote —
 // the target as written rather than as resolved, and the digest verbatim rather
-// than lower-cased — because the two things that read this either write the text
+// than lower-cased — because the things that read this either write the text
 // back out unchanged or quote it back to the author.
+//
+// A `use:` pin is the same thing for a module (`use: {ids: {path: …, digest: …}}`),
+// and is collected by the same walk, so that `flow fmt` carries it, `flow fix`
+// reports one it invalidated and `flow fix --repin` finds it, all by one reading.
 type CallPin struct {
-	// Step is the `id:` of the step holding the call, empty when it wrote none.
+	// Step is the `id:` of the step holding the call, empty when it wrote none or
+	// when the pin is a `use:` pin.
 	Step string
 
-	// Call is the `call:` target as written, relative to the file that wrote it.
+	// Alias is the alias of the `use:` entry holding the pin, empty for a call's.
+	Alias string
+
+	// Call is the pinned file as written, relative to the file that wrote it: the
+	// `call:` target, or the `path:` of a `use:` entry.
 	Call string
 
 	// Digest is the pin itself, verbatim.
@@ -93,6 +103,7 @@ func CallPins(source []byte) ([]CallPin, error) {
 	for _, pin := range pins {
 		out = append(out, CallPin{
 			Step:   pin.step,
+			Alias:  pin.alias,
 			Call:   pin.call,
 			Digest: pin.text,
 			Line:   pin.line,
@@ -116,10 +127,23 @@ func CallPins(source []byte) ([]CallPin, error) {
 // with what it pins and where it was written — for a diagnostic if it cannot be
 // carried across, and for the staleness report `flow fix` builds from it.
 type sourcePin struct {
-	text         string
-	call         string
-	step         string
+	text string
+	call string
+	step string
+
+	// alias is the `use:` entry the pin sits in, empty for a call's. A use pin sits
+	// beside `path:` where a call's sits beside `call:`.
+	alias        string
 	line, column int
+}
+
+// anchorKey is the key a pin is written after.
+func (p sourcePin) anchorKey() string {
+	if p.alias != "" {
+		return "path"
+	}
+
+	return "call"
 }
 
 // sourcePins collects every `digest:` pin in a document, keyed by the path of
@@ -133,28 +157,37 @@ type sourcePin struct {
 // Flowfile, its exported contract does not get to assume is well-formed) cannot
 // make it write a pin that names nothing.
 func sourcePins(source []byte) (map[string]sourcePin, error) {
+	pins, _, err := readPins(source)
+
+	return pins, err
+}
+
+// readPins is [sourcePins] and the `use:` entries the walk passed on the way.
+func readPins(source []byte) (map[string]sourcePin, []ModuleUse, error) {
 	file, err := strictyaml.ParseBytes(source, parser.ParseComments)
 	if err != nil {
 		// The caller compiled this source, so it parses. Refusing rather than
 		// carrying on is the fail-closed reading, the same one sourceComments
 		// takes: unable to see the pins is not the same as knowing there are
 		// none.
-		return nil, fmt.Errorf("the source could not be read to collect its call pins: %w", err)
+		return nil, nil, fmt.Errorf("the source could not be read to collect its call pins: %w", err)
 	}
 
 	out := map[string]sourcePin{}
+	var uses []ModuleUse
 	for _, doc := range file.Docs {
 		collector := pinCollector{anchors: map[string]ast.Node{}, out: out}
 		if err := collector.collectAnchors(doc.Body, 0); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		// The document's own body is not a step: a workflow is a mapping, and
 		// its steps are the elements of the sequence under its `steps:`.
 		if err := collector.collect(doc.Body, "", 0, false); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		uses = append(uses, collector.uses...)
 	}
-	return out, nil
+	return out, uses, nil
 }
 
 // pinCollector resolves anchors, aliases and merge keys the same way the
@@ -163,6 +196,10 @@ func sourcePins(source []byte) (map[string]sourcePin, error) {
 type pinCollector struct {
 	anchors map[string]ast.Node
 	out     map[string]sourcePin
+
+	// uses are the `use:` entries the walk passed, pinned or not, in the order
+	// they were written.
+	uses []ModuleUse
 
 	// nodes is what the walk has visited, bounded by [maxNodes]. Counted rather
 	// than assumed from the byte length: following a merge key expands one
@@ -448,6 +485,14 @@ func (c *pinCollector) collectMapping(mapping *ast.MappingNode, path string, dep
 	}
 
 	for _, e := range entries {
+		if path == "" && e.name == useKey {
+			// The `use:` block of the document itself. Its entries are not steps,
+			// and what pins in it is a different mapping from what pins a call.
+			if err := c.collectUses(e.value, childPath(path, e.name), depth+1); err != nil {
+				return err
+			}
+			continue
+		}
 		// The value under `steps:` is the only thing whose elements are steps.
 		// Read from [stepsKey] rather than spelled here, so that a grammar
 		// growing a second place to write a step list has one string to change
@@ -457,4 +502,117 @@ func (c *pinCollector) collectMapping(mapping *ast.MappingNode, path string, dep
 		}
 	}
 	return nil
+}
+
+// useKey is the key of the block that names a file's modules.
+const useKey = "use"
+
+// collectUses records the pin each entry of a `use:` block carries.
+//
+// Read the way a step's is, through the merge keys and aliases the compiler
+// resolves, for the same reason: a pin that reached an entry that way and is
+// invisible here is a security check [Format] drops without a word.
+func (c *pinCollector) collectUses(n ast.Node, path string, depth int) error {
+	if depth > maxDepth {
+		return fmt.Errorf("nests more than %d levels deep, which is deeper than a Flowfile is meant to go", maxDepth)
+	}
+	if err := c.count(); err != nil {
+		return err
+	}
+
+	resolved, ok := c.resolve(n)
+	if !ok {
+		return nil
+	}
+	block := asMapping(resolved)
+	if block == nil {
+		return nil
+	}
+
+	aliases, err := c.entries(block, depth)
+	if err != nil {
+		return err
+	}
+	for _, alias := range aliases {
+		if err := c.count(); err != nil {
+			return err
+		}
+		entry, ok := c.resolve(alias.value)
+		if !ok {
+			continue
+		}
+		mapping := asMapping(entry)
+		if mapping == nil {
+			continue
+		}
+		fields, err := c.entries(mapping, depth+1)
+		if err != nil {
+			return err
+		}
+
+		var pathEntry, digestEntry *pinEntry
+		for i := range fields {
+			switch fields[i].name {
+			case "path":
+				pathEntry = &fields[i]
+			case "digest":
+				digestEntry = &fields[i]
+			}
+		}
+		if pathEntry == nil {
+			continue
+		}
+
+		use := ModuleUse{Alias: alias.name}
+		use.Path, _ = c.scalar(pathEntry.value)
+		if token := alias.key.GetToken(); token != nil && token.Position != nil {
+			use.Line, use.Column = token.Position.Line, token.Position.Column
+		}
+		c.uses = append(c.uses, use)
+		if digestEntry == nil {
+			continue
+		}
+
+		text, ok := c.scalar(digestEntry.value)
+		if !ok {
+			where := ""
+			if token := digestEntry.key.GetToken(); token != nil && token.Position != nil {
+				where = fmt.Sprintf("%d:%d: ", token.Position.Line, token.Position.Column)
+			}
+			return fmt.Errorf("%sdigest: pins the module `%s` here, but its value could not be read as text; write the digest as a scalar, or as an alias of one", where, alias.name)
+		}
+
+		pin := sourcePin{text: text, alias: alias.name, call: use.Path}
+		if token := digestEntry.key.GetToken(); token != nil && token.Position != nil {
+			pin.line, pin.column = token.Position.Line, token.Position.Column
+		}
+		c.out[childPath(path, alias.name)] = pin
+	}
+
+	return nil
+}
+
+// A ModuleUse is one entry of a file's `use:` block, read from the source.
+type ModuleUse struct {
+	// Alias is the word the entry is written under.
+	Alias string
+
+	// Path is the module's `path:` as written, relative to the file that wrote it.
+	Path string
+
+	// Line and Column are where the alias is written, 1-based.
+	Line, Column int
+}
+
+// ModuleUses reports every entry of source's `use:` block, in the order written.
+//
+// Read from the source rather than from what it compiles to, for the reason
+// [CallPins] is: it answers for a file that does not compile. That is the file
+// `flow breaking` most needs to name, because an importer whose module just lost a
+// type it uses no longer compiles, and a blast radius that listed only the
+// importers that survived would list the least affected ones.
+func ModuleUses(source []byte) ([]ModuleUse, error) {
+	_, uses, err := readPins(source)
+
+	return uses, err
 }

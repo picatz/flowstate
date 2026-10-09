@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -397,28 +399,40 @@ func fmtOne(out, reports io.Writer, theme ui.Theme, path string, opts fmtOptions
 // touching the order of files a pin's presence has no bearing on would make
 // every unrelated report a diff too.
 func orderCalleesBeforeCallers(files []string) []string {
-	index := make(map[string]int, len(files))
-	for i, f := range files {
-		index[filepath.Clean(f)] = i
-	}
-
-	// dependsOn[i] holds the indices, within files, of the callees a `call:`
-	// step in files[i] names directly. Only a direct edge is recorded — A
-	// calling B calling C orders as C, B, A regardless, because the sort
-	// below places a node only once every node it points at is already
-	// placed, and that chains through an indirect edge exactly as it does a
-	// direct one.
-	dependsOn := make([][]int, len(files))
-	for i, f := range files {
+	return orderDependenciesFirst(files, func(f string) []string {
 		workflow, _, err := flowfile.ParseFile(f)
 		if err != nil {
 			// This file will refuse on its own merits when it is actually
 			// formatted; where it sorts among files with no bearing on that
 			// outcome.
-			continue
+			return nil
 		}
-		for target := range directCallTargets(f, workflow) {
-			if j, ok := index[target]; ok && j != i {
+
+		return slices.Collect(maps.Keys(directCallTargets(f, workflow)))
+	})
+}
+
+// orderDependenciesFirst is the reorder [orderCalleesBeforeCallers] describes,
+// for any kind of edge: dependencies reports the cleaned paths a file reads
+// directly, and a file is placed only once every one of them that is among files
+// has been. `flow fix --repin` orders modules before the files that use them with
+// the same sort, so a module that pins another and a file that pins it settle in
+// one run.
+func orderDependenciesFirst(files []string, dependencies func(file string) []string) []string {
+	index := make(map[string]int, len(files))
+	for i, f := range files {
+		index[canonicalPath(f)] = i
+	}
+
+	// dependsOn[i] holds the indices, within files, of the files files[i] reads
+	// directly. Only a direct edge is recorded — A reading B reading C orders as
+	// C, B, A regardless, because the sort below places a node only once every
+	// node it points at is already placed, and that chains through an indirect
+	// edge exactly as it does a direct one.
+	dependsOn := make([][]int, len(files))
+	for i, f := range files {
+		for _, target := range dependencies(f) {
+			if j, ok := index[canonicalPath(target)]; ok && j != i {
 				dependsOn[i] = append(dependsOn[i], j)
 			}
 		}

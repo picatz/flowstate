@@ -442,17 +442,6 @@ func TestTheSameBareNameUnderTwoAliasesIsTwoNames(t *testing.T) {
 	assert.Equal(t, []string{"a.Bad", "b.Bad"}, declaredNames(wf.GetDeclaredErrors()))
 }
 
-func TestADigestPinIsNotYetAKey(t *testing.T) {
-	t.Parallel()
-
-	dir := tree(t, map[string]string{
-		"w.yaml":       workflowUsing("use:\n  ids:\n    path: ./lib/ids.yaml\n    digest: sha256:00\n", ""),
-		"lib/ids.yaml": idsModule,
-	})
-	_, err := compileAt(t, dir, "w.yaml")
-	require.Error(t, err)
-}
-
 func TestAModulesOwnProblemsAreReportedAtTheUse(t *testing.T) {
 	t.Parallel()
 

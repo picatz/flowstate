@@ -150,13 +150,15 @@ flow auth whoami -o json \
 
 ## `flow breaking`
 
-Report workflows whose declared inputs or outputs broke a contract
+Report workflows and modules whose declared interface broke a contract
 
 ```
 flow breaking <path>... [flags]
 ```
 
 Compile every Flowfile at the working tree and at a git ref, match each workflow to its previous self by path, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, a constraint tightened, or a record (`types:`) whose fields changed in the direction that breaks that declaration. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
+
+A module (a Flowfile with no steps) is matched by path the same way, and its interface is what a `use:` writes against: a type removed or changed between record and scalar, a scalar whose base or rule changed, a record field removed or made required, a function removed or given another parameter count or a narrowed parameter or weakened result, an error removed. A finding lists the files among the paths given that `use:` the module (its blast radius), read from source so an importer the change broke is still named.
 
 The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
 
@@ -809,6 +811,8 @@ Shapes that cannot be rewritten without guessing (a task written in flow style, 
 
 A run that rewrites a file another one pins with `digest:` reports every pin it invalidated, naming the digest to adopt, and exits non-zero. It never re-stamps one: a pin is the caller saying it read those bytes, and only a person can say that.
 
+`--repin` is the explicit counterpart: it does not migrate anything, and instead rewrites each stale `digest:` on a `use:` entry to the digest of the module the entry names now, in place, leaving every comment and the formatting as written. It adopts the module's current bytes as the ones you read, so read what changed first. It never adds a pin to an unpinned `use:`, and a module it cannot resolve and read leaves the whole file as it was. Modules are repinned before the files that use them, so a module that pins another and a file that pins that module are both current when one run ends.
+
 `--output json` or `--output jsonl` turns `--check` into a report a program reads instead of scrapes: what changed or would change, what was refused, and what pins the run invalidated, per file. CI that wants structured data rather than stderr text asks for one of those.
 
 `--plugin-dir` launches the plugins there first, and a file whose steps name a plugin's tasks wants it: what this rewriter may do to a step depends on what the task declares — which of its inputs it evaluates itself, and whether it shapes its own outputs — and for a plugin's task those facts arrive with the plugin. Without it a plugin task is rewritten as an ordinary one, which is right for most of them and a guess for the rest. A plugin that will not start fails the command before any file is touched.
@@ -830,6 +834,9 @@ flow fix --check -o jsonl examples/*/workflow.yaml
 
 # Write the result somewhere else:
 flow fix --stdout old.yaml > new.yaml
+
+# After reading a module change, adopt its digest in the files that pin it:
+flow fix --repin examples/
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -845,6 +852,7 @@ flow fix --stdout old.yaml > new.yaml
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in `--plugin-pins`, launches unpinned, so pinning is adopted one plugin at a time |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--repin` | `bool` | `false` | — | rewrite each stale `digest:` on a `use:` entry to its module's current digest, instead of migrating the edition |
 | `--stdout` | `bool` | `false` | — | write the result to standard output instead of back to the file |
 
 ## `flow fmt`

@@ -24,6 +24,7 @@ everything else is `general`, and that is documented rather than pretended away.
 | `sensitive-in-prompt` | A `wait_for_signal:`'s `prompt:` reaches an input declared `sensitive:`, or holds a secret reference; a prompt is rendered to whoever is being asked to approve, so ask the question without that value in it. |
 | `sensitive-in-fail-message` | A `fail:` step's `message:` reaches an input declared `sensitive:`, or holds a secret reference; the message is recorded in the run's history, so write it without that value in it. |
 | `module-refused` | A `use:` names a module the file may not take declarations from: a path outside what it may read, a file that is a workflow and not a module, a cycle of modules, a bound crossed, or a module that has errors of its own. |
+| `module-pin-mismatch` | A `use:` entry's `digest:` does not verify: the module file hashes to something other than the pin, or the pin is not a `sha256:` digest. The message names the digest the file has now; read what changed, then `flow fix --repin`. |
 
 ## Shape
 

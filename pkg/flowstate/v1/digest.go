@@ -86,3 +86,37 @@ func ValidateContentDigest(digest string) error {
 	}
 	return nil
 }
+
+// CanonicalContentDigest is the one normalisation a written digest goes through
+// before it is compared with a measured one: ASCII upper case is folded to lower
+// case, and the result must then be exactly the spelling [ContentDigest] writes.
+//
+// Hex has no case and neither does the algorithm label, so `SHA256:AB12…` names
+// the same bytes as `sha256:ab12…`, and a pin copied out of a tool that renders
+// upper case is not refused for a difference that means nothing. Nothing else is
+// forgiven: no surrounding space, no prefix of a digest, no other algorithm, no
+// other length. The folding is ASCII-only, so no character of another script can
+// fold into a hex digit or into the label.
+//
+// `call: digest:` and `use: {digest:}` both compare through this, so the two pins
+// are one contract rather than two that happen to agree.
+func CanonicalContentDigest(written string) (string, error) {
+	if len(written) != len(ContentDigestPrefix)+ContentDigestHexLen {
+		// Refused before any copy, so a megabyte of somebody else's text costs
+		// the length check and nothing else.
+		return "", ValidateContentDigest(written)
+	}
+
+	folded := []byte(written)
+	for i, c := range folded {
+		if c >= 'A' && c <= 'Z' {
+			folded[i] = c + ('a' - 'A')
+		}
+	}
+	canonical := string(folded)
+	if err := ValidateContentDigest(canonical); err != nil {
+		return "", err
+	}
+
+	return canonical, nil
+}

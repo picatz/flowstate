@@ -73,6 +73,9 @@ import (
 // anchors, aliases and merge keys exactly the way [compiler.entries] does,
 // under the same total-node bound the compiler expands under. See callpins.go.
 //
+// A `use:` entry's `digest:` is the same pin for a module and is carried the same way,
+// anchored to its entry and written back right after its `path:`.
+//
 // What [placePins] writes into does not change, because there is nothing to
 // resolve there: [Marshal] renders every step whole, so a step that reached its
 // `call:` through a merge key is written back with `call:` on it.
@@ -743,7 +746,7 @@ func placePins(n ast.Node, path string, depth int, in map[string]sourcePin, plac
 	switch x := n.(type) {
 	case *ast.MappingNode:
 		if pin, ok := in[path]; ok {
-			ok, err := insertPin(x, pin.text)
+			ok, err := insertPin(x, pin.anchorKey(), pin.text)
 			if err != nil {
 				return err
 			}
@@ -778,8 +781,8 @@ func placePins(n ast.Node, path string, depth int, in map[string]sourcePin, plac
 }
 
 // insertPin writes digest as a new `digest:` entry in mapping, right after its
-// `call:` entry, and reports whether there was a `call:` entry to write it
-// after.
+// anchor entry (`call:` for a call's pin, `path:` for a `use:` entry's), and
+// reports whether there was one to write it after.
 //
 // A mapping with no `call:` entry is the anchor going stale: the document no
 // longer spells this call the way it did when the pin was collected (an alias
@@ -796,10 +799,10 @@ func placePins(n ast.Node, path string, depth int, in map[string]sourcePin, plac
 // `call:` itself sits at, is what makes the parser hand back a key token at
 // that same column, which is what makes the entry land at the right indent
 // once it is spliced into the mapping's own entries.
-func insertPin(mapping *ast.MappingNode, digest string) (bool, error) {
+func insertPin(mapping *ast.MappingNode, anchor, digest string) (bool, error) {
 	callIndex := -1
 	for i, entry := range mapping.Values {
-		if keyStep(entry) == "call" {
+		if keyStep(entry) == anchor {
 			callIndex = i
 			break
 		}
@@ -850,7 +853,7 @@ func unplacedPins(pins map[string]sourcePin, placed map[string]bool) Diagnostics
 		}
 		out = append(out, Diagnostic{
 			Message: fmt.Sprintf(
-				"digest: %s cannot be kept: the call it pins is not written back in the same shape "+
+				"digest: %s cannot be kept: the call or module it pins is not written back in the same shape "+
 					"(reached through an alias the compiler expanded, most likely), so there is nowhere "+
 					"left to put it; a formatter that dropped it here would silently turn off a security "+
 					"check, so nothing was written instead — move the call out of whatever expands it, or "+

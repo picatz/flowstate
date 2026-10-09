@@ -520,6 +520,23 @@ func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
 	return wf, pos, nil
 }
 
+// ParseAtWithoutModulePins is [ParseAt] for reading a file's contract and nothing
+// else: `digest:` pins on its `use:` entries (and on the entries of the modules it
+// reaches) are not enforced. `flow breaking` compiles the ref's version of a file
+// against the working tree's modules, and a pin written for the ref's modules would
+// otherwise refuse the old side whenever a module was edited and repinned, hiding
+// every other change to the file. Never for a file that is run, validated or
+// submitted: there a pin is the author's check and is always enforced.
+func ParseAtWithoutModulePins(data []byte, path string) (*v1.Workflow, *Positions, error) {
+	session := newModuleSession()
+	session.ignorePins = true
+	wf, pos, err := parse(data, path, nil, new(int), session)
+	if err != nil {
+		return nil, nil, err
+	}
+	return wf, pos, nil
+}
+
 // parse is the whole of what both [Parse] and [ParseFile] do, plus what a
 // nested call needs and an ordinary file never supplies: the chain of files
 // already being compiled, for cycle detection across files, and the running

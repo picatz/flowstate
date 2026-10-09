@@ -1605,9 +1605,53 @@ steps:
   `a_b.Name`, which a file cannot write). Nothing evaluates `modules`; the server refuses a
   specification whose qualified name has no recorded module. `flow fmt` writes the `use:`
   block back and not the carried declarations, and is a fixed point.
-- **Not yet.** Pinning a module's digest (`digest:` on an entry) and repinning it, and the
-  cross-module parts of `flow breaking`, `flow test` function cases and the language server
-  (which today offers hover and completion for qualified names, and go-to-definition from a `use:` entry's `path:` to the module file; navigating from a qualified name into the module's declaration lands with the cross-module language-server slice).
+- **Pinned with `digest:`.** An entry may carry the content hash of the module file, the
+  same pin a `call:` step carries and the same contract
+  ([Pinning what a call reads](#pinning-what-a-call-reads)): `sha256:` and 64 hex
+  characters, compared after folding ASCII case and in no other way (no prefix, no padding,
+  no other algorithm). The compiler hashes the module's bytes once, checks the pin against
+  that hash **before** compiling them, and parses the same bytes it hashed, so there is no
+  window between the check and the use. A mismatch refuses the module, whole, with the
+  `module-pin-mismatch` diagnostic at the digest, naming the alias, the path, the pinned
+  digest and the one the file has now. A pin is optional and a property of the file rather
+  than of the run: a matching pin compiles to what the unpinned entry does, and
+  `modules[].source_digest` is recorded either way.
+
+  ```yaml
+  use:
+    ids:
+      path: ./lib/ids.yaml
+      digest: sha256:9b7c93e35b2ff5ef1651bb1a8387a6dd8dd9b9e8e26f1a312b69296d544a8293
+  ```
+
+  `flow fmt` carries the pin and its comments across a reformat, as it does a call's.
+- **Repinned on purpose.** When a module legitimately changes, every pin on it is stale
+  and the compile refuses. `flow fix --repin <path>...` rewrites each stale `digest:` on a
+  `use:` entry to the digest of the module it names now, in place, leaving comments and
+  formatting as written. It is the one command that re-stamps a pin, because it is the
+  explicit "I read the change": it never adds a pin to an unpinned entry, leaves a pin
+  that already matches exactly as written, and refuses, leaving the whole file as it was,
+  when it cannot resolve and read a module or a pin is not a digest. The edition migration
+  (`flow fix` without `--repin`) still never re-stamps; it reports the pins its own
+  rewrite invalidated. Modules are repinned before the files that use them, so a module
+  that pins another and a file that pins that module are current when one run ends.
+- **Part of the contract `flow breaking` guards.** A module is matched to its previous self
+  by path, and what its importers write against is compared over what it compiles to: a
+  type removed or changed between record and scalar, a scalar whose base changed or whose
+  rule changed (read as tightened, like an input's `must:`), a record field removed or made
+  required or narrowed (held to both directions, since a module cannot know whether an
+  importer sends the record or receives it), a function removed, given another parameter
+  count, a narrowed parameter or a weakened result, and an error removed. Adding a
+  declaration, loosening a rule, renaming a parameter and editing a body or a description
+  pass, except that rules are compared as compiled, so editing a function that a type's
+  rule calls reads as that rule changing. A finding lists the files among the paths given that `use:` the module, so the
+  edit's blast radius is in the report; they are read from source, because an importer
+  that no longer compiles is the one most worth naming.
+- **Not yet.** `flow test` function cases and the language server's cross-module parts
+  (which today offer hover and completion for qualified names, and go-to-definition from a
+  `use:` entry's `path:` to the module file; navigating from a qualified name into the
+  module's declaration, and a quick-fix that repins from the `module-pin-mismatch`
+  diagnostic, land with the cross-module language-server slice).
 
 See `examples/use-modules/`.
 

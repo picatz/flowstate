@@ -68,7 +68,16 @@ import (
 // This file cannot name them, so nothing is re-exported, and `flow fmt` writes back
 // only the `use:` entries this file wrote.
 
-var useKeys = []string{"path"}
+var useKeys = []string{"path", "digest"}
+
+// A modulePin is the `digest:` an author wrote on a `use:` entry, with what it
+// takes to report against it.
+type modulePin struct {
+	alias string
+	node  ast.Node
+	path  string
+	ref   ref
+}
 
 // moduleSession is the account of the modules one workflow uses, shared by the file
 // being compiled and every module it reaches.
@@ -92,6 +101,10 @@ type moduleSession struct {
 
 	// reads counts the files read for modules, shared like loaded.
 	reads *int
+
+	// ignorePins skips verifying `use:` digests, for [ParseAtWithoutModulePins]
+	// only. Shared by every module the compile reaches.
+	ignorePins bool
 }
 
 func newModuleSession() *moduleSession {
@@ -139,6 +152,12 @@ func (u usedModule) functionNames() []string {
 type usedModules struct {
 	aliases map[string]usedModule
 	order   []string
+
+	// refused holds the aliases of the entries that were not used because this
+	// block stopped at one it could not (a pin that does not verify, a module that
+	// does not compile), so a name that reaches one says so rather than telling the
+	// author to add a `use:` that is already written.
+	refused map[string]bool
 
 	// span is where `use:` is written, for a refusal about the block as a whole.
 	span Span
@@ -208,14 +227,19 @@ func (c *compiler) useModules(f field) {
 	}
 
 	c.uses.aliases = make(map[string]usedModule, len(entries))
+	c.uses.refused = map[string]bool{}
 	c.initTypeScope()
-	for _, e := range entries {
+	for i, e := range entries {
 		before := len(c.diags)
 		c.useModule(e, path)
 		if len(c.diags) > before {
 			// The first module that cannot be used is the one to fix; the rest of
 			// the block would only repeat it, and a block of failing modules would
 			// otherwise multiply its report by its fan-out at every level.
+			for _, left := range entries[i:] {
+				c.uses.refused[left.name] = true
+			}
+
 			return
 		}
 	}
@@ -275,7 +299,13 @@ func (c *compiler) useModule(e entry, parent string) {
 		return
 	}
 
-	module, ok := c.loadModule(pathField.value, pathRef, target)
+	var pin *modulePin
+	if digestField, pinned := fields.get("digest"); pinned && !c.session.ignorePins {
+		pinPath := fieldPath(path, "digest")
+		pin = &modulePin{alias: e.name, node: digestField.value, path: pinPath, ref: ref{path: pinPath, label: "use " + e.name + " digest"}}
+	}
+
+	module, ok := c.loadModule(pathField.value, pathRef, target, pin)
 	if !ok {
 		return
 	}
@@ -287,7 +317,7 @@ func (c *compiler) useModule(e entry, parent string) {
 // reports why it cannot. It fails closed: a module that does not resolve to a
 // readable, valid module contributes nothing, and the file is not compiled as if it
 // had been used.
-func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedModule, bool) {
+func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modulePin) (*loadedModule, bool) {
 	span := spanOfNode(pathNode)
 
 	located := ResolveCallTarget(c.filePath, target)
@@ -314,6 +344,12 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedM
 	}
 
 	if loaded, ok := c.session.loaded[resolved]; ok {
+		// A pin is held to the bytes this workflow's compile read, however many
+		// entries name the module, and each entry is held to its own.
+		if pin != nil && !c.verifyModulePin(pin, target, loaded.digest) {
+			return nil, false
+		}
+
 		return loaded, true
 	}
 	if message, ok := c.session.failed[resolved]; ok {
@@ -345,8 +381,16 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedM
 	}
 	digest := formatSourceDigest(data)
 
+	// Checked before the module is compiled, on the digest of the bytes just read
+	// and never on a second read: the bytes that were verified are the bytes that
+	// are parsed. Not recorded as a failure of the module, because a pin belongs to
+	// the entry that wrote it and another entry may name the same file unpinned.
+	if pin != nil && !c.verifyModulePin(pin, target, digest) {
+		return nil, false
+	}
+
 	module, positions, err := parse(data, resolved, ancestors, c.callBudget,
-		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads})
+		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads, ignorePins: c.session.ignorePins})
 	if err != nil {
 		return refuse("uses %q, which failed to compile; first problem: %s", target, firstProblem(err.Error()))
 	}
@@ -367,6 +411,48 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedM
 	c.session.loaded[resolved] = loaded
 
 	return loaded, true
+}
+
+// verifyModulePin checks the `digest:` of a `use:` entry against the digest of the
+// module's bytes, and reports whether the module may go on being used.
+//
+// The same contract as a `call:` pin ([compiler.verifySourcePin]): the written text
+// goes through [v1.CanonicalContentDigest], so one spelling is accepted and
+// nothing else (no prefix, no other algorithm, no padding), and it is compared with
+// the digest of bytes already read. Fail closed: a pin that does not verify means
+// the author has not authorised these bytes, so the module contributes nothing.
+func (c *compiler) verifyModulePin(pin *modulePin, target, actual string) bool {
+	before := len(c.diags)
+	written, ok := c.text(pin.node, pin.path, pin.ref)
+	if !ok {
+		// A pin that is not text is a pin that does not verify: coded the same.
+		for i := before; i < len(c.diags); i++ {
+			c.diags[i].Code = v1.DiagnosticCodeModulePinMismatch
+		}
+
+		return false
+	}
+
+	span := spanOfNode(pin.node)
+	canonical, err := v1.CanonicalContentDigest(written)
+	if err != nil {
+		c.reportCode(v1.DiagnosticCodeModulePinMismatch, span, pin.ref,
+			"is %s, which is not the shape of a pin; write `sha256:` and the 64 hex characters of the module's SHA-256, "+
+				"which for module %s (%s) is `digest: %s` right now",
+			describeWrittenPin(written), pin.alias, target, actual)
+
+		return false
+	}
+	if canonical != actual {
+		c.reportCode(v1.DiagnosticCodeModulePinMismatch, span, pin.ref,
+			"pins module %s (%s) at %s, but that file hashes to %s right now; a mismatch means the module changed since the pin was written, "+
+				"so read what it declares now and then run `flow fix --repin` on this file, or write `digest: %s`, to adopt it",
+			pin.alias, target, canonical, actual, actual)
+
+		return false
+	}
+
+	return true
 }
 
 // ancestors is the chain of files compiling this one, this file included, each
@@ -623,6 +709,11 @@ func (c *compiler) typeProblem(text string, err error) string {
 		alias, name := m[1], m[2]
 		used, ok := c.uses.aliases[alias]
 		if !ok {
+			if c.uses.refused[alias] {
+				message += fmt.Sprintf("; `%s.%s` names module `%s`, which was refused where this file's `use:` names it", alias, name, alias)
+
+				continue
+			}
 			message += fmt.Sprintf("; `%s.%s` names module `%s`, which this file does not use: add `use: {%s: {path: ...}}`", alias, name, alias, alias)
 
 			continue

@@ -263,7 +263,22 @@ func TestDiagnosticCodesAreAssigned(t *testing.T) {
 		v1.DiagnosticCodeStubUnmatched:    "flowtest",
 	}
 
+	// A code only compiling a file can produce, because what it reports is a fact
+	// about bytes on disk that a compiled workflow no longer carries: a pin against
+	// a module's content. TestAMismatchedUsePinIsRefusedWithTheDigestToAdopt and
+	// TestAUsePinIsStrict assert the code on the diagnostics a compile returns.
+	producedByCompile := map[v1.DiagnosticCode]bool{
+		v1.DiagnosticCodeModulePinMismatch: true,
+	}
+
 	for _, info := range v1.DiagnosticCodes() {
+		if producedByCompile[info.Code] {
+			assert.False(t, seen[info.Code],
+				"code %q is listed as compile-only but Validate produces it too; list it in diagnosticCodeCases instead",
+				info.Code)
+
+			continue
+		}
 		if owner, elsewhere := producedElsewhere[info.Code]; elsewhere {
 			assert.False(t, seen[info.Code],
 				"code %q is listed as %s's but this package produces it too; one owner, or neither guard means anything",
