@@ -94,8 +94,10 @@ func valueText(v *v1.DebugValue) string {
 	return cutValue(first) + " …"
 }
 
-// childNodes are the rows of a page of children under the row parent.
-func childNodes(answer *v1.DebugInspectResponse, parent string) []pane.Node {
+// childNodes are the rows of a page of children under the row parent, each
+// badged for how a value read at frame f is known.
+func childNodes(f flowdebug.Frame, answer *v1.DebugInspectResponse, parent string) []pane.Node {
+	typed := typedRoot(parent)
 	nodes := make([]pane.Node, 0, len(answer.GetChildren()))
 	for _, child := range answer.GetChildren() {
 		value := child.GetValue()
@@ -103,9 +105,45 @@ func childNodes(answer *v1.DebugInspectResponse, parent string) []pane.Node {
 			ID:    childID(parent, value.GetExpression()),
 			Label: child.GetName(),
 			Value: valueText(value),
+			Badge: badgeOf(f, value, typed),
 			Total: int(value.GetChildren()),
 		})
 	}
 
 	return nodes
+}
+
+// typedRoot reports that the row id is, or is under, a watch or an inspection:
+// an expression that was asked for, whose value was never held by the run.
+func typedRoot(id string) bool {
+	root, _, _ := strings.Cut(id, idSep)
+
+	return strings.HasPrefix(root, watchPrefix) || strings.HasPrefix(root, resultPrefix)
+}
+
+// badgeOf is the mark a row of value carries at frame f, or "" at a live stop:
+// "[rec]" for a name of the scope the replay held, "[hyp]" for an expression
+// that was typed (typed), and "[n/a]" for a value that cannot be known. The
+// words are the whole of it, so a screen without colour loses nothing.
+func badgeOf(f flowdebug.Frame, value *v1.DebugValue, typed bool) string {
+	badge := flowdebug.FidelityBadge(f.ValueFidelity(value, typed))
+	if badge == "" {
+		return ""
+	}
+
+	return "[" + badge + "]"
+}
+
+// paintBadge styles a badge: an expression the run never evaluated stands out,
+// a value that cannot be known recedes, and one the replay held reads as the
+// value beside it does.
+func paintBadge(badge string, theme ui.Theme) string {
+	switch badge {
+	case "[hyp]":
+		return theme.Warning.Render(badge)
+	case "[n/a]":
+		return theme.Muted.Render(badge)
+	default:
+		return badge
+	}
 }

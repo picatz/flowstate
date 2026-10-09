@@ -42,7 +42,15 @@ and a session nobody renews lapses and the run resumes on its own.
 
 Commands are read from the terminal, or from --script. Leaving with ` + "`detach`" + `, or
 at the end of input, releases the run; ` + "`disconnect`" + ` leaves the session attached
-for a later ` + "`flow debug attach --session <id>`" + `.`
+for a later ` + "`flow debug attach --session <id>`" + `.
+
+With --history --run-id the run is not held at all: the debugger opens its record, every
+point of it reachable both ways with next, back, goto and the timeline, whether the run
+is still going or closed. Nothing runs and no session is taken; what it shows is
+reconstructed from the history, a name of the scope is marked rec, an expression typed or
+watched is marked hyp (computed now, never held by the run), and a value that cannot be
+known is marked n/a. until, break, pause and the other verbs that need a run executing are
+refused by name.`
 
 const debugAttachExample = `# Attach, stop at the next step, and drive it interactively:
 flow debug attach order-1234
@@ -51,7 +59,10 @@ flow debug attach order-1234
 flow debug attach order-1234 --script debug.txt -o jsonl
 
 # Rejoin a session another process left attached:
-flow debug attach order-1234 --session 5d3f…`
+flow debug attach order-1234 --session 5d3f…
+
+# Walk a closed run's record, both ways, in the full-screen debugger:
+flow debug attach order-1234 --history --run-id 5d3f… --tui`
 
 func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd := &cobra.Command{
@@ -72,6 +83,8 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd.Flags().String("program", "", "the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, "+
 		"the deployment's plugin and task pins aside")
 	attachCmd.Flags().Duration("wait", time.Minute, "how long a movement waits for the next stop before reporting the run still running")
+	attachCmd.Flags().Bool("history", false, "walk the recorded run named by --run-id instead of holding it: every point is reachable both ways, "+
+		"nothing runs, and what it shows is reconstructed from its history")
 	attachCmd.Flags().Bool("tui", false, "drive the run from a full-screen debugger (keyboard and mouse) instead of the line editor; "+
 		"needs a terminal at least 60x12, and is declined with a note on stderr where there is none")
 
@@ -161,6 +174,12 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	program, _ := cmd.Flags().GetString("program")
 	wait, _ := cmd.Flags().GetDuration("wait")
 	record, _ := cmd.Flags().GetString("record")
+	history, _ := cmd.Flags().GetBool("history")
+	if history {
+		if err := refuseHistoryAttach(cmd, runID); err != nil {
+			return err
+		}
+	}
 	if script != "" {
 		if err := refuseRecordingOver(cmd, script); err != nil {
 			return err
@@ -197,10 +216,31 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	}
 
 	ctx := cmd.Context()
-	remote, receipt, err := flowdebug.AttachRemote(ctx, newWorkflowServiceClient(serverFlagsOf(cmd)), args[0], runID,
-		flowdebug.RemoteOptions{SessionID: session, Lease: lease, SourceMap: sourceMap, Wait: 5 * time.Second})
-	if err != nil {
-		return err
+	var (
+		remote  attachedTarget
+		opening string
+	)
+	if history {
+		// A record is read, not held: no session is taken, so there is nothing
+		// to renew and nothing a lapse can release.
+		recorded, err := flowdebug.OpenHistorical(ctx,
+			flowdebug.RemoteHistory(newWorkflowServiceClient(serverFlagsOf(cmd)), args[0], runID),
+			flowdebug.WithSourceMap(sourceMap))
+		if err != nil {
+			return fmt.Errorf("reading the history of %s: %w", args[0], err)
+		}
+		remote = recordedRun{recorded}
+		opening = fmt.Sprintf("reading the record of %s, run %s — %d points, reconstructed from its history; nothing runs",
+			args[0], runID, len(recorded.Points()))
+	} else {
+		live, receipt, err := flowdebug.AttachRemote(ctx, newWorkflowServiceClient(serverFlagsOf(cmd)), args[0], runID,
+			flowdebug.RemoteOptions{SessionID: session, Lease: lease, SourceMap: sourceMap, Wait: 5 * time.Second})
+		if err != nil {
+			return err
+		}
+		remote = live
+		opening = fmt.Sprintf("attached to %s — session %s (%s)", args[0], live.SessionID(),
+			strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
 	}
 	// Every way out below releases the run unless it has already been
 	// detached or deliberately left attached: a failed write, a bound
@@ -210,8 +250,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	answers := &driveAnswers{out: surface.Out, format: format}
 	defer func() { err = errors.Join(err, answers.flush()) }()
 	if !format.Machine() {
-		fmt.Fprintf(surface.Out, "attached to %s — session %s (%s)\n", args[0], remote.SessionID(),
-			strings.TrimSpace(flowdebug.FormatReceipt(receipt)))
+		fmt.Fprintln(surface.Out, opening)
 		if program != "" && !remote.SourceMapVerified() {
 			fmt.Fprintf(surface.Out, "%s does not match the program this run executes; lines are not shown\n", program)
 		}
@@ -245,7 +284,7 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 
 	// The screen drives the run itself and ends the way the loop below does.
 	if wantTUI {
-		return attachWithTUI(ctx, cmd, remote, driver, parsed, sourceMap, documents, surface, recording, args[0])
+		return attachWithTUI(ctx, cmd, remote, driver, parsed, sourceMap, documents, surface, recording, args[0], first.Snapshot.GetCapabilities())
 	}
 
 	in, interactive := io.Reader(cmd.InOrStdin()), stdinIsInteractive(cmd)
@@ -397,13 +436,17 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 			err = fmt.Errorf("a command is at most %d bytes", flowdebug.MaxCommandBytes)
 		}
 
-		return fmt.Errorf("reading commands: %w; session %s is left attached until its lease lapses", err, remote.SessionID())
+		if history {
+			return fmt.Errorf("reading commands: %w", err)
+		}
+
+		return fmt.Errorf("reading commands: %w; session %s is left attached until its lease lapses", err, sessionOf(remote))
 	}
 
 	if keep {
-		if !format.Machine() {
+		if !format.Machine() && !history {
 			fmt.Fprintf(surface.Out, "left session %s attached; rejoin with `flow debug attach %s --session %s` before its lease lapses\n",
-				remote.SessionID(), args[0], remote.SessionID())
+				sessionOf(remote), args[0], sessionOf(remote))
 		}
 
 		return remote.Disconnect()
@@ -412,6 +455,60 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 	// The end of input releases the run: a debugger that is gone must not
 	// keep a production run held.
 	return remote.Close()
+}
+
+// attachedTarget is what `flow debug attach` drives: a [flowdebug.Remote]
+// holding a durable run, or, for --history, a recorded run read through a
+// [flowdebug.Historical]. The two are one front to the loop and the screen below,
+// which is the point: a post-mortem is the same debugger over another target.
+type attachedTarget interface {
+	flowdebug.Target
+
+	// SourceMapVerified is whether the source map given names the program the
+	// target is at.
+	SourceMapVerified() bool
+
+	// Disconnect leaves the target the way `disconnect` does: a live session
+	// stays attached for a rejoin, and a record has nothing to leave.
+	Disconnect() error
+}
+
+// recordedRun is a [flowdebug.Historical] as an [attachedTarget]. A record holds
+// no session, so leaving it is closing it.
+type recordedRun struct{ *flowdebug.Historical }
+
+// Disconnect closes the record: there is no session to leave attached.
+func (r recordedRun) Disconnect() error { return r.Close() }
+
+// sessionOf is the session id of a live target, or "" for a record, which has none.
+func sessionOf(target attachedTarget) string {
+	if live, ok := target.(interface{ SessionID() string }); ok {
+		return live.SessionID()
+	}
+
+	return ""
+}
+
+// refuseHistoryAttach is why --history cannot be honoured with these flags, or
+// nil. A record is one execution's, so the run id is required; it holds no
+// session, so the flags that name, renew or wait on one mean nothing.
+func refuseHistoryAttach(cmd *cobra.Command, runID string) error {
+	if runID == "" {
+		return errors.New("--history needs --run-id: a point of a recorded run is a point of one execution; `flow get` prints a run's id")
+	}
+
+	var given []string
+	for _, name := range []string{"session", "lease", "wait"} {
+		if cmd.Flags().Changed(name) {
+			given = append(given, "--"+name)
+		}
+	}
+	if len(given) > 0 {
+		return fmt.Errorf("--history reads a recorded run and holds no session, so %s does not apply; "+
+			"leave it out, or drop --history to attach to the live run", strings.Join(given, ", "))
+	}
+
+	return nil
 }
 
 // unexpectedPromptError is the part of a console prompt's failure that is not

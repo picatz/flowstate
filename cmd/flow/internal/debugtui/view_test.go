@@ -172,7 +172,7 @@ func TestTheScreenFitsEverySizeInEveryState(t *testing.T) {
 		"problem":      func(s *Screen) { s.Frame.Scope, s.Problem = nil, long },
 		"watches": func(s *Screen) {
 			s.Watches = []Watch{{Expr: long}, {Expr: "a", Err: long}, {Expr: "b", NotHeld: true}}
-			s.Tree.SetRoots(append(ScopeNodes(s.Frame), watchNodes(s.Watches)...))
+			s.Tree.SetRoots(append(ScopeNodes(s.Frame), watchNodes(s.Watches, s.Frame)...))
 			s.Tree.Toggle(groupWatches)
 		},
 		"menu": func(s *Screen) {

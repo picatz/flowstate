@@ -126,6 +126,11 @@ type Binding struct {
 	// Value is the rendered, redacted answer, or the redacted reason there is
 	// none. Either way it is safe to draw: see the type's own doc.
 	Value string
+
+	// Badge is how the value is known, in the mark [flowdebug.FidelityBadge]
+	// spells: empty at a live stop, and "rec" or "n/a" at a recorded point.
+	// It is drawn before the value as "[rec]", so it reads without colour.
+	Badge string
 }
 
 // Frame is one read of a paused session, and everything the panes are drawn
@@ -252,6 +257,7 @@ func FromFrame(f flowdebug.Frame) (Frame, bool) {
 				text = "(" + binding.GetError() + ")"
 			}
 			frame.Bindings = append(frame.Bindings, Binding{
+				Badge: flowdebug.FidelityBadge(f.ValueFidelity(f.Values[binding.GetExpression()], false)),
 				// The remote chose this text; a map key in it can carry a control
 				// sequence, so it is escaped as the value beside it is.
 				Expression: ui.EscapeControl(binding.GetExpression()),
@@ -751,10 +757,19 @@ func scopeRows(frame Frame, theme ui.Theme, budget int) []string {
 
 	rows := make([]string, 0, shown+1)
 	for _, binding := range frame.Bindings[:shown] {
-		rows = append(rows, fmt.Sprintf("  %s%s  %s",
+		// The mark is plain text, muted when "n/a" says the value is not known,
+		// so a pane drawn without colour keeps every word of it.
+		badge := ""
+		if binding.Badge != "" {
+			badge = "[" + binding.Badge + "] "
+			if binding.Badge == "n/a" {
+				badge = theme.Muted.Render(badge)
+			}
+		}
+		rows = append(rows, fmt.Sprintf("  %s%s  %s%s",
 			theme.Strong.Render(binding.Expression),
 			strings.Repeat(" ", widest-len([]rune(binding.Expression))),
-			binding.Value))
+			badge, binding.Value))
 	}
 
 	// What was left out, and how much of it, in the two places it can be left

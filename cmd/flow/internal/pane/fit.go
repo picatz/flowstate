@@ -30,6 +30,10 @@ type Options struct {
 	// value has been cut to fit. It must return its argument's text unchanged
 	// apart from styling.
 	PaintValue func(string) string
+
+	// PaintBadge, when set, styles a [Node.Badge] as drawn. Like PaintValue it
+	// returns its argument's text unchanged apart from styling.
+	PaintBadge func(string) string
 }
 
 // Fit returns text as exactly h lines of exactly w cells: longer lines are cut

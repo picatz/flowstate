@@ -62,15 +62,26 @@ func (w Watch) text() string {
 	}
 }
 
+// badge is the mark the watch's row carries at frame f: a watch is an expression
+// that was asked for, so it is hypothetical wherever it has a value, and a watch
+// with none (still reading, not held, or failing) is not known.
+func (w Watch) badge(f flowdebug.Frame) string {
+	if w.Err != "" || w.NotHeld {
+		return badgeOf(f, nil, true)
+	}
+
+	return badgeOf(f, w.Value, true)
+}
+
 // watchNodes is the group the watches are listed under, or nil with none.
-func watchNodes(watches []Watch) []pane.Node {
+func watchNodes(watches []Watch, f flowdebug.Frame) []pane.Node {
 	if len(watches) == 0 {
 		return nil
 	}
 	group := pane.Node{ID: groupWatches, Label: "watches", Value: fmt.Sprintf("{%d}", len(watches)), Total: len(watches)}
 	for _, w := range watches {
 		group.Children = append(group.Children, pane.Node{
-			ID: watchPrefix + w.Expr, Label: w.Expr, Value: w.text(), Total: int(w.Value.GetChildren()),
+			ID: watchPrefix + w.Expr, Label: w.Expr, Value: w.text(), Badge: w.badge(f), Total: int(w.Value.GetChildren()),
 		})
 	}
 
@@ -255,7 +266,7 @@ func (m *Model) unwatch(arg string) {
 // still exists.
 func (m *Model) syncTree() {
 	roots := ScopeNodes(m.screen.Frame)
-	roots = append(roots, watchNodes(m.screen.Watches)...)
+	roots = append(roots, watchNodes(m.screen.Watches, m.screen.Frame)...)
 	if r := m.screen.Result; r != nil {
 		roots = append(roots, *r)
 	}

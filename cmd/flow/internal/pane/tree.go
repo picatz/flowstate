@@ -20,6 +20,12 @@ type Node struct {
 	Label string
 	Value string
 
+	// Badge is a short mark drawn between the label and the value, such as how
+	// the value is known. It is the caller's text: empty draws nothing, and the
+	// tree gives no meaning to it. The column it takes is as wide as the widest
+	// badge in view, so values stay aligned.
+	Badge string
+
 	// Children are the ones held. Total is how many the node has in all, so a
 	// node with fewer Children than Total has a page still to load; zero means
 	// the held ones are all of them.
@@ -70,6 +76,9 @@ type Row struct {
 	Branch, Open bool
 
 	Label, Value string
+
+	// Badge is the node's.
+	Badge string
 
 	// Parent and Offset say what activating a [RowMore] loads; Remaining is
 	// how many it would still leave unseen.
@@ -152,7 +161,7 @@ func (t *Tree) Rows() []Row {
 			open := t.open[n.ID]
 			rows = append(rows, Row{
 				ID: n.ID, Depth: depth, Branch: n.total() > 0, Open: open,
-				Label: n.Label, Value: n.Value, Parent: parent,
+				Label: n.Label, Value: n.Value, Badge: n.Badge, Parent: parent,
 			})
 			if !open {
 				continue
@@ -392,10 +401,14 @@ func (t *Tree) View(o Options, empty string) string {
 		labelWidth = max(labelWidth, r.Depth*2+2+lipgloss.Width(cleaned(r.Label)))
 	}
 	labelWidth = min(labelWidth, max(8, o.Width/2))
+	badgeWidth := 0
+	for _, r := range visible {
+		badgeWidth = max(badgeWidth, lipgloss.Width(cleaned(r.Badge)))
+	}
 
 	lines := make([]string, 0, len(visible))
 	for i, r := range visible {
-		lines = append(lines, t.line(r, labelWidth, o))
+		lines = append(lines, t.line(r, labelWidth, badgeWidth, o))
 		kind := KindRow
 		if r.Kind == RowMore {
 			kind = KindMore
@@ -411,7 +424,7 @@ func cleaned(s string) string {
 }
 
 // line draws one row.
-func (t *Tree) line(r Row, labelWidth int, o Options) string {
+func (t *Tree) line(r Row, labelWidth, badgeWidth int, o Options) string {
 	indent := strings.Repeat("  ", r.Depth)
 	if r.Kind == RowMore {
 		text := fmt.Sprintf("%s %d more", o.Symbols.Ellipsis, r.Remaining)
@@ -435,6 +448,16 @@ func (t *Tree) line(r Row, labelWidth int, o Options) string {
 	}
 
 	name := o.Theme.Strong.Render(label)
+	if badgeWidth > 0 {
+		// Every row of the column is as wide, so a row with no badge keeps its
+		// value where the others have theirs.
+		badge := ui.Trim(cleaned(r.Badge), badgeWidth)
+		pad := strings.Repeat(" ", max(0, badgeWidth-lipgloss.Width(badge)))
+		if o.PaintBadge != nil && badge != "" {
+			badge = o.PaintBadge(badge)
+		}
+		value = badge + pad + " " + value
+	}
 	if r.ID == t.selected {
 		gutter := cmp.Or(strings.TrimSpace(o.Symbols.Arrow), ">")
 		if !o.Focused {

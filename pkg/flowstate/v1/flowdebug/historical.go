@@ -471,6 +471,10 @@ func (h *Historical) Travel(ctx context.Context, requestID string, expectedRevis
 	return h.move(ctx, requestID, expectedRevision, first+int(point), "requested")
 }
 
+// settled marks the movements of a recorded run as over when they are applied;
+// see [settledMover].
+func (*Historical) settled() {}
+
 // Pause implements [Target]: a recorded run is not running.
 func (h *Historical) Pause(_ context.Context, requestID string) (*v1.DebugReceipt, error) {
 	return h.receipt(requestID, v1.DebugCommandStatus_DEBUG_COMMAND_STATUS_REFUSED, "a recorded run is not running"), nil

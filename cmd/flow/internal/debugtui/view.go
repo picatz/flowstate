@@ -234,6 +234,7 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		case paneScope:
 			o.Prefix = scopePrefix
 			o.PaintValue = func(value string) string { return PaintValue(value, st.Theme) }
+			o.PaintBadge = func(badge string) string { return paintBadge(badge, st.Theme) }
 			text = ScopeView(s.Tree, s.Frame, s.Loaded, s.Problem, o)
 		case paneInspector:
 			text = InspectorView(s.Tree, s.Frame, o)
@@ -311,6 +312,11 @@ func HeaderView(f flowdebug.Frame, loaded bool, width int, st Style) string {
 		}
 	}
 	parts = append(parts, state, fmt.Sprintf("rev %d", snapshot.GetRevision()))
+	if known := flowdebug.FidelityName(f.Fidelity); known != "" {
+		// A recorded point is a reconstruction, and the bar says so wherever the
+		// run is: nothing on this screen is the run happening.
+		parts = append(parts, known)
+	}
 	if f.Partial {
 		parts = append(parts, "earlier steps not shown")
 	}
@@ -436,6 +442,7 @@ func ScopeNodes(f flowdebug.Frame) []pane.Node {
 				ID:    binding.GetExpression(),
 				Label: binding.GetName(),
 				Value: cutValue(text),
+				Badge: badgeOf(f, value, false),
 				Total: int(value.GetChildren()),
 			})
 		}
@@ -530,12 +537,29 @@ func inspector(tree *pane.Tree, f flowdebug.Frame) pane.Inspector {
 		}
 	}
 	fields = append(fields, pane.Field{Key: "value", Value: node.Value})
+	if known := knownAs(node.Badge); known != "" {
+		fields = append(fields, pane.Field{Key: "known as", Value: known})
+	}
 	note := ""
 	if value.GetTruncated() {
 		note = "the target cut this value"
 	}
 
 	return pane.Inspector{Fields: fields, Note: note}
+}
+
+// knownAs says in words what a row's badge stands for, for the detail pane.
+func knownAs(badge string) string {
+	switch badge {
+	case "[rec]":
+		return "reconstructed: what the run held here, replayed from its history"
+	case "[hyp]":
+		return "hypothetical: computed now over the reconstructed scope, and never held by the run"
+	case "[n/a]":
+		return "unavailable: it cannot be known at this point"
+	default:
+		return ""
+	}
 }
 
 // SelectedExpression is the expression of the selected scope row, or "" when

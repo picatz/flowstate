@@ -85,7 +85,7 @@ func terminalRefusal(in io.Reader, out io.Writer, min tui.Size) string {
 func attachWithTUI(
 	ctx context.Context,
 	cmd *cobra.Command,
-	remote *flowdebug.Remote,
+	remote attachedTarget,
 	driver *flowdebug.Driver,
 	parsed *v1.Workflow,
 	sourceMap *v1.DebugSourceMap,
@@ -93,6 +93,7 @@ func attachWithTUI(
 	surface *ui.UI,
 	recording *attachRecording,
 	workflowID string,
+	capabilities *v1.DebugCapabilities,
 ) error {
 	frames := flowdebug.FrameOptions{Program: parsed}
 	if parsed != nil && remote.SourceMapVerified() {
@@ -111,8 +112,12 @@ func attachWithTUI(
 		Frame:  frames,
 		// The screen shows a text only where the verified map records its digest.
 		Documents: documents,
-		Style:     debugtui.Style{Theme: surface.Theme, Symbols: surface.Caps.Symbols()},
-		Size:      tui.Size{W: width, H: height},
+		// What the target can do decides which verbs have a key: a record has no
+		// key for what needs a run executing.
+		Verbs:  flowdebug.VerbsFor(capabilities),
+		Record: capabilities.GetHistory(),
+		Style:  debugtui.Style{Theme: surface.Theme, Symbols: surface.Caps.Symbols()},
+		Size:   tui.Size{W: width, H: height},
 		// Refreshed by the target's own revisions, never by a clock.
 		Watch:    true,
 		Accepted: acceptInto(recording),
@@ -131,8 +136,11 @@ func attachWithTUI(
 	case debugtui.OutcomeDetach, debugtui.OutcomeEnded:
 		return remote.Disconnect()
 	case debugtui.OutcomeDisconnect:
+		if sessionOf(remote) == "" {
+			return remote.Disconnect()
+		}
 		fmt.Fprintf(surface.Out, "left session %s attached; rejoin with `flow debug attach %s --session %s` before its lease lapses\n",
-			remote.SessionID(), workflowID, remote.SessionID())
+			sessionOf(remote), workflowID, sessionOf(remote))
 
 		return remote.Disconnect()
 	default:
