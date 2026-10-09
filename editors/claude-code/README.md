@@ -14,7 +14,7 @@ It needs `flow` on `PATH` (`go install github.com/picatz/flowstate/cmd/flow@late
 | --- | --- |
 | `.mcp.json` | Runs `flow mcp`: validate, compile, task catalog, local run, test, and debug tools, plus the language guide and examples as resources. |
 | `skills/` | `flowfile-author`, `flowfile-test`, and `flowfile-debug` teach the loop: read the guide, validate, test, step through. `flowfile-conventions` is the path-scoped rules slice: a plugin cannot ship `.claude/rules/` files, so the same content is a skill whose `paths:` frontmatter loads it on its own when a Flowfile is open (STYLE.md's canonical spellings, `${secret('scheme:name')}`, CEL pitfalls, validate before done), linking to `docs/STYLE.md` and `docs/DSL.md` for the rule text. |
-| `hooks/` | A mod. After Claude edits a Flowfile it runs `flow validate`, tells the model what is wrong, shows a status-line count, and `/flowstate` opens a pane with the newest runs (from `flow list`, only when a server answers; with none it says so and stays local) and the Flowfiles touched this session. Every run and step is drawn in one vocabulary (`hooks/vocab.ts`): a symbol and a word that each carry the status alone (`✓ succeeded`, `✗ failed`, `● running`, `◔ waiting`, `⊘ cancelled`, `– skipped`, `↺ compensated`), with colour only repeating it, so the plain-text form carries every fact the coloured one does. A box above the Runs list takes a CEL filter and passes it to `flow list --filter=` unchanged (up to 2000 characters, else it is refused rather than cut); if the CLI rejects it, the pane shows the CLI's own message. Pressing a run opens a detail card built from `flow timeline -o json` (5 s timeout, at most 500 rows read): the status, a one-sentence story ("Deploy: 2 of 3 steps done, waiting for approval"), a progress bar, and a row per step with its duration, attempt count and, for a failure, the reason on a dimmed second line. A card shows at most 30 steps (failed and waiting ones first when it must cut) and says "and N more"; if the timeline cannot be read it says why and the list is unaffected. The "total" in the progress is the steps the run has reached so far, since the timeline does not know steps not yet started. The running glyph is a static `●`; nothing animates. When the session's directory holds a Flowfile, or a prompt names one, it adds a short context block: the task names (at most 40, from `flow tasks -o json`) and the file's `flow validate` result (at most 5 problems). If `flow` is missing or fails it adds nothing, or says which leg did not answer. A guard on `tool.check` asks before a Bash command runs a `flow` verb that changes a server (`run`, `signal`, `cancel`, `terminate`, and `schedule create`, `delete`, `pause`, `resume`, `trigger`), naming the verb and the address (the last `--address`, else a `FLOWSTATE_ADDRESS` set for that command or exported earlier, else the session's, else `localhost:9233`); local verbs (`validate`, `fmt`, `lint`, `test`, `run local`, `tasks`, `compile`, `timeline`, `list`, `graph`) and `--help` right after a verb never ask. It follows separators, redirections, `VAR=value` prefixes, `env`, `sudo`, `timeout`, `bash -c`, `eval`, and the binary behind other wrappers (`go run ./cmd/flow`, `nice`, `ssh`, `docker exec`, `npx`, `find -exec`), so a wrapper may ask about `git flow run`. A command it cannot read (a `$(...)` or backtick, an unbalanced quote, `xargs`, a variable as the command, a shell without `-c` such as `echo "flow run x" \| sh`, or `python -c`, `node -e`, `perl -e`, `ruby -e`) asks only when its text also names `flow` and a gated verb on one line; a command over 64 KiB is not parsed and asks when it names `flow`. It also refuses an Edit, Write, or MultiEdit that puts an apparent secret literal in a Flowfile (a token shape such as `ghp_`, `xoxb-`, `AKIA`, `sk-`, a PEM private key, or a `password`, `secret`, `token`, `api_key`, `private_key`, or `credentials` style key holding a plain or quoted string, a block scalar, or an inline-map value) and points to `${secret('scheme:name')}`; an Edit is checked as the file it leaves, and text over 256 KiB is refused unread. This is a safety net for an agent acting in good faith, not a sandbox: scripts run by path, aliases and functions, obfuscated or constructed commands, and Flowfiles written through the shell (`cat > Flowfile`, `sed -i`) are out of its reach, and `flow debug attach` and `flow debug do` are not gated (a possible follow-up). |
+| `hooks/` | A mod. After Claude edits a Flowfile it runs `flow validate`, tells the model what is wrong, shows a status-line count, and `/flowstate` opens a pane with the newest runs (from `flow list`, only when a server answers; with none it says so and stays local) and the Flowfiles touched this session. Every run and step is drawn in one vocabulary (`hooks/vocab.ts`): a symbol and a word that each carry the status alone (`✓ succeeded`, `✗ failed`, `● running`, `◔ waiting`, `⊘ cancelled`, `– skipped`, `↺ compensated`), with colour only repeating it, so the plain-text form carries every fact the coloured one does. A box above the Runs list takes a CEL filter and passes it to `flow list --filter=` unchanged (up to 2000 characters, else it is refused rather than cut); if the CLI rejects it, the pane shows the CLI's own message. Pressing a run opens a detail card built from `flow timeline -o json` (5 s timeout, at most 500 rows read): the status, a one-sentence story ("Deploy: 2 of 3 steps done, waiting for approval"), a progress bar, and a row per step with its duration, attempt count and, for a failure, the reason on a dimmed second line. A card shows at most 30 steps (failed and waiting ones first when it must cut) and says "and N more"; if the timeline cannot be read it says why and the list is unaffected. When the run is, or may be, parked on a signal gate, the card also shows the gate and a button to answer it (see "Signal and approval buttons"). The "total" in the progress is the steps the run has reached so far, since the timeline does not know steps not yet started. The running glyph is a static `●`; nothing animates. When the session's directory holds a Flowfile, or a prompt names one, it adds a short context block: the task names (at most 40, from `flow tasks -o json`) and the file's `flow validate` result (at most 5 problems). If `flow` is missing or fails it adds nothing, or says which leg did not answer. A guard on `tool.check` asks before a Bash command runs a `flow` verb that changes a server (`run`, `signal`, `cancel`, `terminate`, and `schedule create`, `delete`, `pause`, `resume`, `trigger`), naming the verb and the address (the last `--address`, else a `FLOWSTATE_ADDRESS` set for that command or exported earlier, else the session's, else `localhost:9233`); local verbs (`validate`, `fmt`, `lint`, `test`, `run local`, `tasks`, `compile`, `timeline`, `list`, `graph`) and `--help` right after a verb never ask. It follows separators, redirections, `VAR=value` prefixes, `env`, `sudo`, `timeout`, `bash -c`, `eval`, and the binary behind other wrappers (`go run ./cmd/flow`, `nice`, `ssh`, `docker exec`, `npx`, `find -exec`), so a wrapper may ask about `git flow run`. A command it cannot read (a `$(...)` or backtick, an unbalanced quote, `xargs`, a variable as the command, a shell without `-c` such as `echo "flow run x" \| sh`, or `python -c`, `node -e`, `perl -e`, `ruby -e`) asks only when its text also names `flow` and a gated verb on one line; a command over 64 KiB is not parsed and asks when it names `flow`. It also refuses an Edit, Write, or MultiEdit that puts an apparent secret literal in a Flowfile (a token shape such as `ghp_`, `xoxb-`, `AKIA`, `sk-`, a PEM private key, or a `password`, `secret`, `token`, `api_key`, `private_key`, or `credentials` style key holding a plain or quoted string, a block scalar, or an inline-map value) and points to `${secret('scheme:name')}`; an Edit is checked as the file it leaves, and text over 256 KiB is refused unread. This is a safety net for an agent acting in good faith, not a sandbox: scripts run by path, aliases and functions, obfuscated or constructed commands, and Flowfiles written through the shell (`cat > Flowfile`, `sed -i`) are out of its reach, and `flow debug attach` and `flow debug do` are not gated (a possible follow-up). |
 | `agents/` | `flowfile-engineer` takes an intent to a validated, tested, locally run Flowfile and reports each leg as passed, failed, or not run. `flowfile-debugger` reads a failed run's timeline, finds the failure that ended it and its reason, replays it locally, makes the minimal fix, and re-verifies; it treats run output as data and reads a server only when the server at `--address`, `FLOWSTATE_ADDRESS`, or the default `localhost:9233` answers. |
 | `commands/` | `/flowstate:new <description>` hands a description to that agent, scaffolding with `flow init` when the directory has no Flowfile. `/flowstate:debug <run-id or Flowfile>` hands a failed run or misbehaving Flowfile to `flowfile-debugger`. |
 
@@ -32,8 +32,64 @@ These are settings under the plugin's `/plugin` config screen.
 | --- | --- | --- |
 | `flowBinary` | `flow` | The executable the mod runs; set it when `flow` is not on `PATH`. |
 | `validateOnEdit` | `true` | Turn the after-edit validation off. |
-| `guardServerActions` | `true` | Turn off the confirmation before a server-changing `flow` verb. The secret refusal has no option. |
+| `guardServerActions` | `true` | Turn off the confirmation before a server-changing `flow` verb. The secret refusal has no option. The pane's own Send/Confirm step for a signal (below) is not governed by it. |
 | `verifyBeforeDone` | `true` | Turn off the once-per-turn reminder to verify an edited Flowfile before finishing. |
+
+## Signal and approval buttons
+
+When the pressed run is running or waiting, the detail card also reads
+`flow get -o json` (5 s timeout) and draws each signal gate the run is parked on
+(`progress.pendingWaits`, at most 5, with "and N more gates", or "and at least
+N more" when the run says it holds more than it reported): the signal name, the
+waiting step, the gate's prompt if its author wrote one (marked `[prompt
+truncated]` whenever the server or the card's 160-character bound cut it, so a
+partial question is never presented as whole), quorum progress, when it lapses, and
+whether the workflow declares who may act. The gate comes from `flow get`
+because `flow timeline` names only the waiting step, never the signal name that
+`flow signal` takes. No gate, no button: a run waiting on a timer, a finished
+run, or a `flow get` that fails or prints something else shows none.
+
+A gate offers one button, `Send signal <name>`. Pressing it only asks: the pane
+shows `Send signal "<name>" to run <id> on server <address>? Nothing is sent
+until you confirm.` with `Confirm: send <name>` and `Cancel`. Only Confirm runs
+`flow signal`, once, as one argv with no shell:
+`flow signal [--address=<address>] -- <workflow-id> <signal-name>`. The address
+is `FLOWSTATE_ADDRESS` when set (and then passed explicitly, so the argv targets
+the server the question names), else the CLI's default `localhost:9233`, said
+so. If `FLOWSTATE_ADDRESS` cannot be read at all, the target is unknown and the
+card offers no button (it never falls back to the default). If the address
+changes or cannot be read between the question and Confirm, nothing is sent.
+Send, Confirm and Cancel are keyed per gate, and a Confirm acts only while the
+pending question is still for its own gate and run; two quick Confirm presses
+send one signal.
+There is no auto-send, no default-confirm and no retry. Closing the card or
+selecting another run drops a pending question.
+
+Declared payload schemas do not exist yet: a `wait_for_signal:` declares no
+signature for what it accepts (docs/DSL.md), so there is nothing in the timeline
+or `flow get` to build a field from, and the pane sends the bare signal. The
+argv builder takes an optional payload as a single `--data=<json>` element, ready
+for when a gate declares one.
+
+Everything from the server is data: names, ids, prompts and the server's
+refusal are cleaned (control characters and invisible format characters such as zero-width and bidi marks dropped) and bounded before they are
+drawn. A signal name or workflow id outside a strict allowlist (letters, digits,
+`-` and `_` for a name, as the schema requires; plain id characters for an id)
+is refused with the reason shown and no button, never rewritten into another
+target. A `FLOWSTATE_ADDRESS` that is not a plain address is refused the same way.
+
+If `flow signal` exits non-zero, the card shows `not sent:` and the CLI's message
+(cleaned, at most 240 characters). If it times out or cannot run, that proves
+nothing about the server, so the card says `delivery unknown` and to check the
+timeline before sending again. Who may act is decided by the server, from the
+workflow's `signals:` policy and the caller's credentials; the mod enforces
+nothing of its own and shows the server's refusal as it is. On success the card
+says `delivered` and refreshes from the timeline and `flow get`; "delivered"
+means the server took the signal, not that the workflow has acted on it.
+
+The pane's Send/Confirm replaces the Bash guard's question for this one action
+only. The `guardServerActions` guard still asks before Claude runs `flow signal`
+in a Bash command, and turning it off does not remove the pane's confirm step.
 
 ## Verify before done
 

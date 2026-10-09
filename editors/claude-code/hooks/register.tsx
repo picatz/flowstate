@@ -10,6 +10,8 @@ import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } 
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed } from './detail'
+import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
+import type { Gates } from './signal'
 import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from './verify'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusOf, story } from './vocab'
 
@@ -21,6 +23,13 @@ const selected = atom({ plugin: 'flowstate', key: 'selected' } as const, '')
 const summary = atom({ plugin: 'flowstate', key: 'summary' } as const, { name: '', status: '', startTime: '', closeTime: '' })
 const filter = atom({ plugin: 'flowstate', key: 'filter' } as const, '')
 const verify = atom({ plugin: 'flowstate', key: 'verify' } as const, EMPTY)
+/** The Send press that awaits its Confirm: which run, which signal, and the server it was aimed at. Empty id for none. */
+const NO_CONFIRM = { id: '', signal: '', address: '' }
+const confirm = atom({ plugin: 'flowstate', key: 'confirm' } as const, NO_CONFIRM)
+/** What the last Confirm did, kept for the card: the server's refusal verbatim (cleaned), or the delivery. */
+const NO_OUTCOME = { id: '', signal: '', ok: false, text: '' }
+const outcome = atom({ plugin: 'flowstate', key: 'outcome' } as const, NO_OUTCOME)
+const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
 
@@ -85,6 +94,30 @@ const readTimeline = async ($: Engine, flow: string, id: string): Promise<Parsed
 }
 
 /**
+ * The signal gates a run is parked on, from `flow get`. Read only, like the
+ * timeline; a failure to answer is no gates, which shows no button.
+ */
+const readGates = async ($: Engine, flow: string, address: string, id: string): Promise<Gates> => {
+  const argv = getArgv(flow, address, id)
+  if (argv === undefined) return NO_GATES
+  try {
+    const ran = await $.process.run(argv, { timeoutMs: 5000 })
+    return ran.exitCode === 0 ? parseGates(ran.stdout) : NO_GATES
+  } catch {
+    return NO_GATES
+  }
+}
+
+/** `FLOWSTATE_ADDRESS` as the session sees it: undefined when unset, null when the lookup fails (the target is then unknown, not the default). */
+const envAddress = async ($: Engine): Promise<string | undefined | null> => {
+  try {
+    return await $.env.get('FLOWSTATE_ADDRESS')
+  } catch {
+    return null
+  }
+}
+
+/**
  * The tasks and the last validation for a Flowfile, as one context block. Both
  * legs are local; a leg that fails to run, or exits non-zero without its answer,
  * is left out, and nothing here throws.
@@ -118,6 +151,8 @@ export const register: Register = (on, options) => {
   const isEnabled = options.validateOnEdit !== false
   const guardsServer = options.guardServerActions !== false
   const nudges = options.verifyBeforeDone !== false
+  /** One Confirm at a time: a second press while a send is in flight sends nothing. */
+  let sending = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -290,6 +325,14 @@ export const register: Register = (on, options) => {
     const facts = factsFor(known ?? { workflowId: id }, detail, Date.now())
     const { shown, more } = visibleSteps(detail?.steps ?? [])
     const head = statusOf(known?.status)
+    // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
+    const target = targetOf(await envAddress($))
+    const parkable = id !== '' && (facts.waitingOn !== undefined || ['running', 'waiting'].includes(head.kind))
+    const idOk = WORKFLOW_ID.test(id)
+    const found = parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
+    const pending = await read($, confirm)
+    const last = await read($, outcome)
+    const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
 
     return (
       <Box flexDirection="column">
@@ -325,6 +368,8 @@ export const register: Register = (on, options) => {
                   startTime: clean(r.startTime, 40),
                   closeTime: clean(r.closeTime, 40),
                 }))
+                await update($, confirm, () => NO_CONFIRM)
+                await update($, outcome, () => NO_OUTCOME)
                 await update($, selected, () => r.workflowId)
               }}>
                 <Text color={COLOR[one.status.tone]}>{one.status.symbol}</Text> {one.text}
@@ -367,7 +412,97 @@ export const register: Register = (on, options) => {
                 {detail?.truncated && <Text dimColor>  The server clipped this account; `flow timeline --help` says how to continue it (--run-id, --after-event-id).</Text>}
               </Box>
             )}
-            <Button key="close-run" label="Close" plain onPress={() => update($, selected, () => '')}>
+            {parkable && !idOk && <Text dimColor>  No signal button: this run's id is not a plain one.</Text>}
+            {parkable && 'refused' in target && <Text dimColor>  No signal button: {target.refused}.</Text>}
+            {found.gates.map(g => {
+              const asking = g.refused === '' && asked.id !== '' && asked.signal === g.signal
+              return (
+                <Box flexDirection="column">
+                  <Text>
+                    {'  '}
+                    <Text color={COLOR.wait}>◔</Text> Gate <Text bold>{g.signal}</Text> {g.step && `(step ${g.step}) `}waits for a signal
+                  </Text>
+                  {g.prompt !== '' && <Text>      {g.prompt}{g.promptCut ? ' [prompt truncated]' : ''}</Text>}
+                  {g.prompt === '' && g.promptCut && <Text>      [prompt truncated]</Text>}
+                  {g.quorum !== '' && <Text dimColor>      {g.quorum}</Text>}
+                  <Text dimColor>
+                    {'      '}
+                    {g.deadline !== '' ? `lapses ${g.deadline}` : 'waits until answered'}
+                    {g.policed ? '; the workflow declares who may act' : '; no sender policy declared'}
+                  </Text>
+                  {g.refused !== '' && <Text dimColor>      No button: {g.refused}.</Text>}
+                  {g.refused === '' && !asking && (
+                    <Button
+                      key={`signal:${g.signal}`}
+                      label={`Send signal ${g.signal}`}
+                      plain
+                      onPress={async () => {
+                        // The first press only asks: nothing is sent until Confirm.
+                        const t = targetOf(await envAddress($))
+                        if (!('address' in t)) return
+                        await update($, outcome, () => NO_OUTCOME)
+                        await update($, confirm, () => ({ id, signal: g.signal, address: t.address }))
+                      }}
+                    >
+                      Send signal {g.signal}
+                    </Button>
+                  )}
+                  {asking && (
+                    <Box flexDirection="column">
+                      <Text color={COLOR.wait}>      {confirmText(asked.id, asked.signal, asked.address)}</Text>
+                      <Text dimColor>      The server decides whether you may act, and says so if not.</Text>
+                      <Box>
+                        <Button
+                          key={`confirm-signal:${g.signal}`}
+                          label={`Confirm: send ${g.signal}`}
+                          plain
+                          onPress={async () => {
+                            if (sending) return
+                            sending = true
+                            try {
+                              const c = await read($, confirm)
+                              // This button was drawn for one gate: if the question has moved on, it acts on nothing.
+                              if (c.id !== id || c.signal !== g.signal) return
+                              await update($, confirm, () => NO_CONFIRM)
+                              // The target is read again: if it moved since the question was asked, nothing is sent.
+                              const t = targetOf(await envAddress($))
+                              const argv = 'address' in t && t.address === c.address ? signalArgv(flow, c.address, c.id, c.signal) : undefined
+                              if (c.id === '' || argv === undefined) return
+                              let result: { ok: boolean; text: string }
+                              try {
+                                result = outcomeOf(await $.process.run(argv, { timeoutMs: 10000 }), c.id, c.signal)
+                              } catch (err) {
+                                result = unknownOutcome(err, c.id, c.signal)
+                              }
+                              await update($, outcome, () => ({ id: c.id, signal: c.signal, ...result }))
+                            } finally {
+                              sending = false
+                            }
+                          }}
+                        >
+                          Confirm: send {g.signal}
+                        </Button>
+                        <Button key={`cancel-signal:${g.signal}`} label="Cancel" plain onPress={() => update($, confirm, () => NO_CONFIRM)}>
+                          Cancel
+                        </Button>
+                      </Box>
+                    </Box>
+                  )}
+                </Box>
+              )
+            })}
+            {moreText(found) !== '' && <Text dimColor>  {moreText(found)}</Text>}
+            {last.id === id && last.text !== '' && (
+              <Text color={last.ok ? COLOR.ok : COLOR.fail}>
+                {'  '}
+                {last.ok ? '✓' : '✗'} {last.text}
+              </Text>
+            )}
+            <Button key="close-run" label="Close" plain onPress={async () => {
+              await update($, confirm, () => NO_CONFIRM)
+              await update($, outcome, () => NO_OUTCOME)
+              await update($, selected, () => '')
+            }}>
               Close
             </Button>
           </Box>
