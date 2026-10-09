@@ -231,7 +231,7 @@ export const register: Register = (on, options) => {
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
     // Only a terminal status survives the press: a remembered running or waiting one is stale by now, so it reads as unknown.
     const live = ['running', 'waiting'].includes(statusOf(memo.status).kind)
-    const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: live ? '' : memo.status, startTime: memo.startTime || null, closeTime: memo.closeTime || null })
+    const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: live ? '' : memo.status, startTime: live ? null : memo.startTime || null, closeTime: memo.closeTime || null })
     const facts = factsFor(known ?? { workflowId: id }, detail, Date.now())
     const { shown, more } = visibleSteps(detail?.steps ?? [])
     const head = statusOf(known?.status)
