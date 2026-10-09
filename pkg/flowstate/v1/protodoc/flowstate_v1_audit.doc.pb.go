@@ -263,6 +263,21 @@ func init() {
 				" guessed value — only its digest.\n",
 		},
 		{
+			Name: "flowstate.v1.AuditRecord.task",
+			Leading: " The qualified task whose step used the secret or credential an\n" +
+				" enforcement record is about, such as \"slack.post\": the `task` attribute a\n" +
+				" secret access rule or an assumption rule read. Empty on every other\n" +
+				" record, and where the seam could not name one. A task name is an\n" +
+				" identifier the registry holds, never a value.\n",
+		},
+		{
+			Name: "flowstate.v1.AuditRecord.credential",
+			Leading: " The plugin credential the used input receives, as \"<plugin>/<name>\" such\n" +
+				" as \"slack/bot_token\": the `credential` attribute a rule read. Only the\n" +
+				" declared name, never the reference an author bound to it and never a\n" +
+				" value. Empty where the input claims no plugin credential.\n",
+		},
+		{
 			Name:    "flowstate.v1.AuditDebugDetail",
 			Leading: " AuditDebugDetail is what a debugger decision was about.\n",
 		},

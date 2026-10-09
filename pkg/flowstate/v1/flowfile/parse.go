@@ -1061,9 +1061,12 @@ func (c *compiler) pluginRequirements(n ast.Node, path string, r ref) []*v1.Plug
 }
 
 // pluginCredentials compiles one plugin's `credentials:` mapping: credential
-// name to the whole secret reference bound to it. A binding is a reference and
-// nothing else, so an expression, a literal or a `${credential()}` is refused
-// where it is written, naming the credential and never echoing what was written.
+// name to the whole secret or credential reference bound to it. A binding is a
+// reference and nothing else, so an expression or a literal is refused where it
+// is written, naming the credential and never echoing what was written. Which
+// kind a credential takes is the plugin's declaration (`federated`), which the
+// compiler holds the binding to once the registry is in hand
+// ([v1.BindPluginCredentials]).
 func (c *compiler) pluginCredentials(n ast.Node, plugin, path string) map[string]*v1.Value {
 	r := ref{path: path, label: plugin + " credentials"}
 	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
@@ -1088,9 +1091,9 @@ func (c *compiler) pluginCredentials(n ast.Node, plugin, path string) map[string
 		if value == nil {
 			continue
 		}
-		if value.GetSecretRef() == nil {
+		if value.GetSecretRef() == nil && value.GetCredentialRef() == nil {
 			c.report(spanOfNode(e.value), er,
-				"plugin %q credential %q must be bound to a whole secret reference such as ${secret('env:NAME')}, never a literal, an expression or a credential reference", plugin, e.name)
+				"plugin %q credential %q must be bound to a whole reference such as ${secret('env:NAME')} or ${credential('target')}, never a literal or an expression", plugin, e.name)
 			continue
 		}
 		if out == nil {

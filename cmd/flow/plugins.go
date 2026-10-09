@@ -770,7 +770,7 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 		for _, credential := range p.GetCredentials() {
 			line := credential.GetName()
 			if credential.GetFederated() {
-				line += " (a federated token may stand in)"
+				line += " (federated: bound by a ${credential()} reference)"
 			}
 			if description := credential.GetDescription(); description != "" {
 				line += ": " + description

@@ -31,7 +31,7 @@ func TestResolvePluginSecretInputsRefusesUndeclaredInput(t *testing.T) {
 
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", "s3cr3t"))
 
-	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"other"}, nil, map[string]*flowstatev1.Value{
+	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"other"}, nil, nil, map[string]*flowstatev1.Value{
 		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
@@ -58,7 +58,7 @@ func TestResolvePluginSecretInputsRefusesWithNoDeclaredInputsAtAll(t *testing.T)
 
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), hostSecretRuntime(t, "TOKEN", "s3cr3t"))
 
-	_, _, err := resolvePluginSecretInputs(ctx, "example.task", nil, nil, map[string]*flowstatev1.Value{
+	_, _, err := resolvePluginSecretInputs(ctx, "example.task", nil, nil, nil, map[string]*flowstatev1.Value{
 		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
@@ -85,7 +85,7 @@ func TestResolvePluginSecretInputsRefusesNestedReference(t *testing.T) {
 		}}},
 	})
 
-	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"headers"}, nil, map[string]*flowstatev1.Value{
+	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"headers"}, nil, nil, map[string]*flowstatev1.Value{
 		"headers": nested,
 	}, nil)
 	require.Error(t, err)
@@ -102,7 +102,7 @@ func TestResolvePluginSecretInputsRefusesNestedReference(t *testing.T) {
 func TestResolvePluginSecretInputsFailsClosedWithoutRuntime(t *testing.T) {
 	t.Parallel()
 
-	_, _, err := resolvePluginSecretInputs(t.Context(), "example.task", []string{"message"}, nil, map[string]*flowstatev1.Value{
+	_, _, err := resolvePluginSecretInputs(t.Context(), "example.task", []string{"message"}, nil, nil, map[string]*flowstatev1.Value{
 		"message": {Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{
 			Scheme: "env", Name: "TOKEN",
 		}}},
@@ -116,7 +116,7 @@ func TestResolvePluginSecretInputsFailsClosedWithoutRuntime(t *testing.T) {
 func TestResolvePluginSecretInputsPassesOrdinaryInputsThrough(t *testing.T) {
 	t.Parallel()
 
-	resolved, _, err := resolvePluginSecretInputs(t.Context(), "example.task", nil, nil, map[string]*flowstatev1.Value{
+	resolved, _, err := resolvePluginSecretInputs(t.Context(), "example.task", nil, nil, nil, map[string]*flowstatev1.Value{
 		"name": flowstatev1.NewLiteral("world"),
 	}, nil)
 	require.NoError(t, err)
@@ -128,7 +128,7 @@ func TestResolvePluginSecretInputsRefusesLiteralForRequiredInput(t *testing.T) {
 
 	for _, task := range []string{"sql.query", "sql.exec"} {
 		t.Run(task, func(t *testing.T) {
-			_, _, err := resolvePluginSecretInputs(t.Context(), task, []string{"dsn"}, []string{"dsn"}, map[string]*flowstatev1.Value{
+			_, _, err := resolvePluginSecretInputs(t.Context(), task, []string{"dsn"}, []string{"dsn"}, nil, map[string]*flowstatev1.Value{
 				"dsn": flowstatev1.NewLiteral("postgres://credential@example.invalid/database"),
 			}, nil)
 			require.Error(t, err)

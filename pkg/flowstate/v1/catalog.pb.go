@@ -958,10 +958,15 @@ type CredentialDeclaration struct {
 	// Description says what the credential is for, shown wherever the plugin is
 	// listed.
 	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	// Federated records that a `${credential('target')}` reference is intended to
-	// be able to stand in for a stored secret here. It is declaration metadata
-	// only until the binding slice enforces it; nothing refuses or permits a
-	// reference on its strength yet.
+	// Federated makes the credential one that is bound by a
+	// `${credential('target')}` reference and never by a stored `${secret()}`;
+	// false makes it a stored secret's, bound by `${secret()}` and never by a
+	// credential reference. The same rule is applied wherever a reference meets
+	// the credential's input: the Flowfile compiler, the server's admission of a
+	// specification built by hand, and the worker's dispatch, each refusing the
+	// other kind. It grants nothing: whether the reference resolves is still the
+	// deployment's secret access and credential assumption policies. A registry
+	// that was never told reads false, which is the closed direction.
 	Federated     bool `protobuf:"varint,3,opt,name=federated,proto3" json:"federated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

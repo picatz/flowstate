@@ -66,9 +66,16 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 
 	// A claim on a field it cannot constrain would look protected and not be, so
 	// the task is refused rather than loaded with it.
-	if _, err := flowstatev1.InputClaims(inputs); err != nil {
+	claims, err := flowstatev1.InputClaims(inputs)
+	if err != nil {
 		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
 	}
+
+	// Which of the credentials this task's inputs claim the plugin declares
+	// federated, read from the one manifest so every task of the plugin agrees.
+	// The compiler and admission read it from the def; dispatch holds each input
+	// to it below.
+	federated := flowstatev1.FederatedCredentialsOf(claims, p.Manifest().GetCredentials())
 
 	return flowstatev1.TaskDef{
 		Name:           qualified,
@@ -103,6 +110,7 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// the resolve-or-refuse decision.
 		SecretInputs:         manifest.GetSecretInputs(),
 		RequiredSecretInputs: manifest.GetRequiredSecretInputs(),
+		FederatedCredentials: federated,
 
 		// Nothing here declares [flowstatev1.TaskDef.AuthorityInputs] or
 		// .CredentialInputs for a plugin task's secret inputs — see the
@@ -113,7 +121,7 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		// what routes a step using one to the identity-aware activity
 		// regardless of which task it names. A plugin task with a secret input
 		// is already covered by the same scan a built-in task's `bearer:` is.
-		Fn: p.taskFunc(manifest, outputs),
+		Fn: p.taskFunc(manifest, outputs, inputCredentials(claims, federated)),
 	}, nil
 }
 
@@ -217,7 +225,7 @@ func checkDescriptorSecretClaims(inputs protoreflect.MessageDescriptor, secretIn
 }
 
 // taskFunc returns the function that executes a task by asking the plugin to.
-func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor protoreflect.MessageDescriptor) flowstatev1.TaskFunc {
+func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor protoreflect.MessageDescriptor, credentials map[string]inputCredential) flowstatev1.TaskFunc {
 	// Two names for one task, each used where it is true. The wire carries the
 	// bare manifest name, because that is what the plugin calls it; every error
 	// carries the qualified one, because that is what the author wrote and what
@@ -247,7 +255,7 @@ func (p *Plugin) taskFunc(manifest *pluginv1.TaskManifest, outputDescriptor prot
 		// See [resolvePluginSecretInputs] for why this is where it has to
 		// happen, and for the boundary this local transport depends on.
 		var releaseLogSecrets []func()
-		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, requiredSecretInputs, inputs, func(secret secrets.Secret) {
+		resolvedInputs, scrubber, err := resolvePluginSecretInputs(ctx, qualified, secretInputs, requiredSecretInputs, credentials, inputs, func(secret secrets.Secret) {
 			releaseLogSecrets = append(releaseLogSecrets, inst.stderrSecrets.add(secret))
 		})
 		if err != nil {
@@ -520,6 +528,7 @@ func resolvePluginSecretInputs(
 	taskName string,
 	declared []string,
 	required []string,
+	credentials map[string]inputCredential,
 	inputs map[string]*flowstatev1.Value,
 	registerForLogs func(secrets.Secret),
 ) (map[string]*flowstatev1.Value, *secrets.Scrubber, error) {
@@ -535,7 +544,24 @@ func resolvePluginSecretInputs(
 		ref, isWholeRef := v.GetKind().(*flowstatev1.Value_SecretRef)
 		credential, isWholeCredential := v.GetKind().(*flowstatev1.Value_CredentialRef)
 
+		// The plugin credential this input receives, if it claims one. Named on the
+		// context for the policy's `credential` attribute and the audit record, and
+		// the declaration decides which kind of reference is acceptable here.
+		claimed, claimsCredential := credentials[name]
+		inputCtx := auth.WithCredentialUse(ctx, auth.CredentialUse{Task: taskName})
+		if claimsCredential {
+			inputCtx = auth.WithCredentialUse(ctx, auth.CredentialUse{Task: taskName, Plugin: pluginOfTask(taskName), Credential: claimed.name})
+		}
+
 		switch {
+		case claimsCredential && (isWholeRef || isWholeCredential) && !flowstatev1.CredentialReferenceMatches(claimed.federated, v):
+			// Before either resolver is asked, so the wrong kind of reference
+			// reaches neither the store nor the broker. This is dispatch's half of
+			// what the compiler and admission already refused, for a specification
+			// that reached a worker without either.
+			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, errors.New(
+				flowstatev1.CredentialReferenceMessage(taskName, name, claimed.name, claimed.federated)))
+
 		case slices.Contains(required, name) && !isWholeRef && !isWholeCredential:
 			return nil, nil, flowstatev1.NewTaskError(taskName, flowstatev1.ErrorKindInvalidInput, fmt.Errorf(
 				"input %q must be a whole secret reference such as ${secret('env:NAME')} or credential reference such as ${credential('target')}, never a literal; "+
@@ -548,7 +574,7 @@ func resolvePluginSecretInputs(
 			// handed over as a string exactly as a resolved secret is. Nothing
 			// here is a second resolver; the credential is a value of a
 			// secret input.
-			secret, err := flowstatev1.ResolveCredential(ctx, credential.CredentialRef.GetTarget())
+			secret, err := flowstatev1.ResolveCredential(inputCtx, credential.CredentialRef.GetTarget())
 			if err != nil {
 				kind := flowstatev1.ErrorKindPolicyDenied
 				if auth.Retryable(err) || flowstatev1.AuditRecorderUnavailable(err) {
@@ -569,7 +595,7 @@ func resolvePluginSecretInputs(
 				name, acceptedPluginSecretInputsHelp(declared)))
 
 		case isWholeRef && slices.Contains(declared, name):
-			secret, err := flowstatev1.ResolveSecret(ctx, ref.SecretRef)
+			secret, err := flowstatev1.ResolveSecret(inputCtx, ref.SecretRef)
 			if err != nil {
 				// The same three answers the built-in http task gives, through
 				// the same predicates: a denial is permanent, an unreachable
@@ -1049,4 +1075,37 @@ func verdictFromDetails(err error) (pluginVerdict, bool) {
 	}
 
 	return pluginVerdict{}, false
+}
+
+// inputCredential is the plugin credential one task input receives and whether
+// its plugin declares it federated.
+type inputCredential struct {
+	name      string
+	federated bool
+}
+
+// inputCredentials maps each input of a task that claims a plugin credential to
+// it, from the claims read off its descriptor and the credentials the plugin
+// declared federated. Nil when the task claims none.
+func inputCredentials(claims []flowstatev1.InputClaim, federated []string) map[string]inputCredential {
+	var out map[string]inputCredential
+	for _, c := range claims {
+		if c.Credential == "" {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]inputCredential)
+		}
+		out[c.Name] = inputCredential{name: c.Credential, federated: slices.Contains(federated, c.Credential)}
+	}
+
+	return out
+}
+
+// pluginOfTask is the plugin a qualified task name belongs to: the segment
+// before the first dot, which a plugin name cannot contain.
+func pluginOfTask(task string) string {
+	plugin, _, _ := strings.Cut(task, ".")
+
+	return plugin
 }

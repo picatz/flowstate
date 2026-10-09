@@ -1,0 +1,4 @@
+go test fuzz v1
+string("slack.post")
+string("slack")
+string("bot_to\xe8ken")

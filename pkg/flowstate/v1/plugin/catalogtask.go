@@ -170,6 +170,17 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 		if err := flowstatev1.CheckPluginCredentials(described.GetCredentials(), inputs); err != nil {
 			return nil, fmt.Errorf("%w: plugin %q: %w", ErrDescriptor, textbound.Truncate(described.GetName(), 64), err)
 		}
+
+		// The plugin's federated declarations, onto the tasks that claim them, as
+		// a launch does, so a registry built from a catalog holds a binding to the
+		// same declaration a running plugin's registry does.
+		for i := first; i < len(defs); i++ {
+			claims, err := flowstatev1.InputClaims(defs[i].Inputs)
+			if err != nil {
+				return nil, fmt.Errorf("%w: plugin %q: %w", ErrDescriptor, textbound.Truncate(described.GetName(), 64), err)
+			}
+			defs[i].FederatedCredentials = flowstatev1.FederatedCredentialsOf(claims, described.GetCredentials())
+		}
 	}
 
 	return defs, nil

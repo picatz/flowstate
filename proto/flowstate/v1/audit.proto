@@ -376,6 +376,19 @@ message AuditRecord {
   // guessed value — only its digest.
   AuditDebugDetail debug = 20;
 
+  // The qualified task whose step used the secret or credential an
+  // enforcement record is about, such as "slack.post": the `task` attribute a
+  // secret access rule or an assumption rule read. Empty on every other
+  // record, and where the seam could not name one. A task name is an
+  // identifier the registry holds, never a value.
+  string task = 22 [(buf.validate.field).string.max_bytes = 160];
+
+  // The plugin credential the used input receives, as "<plugin>/<name>" such
+  // as "slack/bot_token": the `credential` attribute a rule read. Only the
+  // declared name, never the reference an author bound to it and never a
+  // value. Empty where the input claims no plugin credential.
+  string credential = 23 [(buf.validate.field).string.max_bytes = 160];
+
   // There is deliberately no MCP session id or JSON-RPC request id. The
   // session id is a process-local bearer-like routing capability, and the
   // request id is caller-chosen, variably typed, and not exposed at the SDK's

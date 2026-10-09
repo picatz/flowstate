@@ -478,7 +478,7 @@ func TestPluginCatalogRendersCredentialDeclarations(t *testing.T) {
 	require.NoError(t, writePluginCatalog(ui.Plain(&out, &bytes.Buffer{}), catalog))
 
 	rendered := out.String()
-	assert.Contains(t, rendered, "credential: bot_token (a federated token may stand in): the bot token")
+	assert.Contains(t, rendered, "credential: bot_token (federated: bound by a ${credential()} reference): the bot token")
 	assert.Contains(t, rendered, "needs credential bot_token in: token")
 
 	plain := rendered[strings.Index(rendered, "plain.do"):]

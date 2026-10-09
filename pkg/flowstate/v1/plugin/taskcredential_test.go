@@ -103,7 +103,7 @@ func TestResolvePluginSecretInputsRefusesACredentialReference(t *testing.T) {
 			ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), credentialRuntime(t, exchanger, "true"))
 
 			resolved, scrubber, err := resolvePluginSecretInputs(
-				ctx, "example.task", []string{"api_key"}, nil, test.inputs, nil)
+				ctx, "example.task", []string{"api_key"}, nil, nil, test.inputs, nil)
 			require.Error(t, err)
 			assert.Nil(t, resolved, "nothing is handed to the plugin")
 			assert.Nil(t, scrubber)
@@ -126,7 +126,7 @@ func TestResolvePluginSecretInputsMintsADeclaredCredential(t *testing.T) {
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), credentialRuntime(t, exchanger, `target == "anthropic" && workload.step == "hello"`))
 
 	var registered []secrets.Secret
-	resolved, scrubber, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, []string{"api_key"},
+	resolved, scrubber, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, []string{"api_key"}, nil,
 		map[string]*flowstatev1.Value{
 			"api_key": flowstatev1.NewCredentialRef("anthropic"),
 			"message": flowstatev1.NewValue("hello"),
@@ -196,7 +196,7 @@ func TestResolvePluginSecretInputsDeniesACredentialTheAssumptionPolicyRefuses(t 
 			exchanger := &bearerExchanger{}
 			ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), test.runtime(t, exchanger))
 
-			resolved, scrubber, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, nil,
+			resolved, scrubber, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, nil, nil,
 				map[string]*flowstatev1.Value{"api_key": flowstatev1.NewCredentialRef(test.target)}, nil)
 			require.Error(t, err)
 			assert.Nil(t, resolved)
@@ -221,7 +221,7 @@ func TestResolvePluginSecretInputsRefusesACredentialWithNoSingleToken(t *testing
 	exchanger := &bearerExchanger{kind: auth.CredentialAWSSession}
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), credentialRuntime(t, exchanger, "true"))
 
-	resolved, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, nil,
+	resolved, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, nil, nil,
 		map[string]*flowstatev1.Value{"api_key": flowstatev1.NewCredentialRef("anthropic")}, nil)
 	require.Error(t, err)
 	assert.Nil(t, resolved)
@@ -239,7 +239,7 @@ func TestResolvePluginSecretInputsRefusesADelegatedCaller(t *testing.T) {
 	runtime.Identity.Actors = []principal.Actor{{Issuer: "https://agents.example.com", Subject: "secret-bot"}}
 	ctx := flowstatev1.ContextWithTaskRuntime(t.Context(), runtime)
 
-	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, nil,
+	_, _, err := resolvePluginSecretInputs(ctx, "example.task", []string{"api_key"}, nil, nil,
 		map[string]*flowstatev1.Value{"api_key": flowstatev1.NewCredentialRef("anthropic")}, nil)
 	require.ErrorIs(t, err, auth.ErrDelegatedCaller)
 	assert.Zero(t, exchanger.calls)

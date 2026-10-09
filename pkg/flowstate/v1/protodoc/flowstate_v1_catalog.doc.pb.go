@@ -463,10 +463,15 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.CredentialDeclaration.federated",
-			Leading: " Federated records that a `${credential('target')}` reference is intended to\n" +
-				" be able to stand in for a stored secret here. It is declaration metadata\n" +
-				" only until the binding slice enforces it; nothing refuses or permits a\n" +
-				" reference on its strength yet.\n",
+			Leading: " Federated makes the credential one that is bound by a\n" +
+				" `${credential('target')}` reference and never by a stored `${secret()}`;\n" +
+				" false makes it a stored secret's, bound by `${secret()}` and never by a\n" +
+				" credential reference. The same rule is applied wherever a reference meets\n" +
+				" the credential's input: the Flowfile compiler, the server's admission of a\n" +
+				" specification built by hand, and the worker's dispatch, each refusing the\n" +
+				" other kind. It grants nothing: whether the reference resolves is still the\n" +
+				" deployment's secret access and credential assumption policies. A registry\n" +
+				" that was never told reads false, which is the closed direction.\n",
 		},
 		{
 			Name:    "flowstate.v1.PluginDescription",

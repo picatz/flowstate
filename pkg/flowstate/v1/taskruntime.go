@@ -86,6 +86,7 @@ func assumeCredential(ctx context.Context, target string, use func(TaskRuntime) 
 		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_CREDENTIAL_TARGET,
 		ResourceKey:  target,
 	}
+	subject = withCredentialUse(ctx, subject)
 
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
 	if ok {
@@ -268,6 +269,7 @@ func ResolveSecret(ctx context.Context, ref secrets.Ref) (secrets.Secret, error)
 		ResourceKind: AuditResourceKind_AUDIT_RESOURCE_KIND_SECRET,
 		ResourceKey:  secrets.RefString(ref),
 	}
+	subject = withCredentialUse(ctx, subject)
 
 	runtime, ok := ctx.Value(secretRuntimeKey{}).(TaskRuntime)
 	if ok {
@@ -367,4 +369,24 @@ func ProtoWorkloadIdentity(identity auth.WorkloadIdentity) *WorkloadIdentity {
 		Deployment: identity.Deployment,
 		Mode:       mode,
 	}
+}
+
+// withCredentialUse records on subject what ctx says the use was for, so the
+// trail names the same task and credential the policy rule read.
+func withCredentialUse(ctx context.Context, subject EnforcementSubject) EnforcementSubject {
+	use := auth.CredentialUseFrom(ctx)
+	subject.Task = use.Task
+	if use.Plugin != "" && use.Credential != "" {
+		subject.Credential = use.Plugin + "/" + use.Credential
+	}
+
+	return subject
+}
+
+// ContextWithTaskUse names the task a step is about to run on ctx, for the secret
+// and assumption policies' `task` attribute and the audit record. It lives here
+// with the other readers and writers of the task's authority, so the engine's
+// import of the auth package stays where it was.
+func ContextWithTaskUse(ctx context.Context, task string) context.Context {
+	return auth.WithCredentialUse(ctx, auth.CredentialUse{Task: task})
 }

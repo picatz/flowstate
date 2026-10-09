@@ -26,9 +26,16 @@ func credentialBindingServer(t *testing.T) *FlowstateServer {
 	t.Helper()
 
 	require.NoError(t, v1.DefaultRegistry().Register(conformance.BoundCredentialTaskDef()))
-	t.Cleanup(func() { v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName) })
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.FederatedCredentialTaskDef()))
+	t.Cleanup(func() {
+		v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName)
+		v1.DefaultRegistry().Unregister(conformance.FederatedCredentialTaskName)
+	})
 
-	return &FlowstateServer{pluginCatalog: testCatalog(installedPlugin(conformance.BoundCredentialPlugin, "v0.1.0"))}
+	return &FlowstateServer{pluginCatalog: testCatalog(
+		installedPlugin(conformance.BoundCredentialPlugin, "v0.1.0"),
+		installedPlugin(conformance.FederatedCredentialPlugin, "v0.1.0"),
+	)}
 }
 
 // TestSubmissionRefusesWhatOmitsOrMisbindsACredential runs the shared refusal
@@ -62,12 +69,22 @@ func TestSubmissionExpandsABindingBeforeAnythingIsDurable(t *testing.T) {
 			_, err := s.validateSubmission(wf, nil)
 			require.NoError(t, err)
 
-			bound, overridden := wf.GetSteps()[0].GetTask().GetInputs()["token"], wf.GetSteps()[1].GetTask().GetInputs()["token"]
-			require.Equal(t, "BOUND_TOKEN", bound.GetSecretRef().GetName(), "the omitting step did not receive the binding")
-			require.Equal(t, "OVERRIDE_TOKEN", overridden.GetSecretRef().GetName(), "the binding replaced a step's own reference")
+			for _, step := range wf.GetSteps() {
+				token := step.GetTask().GetInputs()["token"]
+				require.True(t, token.GetSecretRef() != nil || token.GetCredentialRef() != nil,
+					"step %q was admitted without the credential reference its binding gives it", step.GetId())
+			}
 			require.Len(t, wf.GetResolvedPlugins(), 1, "the plugin was not pinned")
-			require.NotSame(t, bound, wf.GetPluginRequirements()[0].GetCredentials()[conformance.BoundCredentialName],
-				"a step shares the binding's message, so mutating one would change the other")
+
+			// The positive case that binds and overrides: each step holds the
+			// reference it should, and a step shares nothing with the binding's
+			// message, so mutating one would not change the other.
+			if len(wf.GetSteps()) == 2 {
+				bound, overridden := wf.GetSteps()[0].GetTask().GetInputs()["token"], wf.GetSteps()[1].GetTask().GetInputs()["token"]
+				require.Equal(t, "BOUND_TOKEN", bound.GetSecretRef().GetName(), "the omitting step did not receive the binding")
+				require.Equal(t, "OVERRIDE_TOKEN", overridden.GetSecretRef().GetName(), "the binding replaced a step's own reference")
+				require.NotSame(t, bound, wf.GetPluginRequirements()[0].GetCredentials()[conformance.BoundCredentialName])
+			}
 		})
 	}
 }

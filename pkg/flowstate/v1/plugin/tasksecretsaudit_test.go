@@ -49,7 +49,7 @@ func TestAPluginSecretInputIsRetryableWhenTheAuditSinkIsDown(t *testing.T) {
 	ctx = flowstatev1.NewContextWithEnforcementAuditor(ctx, recorder)
 
 	_, _, err = resolvePluginSecretInputs(ctx, "example.task",
-		[]string{"message"}, []string{"message"}, tokenRef, nil)
+		[]string{"message"}, []string{"message"}, nil, tokenRef, nil)
 	require.Error(t, err)
 
 	kind := flowstatev1.ClassifyError(err)

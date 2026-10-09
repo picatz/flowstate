@@ -71,6 +71,17 @@ type SecretAccessPolicy struct {
 	//	allow:
 	//	  - 'secret.scheme == "env" && workload.namespace == "acme"'
 	//	  - 'secret.name.startsWith(workload.namespace + "/")'
+	//
+	// Two more attributes say what the read is for: task, the qualified name of
+	// the task whose step reads it ("slack.post"), and credential, the plugin
+	// credential the input receives (credential.plugin and credential.name).
+	// Both are empty where the use does not say, and a rule naming either
+	// matches nothing there, so least privilege is one line:
+	//
+	//	allow:
+	//	  - 'secret.name == "SLACK_BOT_TOKEN" && credential.plugin == "slack"'
+	//	deny:
+	//	  - 'task == "slack.delete"'
 	Allow []string `json:"allow,omitempty" yaml:"allow,omitempty"`
 
 	// Deny are CEL rules refusing access. A reference matching any of them is
@@ -221,6 +232,7 @@ func (rs secretRules) evaluate(
 ) error {
 	vars := assumeVars("", subject, "", identity, ref)
 	vars[attrSecret] = reference
+	addCredentialUse(ctx, vars)
 	delete(vars, attrTarget)
 	delete(vars, attrAudience)
 
@@ -249,11 +261,13 @@ func (rs secretRules) evaluate(
 func newSecretEnv() (*cel.Env, error) {
 	return cel.NewEnv(
 		ext.NativeTypes(ext.ParseStructTag("cel"),
-			reflect.TypeFor[workload](), reflect.TypeFor[secret]()),
+			reflect.TypeFor[workload](), reflect.TypeFor[secret](), reflect.TypeFor[credentialUse]()),
 		principal.EnvOptions(),
 		principal.Var(attrIdentity),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrSecret, cel.ObjectType(secretTypeName)),
+		cel.Variable(attrTask, cel.StringType),
+		cel.Variable(attrCredential, cel.ObjectType(credentialTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
 		celrule.Literals(),
 	)

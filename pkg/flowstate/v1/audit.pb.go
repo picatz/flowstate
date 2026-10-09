@@ -657,7 +657,18 @@ type AuditRecord struct {
 	// Debug describes a debugger decision: which session and command it was
 	// about. Never the expression an inspection evaluated — that can hold a
 	// guessed value — only its digest.
-	Debug         *AuditDebugDetail `protobuf:"bytes,20,opt,name=debug,proto3" json:"debug,omitempty"`
+	Debug *AuditDebugDetail `protobuf:"bytes,20,opt,name=debug,proto3" json:"debug,omitempty"`
+	// The qualified task whose step used the secret or credential an
+	// enforcement record is about, such as "slack.post": the `task` attribute a
+	// secret access rule or an assumption rule read. Empty on every other
+	// record, and where the seam could not name one. A task name is an
+	// identifier the registry holds, never a value.
+	Task string `protobuf:"bytes,22,opt,name=task,proto3" json:"task,omitempty"`
+	// The plugin credential the used input receives, as "<plugin>/<name>" such
+	// as "slack/bot_token": the `credential` attribute a rule read. Only the
+	// declared name, never the reference an author bound to it and never a
+	// value. Empty where the input claims no plugin credential.
+	Credential    string `protobuf:"bytes,23,opt,name=credential,proto3" json:"credential,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -839,6 +850,20 @@ func (x *AuditRecord) GetDebug() *AuditDebugDetail {
 	return nil
 }
 
+func (x *AuditRecord) GetTask() string {
+	if x != nil {
+		return x.Task
+	}
+	return ""
+}
+
+func (x *AuditRecord) GetCredential() string {
+	if x != nil {
+		return x.Credential
+	}
+	return ""
+}
+
 // AuditDebugDetail is what a debugger decision was about.
 type AuditDebugDetail struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
@@ -935,7 +960,7 @@ var File_flowstate_v1_audit_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"\n" +
-	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x86\x11\n" +
+	"\x18flowstate/v1/audit.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a flowstate/v1/authorization.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xce\x11\n" +
 	"\vAuditRecord\x12C\n" +
 	"\x06action\x18\x01 \x01(\x0e2!.flowstate.v1.AuthorizationActionB\b\xbaH\x05\x82\x01\x02\x10\x01R\x06action\x12C\n" +
 	"\bdecision\x18\x02 \x01(\x0e2\x1b.flowstate.v1.AuditDecisionB\n" +
@@ -966,7 +991,11 @@ const file_flowstate_v1_audit_proto_rawDesc = "" +
 	"deliveryId\x12\x16\n" +
 	"\x06joined\x18\x12 \x01(\bR\x06joined\x12\x14\n" +
 	"\x05count\x18\x13 \x01(\rR\x05count\x124\n" +
-	"\x05debug\x18\x14 \x01(\v2\x1e.flowstate.v1.AuditDebugDetailR\x05debug:\xa4\x05\xbaH\xa0\x05\x1a\xf9\x01\n" +
+	"\x05debug\x18\x14 \x01(\v2\x1e.flowstate.v1.AuditDebugDetailR\x05debug\x12\x1c\n" +
+	"\x04task\x18\x16 \x01(\tB\b\xbaH\x05r\x03(\xa0\x01R\x04task\x12(\n" +
+	"\n" +
+	"credential\x18\x17 \x01(\tB\b\xbaH\x05r\x03(\xa0\x01R\n" +
+	"credential:\xa4\x05\xbaH\xa0\x05\x1a\xf9\x01\n" +
 	"\x16audit_record.operation\x12dexactly one of rpc, mcp_tool, http_endpoint or enforcement_point must identify the audited operation\x1ay[this.rpc != '', this.mcp_tool != '', this.http_endpoint != '', this.enforcement_point != 0].filter(set, set).size() == 1\x1a\xf6\x01\n" +
 	"\x13audit_record.action\x12\x83\x01action names the authorization vocabulary and is set for an rpc, mcp_tool or http_endpoint decision, never for an enforcement point\x1aY(this.action != 0) == (this.rpc != '' || this.mcp_tool != '' || this.http_endpoint != '')\x1a\xa8\x01\n" +
 	"\x18audit_record.dispatch_id\x12=dispatch_id is empty or identifies an attempted task dispatch\x1aMthis.dispatch_id == '' || (this.enforcement_point == 1 && this.attempt != 0u)\"\xff\x01\n" +

@@ -170,10 +170,12 @@ func assumeRuleFailure(ctx context.Context, target, subject string, err error) e
 // startup error rather than a rule that quietly never matches.
 func newAssumeEnv() (*cel.Env, error) {
 	return cel.NewEnv(
-		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[workload]()),
+		ext.NativeTypes(ext.ParseStructTag("cel"), reflect.TypeFor[workload](), reflect.TypeFor[credentialUse]()),
 		principal.EnvOptions(),
 		cel.Variable(attrTarget, cel.StringType),
 		cel.Variable(attrAudience, cel.StringType),
+		cel.Variable(attrTask, cel.StringType),
+		cel.Variable(attrCredential, cel.ObjectType(credentialTypeName)),
 		principal.Var(attrIdentity),
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
@@ -225,6 +227,11 @@ func assumeVars(target, mintedSubject, audience string, identity WorkloadIdentit
 	return map[string]any{
 		attrTarget:   target,
 		attrAudience: audience,
+		// Where a use is not known the task is empty and the credential names
+		// nothing, which no rule naming either matches. [addCredentialUse]
+		// fills them from the context at the seams that decide.
+		attrTask:       "",
+		attrCredential: credentialUse{},
 		// Two principals, deliberately distinct. See [attrIdentity].
 		attrIdentity: identity.Caller().Bind(),
 		attrWorkload: who,

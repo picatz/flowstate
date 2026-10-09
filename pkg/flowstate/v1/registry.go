@@ -153,6 +153,16 @@ type TaskDef struct {
 	// tasks can compose with the same target catalog.
 	CredentialInputs []string
 
+	// FederatedCredentials names the plugin credentials this task's inputs claim
+	// that the plugin declares federated: the credentials a `${credential()}`
+	// reference binds and a stored `${secret()}` does not. It is the plugin's
+	// declaration ([CredentialDeclaration].federated) read for the credentials
+	// this task claims, so every task of one plugin agrees; a credential this
+	// task claims that is not listed is a stored secret only. Empty for a task
+	// that claims no credential, and for one whose registry was never told, which
+	// is the closed direction: unlisted is "not federated".
+	FederatedCredentials []string
+
 	// SecretInputs names the inputs a plugin task accepts a *host* secret
 	// reference through — a Flowfile writes `${secret('vault:prod/api#token')}`,
 	// and a name here is what tells the host it may resolve that reference into

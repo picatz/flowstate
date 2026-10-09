@@ -1656,7 +1656,9 @@ steps:
 
 `slack: v0.2.0` alone is still the minimum version with nothing bound. The mapping
 form adds `credentials:`, which binds each credential the plugin declares once, to
-a whole `${secret(...)}` reference, for every step of that plugin: a step that
+a whole `${secret(...)}` reference (or, for a credential the plugin declares
+federated, a whole `${credential(...)}` reference; the other kind is refused), for
+every step of that plugin: a step that
 leaves the credential's input out (here `token:`) receives the binding, and one
 that writes the input overrides it. A step with neither is refused. A caller's
 binding does not cross a `call:`; a callee binds its own.
