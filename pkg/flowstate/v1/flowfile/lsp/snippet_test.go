@@ -1,10 +1,12 @@
 package lsp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/sourcegraph/go-lsp"
+	"github.com/sourcegraph/jsonrpc2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -145,4 +147,38 @@ func refsDoc2(t *testing.T, src string) *document {
 	t.Helper()
 	// Not required to parse: the buffer being completed is mid-edit.
 	return newDocument("file:///snip.yaml", 1, src, nil)
+}
+
+func TestSnippetItemsStateAdjustIndentationOnTheWire(t *testing.T) {
+	t.Parallel()
+	list := &lsp.CompletionList{IsIncomplete: true, Items: []lsp.CompletionItem{
+		{Label: "http", InsertTextFormat: lsp.ITFSnippet, TextEdit: &lsp.TextEdit{NewText: "http:\n  url: $1"}},
+		{Label: "id", TextEdit: &lsp.TextEdit{NewText: "id: "}},
+	}}
+	raw, err := json.Marshal(withAdjustedIndentation(list))
+	require.NoError(t, err)
+
+	var got struct {
+		IsIncomplete bool `json:"isIncomplete"`
+		Items        []map[string]any
+	}
+	require.NoError(t, json.Unmarshal(raw, &got))
+	assert.True(t, got.IsIncomplete)
+	require.Len(t, got.Items, 2)
+	assert.EqualValues(t, 2, got.Items[0]["insertTextMode"], "a snippet states how it is re-indented")
+	assert.NotContains(t, got.Items[1], "insertTextMode", "a plain item is untouched")
+	assert.Equal(t, "http", got.Items[0]["label"], "the embedded item marshals flat")
+}
+
+func TestInitializeRejectsMalformedParams(t *testing.T) {
+	t.Parallel()
+	c := newClient(t)
+	bad := map[string]any{"capabilities": map[string]any{"textDocument": map[string]any{
+		"completion": map[string]any{"completionItem": map[string]any{"snippetSupport": "yes"}},
+	}}}
+	var result initializeResult
+	err := c.conn.Call(t.Context(), "initialize", bad, &result)
+	var rpcErr *jsonrpc2.Error
+	require.ErrorAs(t, err, &rpcErr)
+	assert.EqualValues(t, jsonrpc2.CodeInvalidParams, rpcErr.Code)
 }

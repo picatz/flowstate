@@ -1506,6 +1506,38 @@ func snippetizeTasks(doc *document, list *lsp.CompletionList, tasks *v1.Registry
 	}
 }
 
+// insertTextModeAdjustIndentation is InsertTextMode.adjustIndentation (LSP 3.16):
+// the client re-indents a multi-line insertion by the indentation of the line it
+// lands on, which is what the relative indentation of a snippet assumes.
+const insertTextModeAdjustIndentation = 2
+
+// wireCompletionItem is a completion item with the field go-lsp lacks.
+type wireCompletionItem struct {
+	lsp.CompletionItem
+
+	InsertTextMode int `json:"insertTextMode,omitempty"`
+}
+
+// wireCompletionList is [lsp.CompletionList] over [wireCompletionItem].
+type wireCompletionList struct {
+	IsIncomplete bool                 `json:"isIncomplete"`
+	Items        []wireCompletionItem `json:"items"`
+}
+
+// withAdjustedIndentation states the indentation mode on every snippet item
+// rather than leaving it to the client's default: snippetSupport says a client
+// expands snippets, not that it re-indents them.
+func withAdjustedIndentation(list *lsp.CompletionList) *wireCompletionList {
+	out := &wireCompletionList{IsIncomplete: list.IsIncomplete, Items: make([]wireCompletionItem, len(list.Items))}
+	for i, it := range list.Items {
+		out.Items[i].CompletionItem = it
+		if it.InsertTextFormat == lsp.ITFSnippet {
+			out.Items[i].InsertTextMode = insertTextModeAdjustIndentation
+		}
+	}
+	return out
+}
+
 // keyOffset is how many columns the key starting at pos sits past the
 // indentation of its line, which is the list marker's width when the key follows
 // one. Zero when the line cannot be read.

@@ -160,9 +160,10 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 	switch req.Method {
 	case "initialize":
 		var params lsp.InitializeParams
-		if err := decode(req, &params); err == nil {
-			s.snippets.Store(params.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport)
+		if err := decode(req, &params); err != nil {
+			return nil, err
 		}
+		s.snippets.Store(params.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport)
 		s.initialized.Store(true)
 		return &initializeResult{Capabilities: capabilities()}, nil
 
@@ -292,6 +293,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		list := completeAt(doc, params.Position)
 		if s.snippets.Load() {
 			snippetizeTasks(doc, list, s.tasks())
+			return withAdjustedIndentation(list), nil
 		}
 		return list, nil
 
