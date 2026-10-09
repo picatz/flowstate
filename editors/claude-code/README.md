@@ -202,6 +202,33 @@ owed leg is `flow test` instead, since a passing `flow test` covers validation.
 - It is advice, not a gate: every leg fails open, and a second attempt to finish
   always succeeds.
 
+## Test results band
+
+After `flow test` runs through the Bash tool, a band above the prompt says how it
+went: `test ✗ failed · ✗ 2 failed · ✓ 5 passed · – 1 skipped · – 3 uncovered`, then
+up to three failing cases with the test file, the line of the first unmet
+expectation and its reason (`✗ failed wrong output (w.test.yaml:18): ...`, and
+`and N more`). Every status is a symbol and a word.
+
+- It reads only what the CLI documents: `flow test -o json` or `-o jsonl`
+  (`flowstate.v1.TestReports`: `cases[].passed/failures/error`, `refused`,
+  `skipped`, `coverage[].unreached`). A run without JSON gets the exit status
+  alone (`✓ passed · exit 0, no case detail; add -o json`), since the text
+  report is not a documented format.
+- Unknown is never passed: output that is cut, unparsable, over 1 MiB or over
+  5000 cases, a run that was interrupted, backgrounded or timed out, a suite where
+  no case ran, or a case that says neither passed nor failed. A non-zero exit with
+  every case green (`--coverage-required`) is failed.
+- Recognition is `verify.ts`'s, stricter: exactly one `flow test`, so `--list`, `--help`,
+  `--watch`, `--dry-run` and a pipe earn no band. A `&&` chain would pass its aggregate
+  exit status and output off as the tests', so it reads `? unknown · chained command;
+  run flow test on its own`. Names and
+  reasons are cleaned and bounded like every CLI-derived text. The mod starts no
+  process for the band.
+- Editing a Flowfile or a `*.test.yaml` through Edit, Write or MultiEdit clears
+  it (an edit made by a shell command is not seen), and so does the Hide button.
+  State: `$.state` `flowstate.testBand`.
+
 ## Status line
 
 `$.ui.status` takes one plain string, so the line is text and never colour: each

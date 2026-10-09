@@ -61,6 +61,14 @@ export const checkOf = (command: unknown, flowBinary = 'flow'): 'validate' | 'te
   return found
 }
 
+/**
+ * Whether a command is exactly one `flow test` (checkOf's recognition and
+ * rejections, but no `&&` chain): only then does the tool's output and exit
+ * status speak for the tests alone, as the result band needs.
+ */
+export const isLoneTest = (command: unknown, flowBinary = 'flow'): boolean =>
+  checkOf(command, flowBinary) === 'test' && tokenize(command as string).segments.length === 1
+
 /** A passing check clears the debt, and `flow test` runs validation too. An errored, interrupted or backgrounded run is no pass. */
 export const recordCheck = (state: Verify, check: 'validate' | 'test' | undefined, passed: boolean): Verify =>
   check === undefined || !passed || state.edited.length === 0

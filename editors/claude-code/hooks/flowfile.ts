@@ -11,6 +11,9 @@ const TEST_FILE = /(\.test\.ya?ml|(^|\/)testdefaults\.ya?ml)$/
  */
 const FLOWFILE = /(^|\/)(Flowfile(\.ya?ml)?|workflow\.ya?ml|[^/]*\.flow\.ya?ml)$|(^|\/)workflows\/.*\.ya?ml$/
 
+/** A `flow test` suite or its shared defaults: an edit to one makes an earlier test result stale. */
+export const isTestFile = (path: string): boolean => TEST_FILE.test(path.replaceAll('\\', '/'))
+
 export const isFlowfile = (path: string): boolean => {
   const unix = path.replaceAll('\\', '/')
   return FLOWFILE.test(unix) && !TEST_FILE.test(unix)
