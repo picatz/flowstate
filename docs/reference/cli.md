@@ -769,7 +769,7 @@ Open the graph `flow graph` writes as a screen you move around in: every workflo
 
 It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status, and each workflow gains a runs row: open it for its fifty most recent runs, and select one for its run id, status, times, starter and labels. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
 
-Keys are the debugger's: j and k move, enter or l opens, h closes or goes to the parent, ? lists them all, q leaves. Rows can be clicked and the wheel scrolls.
+Keys are the debugger's: j and k move, enter or l opens, h closes or goes to the parent, f narrows the workflows to those whose name contains what you type, ? lists them all, q leaves. Rows can be clicked and the wheel scrolls.
 
 It needs a terminal at least 40 columns by 10 rows. For a script or an agent, `flow graph --output json` is the same graph as data.
 

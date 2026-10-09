@@ -180,6 +180,13 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	}
 	m.screen.Problem = ""
 
+	return m, m.rebuild(NewIndex(msg.graph))
+}
+
+// rebuild shows the workflows of x that pass the filter. The rows that were
+// open stay open where their workflows are still shown, and the selection stays
+// where its row does. It returns the commands the reopened rows start.
+func (m *Model) rebuild(x *Index) tea.Cmd {
 	tree := m.screen.Tree
 	rows, selected := tree.Rows(), tree.Selected()
 	// Rows come parents first, which is the order they must be opened again in.
@@ -193,11 +200,11 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	// Summaries belong to rows the new tree is about to rebuild; the reads below
 	// fill the ones that are open again.
 	m.screen.Runs = map[string]*v1.RunSummary{}
-	m.screen.Index = NewIndex(msg.graph)
+	m.screen.Index = x
 	if m.cfg.Runs != nil {
 		m.screen.Index = m.screen.Index.WithRunRows()
 	}
-	tree.SetRoots(m.screen.Index.Roots())
+	tree.SetRoots(m.screen.Index.RootsNamed(m.screen.Filter))
 	var cmds []tea.Cmd
 	for _, id := range opened {
 		if request, ok := tree.Expand(id); ok {
@@ -212,7 +219,7 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	}
 	m.reveal()
 
-	return m, tea.Batch(cmds...)
+	return tea.Batch(cmds...)
 }
 
 // fill answers a request for the children of a row. The index holds a graph
@@ -340,11 +347,25 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.screen.Filtering {
+		return m.typeFilter(msg, name)
+	}
+	if name == "esc" && m.screen.Filter != "" {
+		return m.setFilter("", false)
+	}
+
 	binding, ok := m.keys.Match(name)
 	if !ok {
 		return m, nil
 	}
 	switch binding.Name {
+	case bindFilter:
+		if m.screen.Index == nil {
+			m.toast(ui.ToneWarning, "nothing to filter yet")
+
+			break
+		}
+		m.screen.Filtering = true
 	case bindQuit, bindInterrupt:
 		return m.leave()
 	case bindHelp:
@@ -364,6 +385,49 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// maxFilter bounds what can be typed, so a held key cannot grow the prompt
+// without end.
+const maxFilter = 80
+
+// typeFilter folds a key into the filter being typed. Every change narrows the
+// rows at once; enter keeps the filter and returns the keys to the tree, and
+// esc drops it.
+func (m Model) typeFilter(msg tea.KeyPressMsg, name string) (tea.Model, tea.Cmd) {
+	filter := m.screen.Filter
+	switch name {
+	case "ctrl+c", "ctrl+d":
+		return m.leave()
+	case "enter":
+		m.screen.Filtering = false
+
+		return m, nil
+	case "esc":
+		return m.setFilter("", false)
+	case "backspace":
+		runes := []rune(filter)
+		filter = string(runes[:max(0, len(runes)-1)])
+	case "ctrl+u":
+		filter = ""
+	default:
+		if msg.Text == "" || len([]rune(filter)) >= maxFilter {
+			return m, nil
+		}
+		filter += msg.Text
+	}
+
+	return m.setFilter(filter, true)
+}
+
+// setFilter shows the workflows that match filter.
+func (m Model) setFilter(filter string, filtering bool) (tea.Model, tea.Cmd) {
+	m.screen.Filter, m.screen.Filtering = filter, filtering
+	if m.screen.Index == nil {
+		return m, nil
+	}
+
+	return m, m.rebuild(m.screen.Index)
 }
 
 // navigate moves within the tree, and returns the command a row that needs a

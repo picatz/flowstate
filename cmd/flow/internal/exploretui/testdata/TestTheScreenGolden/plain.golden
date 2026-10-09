@@ -14,7 +14,7 @@ flow explore fixtures
                                                                                                                         
                                                                                                                         
                                                                                                                         
-r refresh  ? help  q quit                                                                                               
+f filter  r refresh  ? help  q quit                                                                                     
 === 60x16
 flow explore fixtures                                       
 → graph 3 workflows ────────────────────────────────────────
@@ -31,5 +31,5 @@ id         workflow:charge
 calls      audit                                            
 …                                                           
                                                             
-r refresh  ? help  q quit                                   
+f filter  r refresh  ? help  q quit                         
 

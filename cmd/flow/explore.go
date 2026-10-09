@@ -33,8 +33,9 @@ func newExploreCommand() *cobra.Command {
 			"times, starter and labels. Press r to read them again; what is open " +
 			"stays open. The screen changes nothing anywhere.\n\n" +
 			"Keys are the debugger's: j and k move, enter or l opens, h closes or goes " +
-			"to the parent, ? lists them all, q leaves. Rows can be clicked and the " +
-			"wheel scrolls.\n\n" +
+			"to the parent, f narrows the workflows to those whose name contains what " +
+			"you type, ? lists them all, q leaves. Rows can be clicked and the wheel " +
+			"scrolls.\n\n" +
 			"It needs a terminal at least 40 columns by 10 rows. For a script or an " +
 			"agent, `flow graph --output json` is the same graph as data.",
 		Args:          cobra.ArbitraryArgs,
