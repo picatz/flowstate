@@ -285,7 +285,21 @@ test('the card keeps the pressed run name and status when the listing no longer 
   await again.unmount()
 })
 
-test('filter text is passed unchanged, but all-whitespace means no filter', async ($, on) => {
+test('a pressed run that was still running is not claimed running once the listing drops it', async ($, on) => {
+  const answers = { list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']), timeline: timeline(deploy) }
+  stub(on, answers)
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  await ui.unmount()
+
+  answers.list = runs(['wf-9', 'STATUS_RUNNING', 'Newer'])
+  const again = await mount($)
+  expect(await again.find({ type: 'Text', text: /unknown Deploy/ })).toBeDefined()
+  expect(await again.find({ type: 'Text', text: /running Deploy/ })).toBeUndefined()
+  await again.unmount()
+})
+
+test('filter text is passed unchanged, but all-whitespace means no filter',async ($, on) => {
   const seen: string[][] = []
   stub(on, { list: runs() }, seen)
   const ui = await mount($)

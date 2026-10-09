@@ -229,7 +229,9 @@ export const register: Register = (on, options) => {
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
     const detail = account && 'detail' in account ? account.detail : undefined
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
-    const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: memo.status, startTime: memo.startTime || null, closeTime: memo.closeTime || null })
+    // Only a terminal status survives the press: a remembered running or waiting one is stale by now, so it reads as unknown.
+    const live = ['running', 'waiting'].includes(statusOf(memo.status).kind)
+    const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: live ? '' : memo.status, startTime: memo.startTime || null, closeTime: memo.closeTime || null })
     const facts = factsFor(known ?? { workflowId: id }, detail, Date.now())
     const { shown, more } = visibleSteps(detail?.steps ?? [])
     const head = statusOf(known?.status)
