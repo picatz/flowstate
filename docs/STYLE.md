@@ -329,10 +329,12 @@ reviewer never spends a comment on layout. `gofmt`'s one transferable lesson is 
 the value is the absence of the argument, and a single option destroys it.
 
 The one form is chosen to be the one an author writes. A task's inputs come out in
-the order `flow tasks` lists them (required first, then the schema's), a list of
+the order `flow tasks` lists them (required first, then the schema's; a task the
+registry does not know is sorted), a list of
 plain scalars that fits in 60 characters stays on one line (`argv: [make, build]`),
 and a string that splices values is written as the interpolation it compiles from
-(`SERVICE=${svc}`), never as the `string()` concatenation underneath. A list that
+(`SERVICE=${svc}`) whenever that compiles back to the identical value, rather than
+as the `string()` concatenation underneath. A list that
 holds a comment is written as a block, so the comment has a line to sit on.
 
 `--check`, `--stdout` and `-o json`/`-o jsonl` are I/O plumbing rather than style,
