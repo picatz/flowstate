@@ -328,7 +328,7 @@ steps:
 // the "same sentence on both paths" claim [v1.RequiredSecretInputMessage] documents:
 // a literal written into an input a task declares in TaskDef.RequiredSecretInputs
 // must be refused with that exact sentence here, in this package's own schema
-// check, not a paraphrase that happens to look similar. [v1.CheckRequiredSecretInputs]
+// check, not a paraphrase that happens to look similar. [v1.CheckInputClaims]
 // is the RPC-path half and is covered separately
 // (pkg/flowstate/v1/server/requiredsecretinputs_internal_test.go); before this test
 // nothing in this package exercised its own branch at all.

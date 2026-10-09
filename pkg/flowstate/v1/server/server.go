@@ -1960,6 +1960,17 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 			"resolving task capabilities before durable execution: %w", err))
 	}
 
+	// Bindings under `plugins:` become the per-step references the checks below
+	// and both drivers read, so a hand-built specification is expanded exactly as
+	// a compiled one was and a worker never meets a binding. The expansion adds
+	// bytes, so the size is asked again.
+	if err := v1.BindPluginCredentials(wf, v1.DefaultRegistry()); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("binding plugin credentials: %w", err))
+	}
+	if err := v1.CheckSpecSize(wf); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err)
+	}
+
 	// Read from the same registry and immediately after resolving task
 	// capabilities above, because that resolution has already refused any
 	// unknown task; this check only has to rely on
@@ -1970,8 +1981,8 @@ func (s *FlowstateServer) validateSpecification(wf *v1.Workflow) error {
 	// in an input a task requires as a whole secret reference is carried into
 	// workflow history by admission itself, and the plugin host's own refusal
 	// happens at dispatch, after the credential is already durable. See
-	// [v1.CheckRequiredSecretInputs].
-	if err := v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()); err != nil {
+	// [v1.CheckInputClaims].
+	if err := v1.CheckInputClaims(wf, v1.DefaultRegistry()); err != nil {
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	}
 	if s.credentialTargetsConfigured {

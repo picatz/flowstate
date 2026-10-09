@@ -236,6 +236,10 @@ func TestWalkEmitsEverySlotItDeclares(t *testing.T) {
 func workflowUsingEveryValuePosition() *Workflow {
 	return &Workflow{
 		Name: "every-position",
+		PluginRequirements: []*PluginRequirement{{
+			Name: "slack", MinimumVersion: "v0.2.0",
+			Credentials: map[string]*Value{"bot_token": {Kind: &Value_SecretRef{SecretRef: &SecretRef{Scheme: "env", Name: "SLACK_BOT_TOKEN"}}}},
+		}},
 		DeclaredInputs: []*InputDeclaration{{
 			Name:    "who",
 			Default: NewLiteral("nobody"),

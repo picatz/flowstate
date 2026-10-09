@@ -85,6 +85,10 @@ const (
 	// SlotUnknown is the zero value and is never emitted.
 	SlotUnknown ValueSlot = iota
 
+	// SlotPluginCredential is a credential bound under a `plugins:` entry: always
+	// a secret reference, never an expression, and the reference every omitting
+	// step of that plugin receives. See [BindPluginCredentials].
+	SlotPluginCredential
 	// SlotInputDefault is an `inputs:` declaration's `default:`.
 	SlotInputDefault
 	// SlotInputExample is an `inputs:` declaration's `example:`.
@@ -185,6 +189,7 @@ const (
 // a map's values and `[]` marks a repeated field.
 func ValueSlotSchemaPath() map[ValueSlot]string {
 	return map[ValueSlot]string{
+		SlotPluginCredential:      "Workflow.plugin_requirements[].credentials{}",
 		SlotInputDefault:          "Workflow.declared_inputs[].default",
 		SlotInputExample:          "Workflow.declared_inputs[].example",
 		SlotTypeFieldDefault:      "Workflow.declared_types[].fields[].default",
@@ -305,6 +310,8 @@ type ValueSite struct {
 // counts references does not.
 func (s ValueSite) Field() string {
 	switch s.Slot {
+	case SlotPluginCredential:
+		return "plugins." + s.Owner + ".credentials." + s.Name
 	case SlotInputDefault:
 		return "inputs." + s.Name + ".default"
 	case SlotInputExample:
@@ -436,6 +443,12 @@ func WalkWorkflow(wf *Workflow, w Walk) {
 }
 
 func walkWorkflowValuesBeforeSteps(wf *Workflow, w Walk) {
+	for i, requirement := range wf.GetPluginRequirements() {
+		for _, name := range slices.Sorted(maps.Keys(requirement.GetCredentials())) {
+			w.value(ValueSite{Slot: SlotPluginCredential, Owner: requirement.GetName(), Name: name, Index: i, Value: requirement.GetCredentials()[name]})
+		}
+	}
+
 	for _, declaration := range wf.GetDeclaredInputs() {
 		name := declaration.GetName()
 		w.value(ValueSite{Slot: SlotInputDefault, Name: name, Value: declaration.GetDefault()})

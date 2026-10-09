@@ -11,6 +11,7 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/testing/protocmp"
 )
 
@@ -30,6 +31,21 @@ func runAuthorityCase(t *testing.T, test conformance.AuthorityCase) {
 	testSuite := &testsuite.WorkflowTestSuite{}
 	env := testSuite.NewTestWorkflowEnvironment()
 
+	// A workflow that requires plugins reaches a worker the way the server hands
+	// one over: pinned against the deployment's catalog and with its `plugins:`
+	// credential bindings expanded into the steps, both before the run exists.
+	// The cases that require none are untouched.
+	workflow := test.Workflow
+	var catalog *v1.PluginCatalog
+	if len(workflow.GetPluginRequirements()) > 0 {
+		var err error
+		workflow = proto.Clone(workflow).(*v1.Workflow)
+		catalog, err = v1.RehearsalPluginCatalog(workflow)
+		require.NoError(t, err)
+		require.NoError(t, v1.ResolvePlugins(workflow, catalog))
+		require.NoError(t, v1.BindPluginCredentials(workflow, v1.DefaultRegistry()))
+	}
+
 	if test.Authority.NoRuntime {
 		engine.Register(env)
 	} else {
@@ -41,11 +57,14 @@ func runAuthorityCase(t *testing.T, test conformance.AuthorityCase) {
 		}
 		runtime, err := engine.NewTaskRuntimeConfig(store, policy, test.Authority.Broker(t))
 		require.NoError(t, err)
+		if catalog != nil {
+			runtime = runtime.WithPluginCatalog(catalog)
+		}
 		engine.Register(env, runtime)
 	}
 
 	env.ExecuteWorkflow(engine.Run, &v1.RunState{
-		Workflow: test.Workflow,
+		Workflow: workflow,
 		Identity: test.Authority.ProtoIdentity(),
 	})
 	require.True(t, env.IsWorkflowCompleted())

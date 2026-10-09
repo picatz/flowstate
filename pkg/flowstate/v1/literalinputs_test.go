@@ -362,7 +362,7 @@ func TestLiteralFieldViolationIsBoundedByDepth(t *testing.T) {
 	require.NotNil(t, v1.LiteralFieldViolation(literalProbe(t), "labels", exprValue(deep)))
 }
 
-func TestCheckRequiredSecretInputsAlsoHoldsLiteralClaims(t *testing.T) {
+func TestCheckInputClaimsAlsoHoldsLiteralClaims(t *testing.T) {
 	const name = "test-literal-fields.probe"
 	require.NoError(t, v1.DefaultRegistry().Register(v1.TaskDef{
 		Name:   name,
@@ -386,21 +386,21 @@ func TestCheckRequiredSecretInputsAlsoHoldsLiteralClaims(t *testing.T) {
 
 	t.Run("accepted", func(t *testing.T) {
 		wf := &v1.Workflow{Name: "w", Steps: []*v1.Node{step("a", &v1.Task{Name: name, Inputs: good}, nil)}}
-		require.NoError(t, v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()))
+		require.NoError(t, v1.CheckInputClaims(wf, v1.DefaultRegistry()))
 	})
 	t.Run("step", func(t *testing.T) {
 		wf := &v1.Workflow{Name: "w", Steps: []*v1.Node{step("a", &v1.Task{Name: name, Inputs: bad}, nil)}}
-		err := v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry())
+		err := v1.CheckInputClaims(wf, v1.DefaultRegistry())
 		require.ErrorContains(t, err, `step "a"`)
 		require.ErrorContains(t, err, "item.name")
 	})
 	t.Run("undo", func(t *testing.T) {
 		wf := &v1.Workflow{Name: "w", Steps: []*v1.Node{step("a", &v1.Task{Name: name, Inputs: good}, &v1.Task{Name: name, Inputs: bad})}}
-		require.ErrorContains(t, v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()), `step "a" undo`)
+		require.ErrorContains(t, v1.CheckInputClaims(wf, v1.DefaultRegistry()), `step "a" undo`)
 	})
 	t.Run("callee", func(t *testing.T) {
 		callee := &v1.Workflow{Name: "c", Steps: []*v1.Node{step("inner", &v1.Task{Name: name, Inputs: bad}, nil)}}
 		wf := &v1.Workflow{Name: "w", Steps: []*v1.Node{{Id: "outer", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}}}}
-		require.ErrorContains(t, v1.CheckRequiredSecretInputs(wf, v1.DefaultRegistry()), `step "inner"`)
+		require.ErrorContains(t, v1.CheckInputClaims(wf, v1.DefaultRegistry()), `step "inner"`)
 	})
 }

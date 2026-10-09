@@ -61,6 +61,8 @@ func corpusSizes() map[string]int {
 		"CallCases":                       len(CallCases()),
 		"CapabilityCases":                 len(CapabilityCases()),
 		"CleartextCredentialCases":        len(CleartextCredentialCases(standIn)),
+		"CredentialBindingCases":          len(CredentialBindingCases()),
+		"CredentialBindingRefusalCases":   len(CredentialBindingRefusalCases()),
 		"ContainmentProhibitedValues":     len(ContainmentProhibitedValues()),
 		"ControlFlowCases":                len(ControlFlowCases(standIn)),
 		"EmptySignalPayloadCases":         len(EmptySignalPayloadCases()),
@@ -168,6 +170,7 @@ var notACorpus = map[string]string{
 // and it means every exported result in this package is now either resolved or
 // named, rather than resolved or missed.
 var unresolvedResults = map[string]account{
+	"BoundCredentialTaskDef":         {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"DispatchAuditTaskDef":           {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"DispatchAuditTighteningTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"ErrorKindTimeoutTaskDef":        {what: "a v1.TaskDef, which is a struct rather than a slice"},

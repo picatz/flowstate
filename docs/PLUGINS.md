@@ -560,6 +560,33 @@ credentials and the input of each task that needs one, and the catalog carries
 them (`PluginDescription.credentials`, `TaskDescription.credential_inputs`) under
 the claims digest.
 
+An author binds the credential once, in the `plugins:` entry that already names
+the plugin, and every step of that plugin that leaves the input out receives it:
+
+```yaml
+plugins:
+  slack:
+    version: v0.2.0
+    credentials:
+      bot_token: ${secret('env:SLACK_BOT_TOKEN')}
+steps:
+  - id: notify
+    slack.post: {channel: ${inputs.channel}, text: released}
+  - id: partner
+    slack.post: {channel: C0123456789, text: released, token: ${secret('vault:partner#bot')}}
+```
+
+A step that writes the input itself overrides the binding; a step with neither is
+refused when the file is validated and again when a specification is submitted. A
+binding is only ever a whole `${secret(...)}` reference, never a literal, an
+expression or a `${credential(...)}`, and it names a credential the plugin
+declares. The compiler and the server expand the binding into the per-step
+references before a run exists, so execution reads the per-step reference (the
+stored workflow keeps both the binding and the expansion) and a plugin receives
+the string the host resolved it to: `sdk.DecodeInputs` refuses a claimed field
+that holds anything else, or that is missing. A caller's binding does not
+cross a `call:`; a callee binds its own.
+
 ## Where the contract catches authors out
 
 Everything above works. What follows is what an outside author learns by walking

@@ -14,6 +14,7 @@ import (
 	"github.com/picatz/flowstate/internal/strictyaml"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -30,6 +31,18 @@ import (
 // string containing ${, which would be read as an expression, and an expression
 // whose source used a macro, which cel-go cannot write back.
 func Marshal(wf *v1.Workflow) ([]byte, error) {
+	// A credential bound once under `plugins:` is written once: the steps that
+	// carry the binding's expansion come out without it, and reading the file back
+	// expands them again. Done on a copy, because the caller's workflow is theirs,
+	// and only when something is bound.
+	if bindsCredentials(wf) {
+		elided := proto.Clone(wf).(*v1.Workflow)
+		if err := v1.ElideBoundCredentials(elided, v1.DefaultRegistry()); err != nil {
+			return nil, err
+		}
+		wf = elided
+	}
+
 	// The edition is a property of a *file* and the schema deliberately has no field
 	// for it, so there is nothing to round-trip — but a document without one is a
 	// document this build refuses, and Marshal's whole contract is that its output
@@ -217,9 +230,43 @@ func pluginRequirementsToYAML(requirements []*v1.PluginRequirement) (yaml.MapSli
 		if !v1.ValidPluginVersion(requirement.GetMinimumVersion()) {
 			return nil, fmt.Errorf("plugin %q: minimum version %q is not a semantic version written as vMAJOR.MINOR.PATCH, so the parser would reject the marshalled file", requirement.GetName(), requirement.GetMinimumVersion())
 		}
-		out = append(out, yaml.MapItem{Key: requirement.GetName(), Value: requirement.GetMinimumVersion()})
+		if len(requirement.GetCredentials()) == 0 {
+			out = append(out, yaml.MapItem{Key: requirement.GetName(), Value: requirement.GetMinimumVersion()})
+			continue
+		}
+
+		// The mapping form, with the credentials by name: a Go map has no order, so
+		// they are sorted, for `flow fmt` to write the same bytes twice. A binding
+		// that is not a secret reference is refused as the parser would refuse it.
+		credentials := make(yaml.MapSlice, 0, len(requirement.GetCredentials()))
+		for _, name := range slices.Sorted(maps.Keys(requirement.GetCredentials())) {
+			binding := requirement.GetCredentials()[name]
+			if binding.GetSecretRef() == nil {
+				return nil, fmt.Errorf("plugin %q credential %q is not a whole secret reference, so the parser would reject the marshalled file", requirement.GetName(), name)
+			}
+			written, err := inputValueToYAML(binding)
+			if err != nil {
+				return nil, fmt.Errorf("plugin %q credential %q: %w", requirement.GetName(), name, err)
+			}
+			credentials = append(credentials, yaml.MapItem{Key: name, Value: written})
+		}
+		out = append(out, yaml.MapItem{Key: requirement.GetName(), Value: yaml.MapSlice{
+			{Key: "version", Value: requirement.GetMinimumVersion()},
+			{Key: "credentials", Value: credentials},
+		}})
 	}
 	return out, nil
+}
+
+// bindsCredentials reports whether any of wf's own requirements binds a
+// credential.
+func bindsCredentials(wf *v1.Workflow) bool {
+	for _, requirement := range wf.GetPluginRequirements() {
+		if len(requirement.GetCredentials()) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // stepsToYAML writes a list of steps, recursing through nested control flow so

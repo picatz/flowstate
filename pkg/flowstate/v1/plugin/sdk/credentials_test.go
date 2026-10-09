@@ -117,3 +117,79 @@ func TestPluginManifestAppliesTheCredentialLattice(t *testing.T) {
 		})
 	}
 }
+
+// TestDecodeInputsRefusesACredentialThatIsNotTheResolvedString is the SDK's half
+// of the contract a credential claim makes: the host hands the task the string it
+// resolved the author's reference to, and anything else means the host did not
+// deliver what the claim promised. The negative directions are the point; the
+// string and an unclaimed field show the refusal reaches the claim and no
+// further.
+func TestDecodeInputsRefusesACredentialThatIsNotTheResolvedString(t *testing.T) {
+	t.Parallel()
+
+	secretRef := &flowstatev1.Value{Kind: &flowstatev1.Value_SecretRef{SecretRef: &flowstatev1.SecretRef{Scheme: "env", Name: "BOT_TOKEN"}}}
+	for _, tc := range []struct {
+		name  string
+		value *flowstatev1.Value
+		want  string
+	}{
+		{"an unresolved secret reference", secretRef, "an unresolved secret reference"},
+		{"an unresolved credential reference", flowstatev1.NewCredentialRef("partner"), "an unresolved credential reference"},
+		{"an unresolved expression", flowstatev1.NewExpr("inputs.token"), "an unresolved expression"},
+		{"a number", flowstatev1.NewLiteral(int64(7)), "not a string"},
+		{"a list", flowstatev1.NewValue([]any{"a"}), "not a string"},
+		{"an absent value", &flowstatev1.Value{}, "no value"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			in := credentialInput(t, "Refused"+strings.ReplaceAll(tc.name, " ", ""), &flowstatev1.InputOptions{Credential: "bot_token"})
+			err := DecodeInputs(map[string]*flowstatev1.Value{"token": tc.value}, in)
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), `credential "bot_token"`) {
+				t.Fatalf("DecodeInputs error = %v, want a refusal naming the credential and %q", err, tc.want)
+			}
+			if strings.Contains(err.Error(), "BOT_TOKEN") {
+				t.Errorf("the refusal named the reference: %v", err)
+			}
+			if IsInvalidInput(err) {
+				t.Errorf("a host-contract refusal was classified as the workflow's invalid input: %v", err)
+			}
+			if in.ProtoReflect().Has(in.ProtoReflect().Descriptor().Fields().ByName("token")) {
+				t.Error("the field was filled before it was refused")
+			}
+		})
+	}
+
+	t.Run("an omitted credential field is refused", func(t *testing.T) {
+		t.Parallel()
+
+		in := credentialInput(t, "Omitted", &flowstatev1.InputOptions{Credential: "bot_token"})
+		err := DecodeInputs(map[string]*flowstatev1.Value{}, in)
+		if err == nil || !strings.Contains(err.Error(), `credential "bot_token"`) || !strings.Contains(err.Error(), "no value") {
+			t.Fatalf("DecodeInputs error = %v, want a refusal of the missing credential", err)
+		}
+	})
+
+	t.Run("the resolved string is decoded", func(t *testing.T) {
+		t.Parallel()
+
+		in := credentialInput(t, "Resolved", &flowstatev1.InputOptions{Credential: "bot_token"})
+		if err := DecodeInputs(map[string]*flowstatev1.Value{"token": flowstatev1.NewValue("xoxb-resolved")}, in); err != nil {
+			t.Fatalf("DecodeInputs refused the resolved string: %v", err)
+		}
+		if got := in.ProtoReflect().Get(in.ProtoReflect().Descriptor().Fields().ByName("token")).String(); got != "xoxb-resolved" {
+			t.Errorf("token = %q, want the resolved string", got)
+		}
+	})
+
+	t.Run("an unclaimed field is not held to it", func(t *testing.T) {
+		t.Parallel()
+
+		in := credentialInput(t, "Unclaimed", &flowstatev1.InputOptions{})
+		if err := DecodeInputs(map[string]*flowstatev1.Value{"token": flowstatev1.NewLiteral(int64(7))}, in); err == nil {
+			t.Fatal("a number in a string field was accepted")
+		} else if strings.Contains(err.Error(), "claims credential") {
+			t.Errorf("an unclaimed field was refused as a credential: %v", err)
+		}
+	})
+}

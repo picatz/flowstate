@@ -24,7 +24,13 @@ edition: v2026.4
 name: slack-click-approval
 description: Posts an approval card, waits for a verified Slack click to answer its gate, then replaces the card through the click's response_url.
 plugins:
-  slack: v0.2.0
+  slack:
+    version: v0.2.0
+    credentials:
+      # Bound once for every slack step. The host resolves it under the run's
+      # namespace; a literal is refused before durable history, and a step that
+      # writes its own `token:` overrides this one.
+      bot_token: ${secret('env:SLACK_BOT_TOKEN')}
 inputs:
   channel:
     type: string
@@ -94,7 +100,6 @@ steps:
       channel: ${inputs.channel}
       idempotency_key: ${inputs.request_message_key}
       text: '${"Approval required: " + inputs.change}'
-      token: ${secret('env:SLACK_BOT_TOKEN')}
   - id: gate
     wait_for_signal:
       name: clicked
@@ -140,7 +145,6 @@ steps:
                 what: ${inputs.change}
       channel: ${steps.notify.channel}
       text: '${steps.outcome_title.value + ": " + inputs.change}'
-      token: ${secret('env:SLACK_BOT_TOKEN')}
       ts: ${steps.notify.ts}
 outputs:
   approved:

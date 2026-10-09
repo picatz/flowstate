@@ -3,6 +3,7 @@ package flowfile
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -118,10 +119,28 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message})
 	}
 
+	// A credential input is required, and the file has two places to give it: the
+	// step, or the plugin's `credentials:` binding, which has already filled an
+	// omitted input by the time this runs. One that is still absent is bound
+	// nowhere, so the sentence names both, in the words admission uses.
+	credentialInputs, _ := v1.TaskCredentialInputs(def)
+	for _, name := range slices.Sorted(maps.Keys(credentialInputs)) {
+		if _, present := task.GetInputs()[name]; present || misspelled[name] {
+			continue
+		}
+		ds = append(ds, Diagnostic{
+			Step:    stepID,
+			Message: v1.CredentialInputUnboundMessage(def.Name, name, credentialInputs[name]),
+		})
+	}
+
 	for i := range fields.Len() {
 		field := fields.Get(i)
 		name := string(field.Name())
 
+		if _, claimed := credentialInputs[name]; claimed {
+			continue
+		}
 		if !requiredField(field) || misspelled[name] {
 			continue
 		}

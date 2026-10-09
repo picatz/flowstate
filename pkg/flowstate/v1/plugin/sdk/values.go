@@ -41,6 +41,12 @@ import (
 // refused, since the plugin has no way to evaluate one it did not declare as
 // deferred.
 //
+// A field that claims a plugin credential with `(flowstate.v1.input).credential`
+// is held to the contract the claim makes: it must arrive as the string the host
+// resolved the author's reference to. Anything else, an unresolved reference
+// included, is refused before the field is filled, unclassified because it is
+// the host's delivery that failed and not the workflow's input.
+//
 // A value that does not fit its field is the workflow's mistake and never a
 // transient one, so that error comes back already classified as [InvalidInput]
 // and is returned as it is: wrapping it in [InvalidInput] again is harmless but
@@ -64,10 +70,25 @@ func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error
 	reflectMsg := msg.ProtoReflect()
 	fields := reflectMsg.Descriptor().Fields()
 
+	// A credential-claimed field the inputs leave out is refused too: the claim
+	// promises the host delivered one, and an omitted key is not that.
+	for i := range fields.Len() {
+		field := fields.Get(i)
+		if _, supplied := inputs[string(field.Name())]; !supplied {
+			if err := checkCredentialValue(field, nil); err != nil {
+				return fmt.Errorf("input %q: %w", field.Name(), err)
+			}
+		}
+	}
+
 	for name, value := range inputs {
 		field := fields.ByName(protoreflect.Name(name))
 		if field == nil {
 			continue
+		}
+
+		if err := checkCredentialValue(field, value); err != nil {
+			return fmt.Errorf("input %q: %w", name, err)
 		}
 
 		if err := setField(reflectMsg, field, value); err != nil {
@@ -79,6 +100,53 @@ func DecodeInputs(inputs map[string]*flowstatev1.Value, msg proto.Message) error
 	}
 
 	return nil
+}
+
+// checkCredentialValue refuses, for a field that claims a plugin credential
+// with `(flowstate.v1.input).credential`, anything but the string the host
+// resolved the author's reference to. A reference still unresolved, a number, a
+// structure or an absent value means the host did not deliver what the claim
+// promised, so the field is not filled with it.
+//
+// Unclassified, like a task's own declaration disagreeing with the wire: the
+// workflow did nothing wrong that its admission would not have refused, so
+// blaming its input would send the failure down the wrong branch. The message
+// names the input and the kind that arrived and never the value.
+func checkCredentialValue(field protoreflect.FieldDescriptor, value *flowstatev1.Value) error {
+	options, _ := proto.GetExtension(field.Options(), flowstatev1.E_Input).(*flowstatev1.InputOptions)
+	credential := options.GetCredential()
+	if credential == "" {
+		return nil
+	}
+
+	if _, isString := value.GetLiteral().GetKind().(*expr.Value_StringValue); !isString {
+		return fmt.Errorf("claims credential %q and must hold the string the host resolved, but holds %s; "+
+			"the host resolves a secret reference before dispatch, so this was not delivered as one",
+			credential, describeKind(value))
+	}
+
+	return nil
+}
+
+// describeKind names the arm a value holds, for a message that must not carry
+// the value.
+func describeKind(value *flowstatev1.Value) string {
+	switch kind := value.GetKind().(type) {
+	case *flowstatev1.Value_Literal:
+		return fmt.Sprintf("a literal that is not a string (%T)", kind.Literal.GetKind())
+	case *flowstatev1.Value_Expr:
+		return "an unresolved expression"
+	case *flowstatev1.Value_SecretRef:
+		return "an unresolved secret reference"
+	case *flowstatev1.Value_CredentialRef:
+		return "an unresolved credential reference"
+	case *flowstatev1.Value_Structure_:
+		return "a structure"
+	case *flowstatev1.Value_Error_:
+		return "an error value"
+	default:
+		return "no value"
+	}
 }
 
 // errTaskDeclaration marks a refusal that is about what the task declared
