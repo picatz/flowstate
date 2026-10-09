@@ -17,7 +17,7 @@
 # `flow fmt` writes the file back with the definitions and the calls as written.
 #
 # A function is also callable in a `must:`, on an input, an output, a record field or a
-# record type (`section`, `path`, `Author` and its `handle` below), so a rule an input
+# record type (`tag`, `path`, `Author` and its `handle` below), so a rule an input
 # and a field share is written once. The compiler expands it there too and the run checks
 # the plain predicate; `flow fmt` keeps the call as written.
 #
@@ -78,13 +78,16 @@ inputs:
   section:
     type: string
     default: posts
+  tag:
+    type: string
+    default: news
     must: isWord(this)
   author:
     type: Author
 steps:
   - id: publish
     log:
-      message: ${"publishing " + postPath(inputs.section, inputs.title)}
+      message: ${"publishing " + postPath(inputs.section, inputs.title) + " under " + inputs.tag}
   # The predicate is written once and used here and in the output below.
   - id: shorten
     if: ${isLong(inputs.title, 20)}

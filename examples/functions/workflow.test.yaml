@@ -36,13 +36,13 @@ tests:
         long: true
 
   # A `must:` that calls a function refuses and admits as the plain predicate does.
-  - name: a section the function refuses is not admitted
+  - name: a tag the function refuses is not admitted
     inputs:
       title: Hello World
-      section: Not A Word
+      tag: Not A Word
     expect:
       failed: true
-      error_contains: 'input "section" must satisfy'
+      error_contains: 'input "tag" must satisfy'
 
   - name: a record field is held to the same function
     inputs:
