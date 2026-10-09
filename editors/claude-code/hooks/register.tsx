@@ -16,6 +16,8 @@ import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from '
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from './vocab'
 import { MAX_SCAN, MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
 import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
+import { cardLines, cardsOf, parseOutputs } from './outputs'
+import type { Cards, Declared } from './outputs'
 
 const PANE = 'flowstate'
 /** The pane and the stored state keep the most recent Flowfiles only. */
@@ -38,8 +40,10 @@ const runConfirm = atom({ plugin: 'flowstate', key: 'runConfirm' } as const, NO_
 const runFile = atom({ plugin: 'flowstate', key: 'runFile' } as const, '')
 const runValues = atom({ plugin: 'flowstate', key: 'runValues' } as const, {} as Record<string, string>)
 /** What the last local run did, kept for the form: output, the engine's refusal, or "outcome unknown". */
-const NO_RUN_RESULT: { file: string; kind: '' | Result['kind']; text: string; lines: string[] } = { file: '', kind: '', text: '', lines: [] }
+const NO_RUN_RESULT: { file: string; kind: '' | Result['kind']; text: string; lines: string[]; cards: Cards | null } = { file: '', kind: '', text: '', lines: [], cards: null }
 const runResult = atom({ plugin: 'flowstate', key: 'runResult' } as const, NO_RUN_RESULT)
+/** The output cards show the raw values (sensitive ones still hidden) instead of the labelled cards. */
+const outputsRaw = atom({ plugin: 'flowstate', key: 'outputsRaw' } as const, false)
 const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
@@ -166,19 +170,20 @@ const listFlowfiles = async ($: Engine): Promise<ReturnType<typeof candidates> &
 }
 
 /**
- * A Flowfile's declared inputs, from `flow compile --schema inputs`: read only,
- * bounded, and `--` keeps the path from being a flag. A failure to answer is a
- * state of the form (no controls, no Run), never an error.
+ * A Flowfile's declared inputs or outputs, from `flow compile --schema=...`: read
+ * only, bounded, and `--` keeps the path from being a flag. A failure to answer
+ * is a state of the form (no controls, no Run, no cards), never an error.
  */
-const readInputs = async ($: Engine, flow: string, file: string): Promise<InputsParsed> => {
+const readSchema = async <T,>($: Engine, flow: string, file: string, which: 'inputs' | 'outputs', parse: (stdout: string) => T): Promise<T | { error: string }> => {
   try {
-    const ran = await $.process.run([flow, 'compile', '-o', 'json', '--schema=inputs', '--', file], { timeoutMs: 10000 })
+    const ran = await $.process.run([flow, 'compile', '-o', 'json', `--schema=${which}`, '--', file], { timeoutMs: 10000 })
     if (ran.exitCode !== 0) return { error: cleanLines(ran.stderr, 3, 160).lines.join(' ') || 'flow compile failed' }
-    return ran.isStdoutTruncated ? { error: 'the schema is larger than the form reads' } : parseInputs(ran.stdout)
+    return ran.isStdoutTruncated ? { error: 'the schema is larger than the form reads' } : parse(ran.stdout)
   } catch (err) {
     return { error: clean(String(err), 100) || 'no answer' }
   }
 }
+const readInputs = ($: Engine, flow: string, file: string): Promise<InputsParsed> => readSchema($, flow, file, 'inputs', parseInputs)
 
 /** The first Flowfile in the session's working directory, if it has one and can be listed. */
 const findInCwd = async ($: Engine): Promise<string | undefined> => {
@@ -200,6 +205,8 @@ export const register: Register = (on, options) => {
   let running = false
   /** Schemas by file and modification time, so typing in a control does not recompile the file on every key. */
   const schemas = new Map<string, InputsParsed>()
+  /** The same for the declared outputs, read once after a confirmed run succeeds. */
+  const outSchemas = new Map<string, Declared>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -403,6 +410,7 @@ export const register: Register = (on, options) => {
     const asking = await read($, runConfirm)
     const questioned = file !== '' && asking.file === file && JSON.stringify(asking.inputs) === JSON.stringify(sent)
     const ranLast = await read($, runResult)
+    const rawView = await read($, outputsRaw)
     /** A change to the form takes any pending question away: Confirm only ever runs what the question named. */
     const setValue = async (name: string, v: string) => {
       await update($, runConfirm, () => NO_RUN_CONFIRM)
@@ -595,6 +603,7 @@ export const register: Register = (on, options) => {
             onSelect={async v => {
               if (v !== '' && !offered.files.includes(v)) return
               schemas.clear()
+              outSchemas.clear()
               await update($, runConfirm, () => NO_RUN_CONFIRM)
               await update($, runResult, () => NO_RUN_RESULT)
               await update($, runValues, () => ({}))
@@ -686,9 +695,10 @@ export const register: Register = (on, options) => {
                         // This button was drawn for one question: if it has moved on, it acts on nothing.
                         if (c.file === '' || c.file !== file) return
                         await update($, runConfirm, () => NO_RUN_CONFIRM)
-                        const stop = (why: string) => update($, runResult, () => ({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [] }))
+                        const stop = (why: string) => update($, runResult, () => ({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [], cards: null }))
                         // Everything is read again: the file must still be a listed Flowfile and its declaration must still accept exactly these values.
-                        if (!(await listFlowfiles($)).files.includes(c.file)) return stop('the file is no longer listed')
+                        const listed = await listFlowfiles($)
+                        if (!listed.files.includes(c.file)) return stop('the file is no longer listed')
                         const fresh = await readInputs($, flow, c.file)
                         if (!('fields' in fresh)) return stop(`its inputs could not be read (${fresh.error})`)
                         const values = Object.fromEntries(fresh.fields.map(f => [f.name, c.inputs.find(i => i.name === f.name)?.value ?? '']))
@@ -698,12 +708,41 @@ export const register: Register = (on, options) => {
                         const argv = same ? runArgv(flow, c.file, c.inputs, fresh.fields) : undefined
                         if (argv === undefined) return stop('the form no longer matches the file, or a value is outside what the form sends')
                         let result: Result
+                        let ran: Awaited<ReturnType<typeof $.process.run>> | undefined
                         try {
-                          result = resultOf(await $.process.run(argv, { timeoutMs: RUN_TIMEOUT_MS }), c.file)
+                          ran = await $.process.run(argv, { timeoutMs: RUN_TIMEOUT_MS })
+                          result = resultOf(ran, c.file)
                         } catch (err) {
                           result = unknownResult(err, c.file)
                         }
-                        await update($, runResult, () => ({ file: c.file, ...result }))
+                        // The raw document is dropped once cards stand for it: it holds sensitive values too.
+                        let cards: Cards | null = null
+                        let lines = result.lines
+                        if (result.kind === 'ok' && ran !== undefined) {
+                          const stamp = listed.stamp.get(c.file) ?? 0
+                          const key = `${c.file}@${stamp}`
+                          let declared = outSchemas.get(key)
+                          const fresh = declared === undefined
+                          if (declared === undefined) declared = await readSchema($, flow, c.file, 'outputs', parseOutputs)
+                          // The schema must describe the file that ran: if it changed (or left the listing) since, an output sensitive then may not be now.
+                          const after = await listFlowfiles($)
+                          const same = after.files.includes(c.file) && (after.stamp.get(c.file) ?? 0) === stamp
+                          if (!same) {
+                            lines = ['Outputs not shown (Flowfile changed during the run). Read them from a terminal.']
+                          } else {
+                            if (fresh) {
+                              if (outSchemas.size >= 16) outSchemas.clear()
+                              outSchemas.set(key, declared)
+                            }
+                            const made = cardsOf(declared, ran.stdout, ran.isStdoutTruncated === true)
+                            if ('error' in made) lines = [`Outputs not shown (${made.error}). Read them from a terminal.`]
+                            else if (made.cards.length > 0) {
+                              cards = made
+                              lines = []
+                            }
+                          }
+                        }
+                        await update($, runResult, () => ({ file: c.file, ...result, lines, cards }))
                       } finally {
                         running = false
                       }
@@ -731,6 +770,31 @@ export const register: Register = (on, options) => {
                 {l}
               </Text>
             ))}
+            {ranLast.cards && (
+              <Box flexDirection="column">
+                {ranLast.cards.cards.map(k => (
+                  <Box flexDirection="column">
+                    <Text>
+                      {'    '}
+                      <Text color={COLOR[k.status.tone]}>{k.status.symbol} {k.status.word}</Text> <Text bold>{k.title}</Text> <Text dimColor>({k.type})</Text>
+                    </Text>
+                    {!rawView && (
+                      <Text dimColor={k.status.kind !== 'succeeded'}>
+                        {'        '}
+                        {k.fact}
+                        {k.cut ? ' (cut or cleaned)' : ''}
+                      </Text>
+                    )}
+                    {!rawView && k.help !== '' && <Text dimColor>{'        '}{k.help}</Text>}
+                  </Box>
+                ))}
+                {rawView && cardLines(ranLast.cards, true).map(l => <Text dimColor>{'        '}{l}</Text>)}
+                {ranLast.cards.more > 0 && <Text dimColor>{'    '}and {ranLast.cards.more} more declared outputs not shown</Text>}
+                <Button key="outputs-raw" label={rawView ? 'Show cards' : 'Show raw JSON'} plain onPress={() => update($, outputsRaw, v => !v)}>
+                  {rawView ? 'Show cards' : 'Show raw JSON'}
+                </Button>
+              </Box>
+            )}
           </Box>
         )}
         <Text bold>Flowfiles</Text>

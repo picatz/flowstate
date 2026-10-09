@@ -150,6 +150,32 @@ a server, which stays a deliberate action through the Bash guard.
   A workflow that waits on a signal needs `--signal`, which the form does not offer,
   so it ends as outcome unknown at the limit; run it from a terminal.
 
+## Output cards
+
+After a run from the form succeeds, the pane shows the workflow's declared outputs as
+cards instead of the raw run document (`hooks/outputs.ts`, pure and tested; the same
+model feeds the terminal and desktop forms and the plain-text lines).
+
+- **Derived from the schema.** `flow compile -o json --schema=outputs -- <file>` names
+  each declared output, its type, description and `sensitive:`; the values are
+  `.runOutputs` of the document `flow run local` already prints. The schema is read
+  once per file and modification time (failures cached too), only after a confirmed run
+  succeeds; nothing extra runs on render.
+- **A card** is the output's name, a status chip (`✓ reported`, `? not reported`,
+  `– hidden`), its type, and one fact: the value on one line. `Show raw JSON` swaps the
+  facts for each whole value as compact JSON, in the plain-text form `name = value`.
+- **Sensitive outputs are never rendered**: the card says `hidden (sensitive)`, the
+  value is never read from the run document, and the raw document is not kept.
+- **Bounded and honest.** Everything is cleaned like other CLI text and cut to 24 cards,
+  160 characters of fact, 1000 per value and 6000 together, 5 levels of nesting and 20
+  items per list or object; a cut or cleaned value is marked `(cut or cleaned)` and
+  extra outputs are counted. Numbers keep their original text (9007199254740993 is not
+  rounded), and `__proto__` keys are plain data.
+- **Fail closed.** If the schema or the run document cannot be read, the pane says
+  `Outputs not shown (<why>)` and shows none of the run document, since it may hold a
+  sensitive value. A workflow that declares no outputs keeps the plain run output.
+- Copy is not offered; the plain-text lines are selectable and carry the same facts.
+
 ## Verify before done
 
 If Claude edits a Flowfile (the guard's own `isFlowfile` decides what that is)
