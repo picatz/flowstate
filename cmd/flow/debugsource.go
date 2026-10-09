@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -110,4 +112,41 @@ func (s *debugSource) documents(sourceMap *v1.DebugSourceMap) []debugtui.Documen
 	}
 
 	return docs
+}
+
+// screenSource is the source map of workflow and the texts to show it with, for
+// a screen over a run in this process: [debugSource.sourceMap] and
+// [debugSource.documents] together, the two halves attach hands the screen. The
+// map is verified by construction when workflow is the program that runs, and
+// the pane still shows a line only where a text hashes to the digest the map
+// records, so a callee saved since the compile is answered with the reason and
+// not with lines that may be the wrong ones.
+func (s *debugSource) screenSource(workflow *v1.Workflow) (*v1.DebugSourceMap, []debugtui.Document) {
+	sourceMap := s.sourceMap(workflow)
+	if sourceMap == nil {
+		return nil, nil
+	}
+
+	return sourceMap, s.documents(sourceMap)
+}
+
+// mapDescribesRun reports whether the program target is running is the one
+// sourceMap is bound to: the snapshot names its program's digest and the map
+// names the digest it was made for, the rule a durable attach and a history walk
+// apply before they show a line. A target that cannot answer, or answers
+// without a digest, is not verified.
+//
+// It is for a front that does not hold the program it runs (`flow test --debug`
+// plays a case that compiles its own), where the map can be checked only against
+// what the run reports.
+func mapDescribesRun(ctx context.Context, target flowdebug.Target, sourceMap *v1.DebugSourceMap) bool {
+	if sourceMap == nil {
+		return false
+	}
+	snapshot, err := target.Snapshot(ctx)
+	if err != nil {
+		return false
+	}
+
+	return snapshot.GetIrDigest() != "" && snapshot.GetIrDigest() == sourceMap.GetIrDigest()
 }
