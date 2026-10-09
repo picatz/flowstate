@@ -26,11 +26,16 @@ option go_package = "flowstatev1";
 // returning a silently smaller graph.
 message Graph {
   // Nodes are the things in the graph, ordered by id so two builds of the same
-  // input are the same bytes.
+  // input are the same bytes. The one exception is the view of a workflow's own
+  // steps, where the order of the steps is part of what the graph says: the
+  // workflow comes first and its steps follow in document order, which is the
+  // same bytes for the same workflow all the same.
   repeated GraphNode nodes = 1 [(buf.validate.field).repeated = {max_items: 1000}];
 
-  // Edges connect nodes by id, ordered by (from, to, kind). Two relations of the
-  // same kind between the same nodes are one edge with a count.
+  // Edges connect nodes by id, ordered by (from, to, kind); in a view of a
+  // workflow's own steps they follow the document order of the steps they reach.
+  // Two relations of the same kind between the same nodes are one edge with a
+  // count.
   repeated GraphEdge edges = 2 [(buf.validate.field).repeated = {max_items: 4000}];
 
   // Partial is true when the graph is missing something it was asked for: an
@@ -90,6 +95,16 @@ message GraphNode {
   // Label is the name to show, as the author wrote it. It is author-controlled
   // text, so a renderer must treat it as untrusted.
   string label = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Address is where the node is in the program, for a STEP: the debug address
+  // `FormatDebugAddress` writes, so a step the explorer shows opens at the same
+  // place in the debugger. Other kinds have none.
+  string address = 4 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Detail is what a STEP does, in the words the debugger uses for it: `task
+  // "http"`, `wait_for_signal "approved"`, `loop`. It is author-controlled text,
+  // so a renderer must treat it as untrusted.
+  string detail = 5 [(buf.validate.field).string = {max_len: 256}];
 }
 
 // GraphNodeKind says what a node stands for.
@@ -104,6 +119,9 @@ enum GraphNodeKind {
 
   // A signal channel a workflow waits on, by name.
   GRAPH_NODE_KIND_SIGNAL = 3;
+
+  // A step of a workflow, by the id the author gave it. Its address says where.
+  GRAPH_NODE_KIND_STEP = 4;
 }
 
 // GraphEdge is one relation between two nodes.
@@ -130,6 +148,10 @@ enum GraphEdgeKind {
 
   // A workflow waits for a signal.
   GRAPH_EDGE_KIND_WAITS = 3;
+
+  // A workflow or a step holds a step: the workflow its top-level steps, a
+  // loop, a parallel branch or a switch arm the steps in its body.
+  GRAPH_EDGE_KIND_CONTAINS = 4;
 }
 
 // GraphRef addresses one thing a graph can be a view of, at any zoom level: the

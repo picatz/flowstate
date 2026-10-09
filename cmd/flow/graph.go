@@ -3,12 +3,14 @@ package main
 import (
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"slices"
 	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/graph"
@@ -67,6 +69,9 @@ flow graph examples/call-a-workflow/workflow.yaml
 # The same graph for a program or an agent:
 flow graph examples -o json | jq '.edges[] | select(.count > 1)'
 
+# The steps of one workflow, each with its debugger address:
+flow graph examples --workflow deploy
+
 # What is running now, over what the files declare:
 flow graph examples --live
 
@@ -77,6 +82,7 @@ flow graph --live --filter 'status == "FAILED" && name == "billing"'`,
 	addServerFlags(cmd)
 	cmd.Flags().Bool("live", false, "also show the runs on the server at --address, counted by workflow and status")
 	cmd.Flags().String("filter", "", "with --live, a CEL expression over runs, as `flow list --filter` takes")
+	cmd.Flags().String("workflow", "", "zoom in on the named workflow: its own steps, each with the address the debugger uses for it")
 
 	return cmd
 }
@@ -110,6 +116,9 @@ type graphSources struct {
 	paths  []string
 	live   bool
 	filter string
+
+	// workflow, when set, zooms from the fleet to that workflow's own steps.
+	workflow string
 }
 
 // graphSourcesOf reads the sources the command line names, and refuses a
@@ -127,7 +136,12 @@ func graphSourcesOf(cmd *cobra.Command, paths []string) (graphSources, error) {
 		return graphSources{}, err
 	}
 
-	return graphSources{paths: paths, live: live, filter: filter}, nil
+	workflow, _ := cmd.Flags().GetString("workflow")
+	if workflow != "" && live {
+		return graphSources{}, errors.New("--workflow shows the steps a file declares; it cannot be combined with --live")
+	}
+
+	return graphSources{paths: paths, live: live, filter: filter, workflow: workflow}, nil
 }
 
 // build reads the sources into one graph.
@@ -164,6 +178,10 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 		workflows = append(workflows, wf)
 	}
 
+	if s.workflow != "" {
+		return stepsOf(workflows, skipped, s.workflow)
+	}
+
 	g := graph.Static(workflows...)
 	if len(skipped) > 0 {
 		g.Partial = true
@@ -176,6 +194,74 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 	}
 
 	return g, nil
+}
+
+// stepsOf is the graph of one workflow's steps, by the name it declares. A name
+// no file declares is answered with the names that are, so a misspelling is one
+// glance from its fix; files that did not compile are named in the graph, since
+// the workflow wanted may be one of them.
+func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph, error) {
+	var found []*v1.Workflow
+	for _, wf := range workflows {
+		if wf.GetName() != name {
+			continue
+		}
+		// Files that differ only in where they were read from declare one workflow.
+		wf = proto.CloneOf(wf)
+		wf.SourceDigest = ""
+		if !slices.ContainsFunc(found, func(other *v1.Workflow) bool { return proto.Equal(other, wf) }) {
+			found = append(found, wf)
+		}
+	}
+	switch {
+	case len(found) > 1:
+		// The fleet graph merges two definitions and says so; one workflow's steps
+		// cannot be merged, so the ambiguity is the answer.
+		return nil, fmt.Errorf("%d files declare a workflow named %q with different definitions; name the one you mean", len(found), name)
+	case len(found) == 0:
+		return nil, noWorkflowNamed(workflows, skipped, name)
+	}
+
+	g := graph.Steps(found[0])
+	if len(skipped) > 0 {
+		g.Partial = true
+		g.Notes = append(skipped[:min(len(skipped), 100)], g.Notes...)
+		g.Notes = g.Notes[:min(len(g.Notes), 100)]
+	}
+
+	return g, nil
+}
+
+// noWorkflowNamed says what the files do declare, and which did not compile,
+// since a workflow in one of those looks the same as a misspelling.
+func noWorkflowNamed(workflows []*v1.Workflow, skipped []string, name string) error {
+	names := make([]string, 0, len(workflows))
+	for _, wf := range workflows {
+		names = append(names, ui.EscapeControl(wf.GetName()))
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	if len(names) > 10 {
+		names = append(names[:10], "...")
+	}
+
+	message := fmt.Sprintf("no workflow named %q", name)
+	if len(names) > 0 {
+		message += "; the files declare: " + strings.Join(names, ", ")
+	}
+	if len(skipped) > 0 {
+		shown := slices.Clone(skipped[:min(len(skipped), 3)])
+		// A file name is another party's text, and this reaches a terminal.
+		for i := range shown {
+			shown[i] = ui.EscapeControl(shown[i])
+		}
+		message += "; " + strings.Join(shown, "; ")
+		if len(skipped) > len(shown) {
+			message += fmt.Sprintf("; and %d more that did not compile", len(skipped)-len(shown))
+		}
+	}
+
+	return errors.New(message)
 }
 
 // withLiveRuns lays the runs on the server over g.
