@@ -64,7 +64,8 @@ func newBreakingCommand() *cobra.Command {
 		Long: "Compile every Flowfile at the working tree and at a git ref, match each workflow to " +
 			"its previous self by path, and report interface breaks: a declared input that a caller must now supply, " +
 			"an input whose type narrowed, an input removed, a declared output removed or renamed, " +
-			"a declared output whose type or guarantee weakened, or a constraint tightened. " +
+			"a declared output whose type or guarantee weakened, a constraint tightened, or a record " +
+			"(`types:`) whose fields changed in the direction that breaks that declaration. " +
 			"Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not " +
 			"shrink.\n\n" +
 			"The comparison is over the compiled protos, not the YAML text, so it is immune to " +
@@ -499,6 +500,18 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 			continue
 		}
 
+		// A record reached by the same name: `TypeAssignable` treats it as unchanged,
+		// so what its fields now accept is compared here.
+		if reasons := recordBreaks(old, neu, oi.DeclaredType(), ni.DeclaredType(), false); len(reasons) > 0 {
+			ds = append(ds, diagAt(pos, "inputs."+name+".type", flowfile.Diagnostic{
+				Field: "inputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"input %q narrowed through its record types, so callers passing what the old types allowed break (%s); keep the record, or add a new input",
+					name, strings.Join(reasons, "; ")),
+			}))
+			continue
+		}
+
 		// Constraint narrowed: a value the old contract accepted is now refused.
 		if why := constraintNarrowed(oi, ni); why != "" {
 			ds = append(ds, diagAt(pos, "inputs."+name, flowfile.Diagnostic{
@@ -569,6 +582,18 @@ func breakingDiagnostics(old, neu *v1.Workflow, pos *flowfile.Positions) flowfil
 				Message: fmt.Sprintf(
 					"output %q weakened its type from %s to %s, so callers reading the old type break; keep the type, or add a new output",
 					name, v1.TypeString(oldT), v1.TypeString(no.DeclaredType())),
+			}))
+			continue
+		}
+
+		// A record promised by the same name: `TypeAssignable` treats it as
+		// unchanged, so what its fields now promise is compared here.
+		if reasons := recordBreaks(old, neu, oo.DeclaredType(), no.DeclaredType(), true); len(reasons) > 0 {
+			ds = append(ds, diagAt(pos, "outputs."+name+".type", flowfile.Diagnostic{
+				Field: "outputs." + name, Value: name,
+				Message: fmt.Sprintf(
+					"output %q weakened through its record types, so callers reading what the old types promised break (%s); keep the record, or add a new output",
+					name, strings.Join(reasons, "; ")),
 			}))
 			continue
 		}
