@@ -7,6 +7,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/pane"
 	"github.com/picatz/flowstate/cmd/flow/internal/tui"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Pane names, as the grid and the hits refer to them.
@@ -54,6 +55,10 @@ type Screen struct {
 	// Index is the graph on show; nil before the first read has finished.
 	Index *Index
 	Tree  *pane.Tree
+
+	// Runs are the runs the "runs" rows hold, by row id, for the details of a
+	// run row.
+	Runs map[string]*v1.RunSummary
 
 	// Problem is why the last read failed.
 	Problem string
@@ -186,7 +191,12 @@ func (s Screen) detailsView(o pane.Options) string {
 	body := o
 	body.Height = o.Height - 1
 
-	return heading + "\n" + s.Index.Details(s.Tree.Selected()).View(body, "nothing selected")
+	selected := s.Tree.Selected()
+	if run, ok := s.Runs[selected]; ok {
+		return heading + "\n" + RunDetails(run).View(body, "nothing selected")
+	}
+
+	return heading + "\n" + s.Index.Details(selected).View(body, "nothing selected")
 }
 
 // helpView is the key help, scrolled to HelpTop.

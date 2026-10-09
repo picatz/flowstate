@@ -25,6 +25,10 @@ type Index struct {
 	out   map[string][]*v1.GraphEdge
 	in    map[string][]*v1.GraphEdge
 	runs  map[string][]*v1.GraphOverlayEntry
+
+	// showRuns gives each workflow a "runs" row to open, whose children are read
+	// on demand and are not part of the graph. See [Index.WithRunRows].
+	showRuns bool
 }
 
 // NewIndex indexes g. A nil graph is an empty one.
@@ -69,6 +73,16 @@ func NewIndex(g *v1.Graph) *Index {
 	}
 
 	return x
+}
+
+// WithRunRows returns the index with a "runs" row under every workflow. Opening
+// it lists that workflow's recent runs, which the graph does not hold: the screen
+// reads them on request and they are not part of the graph message.
+func (x *Index) WithRunRows() *Index {
+	c := *x
+	c.showRuns = true
+
+	return &c
 }
 
 // Graph is the graph the index was built from.
@@ -118,21 +132,31 @@ func (x *Index) Roots() []pane.Node {
 }
 
 // Loader answers a request for the children of a row: the nodes its node's
-// edges reach. It does no I/O, so a tree may call it directly.
+// edges reach, after the "runs" row when the index has them. It does no I/O, so
+// a tree may call it directly; the children of a "runs" row are not its to give.
 func (x *Index) Loader() pane.Loader {
 	return func(r pane.Request) ([]pane.Node, int, error) {
 		id, ok := nodeOf(r.Parent)
-		if !ok {
+		if !ok || isRunsRow(id) {
 			return nil, 0, fmt.Errorf("no row %q", r.Parent)
 		}
 		edges := x.out[id]
-		children := make([]pane.Node, 0, len(edges))
+		children := make([]pane.Node, 0, len(edges)+1)
+		if x.showRuns && x.isWorkflow(id) {
+			children = append(children, pane.Node{ID: treeID(r.Parent, runsPrefix+id), Label: "runs", Value: "recent", Total: 1})
+		}
 		for _, e := range edges {
 			children = append(children, x.row(treeID(r.Parent, e.GetTo()), e.GetTo(), e))
 		}
 
 		return children, len(children), nil
 	}
+}
+
+func (x *Index) isWorkflow(id string) bool {
+	n, ok := x.nodes[id]
+
+	return ok && n.GetKind() == v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW
 }
 
 // row is the tree node for a graph node, reached by edge (nil for a root).
@@ -145,7 +169,12 @@ func (x *Index) row(id, node string, edge *v1.GraphEdge) pane.Node {
 		parts = append(parts, runs)
 	}
 
-	return pane.Node{ID: id, Label: x.label(node), Value: strings.Join(parts, "  "), Total: len(x.out[node])}
+	total := len(x.out[node])
+	if x.showRuns && x.isWorkflow(node) {
+		total++
+	}
+
+	return pane.Node{ID: id, Label: x.label(node), Value: strings.Join(parts, "  "), Total: total}
 }
 
 // relation is how an edge reads: "calls", "waits for" or "uses", and how many
@@ -181,6 +210,18 @@ func (x *Index) runCounts(node string) string {
 func (x *Index) Details(rowID string) pane.Inspector {
 	id, ok := nodeOf(rowID)
 	if !ok {
+		return pane.Inspector{}
+	}
+	if isRunsRow(id) {
+		workflow := strings.TrimPrefix(id, runsPrefix)
+		fields := []pane.Field{{Key: "kind", Value: "runs"}, {Key: "workflow", Value: x.label(workflow)}}
+		if counts := x.runCounts(workflow); counts != "" {
+			fields = append(fields, pane.Field{Key: "counted", Value: counts})
+		}
+
+		return pane.Inspector{Fields: fields, Note: "open the row to read the most recent runs"}
+	}
+	if strings.HasPrefix(id, noRunsPrefix) || strings.HasPrefix(id, moreRunsPrefix) {
 		return pane.Inspector{}
 	}
 	n, known := x.nodes[id]
