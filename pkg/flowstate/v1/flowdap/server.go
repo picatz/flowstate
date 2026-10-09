@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -70,7 +71,12 @@ type Server struct {
 	out    sync.Mutex
 	hungUp atomic.Bool
 
-	target       flowdebug.Target
+	target flowdebug.Target
+
+	// completeMu guards driver: the completer is one value read by whichever
+	// request arrives, and it keeps a cache.
+	completeMu   sync.Mutex
+	driver       *flowdebug.Driver
 	sourceMap    *v1.DebugSourceMap
 	capabilities *v1.DebugCapabilities
 	start        func()
@@ -530,6 +536,9 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	case "evaluate":
 		s.evaluate(ctx, request)
 
+	case "completions":
+		s.completions(ctx, request)
+
 	case "pause":
 		s.pause(ctx, request)
 
@@ -550,6 +559,12 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 
 	case "reverseContinue":
 		s.back(ctx, request, true)
+
+	case "gotoTargets":
+		s.gotoTargets(ctx, request)
+
+	case "goto":
+		s.goTo(ctx, request)
 
 	case "terminate":
 		s.mu.Lock()
@@ -640,11 +655,16 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportsHitConditionalBreakpoints: caps.GetHitConditions(),
 		SupportsLogPoints:                 caps.GetLogpoints(),
 		SupportsEvaluateForHovers:         caps.GetInspect(),
+		SupportsCompletionsRequest:        caps.GetInspect(),
 		SupportsTerminateRequest:          terminable || caps.GetTerminate(),
 		SupportTerminateDebuggee:          terminable || caps.GetTerminate(),
 		SupportsDelayedStackTraceLoading:  true,
 		SupportsStepBack:                  (caps.GetReverse() || caps.GetHistory()) && s.canStepBack(),
+		SupportsGotoTargetsRequest:        (caps.GetReverse() || caps.GetHistory()) && s.canTravel(),
 		ExceptionBreakpointFilters:        []exceptionFilter{},
+	}
+	if body.SupportsCompletionsRequest {
+		body.CompletionTriggerCharacters = []string{"."}
 	}
 	if caps.GetFailureBreakpoints() {
 		body.ExceptionBreakpointFilters = []exceptionFilter{
@@ -1151,6 +1171,13 @@ func (s *Server) canStepBack() bool {
 	return ok
 }
 
+// canTravel is whether the bound target can be asked to go to a timeline point.
+func (s *Server) canTravel() bool {
+	_, ok := s.currentTarget().(flowdebug.Traveler)
+
+	return ok
+}
+
 // back answers stepBack and, with toBreakpoint, reverseContinue: the target
 // goes to the previous stop, or the nearest earlier one a breakpoint decided.
 // The stop it lands on reaches the editor through the same watch as any other,
@@ -1168,7 +1195,18 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 
 		return
 	}
+	rewind := reverser.Back
+	if toBreakpoint {
+		rewind = reverser.BackToBreakpoint
+	}
+	s.travel(ctx, request, rewind)
+}
 
+// travel answers a request that moves the target to a stop it showed: the
+// target goes there, and the stop it lands on reaches the editor through the
+// same watch as any other, so the response is ordered ahead of it the way a
+// movement's is.
+func (s *Server) travel(ctx context.Context, request inbound, move func(ctx context.Context, requestID string, expected uint64) (*v1.DebugReceipt, error)) {
 	s.order.Lock()
 	defer s.order.Unlock()
 
@@ -1184,11 +1222,7 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 	revision := s.revision
 	s.mu.Unlock()
 
-	rewind := reverser.Back
-	if toBreakpoint {
-		rewind = reverser.BackToBreakpoint
-	}
-	receipt, err := rewind(ctx, s.requestID(request.Seq), revision)
+	receipt, err := move(ctx, s.requestID(request.Seq), revision)
 	if err != nil {
 		s.fail(request, err.Error())
 
@@ -1207,6 +1241,107 @@ func (s *Server) back(ctx context.Context, request inbound, toBreakpoint bool) {
 	default:
 		s.fail(request, receiptText(receipt))
 	}
+}
+
+// gotoTargets answers the points of the timeline an editor may jump to from a
+// source position: each point a travel would be tried for. A point whose step
+// the verified source map places on another line, or in another document, is
+// left out; one it cannot place is offered at the line asked about and named by
+// its address, so it can be chosen without being drawn somewhere it is not.
+func (s *Server) gotoTargets(ctx context.Context, request inbound) {
+	select {
+	case <-s.entered:
+	case <-ctx.Done():
+		return
+	}
+
+	var asked struct {
+		Source *source `json:"source"`
+		Line   int     `json:"line"`
+	}
+	if len(request.Arguments) != 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+			s.fail(request, "flowdap: gotoTargets needs a source and a line")
+
+			return
+		}
+	}
+	target := s.currentTarget()
+	if target == nil || !s.capabilitiesBody().SupportsGotoTargetsRequest {
+		s.reply(request, gotoTargetsBody{Targets: []gotoTarget{}})
+
+		return
+	}
+	snapshot, err := target.Snapshot(ctx)
+	if err != nil {
+		s.fail(request, err.Error())
+
+		return
+	}
+
+	s.mu.Lock()
+	sourceMap := s.sourceMap
+	s.mu.Unlock()
+	places := map[string]*v1.DebugSourceLocation{}
+	for _, entry := range sourceMap.GetEntries() {
+		if key := v1.DebugSiteKey(entry.GetSite()); places[key] == nil {
+			places[key] = entry.GetLocation()
+		}
+	}
+
+	lineBase, _ := s.clientBases()
+	targets := []gotoTarget{}
+	for i, point := range snapshot.GetTimeline().GetPoints() {
+		if !point.GetReachable() {
+			continue
+		}
+		line := asked.Line
+		if location := places[v1.DebugSiteKey(point.GetOccurrence().GetSite())]; location != nil && location.GetRange() != nil {
+			here := toClient(location.GetRange().GetStartLine(), lineBase)
+			documents := sourceMap.GetDocuments()
+			elsewhere := asked.Source != nil && asked.Source.Path != "" && int(location.GetDocument()) < len(documents) &&
+				!flowdebug.SameSourceURI(documents[location.GetDocument()].GetUri(), asked.Source.Path)
+			if elsewhere || (asked.Line > 0 && here != asked.Line) {
+				continue
+			}
+			line = here
+		}
+		targets = append(targets, gotoTarget{
+			ID:    i,
+			Label: fmt.Sprintf("%d: %s", i, point.GetOccurrence().GetAddress()),
+			Line:  line,
+		})
+	}
+	s.reply(request, gotoTargetsBody{Targets: targets})
+}
+
+// goTo answers goto: the target travels to the timeline point the target id
+// names, which is the index gotoTargets offered it under.
+func (s *Server) goTo(ctx context.Context, request inbound) {
+	select {
+	case <-s.entered:
+	case <-ctx.Done():
+		return
+	}
+
+	var asked struct {
+		TargetID *int `json:"targetId"`
+	}
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.TargetID == nil || *asked.TargetID < 0 || *asked.TargetID > math.MaxInt32 {
+		s.fail(request, "flowdap: goto needs the targetId of a target gotoTargets offered")
+
+		return
+	}
+	traveler, ok := s.currentTarget().(flowdebug.Traveler)
+	if !ok || !s.capabilitiesBody().SupportsGotoTargetsRequest {
+		s.fail(request, "flowdap: this session cannot go to a point on its timeline; launch with \"reverse\": true to run one that can, or attach with \"history\": true to walk a recorded run")
+
+		return
+	}
+	point := int32(*asked.TargetID)
+	s.travel(ctx, request, func(ctx context.Context, requestID string, expected uint64) (*v1.DebugReceipt, error) {
+		return traveler.Travel(ctx, requestID, expected, point)
+	})
 }
 
 func receiptText(receipt *v1.DebugReceipt) string {
@@ -1547,6 +1682,128 @@ func (s *Server) evaluate(ctx context.Context, request inbound) {
 		body.VariablesReference = s.issue(revision, asked.Expression)
 	}
 	s.reply(request, body)
+}
+
+// maxCompletionText bounds the text a `completions` request is answered for: an
+// expression typed at a console, not a document.
+const maxCompletionText = 4096
+
+// completions answers the names an expression may continue with at the cursor.
+//
+// It offers the same names, and withholds the same ones, as `evaluate` would
+// answer for the text before it: it asks the target to inspect scope, and reads
+// only the names from what comes back. A run that is not stopped, or a target
+// that refuses the inspection, has nothing to offer, and says so with an empty
+// list rather than an error, because an editor asks on every keystroke.
+func (s *Server) completions(ctx context.Context, request inbound) {
+	var asked struct {
+		FrameID *int   `json:"frameId"`
+		Text    string `json:"text"`
+		Line    *int   `json:"line"`
+		Column  int    `json:"column"`
+	}
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil {
+		s.fail(request, "invalid completions arguments")
+
+		return
+	}
+	empty := completionsBody{Targets: []completionItem{}}
+
+	// A frame with no readable scope has no names to offer, as `evaluate` has
+	// nothing to read there.
+	held, _ := s.currentStop()
+	if held == nil || len(asked.Text) > maxCompletionText || asked.FrameID != nil && !scopedFrame(held, *asked.FrameID) {
+		s.reply(request, empty)
+
+		return
+	}
+
+	s.mu.Lock()
+	columnsFrom0, linesFrom0 := s.columnsFrom0, s.linesFrom0
+	s.mu.Unlock()
+
+	// The console may send several lines and name the one the cursor is on;
+	// the column counts from the start of that line.
+	text := asked.Text
+	if asked.Line != nil {
+		index := *asked.Line
+		if !linesFrom0 {
+			index--
+		}
+		lines := strings.Split(text, "\n")
+		if index < 0 || index >= len(lines) {
+			s.reply(request, empty)
+
+			return
+		}
+		text = lines[index]
+	}
+	cursor := asked.Column
+	if !columnsFrom0 {
+		cursor--
+	}
+	text = text[:byteOffset(text, cursor)]
+
+	answer, err := s.completer(s.currentTarget()).CompleteExpression(ctx, text)
+	if err != nil {
+		s.reply(request, empty)
+
+		return
+	}
+
+	// Both positions are in the UTF-16 units an editor counts in, and `start`
+	// is in the client's column origin like the `column` it answers.
+	start := utf16Len(text[:len(text)-len(answer.Prefix)])
+	if !columnsFrom0 {
+		start++
+	}
+	body := empty
+	for _, candidate := range answer.Candidates {
+		kind := "field"
+		if candidate.Continues {
+			kind = "module"
+		}
+		body.Targets = append(body.Targets, completionItem{
+			Label: candidate.Text, Text: candidate.Text, Type: kind, Start: start, Length: utf16Len(answer.Prefix),
+		})
+	}
+	s.reply(request, body)
+}
+
+// byteOffset is the index in text of the given UTF-16 offset, clamped to the
+// text and never inside a character.
+func byteOffset(text string, units int) int {
+	for i, r := range text {
+		if units <= 0 {
+			return i
+		}
+		units -= utf16.RuneLen(r)
+	}
+
+	return len(text)
+}
+
+func utf16Len(text string) int {
+	n := 0
+	for _, r := range text {
+		n += utf16.RuneLen(r)
+	}
+
+	return n
+}
+
+// completer is the driver completions are read through. A server is bound to
+// one target for its life — a second launch or attach is refused — so the
+// driver, and the per-revision cache it keeps, is made once. Targets are not
+// compared: nothing requires one to be comparable.
+func (s *Server) completer(target flowdebug.Target) *flowdebug.Driver {
+	s.completeMu.Lock()
+	defer s.completeMu.Unlock()
+	if s.driver == nil {
+		s.driver = flowdebug.NewDriver(target)
+	}
+
+	return s.driver
 }
 
 // errInvalidBreakpoints is the one text a malformed breakpoint request is

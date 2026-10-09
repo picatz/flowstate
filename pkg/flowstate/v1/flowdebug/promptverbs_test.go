@@ -1,6 +1,8 @@
 package flowdebug_test
 
 import (
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -85,5 +87,76 @@ func TestTheAutopsyDoesNotLeaveOnAVerbThatStepsBack(t *testing.T) {
 			assert.Contains(t, out.String(), "`"+verb+"` has nothing to act on at the autopsy")
 			assert.Contains(t, out.String(), "list what this run can name", "the session was still reading after the refusal, so help answered")
 		})
+	}
+}
+
+// longList is a CEL list literal of n integers, longer than one page of
+// children for any n above [flowdebug.DefaultInspectLimit].
+func longList(n int) string {
+	items := make([]string, n)
+	for i := range items {
+		items[i] = strconv.Itoa(i)
+	}
+
+	return "[" + strings.Join(items, ", ") + "]"
+}
+
+// TestExpandPagesThroughAListLongerThanOnePage: the page that was cut off says
+// how to ask for the rest, and asking for it lists exactly the rest, at the
+// prompt and at the driver alike.
+func TestExpandPagesThroughAListLongerThanOnePage(t *testing.T) {
+	t.Parallel()
+
+	n := flowdebug.DefaultInspectLimit + 25
+	list := longList(n)
+	first := strconv.Itoa(flowdebug.DefaultInspectLimit)
+
+	out, _, err := runDebugged(t, "expand "+list+"\nexpand "+list+" from "+first+"\nexpand "+list+" from 999\ncontinue\n",
+		flowdebug.Options{})
+	require.NoError(t, err)
+
+	assert.Contains(t, out, "… and 25 more (repeat the expand with `from "+first+"`)",
+		"a cut-off page does not say how to read the rest:\n"+out)
+	assert.Contains(t, out, "debug> "+first+"  int  "+first, "the next page does not start at the child the first left off")
+	assert.Contains(t, out, strconv.Itoa(n-1)+"  int  "+strconv.Itoa(n-1), "the last child was never listed")
+	assert.Contains(t, out, fmt.Sprintf("has %d children; none from 999", n),
+		"a page past the end is neither empty-handed nor silent")
+	assert.Equal(t, 1, strings.Count(out, "… and"), "the last page still claims more follows")
+}
+
+// TestExpandOnlyReadsAFromSuffixThatIsANumber: " from " is part of an
+// expression until a whole number follows it, so the evaluator keeps judging
+// anything else.
+func TestExpandOnlyReadsAFromSuffixThatIsANumber(t *testing.T) {
+	t.Parallel()
+
+	out, _, err := runDebugged(t, "expand [1, 2] from x\nexpand [1, 2] from -1\ncontinue\n", flowdebug.Options{})
+	require.NoError(t, err)
+
+	assert.NotContains(t, out, "none from", "a non-number or negative offset paged instead of reaching the evaluator:\n"+out)
+	assert.NotContains(t, out, "0  int  1", "the expression was read as a list")
+}
+
+// TestExpandPageReadsOnlyAWholeNumberAfterFrom: a front that echoes what `expand`
+// answered reads the page the way the driver does, and a suffix that is not a
+// page number belongs to the expression the evaluator then judges.
+func TestExpandPageReadsOnlyAWholeNumberAfterFrom(t *testing.T) {
+	t.Parallel()
+
+	for line, want := range map[string]struct {
+		expression string
+		offset     int
+	}{
+		"steps.build":                 {"steps.build", 0},
+		"steps.build from 50":         {"steps.build", 50},
+		"steps.build  from  50 ":      {"steps.build", 50},
+		"steps.build from -1":         {"steps.build from -1", 0},
+		"steps.build from many":       {"steps.build from many", 0},
+		"steps.build from 3.5":        {"steps.build from 3.5", 0},
+		"steps.build from 9999999999": {"steps.build from 9999999999", 0},
+	} {
+		expression, offset := flowdebug.ExpandPage(line)
+		assert.Equal(t, want.expression, expression, line)
+		assert.Equal(t, want.offset, offset, line)
 	}
 }

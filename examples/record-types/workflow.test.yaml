@@ -40,11 +40,23 @@ tests:
   - name: a missing required field is refused
     inputs:
       order:
-        id: o-1
+        status: open
         lines: []
     expect:
       failed: true
-      error_contains: 'no required field "status" of Order'
+      error_contains: 'no required field "id" of Order'
+
+  - name: a field left out takes its default
+    inputs:
+      order:
+        id: o-1
+    expect:
+      ran: [announce]
+      outputs:
+        receipt:
+          id: o-1
+          status: open
+          lines: []
 
   - name: a nested record is checked, and the path says where
     inputs:

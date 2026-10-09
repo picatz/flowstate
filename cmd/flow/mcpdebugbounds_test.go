@@ -185,6 +185,27 @@ func TestASessionAnswerIsFittedUnderTheResultBound(t *testing.T) {
 		assert.Empty(t, snapshot["observations"])
 		assert.Equal(t, "3000", snapshot["observationsDropped"], "the snapshot does not count what was dropped")
 	})
+	t.Run("a timeline's points go before the text and observations", func(t *testing.T) {
+		snapshot := observations(2)
+		snapshot.Timeline = &v1.DebugTimeline{Current: 1999}
+		for range 2000 {
+			snapshot.Timeline.Points = append(snapshot.Timeline.Points, &v1.DebugTimelinePoint{
+				Occurrence: &v1.DebugOccurrence{Address: strings.Repeat("a", 200)},
+			})
+		}
+		answer := answerWith(snapshot, 0)
+		answer.Text = "the rendered stop"
+		require.Greater(t, len(answer.Snapshot), flowmcp.MaxResultBytes, "the timeline fits already, so this proves nothing")
+		document := fits(t, answer)
+		assert.Contains(t, document["note"], "timeline points were dropped")
+		assert.Equal(t, "the rendered stop", document["text"], "the text went when the timeline alone was enough")
+		view, ok := document["snapshot"].(map[string]any)
+		require.True(t, ok)
+		assert.Len(t, view["observations"], 2, "the observations went when the timeline alone was enough")
+		timeline, ok := view["timeline"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, float64(2000), timeline["dropped"], "the timeline does not count what was dropped")
+	})
 	t.Run("a report is re-rendered within what the rest leaves it", func(t *testing.T) {
 		report := &v1.TestReport{File: "flow_test.yaml"}
 		for i := range 400 {

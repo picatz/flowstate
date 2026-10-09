@@ -53,6 +53,15 @@ const (
 // surely as a change to a .proto does.
 const docGeneratorDir = "cmd/protoc-gen-flowstate-doc/"
 
+// tsGeneratorDir is protoc-gen-flowstate-ts, the plugin that writes the JSON
+// shape of a few messages as TypeScript declarations for the Claude Code mod,
+// and tsGeneratedFile is what it writes. Both are inputs to the regeneration
+// the proto leg verifies; neither feeds docs/reference/.
+const (
+	tsGeneratorDir  = "cmd/protoc-gen-flowstate-ts/"
+	tsGeneratedFile = "editors/claude-code/types/flowstate.d.ts"
+)
+
 // plan is what the changed-file list alone decides: which conditional legs
 // fire, which files gofmt checks, and which directories feed the
 // file-to-package resolution. It is pure so the mapping is testable without
@@ -268,6 +277,11 @@ func buildPlan(changed []string) plan {
 			// stale reference docs.
 			p.docs = true
 			reason("docs", f)
+		}
+
+		if strings.HasPrefix(f, tsGeneratorDir) || f == tsGeneratedFile {
+			p.proto = true
+			reason("proto", f)
 		}
 
 		// The example plugin's own schema, which is a second buf module

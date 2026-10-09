@@ -1,6 +1,7 @@
 package flowtest
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -28,6 +29,10 @@ import (
 // belongs to [compileStubs]'s error, not to whichever invocation happens to
 // reach it first.
 type compiledStub struct {
+	// undeclaredReturn is the warning a `returns:` naming an output its task does
+	// not declare earns ([stubReturnsMismatchAtBind]); empty when there is none.
+	undeclaredReturn string
+
 	// task and step are the two ways a stub names what it replaces, exactly one
 	// set. task is filled straight from the file; step is resolved to its task
 	// against the compiled workflow by [bindStubs], and stepScope carries the
@@ -242,6 +247,11 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 			if mismatch := shapedOutputsMismatchAtBind(&m, taskOfStep, nodeOfStep); mismatch != "" {
 				return nil, fmt.Errorf("stub %d for %s: %s", m.ordinal, describeStubTarget(&m), mismatch)
 			}
+			undeclared, invalid := stubReturnsMismatchAtBind(&m, spec, taskOfStep, nodeOfStep)
+			if invalid != "" {
+				return nil, fmt.Errorf("stub %d for %s: %s", m.ordinal, describeStubTarget(&m), invalid)
+			}
+			m.undeclaredReturn = undeclared
 		}
 
 		task := m.task
@@ -290,17 +300,7 @@ func bindStubs(compiled []compiledStub, spec *v1.Workflow) (map[string]*stubbedT
 // carries none of any candidate's shaped names — a stub that some unshaped
 // step could take, or that fits one of the shaped steps, is left to answer.
 func shapedOutputsMismatchAtBind(m *compiledStub, taskOfStep map[string]string, nodeOfStep map[string]*v1.Node) string {
-	var candidates []string
-	if m.step != "" {
-		candidates = []string{m.step}
-	} else {
-		for step, task := range taskOfStep {
-			if task == m.task {
-				candidates = append(candidates, step)
-			}
-		}
-		slices.Sort(candidates)
-	}
+	candidates := stubCandidateSteps(m, taskOfStep)
 
 	returned := slices.Sorted(maps.Keys(m.returns))
 	mismatch := ""
@@ -845,6 +845,7 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 				// invocation ultimately reports if nothing does match (#386
 				// follow-up), recorded above and surfaced below either way.
 				sawEvalErr = true
+				unstubbed.recordMatcherError()
 				continue
 			}
 			if !ok {
@@ -905,14 +906,17 @@ func (s *stubbedTask) fn(name string, sensitiveInputNames map[string]bool, unstu
 				}
 			}
 
+			answered := v1.NewNamedValues(returns)
 			if s.callee != nil {
-				if err := checkCallAnswer(scope.GetProfile(), s.callee, returns); err != nil {
+				filled, err := checkCallAnswer(scope.GetProfile(), s.callee, returns)
+				if err != nil {
 					return nil, v1.NewTaskError(name, v1.ErrorKindInvalidInput,
 						fmt.Errorf("stub %d for %s: %w", m.ordinal, describeStubTarget(m), err))
 				}
+				answered = filled
 			}
 
-			return &v1.Node_Outputs{NamedValues: v1.NewNamedValues(returns)}, nil
+			return &v1.Node_Outputs{NamedValues: answered}, nil
 		}
 
 		// An invocation nothing answered clears any attribution an earlier
@@ -1318,6 +1322,30 @@ func shadowedDefaultWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
 	for _, f := range found {
 		warnings = append(warnings, &v1.Diagnostic{Field: "stubs", Message: f.message})
 	}
+	return warnings
+}
+
+// undeclaredReturnWarnings is the account of every stub whose `returns:` names
+// an output its task does not declare (#1295), in the stubs' declared order.
+func undeclaredReturnWarnings(byTask map[string]*stubbedTask) []*v1.Diagnostic {
+	type found struct {
+		ordinal int
+		message string
+	}
+	var all []found
+	for _, stubs := range byTask {
+		for i := range stubs.matchers {
+			if m := &stubs.matchers[i]; m.undeclaredReturn != "" {
+				all = append(all, found{m.ordinal, fmt.Sprintf("stub %d for %s: %s", m.ordinal, describeStubTarget(m), m.undeclaredReturn)})
+			}
+		}
+	}
+	slices.SortFunc(all, func(a, b found) int { return cmp.Compare(a.ordinal, b.ordinal) })
+	warnings := make([]*v1.Diagnostic, 0, len(all))
+	for _, f := range all {
+		warnings = append(warnings, &v1.Diagnostic{Field: "stubs", Message: f.message})
+	}
+
 	return warnings
 }
 

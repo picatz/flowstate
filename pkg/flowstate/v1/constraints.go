@@ -207,7 +207,7 @@ func CompileOutputMustExpression(profile, mustExpr string) (*cel.Ast, error) {
 func compileMustIn(env *cel.Env, mustExpr string) (*cel.Ast, error) {
 	parsed, iss := env.Parse(mustExpr)
 	if iss != nil && iss.Err() != nil {
-		return nil, fmt.Errorf("must: %w", iss.Err())
+		return nil, mustIssues(iss)
 	}
 
 	parsedExpr, err := cel.AstToParsedExpr(parsed)
@@ -220,7 +220,7 @@ func compileMustIn(env *cel.Env, mustExpr string) (*cel.Ast, error) {
 
 	checked, iss := env.Check(parsed)
 	if iss != nil && iss.Err() != nil {
-		return nil, fmt.Errorf("must: %w", iss.Err())
+		return nil, mustIssues(iss)
 	}
 	if checked.OutputType() != cel.BoolType {
 		return nil, fmt.Errorf(
@@ -229,6 +229,35 @@ func compileMustIn(env *cel.Env, mustExpr string) (*cel.Ast, error) {
 	}
 
 	return checked, nil
+}
+
+// MustCompileError is a `must:` expression that does not parse or type-check.
+// Its message is the compiler's own sentence and the 1-based column inside the
+// expression, without cel-go's `ERROR: <input>:` prefix, source echo and caret
+// line: the caller knows the file position and a caret is a renderer's concern.
+type MustCompileError struct {
+	// Problems holds one "message (column N)" per issue the compiler found.
+	Problems []string
+}
+
+// Error implements error.
+func (e *MustCompileError) Error() string {
+	return "must: " + strings.Join(e.Problems, "; ")
+}
+
+// mustIssues converts a cel-go issue set into a [MustCompileError].
+func mustIssues(iss *cel.Issues) error {
+	errs := iss.Errors()
+	problems := make([]string, 0, len(errs))
+	for _, e := range errs {
+		where := fmt.Sprintf("column %d", e.Location.Column()+1)
+		if line := e.Location.Line(); line > 1 {
+			// A block-scalar `must:` spans lines, and cel-go's column restarts on each.
+			where = fmt.Sprintf("line %d, %s", line, where)
+		}
+		problems = append(problems, fmt.Sprintf("%s (%s of the expression)", e.Message, where))
+	}
+	return &MustCompileError{Problems: problems}
 }
 
 // refuseNondeterministicMust reports a tailored refusal when a `must:`

@@ -258,7 +258,7 @@ func TestListGatesTokensAreBoundToTheListingTheyContinue(t *testing.T) {
 		token  string
 		answer bool
 	}{
-		"forged":             {size: 4, token: token[:len(token)-2] + "AA"},
+		"forged":             {size: 4, token: forgeToken(token)},
 		"another filter":     {size: 4, token: token, answer: true},
 		"another page size":  {size: 5, token: token},
 		"not a token at all": {size: 4, token: "n4"},
@@ -274,4 +274,17 @@ func TestListGatesTokensAreBoundToTheListingTheyContinue(t *testing.T) {
 	fake.describe.WorkflowExecutionInfo.Execution.RunId = "r-2"
 	_, err = s.ListGates(approver, listGatesRequest(4, token, false))
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+}
+
+// forgeToken changes a token in a position that always decodes to different
+// bytes. Rewriting the last characters does not: where the encoding leaves
+// unused trailing bits, a different last character can decode to the same
+// bytes, and the "forged" token was then the real one a fraction of the time.
+func forgeToken(token string) string {
+	swapped := byte('A')
+	if token[0] == swapped {
+		swapped = 'B'
+	}
+
+	return string(swapped) + token[1:]
 }

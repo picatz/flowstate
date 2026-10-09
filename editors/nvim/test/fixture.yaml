@@ -1,0 +1,18 @@
+name: demo
+inputs:
+  n:
+    type: int
+    must: this > 0 && size(vars.xs) == 1 # why
+    description: this > 0
+  q: {type: int, must: "this >= 1"}
+steps:
+  - id: say
+    if: ${inputs.n > 1}
+    log:
+      message: "hi ${size(steps.say.out)}"
+      escaped: "${inputs.s == \"ready\"}"
+      single: '${inputs.t}'
+      doubled: '${inputs.t == ''x''}'
+  - must: 'this == "a"'
+  - must: "this == \"a\""
+  - must: '''x'

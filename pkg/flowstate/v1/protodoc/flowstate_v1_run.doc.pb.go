@@ -1033,6 +1033,13 @@ func init() {
 				" `ErrRunFailed` exists to do.\n",
 		},
 		{
+			Name: "flowstate.v1.HeldFailure.expression",
+			Leading: " Expression is the structured account of the expression failure this held\n" +
+				" failure ended on, when it did, so a run that suspended while holding it\n" +
+				" reports the same `RunResponse.error.expression` as one that raised it\n" +
+				" without suspending.\n",
+		},
+		{
 			Name: "flowstate.v1.RunState",
 			Leading: " RunState is the durable workflow state used by the Temporal Run entrypoint.\n" +
 				" It allows the workflow to continue-as-new while carrying only the minimal\n" +

@@ -177,6 +177,15 @@ func TestAFieldsSchemaCommentReachesTheToolSchema(t *testing.T) {
 	assert.Contains(t, workflow["description"], "Compile",
 		"RunRequest.workflow's comment does not reach flowstate_run's schema")
 
+	// The compiled specification itself is advertised opaquely (#1288), so the
+	// depth rule is exercised on the message rendered where that field sits: one
+	// level below the request.
+	workflow = messageSchema((&v1.Workflow{}).ProtoReflect().Descriptor(), &schemaBudget{
+		visiting: map[protoreflect.FullName]bool{},
+		left:     maxSchemaNodes,
+		depth:    1,
+	})
+
 	// One level down: a first sentence, and only that.
 	name, ok := field(workflow, "name")["description"].(string)
 	require.True(t, ok, "Workflow.name carries no description one level down")

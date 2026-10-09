@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -56,7 +57,13 @@ func newCompileCommand() *cobra.Command {
 			"The specification is a protobuf message, and protojson is the only faithful way " +
 			"to write one down, so `--output text` writes the same document `--output json` " +
 			"does rather than inventing a second rendering nobody could read back. " +
-			"`--output jsonl` writes that document on a single line.",
+			"`--output jsonl` writes that document on a single line.\n\n" +
+			"`--schema inputs` or `--schema outputs` writes the workflow's contract instead: a " +
+			"JSON Schema (2020-12) of what a run takes or answers with, record types under " +
+			"`$defs`. It is a projection of the same declarations binding a run enforces, for " +
+			"an editor form, an agent choosing arguments, or a gateway validating a request " +
+			"before it reaches a run; a `must:` rule and a `sensitive:` mark ride along as " +
+			"`x-flowstate-` annotations because JSON Schema cannot state them.",
 		Args:          cobra.ExactArgs(1),
 		RunE:          runCompile,
 		SilenceErrors: true,
@@ -72,7 +79,10 @@ flow compile examples/hello-world/workflow.yaml
 flow compile examples/hello-world/workflow.yaml > hello-world.json
 
 # Ask what one step became:
-flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'`,
+flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
+
+# Write the JSON Schema of what a run takes:
+flow compile examples/record-types/workflow.yaml --schema inputs`,
 	}
 
 	// The specification is a schema message, so `--output json` means here what it
@@ -82,8 +92,21 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'`,
 	addPluginFlags(cmd)
 	addPluginCatalogFlag(cmd)
 
+	cmd.Flags().String(schemaFlag, "", "write the JSON Schema of the workflow's inputs or outputs instead of the specification")
+	_ = cmd.RegisterFlagCompletionFunc(schemaFlag,
+		func(*cobra.Command, []string, string) ([]string, cobra.ShellCompDirective) {
+			return []string{schemaInputs, schemaOutputs}, cobra.ShellCompDirectiveNoFileComp
+		})
+
 	return cmd
 }
+
+// The values of `flow compile --schema`.
+const (
+	schemaFlag    = "schema"
+	schemaInputs  = "inputs"
+	schemaOutputs = "outputs"
+)
 
 // errCompileRefused reports that the file did not compile.
 //
@@ -98,6 +121,11 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	format, err := resolveOutputFormat(cmd)
 	if err != nil {
 		return err
+	}
+
+	which, _ := cmd.Flags().GetString(schemaFlag)
+	if which != "" && which != schemaInputs && which != schemaOutputs {
+		return newUsageError(fmt.Errorf("--%s takes %q or %q, not %q", schemaFlag, schemaInputs, schemaOutputs, which))
 	}
 
 	_, closePlugins, err := startPluginsQuietly(cmd, nil)
@@ -123,7 +151,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	// the validator does — a parse can succeed on a file validation would still
 	// object to — so the full check runs too, on the workflow already in hand
 	// rather than on the file a second time.
-	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
+	workflow, positions, diagnostics, err := flowfile.ParseAndValidateFileAt(path)
 	surface := newSurface(cmd)
 	if err != nil {
 		if _, ok := errors.AsType[*os.PathError](err); ok {
@@ -153,6 +181,19 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		// one — and a reader piping this into `jq` must never receive one.
 		writeDiagnostics(surface.Err, surface.ErrTheme.Muted.Render(path), diagnostics)
 		return errCompileRefused
+	}
+
+	// The specification carries where each step is written, so a run from it
+	// (`flow run --spec`) can still point a failure back at this file.
+	flowfile.AttachSources(workflow, positions, path)
+
+	if which != "" {
+		render := v1.InputsJSONSchema
+		if which == schemaOutputs {
+			render = v1.OutputsJSONSchema
+		}
+
+		return writeSchema(surface, format, render(workflow))
 	}
 
 	// Indented unless the line-per-record form was asked for. There is one document

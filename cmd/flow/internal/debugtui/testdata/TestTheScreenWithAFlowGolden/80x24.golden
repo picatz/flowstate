@@ -1,0 +1,24 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 4                 ? help
+→ flow 9 steps ──────────────── source addresses only ──────────────────────────
+  │     △ audit tolerated task    No source: pass --program <Flowfile> to see   
+  └──                             its lines; showing the step's address.        
+  ┌▾ ▶ pages running loop                                                       
+  │     ✓ page task "http"        held at pages[1]/store                        
+→ │     ▶ store held task "http                                                 
+  └──                                                                           
+     ○ charge task "http"                                                       
+steps ─────────────────────────                                                 
+  no step inventory; pass --pro scope 4 names ──────────────────────────────────
+                                •▸ inputs  {2}                                  
+                                 ▸ steps   {1}                                  
+                                 ▸ run     {1}                                  
+                                                                                
+                                                                                
+                                                                                
+console ────────────────────────────────────────────────────────────────────────
+debug> step                                                                     
+                                                                                
+                                                                                
+debug> until pages/store                                                        
+                                                                                
+s step  n next  c continue  tab focus  : console  ? help  q quit                

@@ -374,6 +374,7 @@ func newTaskPolicyEnv() (*cel.Env, error) {
 		cel.Variable("task", cel.StringType),
 		principal.Var("identity"),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	)
 }
 

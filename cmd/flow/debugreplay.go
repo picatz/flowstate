@@ -60,9 +60,9 @@ func newDebugCommand() *cobra.Command {
 			"session accepted, one per line.\n\n" +
 			"A local run is debugged as `flow run local --debug` (a real run, at a terminal), " +
 			"as `flow test --debug` (one test case), and as `flow dap` (from an editor, which " +
-			"can also attach to a durable run). None of those writes a script to disk; the " +
-			"`flowstate_debug` MCP tool's answer carries one, and a script can be written by " +
-			"hand.",
+			"can also attach to a durable run). `flow run local --debug` and `flow test --debug` " +
+			"write a script to disk with `--record`; the `flowstate_debug` MCP tool's answer " +
+			"carries one, and a script can be written by hand.",
 	}
 
 	replayCmd := &cobra.Command{
@@ -88,6 +88,15 @@ func newDebugCommand() *cobra.Command {
 	addPluginFlags(replayCmd)
 	addLocalRehearsalFlags(replayCmd)
 	addLocalSignalFlags(replayCmd)
+	addRecordFlag(replayCmd)
+	addReverseFlag(replayCmd)
+
+	// Taken because the shared local-run path asks for it, and never honoured
+	// here: a replay reads its commands from the script, so there is no
+	// terminal to give the screen, and `--tui` spelled out is declined with the
+	// note that says so. Hidden for the reason --debug below is.
+	addTUIFlag(replayCmd)
+	replayCmd.Flags().Lookup("tui").Hidden = true
 
 	// How this command tells the shared local-run path that its run is
 	// debugged. It is not part of the verb's surface — a replay with no
@@ -208,6 +217,20 @@ func replayDebugScript(cmd *cobra.Command, args []string) error {
 	lines, err := readDebugScript(scriptPath)
 	if err != nil {
 		return err
+	}
+	if err := refuseRecordingOver(cmd, scriptPath); err != nil {
+		return err
+	}
+	// Stepping back is a rerun the run has to be set up for, and without it the
+	// session would refuse each of these and carry on from the wrong stop.
+	if mode, _ := cmd.Flags().GetString("reverse"); mode == "" {
+		for i, line := range lines {
+			if flowdebug.StepsBack(line) {
+				return refuseReplay(cmd, fmt.Errorf("%s: command %d, %q, steps back, which a replay does only "+
+					"with --reverse; add it (the workflow's tasks run again, as `flow run local --reverse` "+
+					"explains), or record a session that does not step back", scriptPath, i+1, line))
+			}
+		}
 	}
 
 	// The workflow, read here as well as inside the run.

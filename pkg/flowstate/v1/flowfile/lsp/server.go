@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/url"
 	"path/filepath"
 	"runtime/debug"
@@ -72,7 +73,12 @@ type FlowfileServer struct {
 	// initialized and shuttingDown track the protocol lifecycle. The spec
 	// requires rejecting requests before initialize and after shutdown, and an
 	// editor that reuses a connection depends on that being enforced.
-	initialized  atomic.Bool
+	initialized atomic.Bool
+
+	// snippets records that the client said at initialize it can expand snippet
+	// completions. A server serves one client over one stream, so this is a
+	// property of the session, and a client that does not say so gets plain text.
+	snippets     atomic.Bool
 	shuttingDown atomic.Bool
 }
 
@@ -153,6 +159,11 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 
 	switch req.Method {
 	case "initialize":
+		var params lsp.InitializeParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		s.snippets.Store(params.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport)
 		s.initialized.Store(true)
 		return &initializeResult{Capabilities: capabilities()}, nil
 
@@ -224,8 +235,13 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			// Closing an unsaved defaults buffer returns its dependent suites to
 			// the saved file. Re-run them now; retaining the live-buffer answer
 			// until a suite happens to change would leave stale diagnostics.
+			//
+			// The suites past the dependent bound too: opening the buffer retracted
+			// their saved-file contributions from the defaults URI, and nothing but
+			// this brings them back (#1273).
 			if doc.kind == docTestDefaults {
-				for _, source := range s.testDiagnosticSourcesFor(testDefaultsDependencyURI(doc)) {
+				target := testDefaultsDependencyURI(doc)
+				for _, source := range append(s.testDiagnosticSourcesFor(target), s.testOverflowSourcesFor(target)...) {
 					suite, ok := s.docs.get(source)
 					if !ok || suite.kind != docTestFile {
 						continue
@@ -254,6 +270,17 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return hoverAt(doc, params.Position), nil
 
+	case "textDocument/signatureHelp":
+		var params lsp.TextDocumentPositionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return nil, nil
+		}
+		return signatureHelpAt(doc, params.Position), nil
+
 	case "textDocument/completion":
 		var params lsp.CompletionParams
 		if err := decode(req, &params); err != nil {
@@ -263,7 +290,12 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if !ok {
 			return &lsp.CompletionList{Items: []lsp.CompletionItem{}}, nil
 		}
-		return completeAt(doc, params.Position), nil
+		list := completeAt(doc, params.Position)
+		if s.snippets.Load() {
+			snippetizeTasks(doc, list, s.tasks())
+			return withAdjustedIndentation(list), nil
+		}
+		return list, nil
 
 	case "textDocument/definition":
 		var params lsp.TextDocumentPositionParams
@@ -279,6 +311,68 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			locations = []lsp.Location{}
 		}
 		return locations, nil
+
+	case "textDocument/references":
+		var params lsp.ReferenceParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return []lsp.Location{}, nil
+		}
+		locations := referencesAt(doc, params.Position, params.Context.IncludeDeclaration)
+		if locations == nil {
+			locations = []lsp.Location{}
+		}
+		return locations, nil
+
+	case "textDocument/documentHighlight":
+		var params lsp.TextDocumentPositionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return []lsp.DocumentHighlight{}, nil
+		}
+		highlights := highlightsAt(doc, params.Position)
+		if highlights == nil {
+			highlights = []lsp.DocumentHighlight{}
+		}
+		return highlights, nil
+
+	case "textDocument/prepareRename":
+		var params lsp.TextDocumentPositionParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return nil, nil
+		}
+		rng, placeholder, ok := prepareRenameAt(doc, params.Position)
+		if !ok {
+			return nil, nil
+		}
+		return prepareRenameResult{Range: rng, Placeholder: placeholder}, nil
+
+	case "textDocument/rename":
+		var params lsp.RenameParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return nil, nil
+		}
+		edit, err := renameAt(doc, params.Position, params.NewName)
+		if err != nil {
+			// A refusal the editor shows as the reason; -32803 is the
+			// protocol's RequestFailed.
+			return nil, &jsonrpc2.Error{Code: requestFailed, Message: err.Error()}
+		}
+		return edit, nil
 
 	case "textDocument/documentSymbol":
 		var params lsp.DocumentSymbolParams
@@ -394,7 +488,28 @@ type serverCapabilities struct {
 
 	// SemanticTokensProvider is absent from go-lsp, which predates the feature.
 	SemanticTokensProvider *semanticTokensProvider `json:"semanticTokensProvider,omitempty"`
+
+	// RenameProvider is the options form for the reason CodeActionProvider is:
+	// go-lsp models it as a bool, which cannot say that prepareRename is served.
+	RenameProvider *renameOptions `json:"renameProvider,omitempty"`
 }
+
+// renameOptions says rename is served with a prepare step, so an editor asks
+// whether the cursor is on a renamable id before it shows a prompt.
+type renameOptions struct {
+	PrepareProvider bool `json:"prepareProvider"`
+}
+
+// prepareRenameResult is the `{range, placeholder}` form of the prepareRename
+// answer: the characters the editor selects, and the name it offers to edit.
+type prepareRenameResult struct {
+	Range       lsp.Range `json:"range"`
+	Placeholder string    `json:"placeholder"`
+}
+
+// requestFailed is the LSP error code for a request that was understood and
+// could not be done, which a refused rename is.
+const requestFailed = -32803
 
 // codeActionOptions says which kinds of action the server can return.
 //
@@ -433,7 +548,8 @@ func capabilities() serverCapabilities {
 				Save:      &lsp.SaveOptions{IncludeText: true},
 			},
 		},
-		HoverProvider: true,
+		HoverProvider:         true,
+		SignatureHelpProvider: &lsp.SignatureHelpOptions{TriggerCharacters: []string{"(", ","}},
 		CompletionProvider: &lsp.CompletionOptions{
 			// Enough to open completion at each place a Flowfile has something
 			// to offer: after a key's colon, inside ${...}, after a step id's
@@ -441,6 +557,9 @@ func capabilities() serverCapabilities {
 			TriggerCharacters: []string{":", " ", ".", "{", "[", ",", "-"},
 		},
 		DefinitionProvider:         true,
+		ReferencesProvider:         true,
+		DocumentHighlightProvider:  true,
+		RenameProvider:             &renameOptions{PrepareProvider: true},
 		DocumentSymbolProvider:     true,
 		DocumentFormattingProvider: true,
 	}
@@ -504,29 +623,37 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		if included != nil {
 			guards = append(guards, included)
 		}
-		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		// A live defaults edit changes every open suite that includes it. Re-run
 		// those suites through the same loader with this buffer; otherwise the
 		// editor would keep diagnostics from the saved defaults until each suite
 		// happened to change too.
+		//
+		// Before the buffer's own publication, not after: that publication
+		// aggregates the tracked suites' cached contributions, which until they
+		// are re-run were computed from the saved file, and a range from the saved
+		// file does not exist in a buffer that has since been corrected (#1273).
 		if doc.kind == docTestDefaults {
 			for _, source := range s.testDiagnosticSourcesFor(testDefaultsDependencyURI(doc)) {
 				suite, ok := s.docs.get(source)
 				if !ok || suite.kind != docTestFile {
 					continue
 				}
-				s.publishTestDiagnostics(ctx, conn, source, diagnoseTestPublications(suite, doc), suite, doc)
+				s.publishTestDiagnosticsWithholding(ctx, conn, source, diagnoseTestPublications(suite, doc),
+					[]lsp.DocumentURI{doc.uri, testDefaultsDependencyURI(doc)}, suite, doc)
 			}
 		}
+		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		return
 	}
-	diagnostics := diagnose(doc)
+	diagnostics := publishable(doc, diagnoseCarried(doc))
 	s.logger().Debug("published diagnostics",
 		"uri", doc.uri, "version", doc.version, "count", len(diagnostics))
-	s.notify(ctx, conn, lsp.PublishDiagnosticsParams{
+	if err := conn.Notify(ctx, "textDocument/publishDiagnostics", publishDiagnosticsParams{
 		URI:         doc.uri,
 		Diagnostics: diagnostics,
-	})
+	}); err != nil {
+		s.logger().Warn("publishing diagnostics failed", "uri", doc.uri, "error", err)
+	}
 }
 
 // siblingDocumentURI retains the client's spelling of a local file URI while
@@ -563,6 +690,16 @@ func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.
 	for source := range s.testSuitesByDefaults[target] {
 		sources = append(sources, source)
 	}
+	slices.Sort(sources)
+	return sources
+}
+
+// testOverflowSourcesFor is [FlowfileServer.testDiagnosticSourcesFor] for the
+// suites waiting past the dependent bound.
+func (s *FlowfileServer) testOverflowSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
+	s.testDiagnosticsMu.Lock()
+	defer s.testDiagnosticsMu.Unlock()
+	sources := slices.Collect(maps.Keys(s.testOverflowsByDefaults[target]))
 	slices.Sort(sources)
 	return sources
 }
@@ -611,6 +748,18 @@ func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.Docu
 // analyses; publishing while the diagnostics lock is held keeps notification
 // order identical to cache-update order under concurrent document changes.
 func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI, publications []diagnosticPublication, guards ...*document) {
+	s.publishTestDiagnosticsWithholding(ctx, conn, source, publications, nil, guards...)
+}
+
+// publishTestDiagnosticsWithholding is [FlowfileServer.publishTestDiagnostics]
+// that records everything but does not notify the URIs in withheld.
+//
+// A live defaults buffer re-runs each tracked suite against itself before it
+// publishes its own aggregate. Every one of those re-runs would otherwise
+// notify the defaults URI with the suites not yet re-run still contributing their
+// saved-file positions, so the buffer is withheld until the last one is current
+// and then published once (#1273).
+func (s *FlowfileServer) publishTestDiagnosticsWithholding(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI, publications []diagnosticPublication, withheld []lsp.DocumentURI, guards ...*document) {
 	s.testDiagnosticsMu.Lock()
 	defer s.testDiagnosticsMu.Unlock()
 	for _, guard := range guards {
@@ -675,6 +824,9 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 	}
 	s.testDiagnosticsBySource[source] = next
 	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
+		if slices.Contains(withheld, publication.URI) {
+			continue
+		}
 		s.notify(ctx, conn, publication)
 	}
 }
@@ -774,11 +926,6 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 			ordered[0], ordered[own] = ordered[own], ordered[0]
 		}
 		for _, source := range ordered {
-			// A target contribution from an untracked suite is a saved-file
-			// fallback, not a diagnosis of the newer open defaults buffer.
-			if open, ok := s.docs.get(uri); source != uri && ok && open.kind == docTestDefaults && s.testDefaultsBySuite[source] != testDefaultsDependencyURI(open) {
-				continue
-			}
 			byURI := s.testDiagnosticsBySource[source]
 			for _, d := range byURI[uri] {
 				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,

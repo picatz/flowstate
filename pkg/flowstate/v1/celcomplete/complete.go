@@ -409,3 +409,48 @@ func InputsRoot(inputs []Candidate) Candidate {
 		Members: inputs,
 	}
 }
+
+// RunRoot describes the run's own facts: the closed set of fields `run` has, and
+// the closed set `run.identity` has. The names come from the caller, which reads
+// them from the same lists the validator refuses an unknown field against, so
+// the menu and the diagnostic cannot disagree about what `run` holds.
+func RunRoot(fields, identity []string) Candidate {
+	members := make([]Candidate, 0, len(fields))
+	for _, name := range fields {
+		member := Candidate{Name: name, Kind: KindField}
+		if name == "identity" {
+			member.Docs = "Who the run executes as."
+			for _, field := range identity {
+				member.Members = append(member.Members, Candidate{Name: field, Kind: KindField})
+			}
+		}
+		members = append(members, member)
+	}
+
+	return Candidate{
+		Name:    v1.RunRoot,
+		Kind:    KindRoot,
+		Detail:  "run facts",
+		Docs:    "Facts about this run: write " + v1.RunRoot + ".<field>. The set is closed; an unknown field is a diagnostic.",
+		Insert:  v1.RunRoot + ".",
+		Members: members,
+	}
+}
+
+// TriggerRoot describes how the run started. It is metadata and never data: what
+// a workflow operates on arrives through `inputs`.
+func TriggerRoot(fields []string) Candidate {
+	members := make([]Candidate, 0, len(fields))
+	for _, name := range fields {
+		members = append(members, Candidate{Name: name, Kind: KindField})
+	}
+
+	return Candidate{
+		Name:    v1.TriggerRoot,
+		Kind:    KindRoot,
+		Detail:  "how the run started",
+		Docs:    "How this run was started: write " + v1.TriggerRoot + ".<field>. Metadata only; the arguments a workflow works on arrive through inputs.",
+		Insert:  v1.TriggerRoot + ".",
+		Members: members,
+	}
+}

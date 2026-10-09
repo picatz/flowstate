@@ -210,32 +210,83 @@ func TestTypesRefuseWhatCannotRun(t *testing.T) {
 	}
 }
 
-// What a field does not carry yet is refused with the reason, not parsed and
-// ignored: a `must:` that nothing enforces reads as a promise.
-func TestAFieldRefusesWhatItDoesNotCarryYet(t *testing.T) {
+// A field marked sensitive makes every input and output the record types sensitive
+// whole, at any depth; the compiler marks them, so an author names it once.
+func TestASensitiveFieldMakesWhatItTypesSensitive(t *testing.T) {
 	t.Parallel()
 
-	for _, key := range []string{
-		"default: x", "example: x", "sensitive: true",
-	} {
-		t.Run(strings.SplitN(key, ":", 2)[0], func(t *testing.T) {
-			t.Parallel()
-
-			wf, _, err := flowfile.Parse([]byte(typesSource(`types:
-  Order:
+	wf, _, err := flowfile.Parse([]byte(`edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Login:
     fields:
-      id:
+      user:
         type: string
-        `+key+`
-`, "Order")))
-			require.NoError(t, err)
+      password:
+        type: string
+        sensitive: true
+  Account:
+    fields:
+      login:
+        type: Login
+inputs:
+  login:
+    type: Login
+    required: true
+  accounts:
+    type: list(Account)
+    required: true
+  plain:
+    type: string
+    required: true
+steps:
+  - id: done
+    value: ${inputs.plain}
+outputs:
+  who:
+    value: ${inputs.login}
+    type: Login
+  name:
+    value: ${inputs.plain}
+    type: string
+`))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(wf))
 
-			ds := flowfile.Validate(wf)
-			require.NotEmpty(t, ds)
-			assert.Contains(t, ds.Error(), "does not carry yet")
-			assert.Contains(t, ds.Error(), "`"+strings.SplitN(key, ":", 2)[0]+"`")
-		})
+	sensitive := v1.SensitiveInputNames(wf)
+	assert.True(t, sensitive["login"], "a record with a sensitive field")
+	assert.True(t, sensitive["accounts"], "a list of records that reach one")
+	assert.False(t, sensitive["plain"])
+	assert.True(t, v1.SensitiveOutputNames(wf)["who"])
+	assert.False(t, v1.SensitiveOutputNames(wf)["name"])
+}
+
+// A specification that skipped the compiler is refused when it types a declaration
+// by a record with a sensitive field and leaves the declaration unmarked: it fails
+// closed rather than showing the value.
+func TestAnUnmarkedDeclarationOfASensitiveRecordIsRefused(t *testing.T) {
+	t.Parallel()
+
+	wf := &v1.Workflow{
+		DeclaredTypes: []*v1.TypeDeclaration{{
+			Name: "Login",
+			Fields: []*v1.InputDeclaration{
+				{Name: "password", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+			},
+		}},
+		DeclaredInputs: []*v1.InputDeclaration{{
+			Name:      "login",
+			Type:      v1.InputDeclaration_TYPE_STRUCT,
+			ValueType: &v1.Type{Kind: &v1.Type_Message{Message: "Login"}},
+		}},
 	}
+
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be declared `sensitive: true`")
+
+	v1.DeriveSensitive(wf)
+	assert.NoError(t, v1.CheckRecordDeclarations(wf))
 }
 
 func TestADuplicateTypeFieldIsReported(t *testing.T) {
@@ -372,6 +423,13 @@ func TestARecordFieldIsTypedWhereItIsRead(t *testing.T) {
 		{"an optional read of a declared field", `inputs.order.?id.orValue("") == "x"`, ""},
 		{"an optional read of an undeclared field", `inputs.order.?idd.hasValue()`, `the record Order has no field "idd"`},
 		{"an index by a declared field", `inputs.order["id"] == "x"`, ""},
+		{"an optional read of a string is an optional string", `inputs.order.?id.orValue(0) == 0`, "no matching overload"},
+		{"an optional read used as its bare value", `inputs.order.?id == "x"`, "no matching overload"},
+		{"an optional read chained through hasValue", `inputs.order.?id.hasValue()`, ""},
+		{"an index read is typed as the field", `inputs.order["id"] + 1 > 0`, "no matching overload"},
+		{"an index read is the field's own type", `inputs.order["id"].startsWith("o-")`, ""},
+		{"a presence test through an index", `has(inputs["order"].id) && true`, ""},
+		{"a presence test through an optional", `has(inputs.?order.id) && true`, ""},
 		{"an index by an empty key", `inputs.order[""] == "x"`, `has no field ""`},
 		{"an index by an undeclared field", `inputs.order["idd"] == "x"`, `the record Order has no field "idd"`},
 		{"a comprehension variable named like the root", `[inputs].exists(inputs, has(inputs.order.coupon))`, ""},
@@ -608,4 +666,196 @@ steps:
 	require.NoError(t, err)
 	assert.Contains(t, string(out), "must: this.start < this.end")
 	assert.Contains(t, string(out), "must: this >= 0")
+}
+
+// A field's default is read from the file and held to the field's own rules where the
+// file loads, so a stale one is a diagnostic and not a surprise at the first run.
+func TestAFieldDefaultIsCheckedWhereTheFileLoads(t *testing.T) {
+	t.Parallel()
+
+	source := func(field string) string {
+		return typesSource(`types:
+  Order:
+    fields:
+      id:
+        type: string
+        required: true
+      status:
+        `+field+`
+`, "Order")
+	}
+
+	wf, _, err := flowfile.Parse([]byte(source("{type: enum, values: [open, paid], default: open}")))
+	require.NoError(t, err)
+	assert.Empty(t, flowfile.Validate(wf))
+
+	for name, field := range map[string]string{
+		"outside the values": "{type: enum, values: [open, paid], default: pending}",
+		"wrong type":         "{type: int, default: soon}",
+		"with required":      "{type: string, required: true, default: open}",
+	} {
+		wf, _, err := flowfile.Parse([]byte(source(field)))
+		require.NoError(t, err, name)
+
+		ds := flowfile.Validate(wf)
+		require.NotEmpty(t, ds, name)
+		assert.Contains(t, ds.Error(), `type "Order" field "status"`, name)
+	}
+}
+
+// The optional and indexed spellings are typed in the checks that hold a value to a
+// declared contract too: a call argument against the callee's input, and a computed
+// output against its `type:`.
+func TestAnIndexedRecordReadMeetsDeclaredContracts(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+inputs:
+  n:
+    type: int
+    required: true
+steps:
+  - id: a
+    log:
+      message: hi
+`)
+
+	source := func(read string) string {
+		return `edition: v2026.4
+name: caller
+types:
+  Order:
+    fields:
+      id:
+        type: string
+inputs:
+  order:
+    type: Order
+    required: true
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+      n: ${` + read + `}
+outputs:
+  total:
+    value: ${` + read + `}
+    type: int
+`
+	}
+
+	for _, read := range []string{`inputs.order["id"]`, `inputs.order.id`} {
+		ds, err := flowfile.ValidateSourceAt([]byte(source(read)), dir+"/caller.yaml")
+		require.NoError(t, err)
+		require.NotEmpty(t, ds, read)
+		assert.Len(t, ds, 2, "one for the argument, one for the output: %s", ds.Error())
+	}
+}
+
+// A `for_each` over a list of records binds its item as that record: a field read
+// is typed at its leaf, a misspelled one is refused with the record's fields, and
+// the item of an inner loop over a field of the outer item is typed the same way.
+func TestAForEachOverRecordsTypesTheItemsFields(t *testing.T) {
+	t.Parallel()
+
+	source := func(body string) string {
+		return `edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Line:
+    fields:
+      sku:
+        type: string
+      quantity:
+        type: int
+  Order:
+    fields:
+      id:
+        type: string
+      lines:
+        type: list(Line)
+inputs:
+  orders:
+    type: list(Order)
+    required: true
+steps:
+  - id: each
+    for_each:
+      items: ${inputs.orders}
+      as: order
+      steps:
+        - id: inner
+          for_each:
+            items: ${order.lines}
+            as: line
+            steps:
+              - id: use
+                value: ${` + body + `}
+`
+	}
+
+	for _, test := range []struct {
+		name, body, want string // empty want accepts
+	}{
+		{"a typed field of the inner item", `line.quantity + 1`, ""},
+		{"a field of the outer item", `order.id + "x"`, ""},
+		{"an int field used as a string", `line.quantity.startsWith("a")`, "no matching overload"},
+		{"a misspelled inner field", `line.skuu`, `the record Line has no field "skuu"`},
+		{"a misspelled outer field", `order.idd`, `the record Order has no field "idd"`},
+		{"an optional read is typed", `line.?sku.orValue(0)`, "no matching overload"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			wf, _, err := flowfile.Parse([]byte(source(test.body)))
+			require.NoError(t, err)
+
+			ds := flowfile.Validate(wf)
+			if test.want == "" {
+				assert.Empty(t, ds)
+				return
+			}
+			require.NotEmpty(t, ds)
+			assert.Contains(t, ds.Error(), test.want)
+		})
+	}
+}
+
+func TestAnIteratorAndARecordInputSharingANameAreCheckedSeparately(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(`edition: ` + flowfile.CurrentEdition + `
+name: t
+types:
+  Line:
+    fields:
+      sku:
+        type: string
+  Order:
+    fields:
+      id:
+        type: string
+inputs:
+  order:
+    type: Line
+    required: true
+  orders:
+    type: list(Order)
+    required: true
+steps:
+  - id: each
+    for_each:
+      items: ${inputs.orders}
+      as: order
+      steps:
+        - id: use
+          value: ${order.id + inputs.order.id}
+`))
+	require.NoError(t, err)
+
+	ds := flowfile.Validate(wf)
+	require.NotEmpty(t, ds)
+	assert.Contains(t, ds.Error(), `the record Line has no field "id"`)
 }

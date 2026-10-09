@@ -1,0 +1,36 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
+flow ─────────────────────── source addresses only ──────────── steps ──────────────── → scope 4 names ─────────────────
+no program; pass --program     No source: pass --program          ○ checkout pending    ▾ inputs      {2}               
+                               <Flowfile> to see its lines;     → ▶ build running           version   "2026.9.0"        
+                               showing the step's address.        ○ flaky pending           region    "eu-west-1"       
+                                                                  ○ gated pending       ▾ steps       {1}               
+                               held at build                      ○ deploy pending     →  ▸ checkout  {artifact: checkou
+                                                                  ○ notify pending      ▸ run         {1}               
+                                                                  6 step(s)                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                       inspector ───────────────────────
+                                                                                       expression  steps.checkout       
+                                                                                       type        map                  
+                                                                                       children    2                    
+                                                                                       value       {artifact: checkout.t
+                                                                                                   ar.gz, sha: 9f2c}    
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+console ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+debug>                                                                                                                  
+                                                                                                                        
+s step  n next  c continue  tab focus  : console  ? help  q quit                                                        

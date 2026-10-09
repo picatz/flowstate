@@ -33,6 +33,8 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 
 	assert.True(t, got.HoverProvider)
 	assert.True(t, got.DefinitionProvider)
+	assert.True(t, got.ReferencesProvider)
+	assert.True(t, got.DocumentHighlightProvider)
 	assert.True(t, got.DocumentSymbolProvider)
 	assert.True(t, got.DocumentFormattingProvider)
 	require.NotNil(t, got.CompletionProvider)
@@ -51,11 +53,17 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	// field on the wire.
 	assert.False(t, got.ServerCapabilities.CodeActionProvider)
 
+	// Rename is the options form for the same reason: a bare `true` cannot say
+	// that prepareRename is served, and the editor then offers a rename on a
+	// cursor that is on nothing renamable.
+	require.NotNil(t, got.RenameProvider)
+	assert.True(t, got.RenameProvider.PrepareProvider)
+	assert.False(t, got.ServerCapabilities.RenameProvider)
+
 	// Everything not implemented must stay unadvertised.
-	assert.False(t, got.ReferencesProvider)
-	assert.False(t, got.RenameProvider)
 	assert.False(t, got.WorkspaceSymbolProvider)
-	assert.Nil(t, got.SignatureHelpProvider)
+	require.NotNil(t, got.SignatureHelpProvider)
+	assert.Equal(t, []string{"(", ","}, got.SignatureHelpProvider.TriggerCharacters)
 	assert.Nil(t, got.CodeLensProvider)
 	assert.Nil(t, got.ExecuteCommandProvider)
 }
@@ -71,10 +79,14 @@ var implementedCapabilities = map[string]string{
 	"HoverProvider":              "textDocument/hover",
 	"CompletionProvider":         "textDocument/completion",
 	"DefinitionProvider":         "textDocument/definition",
+	"ReferencesProvider":         "textDocument/references",
+	"DocumentHighlightProvider":  "textDocument/documentHighlight",
+	"RenameProvider":             "textDocument/rename",
 	"DocumentSymbolProvider":     "textDocument/documentSymbol",
 	"DocumentFormattingProvider": "textDocument/formatting",
 	"CodeActionProvider":         "textDocument/codeAction",
 	"SemanticTokensProvider":     "textDocument/semanticTokens/full",
+	"SignatureHelpProvider":      "textDocument/signatureHelp",
 }
 
 // TestNoCapabilityIsAdvertisedWithoutAHandler is the check the list above cannot be
@@ -111,6 +123,10 @@ func TestNoCapabilityIsAdvertisedWithoutAHandler(t *testing.T) {
 		// Advertised in the options form, which shadows the embedded bool — so the
 		// scan below will always find that one zero and this is where it is counted.
 		set["CodeActionProvider"] = true
+	}
+	if got.RenameProvider != nil {
+		// Wrapper field in the options form, like CodeActionProvider above.
+		set["RenameProvider"] = true
 	}
 	if got.SemanticTokensProvider != nil {
 		// Also a wrapper field: go-lsp has no such capability to scan.
@@ -208,7 +224,7 @@ func TestUnknownMethodIsRejected(t *testing.T) {
 	p.send(map[string]any{"id": 1, "method": "initialize", "params": map[string]any{}})
 	p.receive()
 
-	p.send(map[string]any{"id": 2, "method": "textDocument/rename", "params": map[string]any{}})
+	p.send(map[string]any{"id": 2, "method": "textDocument/codeLens", "params": map[string]any{}})
 	resp := p.receive()
 	rpcErr, ok := resp["error"].(map[string]any)
 	require.True(t, ok, "expected an error response, got %v", resp)

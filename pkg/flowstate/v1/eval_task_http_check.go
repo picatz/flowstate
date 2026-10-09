@@ -79,6 +79,15 @@ func checkHTTPLiteral(input string, value *Value) error {
 		// because the alternative is a diagnostic saying the http task cannot
 		// request "" — and being wrong in a way that reads confidently is the
 		// failure mode this whole area keeps producing.
+		//
+		// The one host spelling decidable from the text alone: `127.1` and its
+		// kin are never what an author meant to write, are the classic filter
+		// evasions, and are refused at run time for every request whatever the
+		// policy (#1768). Said here so the author hears it before the run.
+		if canonical, ok := nonCanonicalIPv4(parsed.Hostname()); ok {
+			return fmt.Errorf("host %q is not a canonical IPv4 address; write %s", parsed.Hostname(), canonical)
+		}
+
 		return nil
 	}
 

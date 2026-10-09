@@ -1,0 +1,11 @@
+{
+  "name": "flowstate",
+  "owner": { "name": "picatz" },
+  "plugins": [
+    {
+      "name": "flowstate",
+      "source": "./editors/claude-code",
+      "description": "Write, test, and debug Flowstate Flowfiles from Claude Code: MCP tools, skills, and a live validation pane."
+    }
+  ]
+}

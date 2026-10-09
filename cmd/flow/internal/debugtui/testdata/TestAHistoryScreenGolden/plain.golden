@@ -1,0 +1,36 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 1 · reconstructed                                         ? help
+flow ─────────────────────── source addresses only ──────────── steps ──────────────── → scope 5 names ─────────────────
+no program; pass --program     No source: pass --program          ○ checkout pending    ▾ inputs                {2}     
+                               <Flowfile> to see its lines;     → ▶ build running           version       [rec] "2026.9.
+                               showing the step's address.        ○ flaky pending           region        [rec] "eu-west
+                                                                  ○ gated pending       ▾ steps                 {2}     
+                               held at build                      ○ deploy pending        ▸ checkout      [rec] {artifac
+                                                                  ○ notify pending          lost          [n/a] (no such
+                                                                  6 step(s)             ▸ run                   {1}     
+                                                                                        ▾ watches               {1}     
+                                                                                            1 + 1         [hyp] 2       
+                                                                                        ▾ result                {1}     
+                                                                                       →    inputs.versi  [hyp] "2026.9.
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                       inspector ───────────────────────
+                                                                                       expression  inputs.version       
+                                                                                       value       "2026.9.0"           
+                                                                                       known as    hypothetical: compute
+                                                                                                   d now over the recons
+                                                                                                   tructed scope, and ne
+                                                                                                   ver held by the run  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+timeline 0 1 [2] 3 4                                                                                                    
+console ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+debug> watch 1 + 1                                                                                                      
+debug> inspect inputs.version                                                                                           
+[hyp] "2026.9.0"                                                                                                        
+                                                                                                                        
+                                                                                                                        
+debug>                                                                                                                  
+                                                                                                                        
+s step  n next  c continue  tab focus  : console  ? help  q quit                                                        

@@ -105,10 +105,13 @@ type capabilities struct {
 	SupportsHitConditionalBreakpoints bool              `json:"supportsHitConditionalBreakpoints"`
 	SupportsLogPoints                 bool              `json:"supportsLogPoints"`
 	SupportsEvaluateForHovers         bool              `json:"supportsEvaluateForHovers"`
+	SupportsCompletionsRequest        bool              `json:"supportsCompletionsRequest"`
+	CompletionTriggerCharacters       []string          `json:"completionTriggerCharacters,omitempty"`
 	SupportsTerminateRequest          bool              `json:"supportsTerminateRequest"`
 	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
 	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
 	SupportsStepBack                  bool              `json:"supportsStepBack"`
+	SupportsGotoTargetsRequest        bool              `json:"supportsGotoTargetsRequest"`
 	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
 }
 
@@ -146,6 +149,13 @@ type threadsBody struct {
 	Threads []thread `json:"threads"`
 }
 
+// gotoTarget is one point of the session's timeline an editor may travel to.
+type gotoTarget struct {
+	ID    int    `json:"id"`
+	Label string `json:"label"`
+	Line  int    `json:"line"`
+}
+
 type stackFrame struct {
 	ID   int    `json:"id"`
 	Name string `json:"name"`
@@ -162,6 +172,10 @@ type stackFrame struct {
 	// PresentationHint is "subtle" for a container frame: a loop iteration, a
 	// parallel branch, a switch arm or a call the stop is inside.
 	PresentationHint string `json:"presentationHint,omitempty"`
+}
+
+type gotoTargetsBody struct {
+	Targets []gotoTarget `json:"targets"`
 }
 
 type stackTraceBody struct {
@@ -203,6 +217,21 @@ type evaluateBody struct {
 	Result             string `json:"result"`
 	Type               string `json:"type,omitempty"`
 	VariablesReference int    `json:"variablesReference"`
+}
+
+// completionsBody answers `completions`. Each item is a name the run's scope
+// holds; none carries a value.
+type completionsBody struct {
+	Targets []completionItem `json:"targets"`
+}
+
+type completionItem struct {
+	Label string `json:"label"`
+	Text  string `json:"text,omitempty"`
+	Type  string `json:"type,omitempty"`
+	Start int    `json:"start"`
+	// Length is how much of the typed text the item replaces.
+	Length int `json:"length"`
 }
 
 type breakpoint struct {

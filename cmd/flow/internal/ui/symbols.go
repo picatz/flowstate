@@ -36,6 +36,17 @@ type SymbolSet struct {
 
 	// Divider fills a horizontal rule.
 	Divider string
+
+	// Collapsed and Expanded mark a row of a tree that has children it is not
+	// showing and children it is.
+	Collapsed string
+	Expanded  string
+
+	// Rail, Open and Close draw a box around a group of rows: the line down its
+	// side, and the corner that begins it and the one that ends it.
+	Rail  string
+	Open  string
+	Close string
 }
 
 // unicodeSymbols is the preferred set: geometric marks that share a visual weight
@@ -51,6 +62,13 @@ var unicodeSymbols = SymbolSet{
 	Arrow:    "→", // → rightwards arrow
 	Ellipsis: "…", // … horizontal ellipsis
 	Divider:  "─", // ─ box drawings light horizontal
+
+	Collapsed: "▸", // ▸ black right-pointing small triangle
+	Expanded:  "▾", // ▾ black down-pointing small triangle
+
+	Rail:  "│", // │ box drawings light vertical
+	Open:  "┌", // ┌ box drawings light down and right
+	Close: "└", // └ box drawings light up and right
 }
 
 // asciiSymbols is what a pipe, a CI log, and a terminal that cannot be measured
@@ -75,6 +93,13 @@ var asciiSymbols = SymbolSet{
 	Arrow:    ">",
 	Ellipsis: "...",
 	Divider:  "-",
+
+	Collapsed: "+",
+	Expanded:  "-",
+
+	Rail:  "|",
+	Open:  "+",
+	Close: "+",
 }
 
 // Symbols returns the set this stream may use.

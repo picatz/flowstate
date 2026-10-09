@@ -664,3 +664,19 @@ func Test_ruleSet_evaluate(t *testing.T) {
 		})
 	}
 }
+
+// TestRuleWithAnUnparseableLiteralIsRefusedAtLoad is #1856 on the egress
+// surface: both the request and the connection environment run the literal
+// validators, so the mistake surfaces when the rule compiles.
+func TestRuleWithAnUnparseableLiteralIsRefusedAtLoad(t *testing.T) {
+	rc, err := newRuleCompiler(50_000)
+	require.NoError(t, err)
+
+	for _, src := range []string{`host.matches('(')`, `host == 'a' && path.matches('[')`} {
+		_, _, err := rc.compile("allow", src)
+		require.Error(t, err, src)
+	}
+
+	_, _, err = rc.compile("allow", `host.matches('^a')`)
+	require.NoError(t, err)
+}

@@ -152,3 +152,30 @@ func TestAVerbNotOnEveryFrontSaysWhereItIs(t *testing.T) {
 		}
 	}
 }
+
+// TestDriverVerbsAreTheTablesDriverFront: what a key-binding surface may offer
+// is exactly what the driver front answers, in both directions.
+func TestDriverVerbsAreTheTablesDriverFront(t *testing.T) {
+	t.Parallel()
+
+	names := map[string]flowdebug.Verb{}
+	for _, verb := range flowdebug.DriverVerbs() {
+		names[verb.Name] = verb
+		assert.NotEmpty(t, verb.Help, "%s has no sentence", verb.Name)
+	}
+
+	for _, want := range []string{"step", "next", "continue", "detach", "inspect", "pause", "back"} {
+		assert.Contains(t, names, want)
+	}
+	assert.True(t, names["step"].Moves)
+	assert.False(t, names["inspect"].Moves)
+	assert.Equal(t, []string{"s"}, names["step"].Aliases)
+
+	// Verbs the driver front refuses by name are not offered: `quit` belongs
+	// to a prompt and `info` describes a step only a prompt can.
+	for _, refused := range []string{"quit", "info"} {
+		assert.NotContains(t, names, refused)
+		_, err := flowdebug.NewDriver(nil).Do(t.Context(), refused)
+		require.Error(t, err, "the driver answered %q, which the table says it does not", refused)
+	}
+}

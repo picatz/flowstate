@@ -635,7 +635,7 @@ edition: v2026.4
 		const leakyURI = "file:///leaky-wait.yaml"
 		params := c.open(leakyURI, leaky)
 		require.Len(t, params.Diagnostics, 1, "got %v", messages(params.Diagnostics))
-		assert.Contains(t, params.Diagnostics[0].Message, `references unknown step "inner"`)
+		assert.Contains(t, params.Diagnostics[0].Message, `references step "inner", which is not visible from here`)
 
 		pos := positionOf(t, leaky, "steps.inner.body", len("steps."))
 		assert.Nil(t, c.hover(leakyURI, pos.Line, pos.Character),
@@ -1235,6 +1235,7 @@ edition: v2026.4
 	require.NotNil(t, got, "no hover on a loop iterator")
 	assert.Contains(t, hoverText(got), "current item of the `repeat` loop")
 	assert.Contains(t, hoverText(got), "do not escape")
+	assert.Contains(t, hoverText(got), "Its type is `string`", "an item of a list of strings is a string")
 
 	// The loop that binds it is the only declaration to jump to.
 	def := c.definition(uri, pos.Line, pos.Character)
@@ -1591,4 +1592,40 @@ func positionOfKey(t *testing.T, src, key string, minIndent int, after string) l
 	}
 	t.Fatalf("test source declares no key %q", key)
 	return lsp.Position{}
+}
+
+// TestLoopIteratorOverRecordsIsNamedByItsRecord: CEL holds a record as `dyn`, so
+// hover has to say what the item is from the declaration.
+func TestLoopIteratorOverRecordsIsNamedByItsRecord(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.4
+name: records
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true}
+inputs:
+  lines:
+    type: "list(Line)"
+    default: []
+steps:
+  - id: repeat
+    for_each:
+      items: ${inputs.lines}
+      as: line
+      steps:
+        - id: body
+          log:
+            message: ${line.sku}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///records.yaml"
+	require.Empty(t, messages(c.open(uri, src).Diagnostics))
+
+	pos := positionOf(t, src, "${line.sku}", 3)
+	got := c.hover(uri, pos.Line, pos.Character)
+	require.NotNil(t, got)
+	assert.Contains(t, hoverText(got), "Its type is `Line`")
 }

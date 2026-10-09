@@ -40,12 +40,11 @@ refuses to start without a policy that has a `secrets:` section.
 [`examples/plugins/greet/auth.yaml`](../greet/auth.yaml) is a rehearsal policy
 that allows every reference.
 
-`flow run` refuses these files today (#1548): it checks a file against its own
-build's task registry, takes no `--plugin-dir`, and so reports every `github.*`
-task as one nothing registered before the server sees it. Until that is fixed,
-`flow run local` with the same `--plugin-dir` and `--auth-policy` runs one in a
-single process, and an agent host running `flow mcp --plugin-dir ./plugins`
-submits it to this server with `flowstate_compile` then `flowstate_run`.
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow plugins --plugin-dir ./plugins --output json`.
 
 `--insecure-no-auth` is what makes this a rehearsal rather than a deployment:
 the server authenticates every caller as anonymous, which is only ever right on
@@ -90,8 +89,8 @@ user can read through `/proc/<pid>/environ`
 (`pkg/flowstate/v1/plugin/env_config.go`). On a shared host, resolve `token`
 worker-side instead: it is a secret input the host resolves for each call, so
 `token: ${secret('file:github-token')}` with the worker's `--secret-dir` keeps
-it out of the plugin's environment. The submission is refused by `flow run`
-today, as above.
+it out of the plugin's environment. `flow run` validates it against the
+server's catalog, as above.
 
 ## Why github.* and not forge.*
 

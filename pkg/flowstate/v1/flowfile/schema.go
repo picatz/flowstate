@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/google/cel-go/common/types"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -201,35 +202,25 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 	return append(ds, violatedRules(stepID, task, def, checkable)...)
 }
 
-// checkExpressionInputTypes reports a task input written as a *direct reference* to a
-// name whose static type this file already fixes — `${inputs.<name>}` against the
-// declared input's type, `${vars.<name>}` against a var's literal — where that type is
-// one the field can never hold.
+// checkExpressionInputTypes reports a task input written as an expression whose
+// type the field can never hold, in two tiers.
 //
-// This closes the half of the schema type-check a literal got and an expression
-// escaped (#158). [validateTaskInputs] type-checks a literal against the field and
-// returns early for anything else, so `parse_json: false` was caught and the identical
-// mistake routed through `parse_json: ${vars.flag}` — with `flag: "yes"` making the
-// type just as knowable — was not. Real files wire steps together with references, so
-// the spelling checked was the one authors leave behind the moment they start.
+// A *direct reference* to a name whose static type this file already fixes —
+// `${inputs.<name>}` against the declared input's type, `${vars.<name>}` against a
+// var's literal — is judged by that type, with the same rule a literal gets (#158).
+// [validateTaskInputs] type-checks a literal and returns early for anything else, so
+// `parse_json: false` was caught and the identical mistake routed through
+// `parse_json: ${vars.flag}` — with `flag: "yes"` making the type just as knowable —
+// was not.
 //
-// It stays inside the boundary CLAUDE.md draws — report what is a property of the file,
-// stay silent about what a run decides — by checking *only* a reference whose type is
-// written in this same file, and only in its exact form:
-//
-//   - `${inputs.x}` where `x` is a declared input with a declared type. A run supplies
-//     the value, but the *type* is the declaration's, which is in the file.
-//   - `${vars.x}` where `x` is a var whose value is a literal. The literal, and so its
-//     type, is in the file. A var whose value is itself an expression is skipped — its
-//     type is not knowable here.
-//
-// Everything else is left to the run, which is the whole point rather than a
-// limitation: a computed expression (`${inputs.n + 1}`), a nested selection
-// (`${inputs.obj.field}`), or a step output (`${steps.a.body}`) has a type no part of
-// the file fixes, and a diagnostic drawn from a type this cannot know would be exactly
-// the false one CLAUDE.md forbids. An enum target is skipped for the `inputs` path too:
-// the field's type is knowable but the *value* is not, and an enum is judged by value.
-func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Diagnostics {
+// Any other expression falls to [expressionMismatch], which asks the checker for the
+// expression's type through the workflow's type table (#1637): `${42}`,
+// `${inputs.n + 1}`, a step output the table types. It stays inside the boundary
+// AGENTS.md draws — report what is a property of the file, stay silent about what a
+// run decides — because an expression the checker leaves `dyn` is never reported, and
+// neither is an enum's value, which only a run can judge, so a diagnostic here is
+// drawn from a type the file fixes.
+func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
 	def, known := v1.LookupTask(task.GetName())
 	if !known || def.Inputs == nil {
 		return nil
@@ -263,11 +254,18 @@ func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Di
 		}
 
 		root, refName, ok := directReference(parsed.GetExpr())
-		if !ok {
-			continue
+		var value *expr.Value
+		var synthesized bool
+		if ok {
+			value, synthesized, ok = knowableReferenceType(root, refName, wf)
 		}
-		value, synthesized, ok := knowableReferenceType(root, refName, wf)
 		if !ok {
+			// Not a reference this file types by itself, so ask the checker what
+			// the whole expression is: `${42}`, `${inputs.n + 1}`, a step output
+			// the table types. Silent for `dyn`, which is most of them.
+			if message := expressionMismatch(table, stepID, field, parsed); message != "" {
+				ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: message, Code: v1.DiagnosticCodeTypeMismatch})
+			}
 			continue
 		}
 		if synthesized && field.Kind() == protoreflect.EnumKind {
@@ -287,6 +285,75 @@ func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow) Di
 	}
 
 	return ds
+}
+
+// expressionMismatch reports why a field can never hold what an expression checks
+// to, or "" when it can, when the type is not decided, or when the field takes a
+// shape this declines to narrow.
+//
+// The comparison is by kind and deliberately coarser than [literalMismatch]: a
+// checked type says `int` where a literal says `42`, so an enum's membership and
+// a message's shape stay with the run. Numbers are silent across int, uint and
+// double, which is #1432's decision to make rather than this one's.
+func expressionMismatch(table *typeTable, stepID string, field protoreflect.FieldDescriptor, parsed *expr.ParsedExpr) string {
+	if table == nil {
+		return ""
+	}
+	found, ok := checkedType(table, parsed, table.before(v1.ValueSite{Step: stepID}), stepID)
+	if !ok {
+		return ""
+	}
+
+	var shape string
+	switch found.Kind() {
+	case types.StringKind:
+		shape = "a string"
+	case types.BytesKind:
+		shape = "a string of bytes"
+	case types.BoolKind:
+		shape = "true or false"
+	case types.IntKind, types.UintKind:
+		shape = "a whole number"
+	case types.DoubleKind:
+		shape = "a number"
+	case types.NullTypeKind:
+		shape = "null"
+	case types.ListKind:
+		shape = "a list"
+	case types.MapKind:
+		shape = "a mapping"
+	default:
+		// dyn, a timestamp, a duration, a type: not worth a rule each.
+		return ""
+	}
+
+	assignable := false
+	switch {
+	case field.IsMap():
+		assignable = found.Kind() == types.MapKind
+	case field.IsList():
+		assignable = found.Kind() == types.ListKind
+	case field.Kind() == protoreflect.MessageKind, field.Kind() == protoreflect.GroupKind:
+		return ""
+	case field.Kind() == protoreflect.EnumKind:
+		assignable = found.Kind() == types.StringKind
+	case field.Kind() == protoreflect.StringKind:
+		// Only text: the decoder's string arm takes a string and nothing else.
+		assignable = found.Kind() == types.StringKind
+	case field.Kind() == protoreflect.BytesKind:
+		assignable = found.Kind() == types.StringKind || found.Kind() == types.BytesKind
+	case field.Kind() == protoreflect.BoolKind:
+		assignable = found.Kind() == types.BoolKind
+	case isNumeric(field.Kind()), field.Kind() == protoreflect.DoubleKind, field.Kind() == protoreflect.FloatKind:
+		assignable = slices.Contains([]types.Kind{types.IntKind, types.UintKind, types.DoubleKind}, found.Kind())
+	default:
+		return ""
+	}
+	if assignable {
+		return ""
+	}
+
+	return fmt.Sprintf("expected %s, but this expression is %s", inputTypePhrase(field), shape)
 }
 
 // directReference returns the root and selected name of an expression that is exactly

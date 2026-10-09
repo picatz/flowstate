@@ -1,0 +1,24 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                 ? help
+→ flow 4 steps ──────────────── source main.yaml:8 ─────────────────────────────
+     ○ fetch task "log"             5   - id: fetch                             
+→    ▶ charge held task "log"       6     log:                                  
+  ┌▾ ○ nested call "child"          7       message: fetching                   
+  │     ○ greet task "log"      ▶   8   - id: charge                            
+  └──                           │   9     log:                                  
+                                │  10       message: ${"charging " + string(1)} 
+                                   11   - id: nested                            
+steps ─────────────────────────    12     call: ./child.yaml                    
+  ○ fetch pending               scope 4 names ──────────────────────────────────
+  ○ charge pending              •▸ inputs  {2}                                  
+  ○ nested pending               ▸ steps   {1}                                  
+  ○ d pending                    ▸ run     {1}                                  
+  ○ e pending                                                                   
+  ○ f pending                                                                   
+  6 step(s)                                                                     
+console ────────────────────────────────────────────────────────────────────────
+                                                                                
+                                                                                
+                                                                                
+debug>                                                                          
+                                                                                
+s step  n next  c continue  tab focus  : console  ? help  q quit                

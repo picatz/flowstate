@@ -726,3 +726,192 @@ steps:
 
 	require.Contains(t, mustValidate(t, caller).Error(), `with.hosts is declared list(string) by workflow "callee", but this expression always produces int`)
 }
+
+// TestCallBindingOfATypedInputIsCheckedAgainstTheCalleesDeclaration is the first
+// half of #1554: a bare `${inputs.<name>}` is typed by its declaration, so
+// binding a string input to a callee's int input is a diagnostic at the call
+// rather than a refusal when the run reaches it.
+func TestCallBindingOfATypedInputIsCheckedAgainstTheCalleesDeclaration(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+inputs:
+  shards:
+    type: int
+    required: true
+  region:
+    type: enum
+    values: [east, west]
+    required: true
+steps:
+  - id: noop
+    log:
+      message: hi
+`)
+	call := func(inputs, with string) string {
+		return writeFile(t, dir, "caller.yaml", `edition: v2026.4
+name: caller
+inputs:
+`+inputs+`
+steps:
+  - id: place
+    call: ./callee.yaml
+    with:
+`+with+`
+`)
+	}
+
+	const typed = `  tenant:
+    type: string
+    default: acme
+  count:
+    type: int
+    default: 3
+`
+
+	ds := mustValidate(t, call(typed, "      shards: ${inputs.tenant}\n      region: east"))
+	require.NotEmpty(t, ds, "a string input bound to an int input was accepted")
+	require.Contains(t, ds.Error(), `with.shards is declared int by workflow "callee", but this expression always produces string`)
+
+	ds = mustValidate(t, call(typed, "      shards: ${inputs.count}\n      region: ${inputs.tenant}"))
+	require.Empty(t, ds, "a matching int and a string bound to an enum must pass: %v", ds)
+}
+
+// A callee's declared `int` output reaches the caller as an int, like every other
+// declared type: arithmetic on it checks, and a method an int does not have is
+// refused where it is written.
+func TestACallsIntOutputIsTypedInTheCaller(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir, "callee.yaml", `edition: v2026.4
+name: callee
+steps:
+  - id: a
+    log:
+      message: hi
+outputs:
+  count:
+    value: ${3}
+    type: int
+`)
+
+	caller := func(condition string) string {
+		return `edition: v2026.4
+name: caller
+steps:
+  - id: c
+    call: ./callee.yaml
+  - id: use
+    if: ${` + condition + `}
+    log:
+      message: hi
+`
+	}
+
+	good, err := flowfile.ValidateSourceAt([]byte(caller(`steps.c.count + 1 > 3`)), dir+"/caller.yaml")
+	require.NoError(t, err)
+	require.Empty(t, good)
+
+	bad, err := flowfile.ValidateSourceAt([]byte(caller(`steps.c.count.size() > 0`)), dir+"/caller.yaml")
+	require.NoError(t, err)
+	require.NotEmpty(t, bad)
+	require.Contains(t, bad.Error(), "no matching overload")
+}
+
+// A loop's `results` is a list, and the checker says so: a string index on it is
+// refused where it is written rather than at the step that reads it.
+func TestALoopsResultsIsAList(t *testing.T) {
+	t.Parallel()
+
+	source := func(read string) string {
+		return `edition: v2026.4
+name: results
+inputs:
+  names:
+    type: list(dyn)
+    default: [a, b]
+steps:
+  - id: loop
+    for_each:
+      items: ${inputs.names}
+      steps:
+        - id: x
+          value: ${item}
+  - id: after
+    value: ${` + read + `}
+`
+	}
+
+	for read, want := range map[string]string{
+		`steps.loop.results.size()`:     "",
+		`steps.loop.results[0].x.value`: "",
+		`steps.loop.results.first`:      "does not support field selection",
+	} {
+		ds, err := flowfile.ValidateSource([]byte(source(read)))
+		require.NoError(t, err)
+		if want == "" {
+			require.Empty(t, ds, read)
+			continue
+		}
+		require.NotEmpty(t, ds, read)
+		require.Contains(t, ds.Error(), want, read)
+	}
+}
+
+// A `for_each` binds its iterator with the element type of `items:`: a field read
+// on a string item is refused where it is written, a declared `list(dyn)` stays
+// silent, and an inner loop sees the outer's iterator.
+func TestAForEachIteratorTakesTheElementTypeOfItems(t *testing.T) {
+	t.Parallel()
+
+	source := func(itemsType, body string) string {
+		return `edition: v2026.4
+name: iterator
+inputs:
+  names:
+    type: ` + itemsType + `
+    default: [a, b]
+steps:
+  - id: loop
+    for_each:
+      items: ${inputs.names}
+      as: n
+      steps:
+        - id: x
+          value: ${` + body + `}
+        - id: inner
+          for_each:
+            items: ${["p", "q"]}
+            as: m
+            steps:
+              - id: y
+                value: ${` + body + `}
+`
+	}
+
+	for _, test := range []struct {
+		name, itemsType, body, want string
+	}{
+		{"a string item used as one", "list(string)", `n.startsWith("a")`, ""},
+		{"a field read on a string item", "list(string)", `n.first_name`, "does not support field selection"},
+		{"an int method on a string item", "list(string)", `n + 1`, "no matching overload"},
+		{"an untyped list stays dyn", "list(dyn)", `n.first_name`, ""},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			ds, err := flowfile.ValidateSource([]byte(source(test.itemsType, test.body)))
+			require.NoError(t, err)
+			if test.want == "" {
+				require.Empty(t, ds)
+				return
+			}
+			require.NotEmpty(t, ds)
+			require.Contains(t, ds.Error(), test.want)
+			// Both occurrences, so the outer iterator is still typed one loop down.
+			require.Contains(t, ds.Error(), `step "x"`)
+			require.Contains(t, ds.Error(), `step "y"`)
+		})
+	}
+}

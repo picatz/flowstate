@@ -238,6 +238,12 @@ func init() {
 				" the argument to fix without parsing `message`.\n",
 		},
 		{
+			Name: "flowstate.v1.RunResponse.Error.expression",
+			Leading: " Expression says which operation failed and what it saw, when `kind` is\n" +
+				" `Expression` and the cause was an operator with no overload for its\n" +
+				" operands or a selection of a missing key. Unset for every other failure.\n",
+		},
+		{
 			Name:    "flowstate.v1.RunResponse.Status",
 			Leading: " Status is where a run is in its lifecycle.\n",
 		},
@@ -1207,6 +1213,19 @@ func init() {
 			Name: "flowstate.v1.CompileResponse.report",
 			Leading: " Report carries the diagnostics for the file, present even when empty so\n" +
 				" \"compiled clean\" is stated rather than inferred from absence.\n",
+		},
+		{
+			Name: "flowstate.v1.CompileResponse.inputs_json_schema",
+			Leading: " InputsJsonSchema is the JSON Schema (2020-12) of what a run of the workflow\n" +
+				" takes, set only when the file compiled clean: the same document\n" +
+				" `flow compile --schema inputs` prints, for a caller choosing arguments to\n" +
+				" Run. It is never stricter than binding a run's inputs and omits a sensitive\n" +
+				" declaration's default and example.\n",
+		},
+		{
+			Name: "flowstate.v1.CompileResponse.outputs_json_schema",
+			Leading: " OutputsJsonSchema is the JSON Schema (2020-12) of what a run answers with,\n" +
+				" set under the same condition as [inputs_json_schema].\n",
 		},
 		{
 			Name:    "flowstate.v1.GetCatalogRequest",

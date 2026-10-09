@@ -1,0 +1,62 @@
+// Package debugtui is the debugger's full-screen view: a bubbletea screen over
+// one [flowdebug.Target], opened by `flow debug attach --tui`.
+//
+// It is a client of three things and nothing else. The target's own answers,
+// read as a [flowdebug.Frame] by [flowdebug.ReadFrame], are everything it
+// draws, so it shows exactly what the line editor and the panes show and no
+// value a target's redactor withheld. The [flowdebug.Driver] carries every
+// command, so a key, a click and a typed line all end in the same call, answered
+// with the same refusals. And [github.com/picatz/flowstate/cmd/flow/internal/pane]
+// and [github.com/picatz/flowstate/cmd/flow/internal/tui] supply the components
+// and the shell.
+//
+// # Pure views, one owner of state
+//
+// Drawing is [Screen.Draw], a function of the screen's state and a [Style]: it
+// reads no clock, no terminal and no target. [Model] owns the state, changes it
+// in Update, and talks to the target only through commands, so a test drives a
+// model with messages and compares bytes.
+//
+// # The flow
+//
+// Given the program, the left column draws its structure as a ladder with what
+// the run has done on each step ([FlowView]). The structure is built once per
+// program and the marks come from the frame's [flowdebug.Overlay], so a stop
+// changes the picture without rebuilding it. The keys that act on a step send the
+// console's own lines (`until`, `break`, `delete`), and a step whose name the
+// session withholds is never put on one.
+//
+// # The source
+//
+// Beside the flow, [SourceView] draws the Flowfile with the held step's lines
+// marked, following the held frame across a `call:`. The texts are the caller's
+// [Config.Documents], read once into bounded lines that are safe to draw; a line
+// is drawn only where the frame's source map is verified and records the digest
+// of the text, and otherwise the pane draws the step's address and says why. A
+// click on a line's gutter arms a breakpoint on it through
+// [flowdebug.Driver.BreakLine], and refuses with a toast, sending nothing, where
+// the lines cannot be trusted.
+//
+// # The console, its menu and watches
+//
+// An `inspect` typed at the console is a tree in the scope pane
+// ([Screen.Result]), painted with [flowdebug.ValueTokens] as the line editor
+// paints it, and opening a row of it is the driver's own `expand`. `tab` in the
+// console opens a [Menu] fed by the driver's completer. A [Watch] is an
+// expression kept by the screen (at most [MaxWatches]) and evaluated through
+// [flowdebug.Target.Inspect] by the same command that reads each frame, so a
+// frame and its watches are of one stop and a travel refreshes both.
+//
+// # What refreshes the screen
+//
+// The screen re-reads the frame when a command finishes and when the target's
+// [flowdebug.Target.WaitSnapshot] reports a newer revision, never on a timer. A
+// target that cannot be waited on leaves the screen as of its last read, which
+// the next command refreshes.
+//
+// # Keys come from the command table
+//
+// [NewKeymap] binds keys only to verbs [flowdebug.DriverVerbs] lists, so a verb
+// a front does not answer has no key and no help line, and a verb added to the
+// table must be given a key or named as console-only before the tests pass.
+package debugtui

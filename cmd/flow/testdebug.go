@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/dst"
@@ -27,11 +29,11 @@ import (
 func debugSession(
 	cmd *cobra.Command,
 	surface *ui.UI,
-	machine bool,
+	format OutputFormat,
 	budget dst.Budget,
 	files []string,
 	selectCase func(string) bool,
-) (*flowdebug.Session, func(), error) {
+) (*flowdebug.Session, *reversibleFront, func(), error) {
 	// Returned beside every refusal below as well as beside a session, so a
 	// caller can defer it unconditionally: a cleanup a caller has to remember
 	// only on the success path is one that eventually gets forgotten, and the
@@ -39,11 +41,11 @@ func debugSession(
 	nothingToRestore := func() {}
 
 	switch {
-	case machine:
+	case format.Machine():
 		// A prompt and a document cannot share one stdout: the first
 		// `debug>` written into a JSON stream is a document nothing can
 		// parse.
-		return nil, nothingToRestore, errors.New("--debug reads commands and prints a prompt on the terminal, and " +
+		return nil, nil, nothingToRestore, errors.New("--debug reads commands and prints a prompt on the terminal, and " +
 			"--output json writes a document to the same stream; run one or the other")
 
 	case budget.Schedules > 0:
@@ -52,12 +54,12 @@ func debugSession(
 		// be run ten thousand times is a question with no answer. One seed
 		// is a question with an answer — the run a reported violation names —
 		// and is allowed: --seed replays exactly that run under the debugger.
-		return nil, nothingToRestore, errors.New("--debug steps through one run, and --seeds runs each " +
+		return nil, nil, nothingToRestore, errors.New("--debug steps through one run, and --seeds runs each " +
 			"case under many schedules; replay the one seed a finding names with --seed N --debug, " +
 			"or drop --seeds/--debug")
 
 	case len(files) != 1:
-		return nil, nothingToRestore, fmt.Errorf("--debug drives one console, and %d test files matched; "+
+		return nil, nil, nothingToRestore, fmt.Errorf("--debug drives one console, and %d test files matched; "+
 			"name the one file to debug", len(files))
 	}
 
@@ -69,7 +71,7 @@ func debugSession(
 	// give a diagnostic that names the number.
 	file, err := flowtest.Load(files[0])
 	if err != nil {
-		return nil, nothingToRestore, err
+		return nil, nil, nothingToRestore, err
 	}
 	matched := make([]string, 0, len(file.Tests))
 	var only flowtest.Test
@@ -80,8 +82,20 @@ func debugSession(
 		}
 	}
 	if len(matched) != 1 {
-		return nil, nothingToRestore, fmt.Errorf("--debug steps through one case, and %d of this file's cases were "+
+		return nil, nil, nothingToRestore, fmt.Errorf("--debug steps through one case, and %d of this file's cases were "+
 			"selected: %s. Name one with --run", len(matched), quotedList(matched))
+	}
+
+	// At a terminal the full-screen debugger plays the case, through the same
+	// reversible front the line editor uses, so `back` is real there as well.
+	// What the case says while it owns the terminal is kept and printed when
+	// it closes.
+	open, note := debugScreen(cmd, cmd.InOrStdin(), surface.Out, "", format, os.Getenv)
+	fmt.Fprint(surface.Err, note)
+	if open {
+		front, restore := screenFront(cmd, surface, flowtest.WorkflowPath(files[0], &only))
+
+		return nil, front, restore, nil
 	}
 
 	console, out, restore := debugConsoleFor(cmd.InOrStdin(), surface.Out, surface.Theme)
@@ -92,10 +106,29 @@ func debugSession(
 	emit, panes := debugPanesFor(cmd.Context(), console, out, surface.Theme, surface.Caps,
 		debugEmitter(out, surface.Theme))
 
+	// At a terminal the case runs under a reversible front, so `back` is real:
+	// see [reversibleFront] for why the session's own prompt cannot do it. A
+	// script or a pipe keeps the session, whose prompt is the reference for
+	// what a recorded line means.
+	if console != nil {
+		front := &reversibleFront{
+			Steps:   workflowStepList(flowtest.WorkflowPath(files[0], &only)),
+			Out:     out,
+			Emit:    emit,
+			Prompt:  flowdebug.Prompt,
+			Console: console,
+			Panes:   panes,
+			Theme:   surface.Theme,
+		}
+		fmt.Fprintf(out, "%s\n", surface.Theme.Accent.Render(
+			fmt.Sprintf("debugging %q — `help` lists the commands", matched[0])))
+
+		return nil, front, restore, nil
+	}
+
 	session, err := flowdebug.New(flowdebug.Options{
-		In:      cmd.InOrStdin(),
-		Console: consoleOrNil(console),
-		Out:     out,
+		In:  cmd.InOrStdin(),
+		Out: out,
 		// The session's tones through the one theme the transcript already
 		// renders with, so a paused run and a failed run's account read as
 		// one product. A non-terminal stream resolves every style to a
@@ -116,17 +149,13 @@ func debugSession(
 	if err != nil {
 		restore()
 
-		return nil, nothingToRestore, err
+		return nil, nil, nothingToRestore, err
 	}
-	if console != nil {
-		console.SetCompleter(session.Complete)
-	}
-	panes.setSession(session)
 
 	fmt.Fprintf(out, "%s\n", surface.Theme.Accent.Render(
 		fmt.Sprintf("debugging %q — `help` lists the commands", matched[0])))
 
-	return session, restore, nil
+	return session, nil, restore, nil
 }
 
 // debugConsoleFor attaches a terminal line editor where stdin is a terminal,
@@ -271,6 +300,7 @@ const maxCallInventoryDepth = v1.MaxCallDepth
 //     printTranscript, because a tolerated failure must look identical
 //     whether an author meets it live at a breakpoint or afterward in a
 //     failing case's account;
+//   - an inspected value is coloured token by token (see [debugtui.PaintValue]);
 //   - the account itself stays plain, matching the transcript.
 //
 // Styling is applied to the fragment minus its trailing newline, so the
@@ -287,6 +317,8 @@ func debugEmitter(out io.Writer, theme ui.Theme) func(string, flowdebug.Tone) {
 			trimmed = theme.Warning.Render(trimmed)
 		case flowdebug.ToneDanger:
 			trimmed = theme.Danger.Render(trimmed)
+		case flowdebug.ToneValue:
+			trimmed = debugtui.PaintValue(trimmed, theme)
 		}
 		if hadNewline {
 			fmt.Fprintln(out, trimmed)

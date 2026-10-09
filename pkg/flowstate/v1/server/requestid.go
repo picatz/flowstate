@@ -90,8 +90,10 @@ func newSubmissionKey(namespace, requestID string, submitted *v1.Workflow, input
 	// client compiled the program from, not what the program does, so a retry
 	// from an edited comment, or from the same bytes compiled without a file,
 	// is the same submission ([sameProgram]).
-	if submitted.GetSourceDigest() != "" {
-		submitted = proto.CloneOf(submitted)
+	//
+	// Nor are the advisory step locations, for the same reason.
+	submitted = v1.WithoutSourceLocations(submitted)
+	if submitted != nil {
 		submitted.SourceDigest = ""
 	}
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(&v1.RunRequest{

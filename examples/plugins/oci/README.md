@@ -31,13 +31,11 @@ reads it and a run records only the claims an entry carries. Every client comman
 below authenticates with `--token-file` (or `--credential-source`): an
 authenticated server refuses an anonymous caller.
 
-`flow run` refuses this file today (#1548): it checks the file against its own
-build's task registry, takes no `--plugin-dir`, and so reports the `oci.*`
-tasks as ones nothing registered before the server sees it. Until that is
-fixed, `flow run local` with the worker's `--plugin-dir` and `--egress-policy`
-runs it in one process, and an agent host running
-`flow mcp --plugin-dir ./plugins --token-file /path/to/starter.token` submits
-it to this server with `flowstate_compile` then `flowstate_run`.
+`flow run` asks the server it submits to which tasks it can run
+(`GetCatalog`), so a plugin task the server loaded validates on the client
+without the client launching anything. Against a server whose policy denies
+that call, or one you cannot reach, pass `--plugin-catalog` with the output of
+`flow plugins --plugin-dir ./plugins --output json`.
 
 The run stops at `approval` and waits - durably, for up to a day - until someone
 answers:
@@ -91,7 +89,7 @@ $ flow run local examples/plugins/oci/read-statement.yaml \
     --input statement=ghcr.io/acme/api@sha256:<layer digest>
 ```
 
-`flow run` refuses this file today for the same reason as the gate (#1548).
+`flow run` takes the same path as the gate: it asks the server's own catalog, so no client plugin flag is needed.
 
 ## What fails closed here
 

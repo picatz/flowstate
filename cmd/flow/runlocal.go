@@ -6,13 +6,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -149,7 +154,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	workflow, err := loadWorkflow(args[0])
+	// A debugged run reads the file once for both the program and the lines its
+	// steps are written on, so the full-screen debugger can show the Flowfile
+	// beside the run it holds.
+	debugging, _ := cmd.Flags().GetBool("debug")
+	workflow, source, err := loadRunWorkflow(args[0], debugging)
 	if err != nil {
 		return err
 	}
@@ -237,13 +246,31 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// prompt is drawn is a staircase down the screen with the half-typed
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
-	debugging, _ := cmd.Flags().GetBool("debug")
+	record, err := recordPath(cmd)
+	if err != nil {
+		return err
+	}
 
 	var (
 		console *debugConsole
 		narrate io.Writer = surface.Err
 		restore           = func() {}
 	)
+	var (
+		front *reversibleFront
+		// screenSession is the session the full-screen debugger drives, for a
+		// run that does not step back; the reversible front owns its own.
+		screenSession *flowdebug.Session
+		screen        bool
+		over          = screenOver{Local: true, Recording: &attachRecording{}}
+		// sourceMap is the lines of the program as run, for the screen and for
+		// the session that resolves a line breakpoint through it.
+		sourceMap *v1.DebugSourceMap
+	)
+	reverse, err := reverseRequested(cmd, workflow, debugging, localSignals)
+	if err != nil {
+		return err
+	}
 	if debugging {
 		// A debugger is a reveal: the session narrates each step's values as
 		// they complete and `inspect` reaches anything in scope, so on a
@@ -260,8 +287,32 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		// At a terminal the full-screen debugger owns the screen, so there is
+		// no line editor and nothing may be written to the terminal around it:
+		// what the run says is kept and printed when the screen has closed.
+		// Everywhere else the line editor and the script front are what they
+		// always were.
+		var note string
+		screen, note = debugScreen(cmd, cmd.InOrStdin(), surface.Out, "", format, os.Getenv)
+		fmt.Fprint(surface.Err, note)
+		if screen {
+			// The program is the one this process runs, so it can name the
+			// steps the run will reach.
+			over.Frames = flowdebug.FrameOptions{Program: workflow, Inventory: stepList(workflow)}
+			// And the lines they are written on: the map is of the program this
+			// process runs, so it is verified by construction.
+			sourceMap, over.Documents = source.screenSource(workflow)
+			over.Frames.SourceMap = sourceMap
+			account := &screenNarration{}
+			narrate, restore = account, func() { account.flushTo(surface.Err) }
+		} else {
+			console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		}
 		defer restore()
+		if console == nil && !screen {
+			// The run's goroutines and the front's prompt loop share stderr.
+			narrate = &lockedWriter{w: narrate}
+		}
 	}
 
 	ctx = v1.ContextWithLogger(ctx,
@@ -288,39 +339,108 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		emit, panes := debugPanesFor(ctx, console, narrate, surface.ErrTheme, surface.ErrCaps,
 			debugEmitter(narrate, surface.ErrTheme))
 
-		session, err := flowdebug.New(flowdebug.Options{
-			In:      cmd.InOrStdin(),
-			Console: consoleOrNil(console),
-			Out:     narrate,
-			Emit:    emit,
-			// This command holds the specification, so `break` and `until`
-			// complete over every step the run may reach rather than only the
-			// ones it has been to.
-			Steps: stepList(workflow),
-			// And the program itself, so a target or a condition is judged
-			// against where it can fire, as every other front judges it.
-			Workflow: workflow,
-			// Authorized by --reveal-sensitive, without which a program
-			// declaring sensitive values is refused above.
-			RevealSensitive: reveal,
-		})
-		if err != nil {
-			return err
-		}
-		if console != nil {
-			console.SetCompleter(session.Complete)
-		}
-		panes.setSession(session)
-		// This process is about to exit either way, so the reader parking
-		// costs nothing here — closed anyway because a session's owner closes
-		// it, and a habit that holds only where it is load-bearing is one that
-		// will be missing where it is.
-		defer func() { _ = session.Close() }()
+		if reverse != "" {
+			front = &reversibleFront{
+				Steps: stepList(workflow),
+				// Offered to every pass's session, so a line breakpoint the screen
+				// sets resolves in a replay as it did in the pass that set it.
+				SourceMap: sourceMap,
+				Out:       narrate,
+				Emit:      emit,
+				Prompt:    flowdebug.Prompt,
+				Console:   console,
+				Panes:     panes,
+				Theme:     surface.ErrTheme,
+				// The explicit opt-in, held by every pass's session.
+				RevealSensitive: reveal,
+				// A script that steps back is replayed by this same front, so
+				// the recording keeps what a terminal session typed.
+				RecordRewinds: true,
+			}
+			if console == nil && !screen {
+				// No terminal: the commands come off a stream, a script being
+				// replayed or a pipe, one to a line.
+				front.Next = scriptLines(cmd.InOrStdin())
+			}
+			if record != "" {
+				front.Record = &attachRecording{}
+				defer func() { writeRecording(record, front.Record.lines, front.Record.truncated, surface.Err) }()
+			}
+			if screen {
+				// The front replays a recording that steps back, so the screen
+				// keeps what was typed, and a line breakpoint ends it as it
+				// does everywhere else.
+				if front.Record != nil {
+					over.Recording = front.Record
+				}
+				over.KeepRewinds = true
+				front.Screen = func(ctx context.Context, shown screenOver) (debugtui.Outcome, error) {
+					over.Target, over.Driver, over.Capabilities = shown.Target, shown.Driver, shown.Capabilities
 
-		fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
-			fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
-		ctx = v1.NewContextWithDebugger(ctx, session)
-		ctx = v1.NewContextWithRunObserver(ctx, session)
+					return showScreen(ctx, cmd.InOrStdin(), surface, over)
+				}
+			} else {
+				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+					fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			}
+			if reverse == reverseUnsafe {
+				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Warning.Render(
+					"--reverse=unsafe: stepping back runs every task again, effects included"))
+			}
+		} else {
+			options := flowdebug.Options{
+				In:      cmd.InOrStdin(),
+				Console: consoleOrNil(console),
+				Out:     narrate,
+				Emit:    emit,
+				// This command holds the specification, so `break` and `until`
+				// complete over every step the run may reach rather than only the
+				// ones it has been to.
+				Steps: stepList(workflow),
+				// And the program itself, so a target or a condition is judged
+				// against where it can fire, as every other front judges it.
+				Workflow: workflow,
+				// The lines of that program, which `break` on a line resolves
+				// through. Only the screen sets one: the line editor has no line to
+				// name.
+				SourceMap: sourceMap,
+				// Authorized by --reveal-sensitive, without which a program
+				// declaring sensitive values is refused above.
+				RevealSensitive: reveal,
+			}
+			if screen {
+				// Driven through the typed contract by the screen, never read
+				// from a stream.
+				options.In, options.Controlled = nil, true
+			}
+			session, err := flowdebug.New(options)
+			if err != nil {
+				return err
+			}
+			if console != nil {
+				console.SetCompleter(session.Complete)
+			}
+			panes.setSession(session)
+			// This process is about to exit either way, so the reader parking
+			// costs nothing here — closed anyway because a session's owner closes
+			// it, and a habit that holds only where it is load-bearing is one that
+			// will be missing where it is.
+			defer func() { _ = session.Close() }()
+			// Registered last, so it runs first: the file is written while the
+			// session still holds what it accepted, on every way out.
+			if screen {
+				screenSession = session
+				if record != "" {
+					defer func() { writeRecording(record, over.Recording.lines, over.Recording.truncated, surface.Err) }()
+				}
+			} else {
+				defer recordSession(record, session, surface.Err)()
+				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+					fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			}
+			ctx = v1.NewContextWithDebugger(ctx, session)
+			ctx = v1.NewContextWithRunObserver(ctx, session)
+		}
 	}
 
 	started := time.Now()
@@ -328,7 +448,21 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// The local driver's own submit boundary, which binds the arguments and applies
 	// the declared defaults exactly as the server does before a durable run starts.
 	// The check above is for the message; this is the one that decides.
-	outputs, runErr := v1.RunWithInputs(ctx, workflow, inputs)
+	var (
+		outputs *v1.Workflow_StepOutputs
+		runErr  error
+	)
+	switch {
+	case front != nil:
+		outputs, runErr = runReversibly(ctx, front, workflow, inputs, narrate, surface.ErrTheme)
+	case screenSession != nil:
+		outputs, runErr = runUnderScreen(ctx, cmd.InOrStdin(), surface, screenSession, over,
+			func(runCtx context.Context) (*v1.Workflow_StepOutputs, error) {
+				return v1.RunWithInputs(runCtx, workflow, inputs)
+			})
+	default:
+		outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
+	}
 	// A debugger is told the run has returned, so it can say what the run
 	// never did, an `until` it never reached, while its console still owns
 	// the line. Found on the context, as flowtest finds it.
@@ -384,8 +518,18 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		// person reads is covered — the wrapper's own frame included — and so
 		// the loopback remedy is resolved off the original chain before that
 		// chain is dropped. See [redactFailureError].
-		return redactFailureError(
-			wrapLoopbackDenial(cmd, fmt.Errorf("error running workflow locally: %w", runErr)), sensitive)
+		failure := fmt.Errorf("error running workflow locally: %w", runErr)
+		// An expression failure shows where it broke, compiler style. Drawn from
+		// the redacted response, whose structured account is dropped whenever
+		// the run declares a sensitive value: redacting the sentence's text can
+		// move the operator without moving a caret computed before it, so the
+		// excerpt is omitted rather than drawn under the wrong character. The
+		// same rule `flow get` follows.
+		if rendered := failureExcerpt(response.GetError().GetExpression()); rendered != "" {
+			failure = fmt.Errorf("%w\n%s", failure, rendered)
+		}
+
+		return redactFailureError(wrapLoopbackDenial(cmd, failure), sensitive)
 	}
 
 	// The same word `flow get` uses for the same outcome, through the same pill, on
@@ -444,10 +588,19 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		// failureError does that work only because Temporal's wire made it
 		// necessary. Left unset for an interrupted (not failed) run — a
 		// classification would claim this driver knows why a workload it
-		// itself stopped went wrong.
+		// itself stopped went wrong. The one exception is the whole-run
+		// deadline: that the run exceeded the bound this driver itself
+		// enforced is a fact it does know, and it is the same fact, in the
+		// same field, that the durable driver reports for its own run bound
+		// (v1.RunTimeoutFailure, which that driver calls too), so a client branching on the kind sees
+		// one answer from either driver (#1310).
 		errorResponse := &v1.RunResponse_Error{Message: runErr.Error()}
-		if response.GetStatus() == v1.RunResponse_STATUS_FAILED {
+		switch response.GetStatus() {
+		case v1.RunResponse_STATUS_FAILED:
 			errorResponse.Kind = v1.ClassifyError(runErr).String()
+			errorResponse.Expression = v1.ExpressionFailureOf(runErr)
+		case v1.RunResponse_STATUS_TIMED_OUT:
+			errorResponse = v1.RunTimeoutFailure(runErr.Error())
 		}
 		response.Kind = &v1.GetResponse_Error{Error: errorResponse}
 
@@ -520,4 +673,50 @@ func debugRevealRefusal(name string, decided carriedValues) error {
 			"%q's sensitive-value declarations could not be fully inspected, so it is not debugged "+
 			"without explicit disclosure; add --reveal-sensitive to debug it with values shown, or drop --debug", name)
 	}
+}
+
+// failureExcerpt is the lines an expression failure adds under its sentence: the
+// step's place in its file (`--> path:line:col`) when the specification carried
+// one, then the failing subexpression with a caret under the operator. It is
+// built from the structured account alone, which every redaction drops whole, so
+// it is absent wherever the message is.
+func failureExcerpt(failure *v1.ExpressionFailure) string {
+	var lines []string
+	if where := failure.GetLocation(); where.GetFile() != "" && where.GetLine() > 0 {
+		position := fmt.Sprintf("%s:%d", ui.EscapeControl(where.GetFile()), where.GetLine())
+		if where.GetColumn() > 0 {
+			position += fmt.Sprintf(":%d", where.GetColumn())
+		}
+		lines = append(lines, "    --> "+position)
+	}
+	if excerpt := failure.Excerpt("    "); excerpt != "" {
+		// The excerpt is drawn from text a remote peer supplied, one line per
+		// source line; escape each so a control byte cannot reach the terminal.
+		for line := range strings.SplitSeq(excerpt, "\n") {
+			lines = append(lines, ui.EscapeControl(line))
+		}
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+// loadRunWorkflow is [loadWorkflow] for `flow run local`, which reads the file
+// through [loadDebuggedWorkflow] instead when the run is debugged: the program
+// and the lines of the bytes it was compiled from come from one read. The source
+// is nil for a run that is not debugged.
+func loadRunWorkflow(path string, debugging bool) (*v1.Workflow, *debugSource, error) {
+	if !debugging {
+		workflow, err := loadWorkflow(path)
+
+		return workflow, nil, err
+	}
+	workflow, source, err := loadDebuggedWorkflow(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Where each step is written travels with the specification, as it does
+	// from [loadWorkflow], so a failure points back at the file.
+	flowfile.AttachSources(workflow, source.positions, path)
+
+	return workflow, source, nil
 }

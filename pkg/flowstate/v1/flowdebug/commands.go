@@ -156,6 +156,9 @@ var commands = []command{
 		help: "return to the previous stop (a session that can step back)"},
 	{verb: "reverse-continue", aliases: []string{"rc"}, completes: completesNothing, fronts: frontsLive, effect: effectMoves, rewinds: true,
 		help: "return to the nearest earlier breakpoint stop, or the first"},
+	{verb: "goto", argument: "<point>", completes: completesNothing, fronts: frontDriver, effect: effectMoves, rewinds: true,
+		help:      "go to a point of the timeline, counted from 0, in one move (a session that can travel)",
+		elsewhere: "`goto` is a driver command: a prompt has no timeline to travel along, and `back` is the step it can answer"},
 	{verb: "pause", completes: completesNothing, fronts: frontDriver, effect: effectChanges,
 		help:      "hold at the next step boundary",
 		elsewhere: "`pause` is a driver command: a prompt already holds the run at every stop"},
@@ -182,14 +185,13 @@ var commands = []command{
 	{verb: "inspect", aliases: []string{"p"}, argument: "<expr>", completes: completesExpression, fronts: frontsAll, effect: effectRead,
 		help:       "evaluate a CEL expression against this run's scope",
 		driverHelp: "evaluate a read-only CEL expression at this stop"},
-	{verb: "expand", argument: "<expr>", completes: completesExpression, fronts: frontsLive, effect: effectRead,
+	{verb: "expand", argument: "<expr> [from <n>]", completes: completesExpression, fronts: frontsLive, effect: effectRead,
 		help: "list a map's or list's children"},
 	{verb: "scope", completes: completesNothing, fronts: frontsAll, effect: effectRead,
 		help:       "list what this run can name right now",
 		driverHelp: "list what this stop can name"},
-	{verb: "complete", argument: "<partial-command>", completes: completesNothing, fronts: frontPrompt | frontAutopsy, effect: effectRead,
-		help:      "list what could be written at the end of that text",
-		elsewhere: "`complete` is a prompt command: the structured fronts do not complete a line"},
+	{verb: "complete", argument: "<partial-command>", completes: completesNothing, fronts: frontsAll, effect: effectRead,
+		help: "list what could be written at the end of that text"},
 	{verb: "status", completes: completesNothing, fronts: frontsLive, effect: effectRead,
 		help: "where the run is, and why"},
 	{verb: "info", aliases: []string{"step-info"}, completes: completesNothing, fronts: frontPrompt, effect: effectRead,
@@ -496,7 +498,8 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 			return false, nil
 		}
 		s.record("expand " + expression)
-		s.expand(ctx, expression)
+		expression, offset := ExpandPage(expression)
+		s.expand(ctx, expression, offset)
 
 		return false, nil
 
@@ -672,7 +675,22 @@ func (s *Session) inspectWith(ctx context.Context, expression string, scope *v1.
 	// Redacted before the cap, for the reason [Session.stepOutcomeText] gives:
 	// truncating first would leave the first MaxInspectRunes of a long secret
 	// in a string no substring match can recognise (Codex, #1109).
-	s.printf("%s\n", capRunes(applyText(text, refValTextWith(out, text, value)), MaxInspectRunes))
+	//
+	// A value that does not fit a line is laid out as a tree, from the tree the
+	// redactors already walked; the backstop pass over what it writes is
+	// unchanged.
+	//
+	// Only the renderer's own shapes are a value tone: the fallback is Go's
+	// formatting, whose text ValueTokens has no grammar for.
+	tone := ToneInfo
+	var rendered string
+	if native, ok := redactedTree(out, text, value); ok {
+		rendered = RenderValue(native, Layout{})
+		tone = ToneValue
+	} else {
+		rendered = unrenderedText(out, text != nil || value != nil)
+	}
+	s.printfTone(tone, "%s\n", capRunes(applyText(text, rendered), MaxInspectRunes))
 }
 
 // showCompletion answers `complete`, which is tab made into a command.
@@ -1002,6 +1020,9 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // this, so one breakpoint reads the same on each.
 func breakpointLabel(definition *v1.DebugBreakpoint) string {
 	label := definition.GetStep()
+	if line := definition.GetLine(); label == "" && line != nil {
+		label = fmt.Sprintf("%s:%d", SourceName(line.GetUri()), line.GetLine())
+	}
 	if hit := strings.TrimSpace(definition.GetHitCondition()); hit != "" {
 		label += " hit " + hit
 	}
@@ -1489,15 +1510,15 @@ func (s *Session) addLogpoint(rest string) {
 // expand lists an expression's children, through the same [Session.Inspect] a
 // structured front reads, so the redactors, the page size and the wording are
 // one thing on both.
-func (s *Session) expand(ctx context.Context, expression string) {
-	answer, err := s.Inspect(ctx, &v1.DebugInspectRequest{Expression: expression, Children: true})
+func (s *Session) expand(ctx context.Context, expression string, offset int) {
+	answer, err := s.Inspect(ctx, &v1.DebugInspectRequest{Expression: expression, Children: true, Offset: int32(offset)})
 	switch {
 	case err != nil:
 		s.printfTone(ToneWarning, "cannot expand: %v\n", err)
 	case answer.GetError() != "":
 		s.emitTone(ToneWarning, answer.GetError()+"\n")
 	default:
-		s.printf("%s", formatChildren(expression, answer))
+		s.printf("%s", formatChildren(expression, offset, answer, Frame{}))
 	}
 }
 

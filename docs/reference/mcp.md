@@ -336,7 +336,7 @@ Start a retained debug session over one test case of a Flowfile — the same stu
 
 ## `flowstate_debug_session_attach`
 
-Attach a retained debug session to a durable run on the configured server, holding it at its next step boundary. Needs the run's `debug:` policy to name you and workload.debug (workload.debug_inspect to evaluate). A hold never freezes work already dispatched. Pass session_id to rejoin a session.
+Attach a retained debug session to a durable run on the configured server, holding it at its next step boundary. Needs the run's `debug:` policy to name you and workload.debug (workload.debug_inspect to evaluate). A hold never freezes work already dispatched. Pass session_id to rejoin a session. Pass history with run_id to walk a run's record instead — a closed run included: the session holds nothing and runs nothing, every point is reachable both ways with next, back and goto <point> (the snapshot's timeline lists them), and everything it shows is reconstructed from the history (timeline fidelity says so). until, break, pause and the other commands that need a run executing are refused by name.
 
 ## `flowstate_debug_session_observe`
 
@@ -344,7 +344,7 @@ Read a retained session: its typed snapshot and the transcript since the last ob
 
 ## `flowstate_debug_session_command`
 
-Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, back, reverse-continue, pause, break <step> [hit <n>] [if <expr>], log <step> <message>, catch none|uncaught|all, delete <step>|log <step>, clear, breakpoints, inspect <expr>, expand <expr>, scope, status, backtrace, detach. back and reverse-continue (rc) need a stubbed session that can step back; any other says so and does not move. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
+Run one debugger command in a retained session and answer with its typed result. Commands: step, next, finish, continue, until <step>, back, reverse-continue, goto <point>, pause, break <step> [hit <n>] [if <expr>], log <step> <message>, catch none|uncaught|all, delete <step>|log <step>, clear, breakpoints, inspect <expr>, expand <expr> [from <n>], scope, complete <partial-command>, status, backtrace, detach. back, reverse-continue (rc) and goto <point> (a point of the snapshot's timeline, counted from 0) need a stubbed session that can step back, or a recorded run opened with history; any other says so and does not move. A recorded run moves among its points in either direction and refuses until, break, pause and the other commands that need a run executing. Movements answer with the next stop. Set expected_revision to the snapshot you acted on, so a command meant for a stop the run has left is refused as stale: a movement or an inspection is judged by the run in the same step as the command; any other command is checked just before it is sent.
 
 ## `flowstate_debug_session_end`
 

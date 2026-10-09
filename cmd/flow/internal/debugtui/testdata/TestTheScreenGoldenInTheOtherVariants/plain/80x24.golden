@@ -1,0 +1,24 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                 ? help
+flow ────────────────────────── source addresses only ──────────────────────────
+no program; pass --program        No source: pass --program <Flowfile> to see   
+                                  its lines; showing the step's address.        
+                                                                                
+                                  held at build                                 
+                                                                                
+                                                                                
+                                                                                
+steps ─────────────────────────                                                 
+  ○ checkout pending            → scope 4 names ────────────────────────────────
+→ ▶ build running                ▾ inputs      {2}                              
+  ○ flaky pending                    version   "2026.9.0"                       
+  ○ gated pending                    region    "eu-west-1"                      
+  ○ deploy pending               ▾ steps       {1}                              
+  ○ notify pending              →  ▸ checkout  {artifact: checkout.tar.gz, sha: 
+  6 step(s)                      ▸ run         {1}                              
+console ────────────────────────────────────────────────────────────────────────
+                                                                                
+                                                                                
+                                                                                
+debug>                                                                          
+                                                                                
+s step  n next  c continue  tab focus  : console  ? help  q quit                

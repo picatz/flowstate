@@ -277,6 +277,9 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 		// arrived as (see [NormalizeWireValue]): after the check above has proved the
 		// text parses, and before the constraints, which evaluate `must:` against
 		// what an expression sees.
+		if err := checkFillBound(table, declaration, value); err != nil {
+			return nil, invalidInput(name, err)
+		}
 		value = NormalizeInputValue(table, declaration, value)
 
 		// #204 found the element bound was gated on a declaration carrying
@@ -429,6 +432,10 @@ func CheckInputDefaultIn(table TypeTable, profile string, declaration *InputDecl
 		return err
 	}
 
+	if err := checkFillBound(table, declaration, declaration.GetDefault()); err != nil {
+		return err
+	}
+
 	value := NormalizeInputValue(table, declaration, declaration.GetDefault())
 	if err := CheckInputConstraints(profile, declaration.GetName(), declaration, value); err != nil {
 		return err
@@ -458,6 +465,10 @@ func CheckInputExampleIn(table TypeTable, profile string, declaration *InputDecl
 	}
 
 	if err := CheckInputValueIn(table, declaration.GetName(), declaration, declaration.GetExample()); err != nil {
+		return fmt.Errorf("example: %w", err)
+	}
+
+	if err := checkFillBound(table, declaration, declaration.GetExample()); err != nil {
 		return fmt.Errorf("example: %w", err)
 	}
 
@@ -576,6 +587,11 @@ func checkDeclaredLiteralType(table TypeTable, r valueRendering, kind, verb, nam
 	if got != declared {
 		return fmt.Errorf("%s %q is declared %s but %s %s",
 			kind, name, declaredAs, verb, DeclaredTypeName(got))
+	}
+
+	if declared == InputDeclaration_TYPE_INT && aboveLargestInt(literal) {
+		return fmt.Errorf("%s %q is declared %s but %s a value above the largest int, %d",
+			kind, name, declaredAs, verb, int64(math.MaxInt64))
 	}
 
 	// A float is a finite number. NaN and the infinities are values a double
@@ -769,4 +785,15 @@ func CheckSubmissionSize(wf *Workflow, inputs map[string]*Value) error {
 			"limit; the workflow alone is %d bytes. A run carries both across every suspension, "+
 			"so a large value belongs somewhere a step can fetch it rather than in the arguments",
 		size, MaxSpecBytes, proto.Size(wf))
+}
+
+// checkFillBound applies [CheckDefaultFillBound] to a declaration's literal value,
+// and accepts a value that is not a literal, which is nothing to fill.
+func checkFillBound(table TypeTable, declaration *InputDeclaration, value *Value) error {
+	lit := value.GetLiteral()
+	if lit == nil {
+		return nil
+	}
+
+	return CheckDefaultFillBound(table, declaration.DeclaredType(), lit)
 }

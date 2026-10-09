@@ -1,0 +1,36 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
+→ flow 4 steps ───────────── source main.yaml:8 ─────────────── steps ──────────────── scope 4 names ───────────────────
+     ○ fetch task "log"          1 edition: v2026.4               ○ fetch pending      •▸ inputs  {2}                   
+→    ▶ charge held task "log     2 name: main                     ○ charge pending      ▸ steps   {1}                   
+  ┌▾ ○ nested call "child"       3 # fetch, charge, then hand …   ○ nested pending      ▸ run     {1}                   
+  │     ○ greet task "log"       4 steps:                         ○ d pending                                           
+  └──                            5   - id: fetch                  ○ e pending                                           
+                                 6     log:                       ○ f pending                                           
+                                 7       message: fetching        6 step(s)                                             
+                             ▶   8   - id: charge                 outcomes stopped bei                                  
+                             │   9     log:                                                                             
+                             │  10       message: ${"charging …                                                         
+                                11   - id: nested                                                                       
+                                12     call: ./child.yaml                                                               
+                                                                                                                        
+                                                                                                                        
+                                                                                       inspector ───────────────────────
+                                                                                       group     inputs                 
+                                                                                       root                             
+                                                                                       names     2                      
+                                                                                       resolved  2                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+console ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+debug>                                                                                                                  
+                                                                                                                        
+s step  n next  c continue  tab focus  : console  ? help  q quit                                                        

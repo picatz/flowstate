@@ -178,5 +178,96 @@ func init() {
 				" encoded in sorted key order, and a JSON object is unordered by\n" +
 				" definition.\n",
 		},
+		{
+			Name: "flowstate.v1.ExpressionFailure",
+			Leading: " ExpressionFailure is what a failed expression knew about itself, as fields a\n" +
+				" program can read without parsing the failure's words. It accompanies a failure\n" +
+				" of kind `Expression` whose cause was an operation with no overload for its\n" +
+				" operands, or a selection of a key that is not there; any other expression\n" +
+				" failure carries none.\n" +
+				"\n" +
+				" It quotes the failing expression's own source text (`subexpression`,\n" +
+				" `selected`), which is the author's and can hold literals, so it is treated\n" +
+				" exactly like the failure's message: a response whose message is redacted or\n" +
+				" withheld for a declared sensitive value carries no `expression` at all. Only\n" +
+				" `candidates` is restricted to the author's declared step and output names, and\n" +
+				" no field carries a runtime value, only type names.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.operator",
+			Leading: " Operator is the operator or function that failed, such as `+` or\n" +
+				" `size`. Empty when the failure was a selection.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.operand_types",
+			Leading: " OperandTypes names the type of each operand the operator saw, in order,\n" +
+				" such as `int` and `string`. A `?` stands for an operand that could not be\n" +
+				" evaluated again to find out.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.subexpression",
+			Leading: " Subexpression is the failing part of the expression, as source text cut to\n" +
+				" a bounded length.\n",
+		},
+		{
+			Name:    "flowstate.v1.ExpressionFailure.selected",
+			Leading: " Selected is the key a failed selection asked for. Empty for an operator.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.candidates",
+			Leading: " Candidates are the names that do exist where `selected` was asked for, when\n" +
+				" that is a step or a step's output: the author's own names, bounded and\n" +
+				" sorted. Empty when there is nothing to offer.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.offset",
+			Leading: " Offset is where the failing operation sits in the expression's own text, as\n" +
+				" a character offset from its start, so a consumer can point at it when\n" +
+				" `subexpression` repeats elsewhere in the expression. Unset when the\n" +
+				" expression carries no position for the node.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.caret",
+			Leading: " Caret is the character index within `subexpression` of the operator or the\n" +
+				" selected name, so `subexpression` with a `^` under that column shows the\n" +
+				" failure the way a compiler does. Unset when the subexpression was cut or its\n" +
+				" text does not place the operator exactly, because a caret under the wrong\n" +
+				" character is worse than none.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.step",
+			Leading: " Step is the id of the step whose expression failed, the innermost one when\n" +
+				" steps nest, so a consumer that holds the Flowfile can find the line the\n" +
+				" sentence is about. Empty when the failure was raised outside any step.\n",
+		},
+		{
+			Name: "flowstate.v1.ExpressionFailure.location",
+			Leading: " Location is where that step is written, when the specification carried it\n" +
+				" (`Node.source`). Unset for a hand-built specification, for a step of a\n" +
+				" called workflow, and for an id declared in more than one place.\n",
+		},
+		{
+			Name: "flowstate.v1.SourceLocation",
+			Leading: " SourceLocation is where a step is written in the file it was compiled from.\n" +
+				"\n" +
+				" Advisory: it is carried so a failure can point back at the file without the\n" +
+				" reader holding it, and it is never part of the program. It is cleared from\n" +
+				" every digest ([CanonicalWorkflow], [WorkflowIRDigest]) and counts against the\n" +
+				" specification's size like any other field. Lines and columns are 1-based and\n" +
+				" count characters, as `Diagnostic.line` and `Diagnostic.column` do.\n",
+		},
+		{
+			Name: "flowstate.v1.SourceLocation.file",
+			Leading: " File is the path as the submitter named it, or its base name when that was\n" +
+				" absolute, so a home directory does not travel into durable history.\n",
+		},
+		{
+			Name:    "flowstate.v1.SourceLocation.line",
+			Leading: " Line is the 1-based line.\n",
+		},
+		{
+			Name:    "flowstate.v1.SourceLocation.column",
+			Leading: " Column is the 1-based column, or zero when only the line is known.\n",
+		},
 	})
 }

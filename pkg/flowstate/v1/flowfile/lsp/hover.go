@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/celcomplete"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
 	"github.com/sourcegraph/go-lsp"
@@ -53,6 +54,9 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		// author's position `edition:` and `timeout:` are the same kind of thing: a
 		// word the grammar defines, whose meaning is not readable off the value
 		// written beside it.
+		if h := hoverInputDeclaration(doc, pos); h != nil {
+			return h
+		}
 		if k, rng, ok := documentKeyAt(doc.parsed, pos); ok {
 			return dslKeyHover(k, rng)
 		}
@@ -138,8 +142,16 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 
 	// A key of the document's own shape: id, description, if, timeout, retry, and
 	// so on.
-	if k, rng, ok := dslKeyAt(step, pos); ok {
-		return dslKeyHover(k, rng)
+	//
+	// A step's range ends where its first nested step begins (see
+	// assignStepRanges), so a key the block writes after its body — a switch's
+	// `default:` beside the cases above it — sits in the last nested step's range.
+	// Its own keys are tried, then each enclosing block's: a key matches by its
+	// exact range, so an ancestor cannot answer for a position it does not hold.
+	for s := step; s != nil; s = s.parent {
+		if k, rng, ok := dslKeyAt(s, pos); ok {
+			return dslKeyHover(k, rng)
+		}
 	}
 	return nil
 }
@@ -375,6 +387,9 @@ func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor i
 	if h := hoverInputPath(doc, v, f, cursor); h != nil {
 		return h
 	}
+	if h := hoverVarPath(doc, v, f, cursor); h != nil {
+		return h
+	}
 
 	ref := referenceAt(f.source, cursor)
 	if ref.empty() {
@@ -410,8 +425,17 @@ func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor i
 	}
 
 	if ref.step == "" {
-		if h := hoverBareName(from, ref.local, clock, shaping, ls, rng); h != nil {
-			return h
+		// `run` and `trigger` are described only on the root word: `referenceAt`
+		// reports the first segment of the whole reference, so a cursor on a field
+		// after the dot would otherwise describe and underline the root.
+		root := ref.local == v1.RunRoot || ref.local == v1.TriggerRoot
+		if !root || cursor <= ref.span[0]+len(ref.local) {
+			if root {
+				rng = v.fenceSpanOrWhole(doc.index, f, ref.span[0], ref.span[0]+len(ref.local))
+			}
+			if h := hoverBareName(doc, from, ref.local, clock, shaping, ls, rng); h != nil {
+				return h
+			}
 		}
 	}
 
@@ -534,7 +558,7 @@ const varsKeyword = "vars"
 // answer to `${now}` written in a task input is not this documentation — it is the
 // validator's diagnostic saying the name is not bound there, and describing it as
 // though it were would contradict a squiggle the author is looking at.
-func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopScope, rng lsp.Range) *lsp.Hover {
+func hoverBareName(doc *document, from *parsedStep, name string, clock, shaping bool, ls loopScope, rng lsp.Range) *lsp.Hover {
 	if clock && name == v1.NowIdentifier {
 		return markdownHover(nowDoc(), rng)
 	}
@@ -570,11 +594,20 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopSc
 		if loop.loopEntry != nil {
 			return markdownHover(loopStateDoc(name, loop), rng)
 		}
+		// What `items:` says an element is, when the checker knows: the same table
+		// the validator judges the body with.
+		typeSentence := "Its type is whatever the loop's `items` expression yields an element of. "
+		if wf := compiledWorkflow(doc); wf != nil {
+			if typed, ok := flowfile.IteratorType(wf, from.id, name); ok {
+				typeSentence = fmt.Sprintf("Its type is `%s`, the element type of the loop's `items` expression. ", typed)
+			}
+		}
+
 		return markdownHover(fmt.Sprintf(
 			"**`%s`** — the current item of the `%s` loop.\n\n"+
-				"Its type is whatever the loop's `items` expression yields an element of. "+
+				"%s"+
 				"The loop reports every iteration through `${%s.%s.%s}`; body outputs do "+
-				"not escape it.", name, loop.id, v1.StepsRoot, loop.id, loopResultsOutput), rng)
+				"not escape it.", name, loop.id, typeSentence, v1.StepsRoot, loop.id, loopResultsOutput), rng)
 	}
 
 	// A `vars:` key, the step's own first and then any block enclosing it — the
@@ -615,7 +648,24 @@ func hoverBareName(from *parsedStep, name string, clock, shaping bool, ls loopSc
 				"separate namespaces, so neither can hide the other.",
 			v1.StepsRoot, v1.StepsRoot, v1.NowIdentifier), rng)
 	}
-	return nil
+
+	// The other two roots with a closed field set, described by the same candidate
+	// completion offers so a hover and the menu cannot give two accounts of one
+	// name.
+	var root celcomplete.Candidate
+	switch name {
+	case v1.RunRoot:
+		root = celcomplete.RunRoot(flowfile.RunFields(), flowfile.RunIdentityFields())
+	case v1.TriggerRoot:
+		root = celcomplete.TriggerRoot(v1.TriggerContextFields())
+	default:
+		return nil
+	}
+	fields := make([]string, 0, len(root.Members))
+	for _, member := range root.Members {
+		fields = append(fields, member.Name)
+	}
+	return markdownHover(fmt.Sprintf("**`%s`** — %s\n\nFields: `%s`.", root.Name, root.Docs, strings.Join(fields, "`, `")), rng)
 }
 
 // The two of the wait's three result names the schema itself declares. `payload`
@@ -811,6 +861,36 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 
 		return markdownHover(b.String(), rng)
 	}
+	// A `call:` runs no task: its outputs are the callee's declared ones, so the
+	// answer comes from the callee's own declarations or is not given. Nothing is
+	// said about a name the callee does not declare; the validator reports it.
+	if target.callEntry != nil {
+		called, ok := callee(doc, target.callEntry.valueText())
+		if !ok {
+			return nil
+		}
+		if ref.output == "" {
+			names := make([]string, 0, len(called.workflow.GetDeclaredOutputs()))
+			for _, declared := range called.workflow.GetDeclaredOutputs() {
+				names = append(names, declared.GetName())
+			}
+			fmt.Fprintf(&b, "**`%s`** · step %d, a call to `%s`", rootedRef(target.id, ""), target.index+1, called.workflow.GetName())
+			if len(names) > 0 {
+				fmt.Fprintf(&b, "\n\nOutputs: `%s`", strings.Join(names, "`, `"))
+			}
+			return markdownHover(b.String(), rng)
+		}
+		declaration := called.output(ref.output)
+		if declaration == nil {
+			return nil
+		}
+		fmt.Fprintf(&b, "**`%s`** · `%s`\n\nOutput of step `%s` on line %d, declared by the workflow it calls, in `%s`.",
+			rootedRef(target.id, ref.output), declaration.TypeText(), target.id, target.rng.Start.Line+1, called.path)
+		if description := declaration.GetDescription(); description != "" {
+			fmt.Fprintf(&b, "\n\n%s", description)
+		}
+		return markdownHover(b.String(), rng)
+	}
 	// A `switch:` answers for itself too, for the reason a `value:` does: it
 	// runs no task, and its output set is the grammar's own — the observed
 	// discriminant and the case that took it.
@@ -937,9 +1017,8 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 // constructOutputNode builds a minimal *v1.Node describing a for_each, loop,
 // or wait step from its syntactic model — enough for [v1.OutputNames] to
 // answer without the file needing to compile. nil for every other kind,
-// including a value: and switch: (handled above, before this is reached) and
-// call: (whose declared outputs live in another file this model does not
-// hold, a separate piece of work from #322's first slice).
+// including a value:, switch: and call: (handled above, before this is
+// reached; a call's outputs are the callee's declarations, read by [callee]).
 //
 // A wait's spellings — `sleep:`, `wait_until:`, `wait_for_signal:`, and
 // `wait_for_signals:` —
@@ -1244,6 +1323,11 @@ type reference struct {
 	// local is the bare name, empty for a rooted reference.
 	local string
 
+	// member is the name written after a bare root, as in `vars.region` or
+	// `inputs.n`: the key that selects into the root. Empty when nothing follows
+	// the dot yet, or for a step reference, which has step and output instead.
+	member string
+
 	// span is the byte span of the reference within the expression source.
 	span [2]int
 }
@@ -1294,7 +1378,11 @@ func referenceAt(src string, cursor int) reference {
 		if segments[0] == "" {
 			return reference{}
 		}
-		return reference{local: segments[0], span: [2]int{start, start + len(segments[0])}}
+		ref = reference{local: segments[0], span: [2]int{start, start + len(segments[0])}}
+		if len(segments) > 1 {
+			ref.member = segments[1]
+		}
+		return ref
 	}
 	if segments[1] == "" {
 		// `steps.` with nothing after it yet, which is what an author has typed the

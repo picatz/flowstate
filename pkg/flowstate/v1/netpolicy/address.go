@@ -190,6 +190,23 @@ func containsAny(prefixes []netip.Prefix, addr netip.Addr) bool {
 	})
 }
 
+// NonCanonicalIPv4 reports whether host is an IPv4 address written in one of the
+// spellings inet_aton accepts and [netip.ParseAddr] refuses ("127.1",
+// "2130706433", "0x7f.0.0.1", "0177.0.0.1"), and returns the canonical
+// dotted-decimal address it names.
+//
+// It is the question [Policy.CheckURL] answers at run time, exported so that a
+// validator can ask it of a literal URL without a policy: whether a spelling is
+// canonical is a property of the text, the same in every deployment. A host that
+// is a canonical address, or a name, reports false.
+func NonCanonicalIPv4(host string) (netip.Addr, bool) {
+	if _, err := netip.ParseAddr(host); err == nil {
+		return netip.Addr{}, false
+	}
+
+	return legacyIPv4(host)
+}
+
 // legacyIPv4 reports whether host is an IPv4 address in one of the spellings
 // inet_aton accepts and [netip.ParseAddr] refuses — fewer than four parts
 // ("127.1"), a single number ("2130706433"), or octal and hexadecimal parts

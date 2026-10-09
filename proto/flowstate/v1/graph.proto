@@ -1,0 +1,212 @@
+syntax = "proto3";
+
+package flowstate.v1;
+
+import "buf/validate/validate.proto";
+
+option go_package = "flowstatev1";
+
+// Graph is how the things Flowstate runs connect, as data any front end can draw.
+//
+// It is a schema type rather than a rendering because a graph has several
+// readers that must agree on what is connected to what: the `flow graph`
+// command prints it, an agent reads the same document as JSON, and a TUI, a web
+// canvas or an editor lays it out. A graph each of them derived for itself is a
+// graph that disagrees with the others about whether two workflows are linked.
+//
+// This message is the structure only. Position, drawing and live state are
+// separate layers over the same node ids, so a layout or an overlay can be added
+// or replaced without changing what the graph says.
+//
+// # Bounds
+//
+// A graph is built from files and runs another party controls, so its size is
+// bounded where it is spent: nodes and edges are capped, and a build that
+// reaches a cap sets `partial` and says so in `notes` rather than
+// returning a silently smaller graph.
+message Graph {
+  // Nodes are the things in the graph, ordered by id so two builds of the same
+  // input are the same bytes. The one exception is the view of a workflow's own
+  // steps, where the order of the steps is part of what the graph says: the
+  // workflow comes first and its steps follow in document order, which is the
+  // same bytes for the same workflow all the same.
+  repeated GraphNode nodes = 1 [(buf.validate.field).repeated = {max_items: 1000}];
+
+  // Edges connect nodes by id, ordered by (from, to, kind); in a view of a
+  // workflow's own steps they follow the document order of the steps they reach.
+  // Two relations of the same kind between the same nodes are one edge with a
+  // count.
+  repeated GraphEdge edges = 2 [(buf.validate.field).repeated = {max_items: 4000}];
+
+  // Partial is true when the graph is missing something it was asked for: an
+  // input that did not compile, or a bound that was reached. Never silent.
+  bool partial = 3;
+
+  // Notes say, in plain text, why the graph is partial or what was skipped.
+  repeated string notes = 4 [(buf.validate.field).repeated = {
+    max_items: 100
+    items: {string: {max_len: 1024}}
+  }];
+
+  // Overlays are live state laid over the nodes above, one layer per kind, in
+  // kind order. They are separate from the structure so a graph built from files
+  // alone and the same graph with a running system's state differ only here.
+  repeated GraphOverlay overlays = 5 [(buf.validate.field).repeated = {max_items: 8}];
+}
+
+// GraphOverlay is one layer of live state over a graph's nodes.
+message GraphOverlay {
+  GraphOverlayKind kind = 1 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+
+  // Entries are ordered by (node, value) so two builds of the same state are the
+  // same bytes. A node absent from the layer has nothing to report for it.
+  repeated GraphOverlayEntry entries = 2 [(buf.validate.field).repeated = {max_items: 4000}];
+}
+
+// GraphOverlayKind says what a layer reports.
+enum GraphOverlayKind {
+  GRAPH_OVERLAY_KIND_UNSPECIFIED = 0;
+
+  // How many runs of a workflow are in each status. `value` is the short status
+  // name (`RUNNING`, `FAILED`), the same one a `List` filter compares.
+  GRAPH_OVERLAY_KIND_RUN_STATUS = 1;
+}
+
+// GraphOverlayEntry is one fact about one node.
+message GraphOverlayEntry {
+  // Node is the id of the node this is about, as in GraphNode.
+  string node = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  // Value is what is reported: for RUN_STATUS, a status name.
+  string value = 2 [(buf.validate.field).string = {min_len: 1, max_len: 64}];
+
+  // Count is how many of the node's runs have this value.
+  uint32 count = 3;
+}
+
+// GraphNode is one thing in a graph.
+message GraphNode {
+  // Id is unique in the graph and stable across builds: the kind, a colon and
+  // the name, as in `workflow:deploy`.
+  string id = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  GraphNodeKind kind = 2 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+
+  // Label is the name to show, as the author wrote it. It is author-controlled
+  // text, so a renderer must treat it as untrusted.
+  string label = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Address is where the node is in the program, for a STEP: the debug address
+  // `FormatDebugAddress` writes, so a step the explorer shows opens at the same
+  // place in the debugger. Other kinds have none.
+  string address = 4 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Detail is what a STEP does, in the words the debugger uses for it: `task
+  // "http"`, `wait_for_signal "approved"`, `loop`. It is author-controlled text,
+  // so a renderer must treat it as untrusted.
+  string detail = 5 [(buf.validate.field).string = {max_len: 256}];
+}
+
+// GraphNodeKind says what a node stands for.
+enum GraphNodeKind {
+  GRAPH_NODE_KIND_UNSPECIFIED = 0;
+
+  // A workflow, by its declared name.
+  GRAPH_NODE_KIND_WORKFLOW = 1;
+
+  // A task a workflow runs, by its registered name.
+  GRAPH_NODE_KIND_TASK = 2;
+
+  // A signal channel a workflow waits on, by name.
+  GRAPH_NODE_KIND_SIGNAL = 3;
+
+  // A step of a workflow, by the id the author gave it. Its address says where.
+  GRAPH_NODE_KIND_STEP = 4;
+}
+
+// GraphEdge is one relation between two nodes.
+message GraphEdge {
+  string from = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+  string to = 2 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  GraphEdgeKind kind = 3 [(buf.validate.field).enum = {defined_only: true, not_in: [0]}];
+
+  // Count is how many times the relation was found: three `http` steps in one
+  // workflow are one USES edge with count 3.
+  uint32 count = 4;
+}
+
+// GraphEdgeKind says how two nodes are related.
+enum GraphEdgeKind {
+  GRAPH_EDGE_KIND_UNSPECIFIED = 0;
+
+  // A workflow calls another with a `call:` step.
+  GRAPH_EDGE_KIND_CALL = 1;
+
+  // A workflow runs a task.
+  GRAPH_EDGE_KIND_USES = 2;
+
+  // A workflow waits for a signal.
+  GRAPH_EDGE_KIND_WAITS = 3;
+
+  // A workflow or a step holds a step: the workflow its top-level steps, a
+  // loop, a parallel branch or a switch arm the steps in its body.
+  GRAPH_EDGE_KIND_CONTAINS = 4;
+}
+
+// GraphRef addresses one thing a graph can be a view of, at any zoom level: the
+// whole fleet, a workflow definition, a run, a step of a run, or one attempt of
+// that step.
+//
+// It is a message so every surface (the CLI, the terminal UI, MCP, the language
+// server) names a thing the same way and none grows a parser of its own. The
+// level is not a field: it is which fields are set, so a reference cannot say
+// two things at once. The graph package turns a reference into its two text
+// spellings and back.
+//
+//   - nothing set: the fleet.
+//   - `workflow_name`: a workflow definition.
+//   - `workflow_id`, optionally `run_id`: a run. Without `run_id` it is the
+//     latest run of that workflow id.
+//   - `workflow_id`, `run_id` and `step`: a step of that run.
+//   - `attempt` as well: one attempt of that step.
+message GraphRef {
+  option (buf.validate.message).cel = {
+    id: "graph_ref.definition"
+    message: "workflow_name addresses a definition and cannot be combined with workflow_id, run_id, step or attempt"
+    expression: "this.workflow_name == '' || (this.workflow_id == '' && this.run_id == '' && this.step == '' && !has(this.attempt))"
+  };
+  option (buf.validate.message).cel = {
+    id: "graph_ref.run"
+    message: "run_id, step and attempt need a workflow_id"
+    expression: "this.workflow_id != '' || (this.run_id == '' && this.step == '' && !has(this.attempt))"
+  };
+  option (buf.validate.message).cel = {
+    id: "graph_ref.step"
+    message: "step needs a run_id"
+    expression: "this.step == '' || this.run_id != ''"
+  };
+  option (buf.validate.message).cel = {
+    id: "graph_ref.attempt"
+    message: "attempt needs a step"
+    expression: "!has(this.attempt) || this.step != ''"
+  };
+
+  // WorkflowName is the declared name of a workflow definition.
+  string workflow_name = 1 [(buf.validate.field).string = {max_len: 256}];
+
+  // WorkflowId is the id of a run's workflow, as the engine records it. It is
+  // arbitrary text, 1 to 256 characters when set.
+  string workflow_id = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // RunId distinguishes the runs of one workflow id.
+  string run_id = 3 [(buf.validate.field).string = {max_len: 256}];
+
+  // Step is a debug address in the form `FormatDebugAddress` writes, so a
+  // reference from the explorer opens at the same place in the debugger.
+  string step = 4 [(buf.validate.field).string = {max_len: 4096}];
+
+  // Attempt is the attempt of the step, counting from 1, when the reference is
+  // to one.
+  optional uint32 attempt = 5 [(buf.validate.field).uint32.gte = 1];
+}

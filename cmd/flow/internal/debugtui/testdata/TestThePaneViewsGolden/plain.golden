@@ -1,0 +1,89 @@
+=== header
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                 ? help
+=== steps
+steps ──────────────────────────────────
+  ○ checkout pending
+→ ▶ build running
+  ○ flaky pending
+  ○ gated pending
+  ○ deploy pending
+  ○ notify pending
+  6 step(s)
+=== scope
+→ scope 4 names ────────────────────────────
+ ▾ inputs      {2}
+     version   "2026.9.0"
+     region    "eu-west-1"
+ ▾ steps       {1}
+→  ▸ checkout  {artifact: checkout.tar.gz, s
+ ▸ run         {1}
+=== inspector
+inspector ──────────────────────────────
+expression  steps.checkout
+type        map
+children    2
+value       {artifact: checkout.tar.gz, 
+            sha: 9f2c}
+=== console
+→ console ──────────────────────────────────────────────────
+"eu-west-1"
+
+
+debug> inspect inputs.region_
+=== help
+help ? or esc closes ───────────────────────────────────────────────────────────
+Run the program
+  s space    run to the next step anywhere, including inside this one
+  n          run this step whole; stop at the next step at this level or above
+  f          run until the loop, parallel, switch, or call around this step is l
+  c          run to the next breakpoint, or the end
+  b          return to the previous stop (a session that can step back)
+  r          return to the nearest earlier breakpoint stop, or the first
+  g          go to a point of the timeline, counted from 0, in one move (a sessi
+  p          hold at the next step boundary
+
+Move
+  up k       move up a row
+  down j     move down a row
+  enter      open or close the row (click too); in the flow, run until it
+  right l    open the row; in the flow, unfold it
+  left h     close the row, or go to its parent; in the flow, fold it
+  PgUp       up a page
+  PgDn       down a page
+  home       first row
+  end G      last row
+
+Screen
+  tab        focus the next pane (click a pane to focus it)
+  shift+tab  focus the previous pane
+  : /        type a command; every verb below works there
+  i          inspect the selected scope row in the console
+  w          watch the selected scope row: it is read again at every stop and tr
+  ?          show or hide this help
+  q          detach and let the run go on unattended
+  ctrl+c     leave at once and release the run, like quit
+  ctrl+d     leave and release the run (an empty console line)
+
+Flow
+  u          run until the selected flow step (double click too)
+  B          toggle a breakpoint on the selected flow step (right click too), or
+
+Type in the console
+  until <step>  run to that step (an id or an address like pages[2]/page); a con
+  break <step> [hit <n>] [if <expr>]  stop there, when the count and condition a
+  log <step> <message>  record the message at every arrival without stopping; {e
+  catch none|uncaught|all  stop where a step fails
+  delete <step>|log <step>  remove that breakpoint, or that logpoint
+  clear  remove every breakpoint, whoever set it
+  breakpoints  list breakpoints and their hit counts
+  inspect <expr>  evaluate a read-only CEL expression at this stop
+  expand <expr> [from <n>]  list a map's or list's children
+  scope  list what this stop can name
+  complete <partial-command>  list what could be written at the end of that text
+  status  where the run is, and why
+  backtrace  the step and every container around it
+  detach  clear breakpoints and let the run go on unattended
+  help  this list
+  watch <expr>  show an expression in the scope pane at every stop and after eve
+  unwatch <n|expr>  stop watching the nth watch, or the one spelled so
+

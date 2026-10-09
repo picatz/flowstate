@@ -1,0 +1,89 @@
+=== header
+[1;38;2;241;239;239mflow debug[m[2;38;2;133;131;146m · release-1 · run 3f7c9a2e · held step · rev 2[m                 [2;38;2;133;131;146m? help[m
+=== steps
+[1;38;2;133;131;146msteps[m [2;38;2;133;131;146m──────────────────────────────────[m
+  [2;38;2;133;131;146m○[m checkout [2;38;2;133;131;146mpending[m
+→ [38;2;0;164;255m▶[m [1;38;2;241;239;239mbuild[m [2;38;2;133;131;146mrunning[m
+  [2;38;2;133;131;146m○[m flaky [2;38;2;133;131;146mpending[m
+  [2;38;2;133;131;146m○[m gated [2;38;2;133;131;146mpending[m
+  [2;38;2;133;131;146m○[m deploy [2;38;2;133;131;146mpending[m
+  [2;38;2;133;131;146m○[m notify [2;38;2;133;131;146mpending[m
+[2;38;2;133;131;146m  6 step(s)[m
+=== scope
+[38;2;107;80;255m→ scope[m [2;38;2;133;131;146m4 names[m [2;38;2;133;131;146m────────────────────────────[m
+ ▾ [1;38;2;241;239;239minputs[m      {2}
+     [1;38;2;241;239;239mversion[m   "2026.9.0"
+     [1;38;2;241;239;239mregion[m    "eu-west-1"
+ ▾ [1;38;2;241;239;239msteps[m       {1}
+→  ▸ [1;38;2;241;239;239mcheckout[m  {artifact: checkout.tar.gz, s
+ ▸ [1;38;2;241;239;239mrun[m         {1}
+=== inspector
+[1;38;2;133;131;146minspector[m [2;38;2;133;131;146m──────────────────────────────[m
+[2;38;2;133;131;146mexpression[m  steps.checkout
+[2;38;2;133;131;146mtype[m        map
+[2;38;2;133;131;146mchildren[m    2
+[2;38;2;133;131;146mvalue[m       {artifact: checkout.tar.gz, 
+            sha: 9f2c}
+=== console
+[38;2;107;80;255m→ console[m [2;38;2;133;131;146m──────────────────────────────────────────────────[m
+[2;38;2;133;131;146m"eu-west-1"[m
+
+
+[2;38;2;133;131;146mdebug> [minspect inputs.region_
+=== help
+[1;38;2;133;131;146mhelp[m [2;38;2;133;131;146m? or esc closes[m [2;38;2;133;131;146m───────────────────────────────────────────────────────────[m
+[1;38;2;133;131;146mRun the program[m
+  [1;38;2;241;239;239ms space[m    run to the next step anywhere, including inside this one
+  [1;38;2;241;239;239mn[m          run this step whole; stop at the next step at this level or above
+  [1;38;2;241;239;239mf[m          run until the loop, parallel, switch, or call around this step is l
+  [1;38;2;241;239;239mc[m          run to the next breakpoint, or the end
+  [1;38;2;241;239;239mb[m          return to the previous stop (a session that can step back)
+  [1;38;2;241;239;239mr[m          return to the nearest earlier breakpoint stop, or the first
+  [1;38;2;241;239;239mg[m          go to a point of the timeline, counted from 0, in one move (a sessi
+  [1;38;2;241;239;239mp[m          hold at the next step boundary
+
+[1;38;2;133;131;146mMove[m
+  [1;38;2;241;239;239mup k[m       move up a row
+  [1;38;2;241;239;239mdown j[m     move down a row
+  [1;38;2;241;239;239menter[m      open or close the row (click too); in the flow, run until it
+  [1;38;2;241;239;239mright l[m    open the row; in the flow, unfold it
+  [1;38;2;241;239;239mleft h[m     close the row, or go to its parent; in the flow, fold it
+  [1;38;2;241;239;239mPgUp[m       up a page
+  [1;38;2;241;239;239mPgDn[m       down a page
+  [1;38;2;241;239;239mhome[m       first row
+  [1;38;2;241;239;239mend G[m      last row
+
+[1;38;2;133;131;146mScreen[m
+  [1;38;2;241;239;239mtab[m        focus the next pane (click a pane to focus it)
+  [1;38;2;241;239;239mshift+tab[m  focus the previous pane
+  [1;38;2;241;239;239m: /[m        type a command; every verb below works there
+  [1;38;2;241;239;239mi[m          inspect the selected scope row in the console
+  [1;38;2;241;239;239mw[m          watch the selected scope row: it is read again at every stop and tr
+  [1;38;2;241;239;239m?[m          show or hide this help
+  [1;38;2;241;239;239mq[m          detach and let the run go on unattended
+  [1;38;2;241;239;239mctrl+c[m     leave at once and release the run, like quit
+  [1;38;2;241;239;239mctrl+d[m     leave and release the run (an empty console line)
+
+[1;38;2;133;131;146mFlow[m
+  [1;38;2;241;239;239mu[m          run until the selected flow step (double click too)
+  [1;38;2;241;239;239mB[m          toggle a breakpoint on the selected flow step (right click too), or
+
+[1;38;2;133;131;146mType in the console[m
+  [1;38;2;241;239;239muntil <step>[m  run to that step (an id or an address like pages[2]/page); a con
+  [1;38;2;241;239;239mbreak <step> [hit <n>] [if <expr>][m  stop there, when the count and condition a
+  [1;38;2;241;239;239mlog <step> <message>[m  record the message at every arrival without stopping; {e
+  [1;38;2;241;239;239mcatch none|uncaught|all[m  stop where a step fails
+  [1;38;2;241;239;239mdelete <step>|log <step>[m  remove that breakpoint, or that logpoint
+  [1;38;2;241;239;239mclear[m  remove every breakpoint, whoever set it
+  [1;38;2;241;239;239mbreakpoints[m  list breakpoints and their hit counts
+  [1;38;2;241;239;239minspect <expr>[m  evaluate a read-only CEL expression at this stop
+  [1;38;2;241;239;239mexpand <expr> [from <n>][m  list a map's or list's children
+  [1;38;2;241;239;239mscope[m  list what this stop can name
+  [1;38;2;241;239;239mcomplete <partial-command>[m  list what could be written at the end of that text
+  [1;38;2;241;239;239mstatus[m  where the run is, and why
+  [1;38;2;241;239;239mbacktrace[m  the step and every container around it
+  [1;38;2;241;239;239mdetach[m  clear breakpoints and let the run go on unattended
+  [1;38;2;241;239;239mhelp[m  this list
+  [1;38;2;241;239;239mwatch <expr>[m  show an expression in the scope pane at every stop and after eve
+  [1;38;2;241;239;239munwatch <n|expr>[m  stop watching the nth watch, or the one spelled so
+

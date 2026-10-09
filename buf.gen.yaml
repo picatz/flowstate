@@ -45,3 +45,17 @@ plugins:
     strategy: all
     out: ./pkg/flowstate/v1/protodoc
     opt: package=github.com/picatz/flowstate/pkg/flowstate/v1/protodoc
+  # The JSON the CLI and the RPC surface answer in, as TypeScript declarations,
+  # for programs that read it (the Claude Code mod in editors/claude-code). Only
+  # the named messages and what they reach are declared; add an entry point here
+  # when a TypeScript consumer needs another answer.
+  #
+  # strategy: all, because the closure of an entry point can span files, and
+  # buf's default invokes the plugin once per directory.
+  - local: [go, tool, protoc-gen-flowstate-ts]
+    strategy: all
+    out: ./editors/claude-code/types
+    opt:
+      - file=flowstate.d.ts
+      - message=flowstate.v1.DiagnosticReport
+      - message=flowstate.v1.RunSummary

@@ -601,13 +601,11 @@ func (p *Policy) checkRequest(req *http.Request) error {
 	// at run time never passes a validator, and a redirect hop never does
 	// either. This is the one check every request meets.
 	if host := req.URL.Hostname(); host != "" {
-		if _, err := netip.ParseAddr(host); err != nil {
-			if canonical, ok := legacyIPv4(host); ok {
-				return &DenyError{
-					Reason: ReasonRequest,
-					Target: target,
-					Detail: fmt.Sprintf("host %q is not a canonical IPv4 address; write %s", host, canonical),
-				}
+		if canonical, ok := NonCanonicalIPv4(host); ok {
+			return &DenyError{
+				Reason: ReasonRequest,
+				Target: target,
+				Detail: fmt.Sprintf("host %q is not a canonical IPv4 address; write %s", host, canonical),
 			}
 		}
 	}

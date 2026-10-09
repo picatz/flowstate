@@ -50,8 +50,10 @@ type recordPath struct {
 	prefix string
 }
 
-// fieldPaths resolves every chain of an expression that starts at a record input.
-func (t *typeTable) fieldPaths(parsed *expr.ParsedExpr) []recordPath {
+// fieldPaths resolves every chain of an expression that starts at a record input,
+// or at the iterator of a `for_each` over a list of records, from the step the
+// expression is written in.
+func (t *typeTable) fieldPaths(parsed *expr.ParsedExpr, step string) []recordPath {
 	if t == nil || len(t.records) == 0 || parsed == nil {
 		return nil
 	}
@@ -59,11 +61,28 @@ func (t *typeTable) fieldPaths(parsed *expr.ParsedExpr) []recordPath {
 	var paths []recordPath
 	seen := map[string]bool{}
 
+	items := t.recordIterators(step)
+
 	walkExpr(parsed.GetExpr(), func(root string, fields []string) {
+		if declared, bound := items[root]; bound {
+			names := append([]string{root}, fields...)
+			key := strings.Join(names, ".")
+			if seen[key] {
+				return
+			}
+			seen[key] = true
+
+			if path, ok := t.resolveFrom(declared, names); ok {
+				paths = append(paths, path)
+			}
+
+			return
+		}
+
 		if root != v1.InputsRoot || len(fields) < 2 {
 			return
 		}
-		key := strings.Join(fields, ".")
+		key := v1.InputsRoot + "." + strings.Join(fields, ".")
 		if seen[key] {
 			return
 		}
@@ -76,6 +95,29 @@ func (t *typeTable) fieldPaths(parsed *expr.ParsedExpr) []recordPath {
 	})
 
 	return paths
+}
+
+// recordIterators are the iterators visible from step whose item is a record, by
+// name, with the record each is declared as. The innermost loop wins a shared name,
+// and one that rebinds it to anything else hides the outer record.
+func (t *typeTable) recordIterators(step string) map[string]*v1.Type {
+	if t == nil || len(t.records) == 0 {
+		return nil
+	}
+
+	var records map[string]*v1.Type
+	for _, binding := range t.scopes[step] {
+		if declared := t.elementDeclared(binding); declared.GetMessage() != "" {
+			if records == nil {
+				records = map[string]*v1.Type{}
+			}
+			records[binding.name] = declared
+		} else {
+			delete(records, binding.name)
+		}
+	}
+
+	return records
 }
 
 // parameterPaths resolves every chain of an expression that starts at one of the
@@ -112,7 +154,12 @@ func (t *typeTable) parameterPaths(parsed *expr.Expr) []recordPath {
 // resolveFieldPath resolves names (the input, then fields) against the record the
 // input is declared as. False for an input that is not a record.
 func (t *typeTable) resolveFieldPath(names []string) (recordPath, bool) {
-	declared := t.inputTypes[names[0]]
+	return t.resolveFrom(t.inputTypes[names[0]], names)
+}
+
+// resolveFrom resolves names[1:] as fields of the record declared is, names[0]
+// being what the chain is rooted at.
+func (t *typeTable) resolveFrom(declared *v1.Type, names []string) (recordPath, bool) {
 	if declared.GetMessage() == "" {
 		return recordPath{}, false
 	}
@@ -154,7 +201,7 @@ const (
 // does not declare, up to [maxFieldErrors] of them: the first is the one to fix and
 // the rest follow it.
 func (t *typeTable) fieldErrors(site v1.ValueSite) Diagnostics {
-	return pathErrors(t.fieldPaths(site.Value.GetExpr()), site.Step, site.Field())
+	return pathErrors(t.fieldPaths(site.Value.GetExpr(), site.Step), site.Step, site.Field())
 }
 
 // pathErrors reports each of paths that names a field its record does not declare,

@@ -77,9 +77,13 @@ on:
       # registry changes what completion offers, and the probe asserts on that.
       - 'docs/EDITORS.md'
       - 'tools/editorsmoke/**'
+      - 'editors/vim/**'
       - 'pkg/flowstate/v1/flowfile/**'
       - 'cmd/flow/**'
       - 'editors/vscode/**'
+      - 'editors/tree-sitter-cel/**'
+      - 'editors/nvim/**'
+      - 'editors/claude-code/**'
       - '.github/workflows/editors.yml'
 
 permissions:
@@ -95,6 +99,26 @@ env:
   # which is why this is a tarball and not `apt-get install neovim`.
   NVIM_VERSION: v0.12.4
   NVIM_SHA256: 012bf3fcac5ade43914df3f174668bf64d05e049a4f032a388c027b1ebd78628
+  # The tree-sitter CLI that generates and tests editors/tree-sitter-cel. The
+  # release binary, verified against a recorded SHA-256 before it runs, and not
+  # `npm install tree-sitter-cli`, whose postinstall script downloads the same
+  # binary unverified. The digest is of tree-sitter-linux-x64.gz as published
+  # for this tag.
+  TREE_SITTER_VERSION: v0.27.0
+  TREE_SITTER_SHA256: 20a1f39ec1c45f2211492dcb8881c802b643b554bb196869a29ac3778277fa77
+  # The YAML parser the Flowfile injection queries run over, fetched by commit:
+  # git checks the object hash, so the content is the content of this revision
+  # (tree-sitter-grammars/tree-sitter-yaml, tag v0.7.2).
+  YAML_PARSER_REV: 7708026449bed86239b1cd5bce6e3c34dbca6415
+  # The claude CLI that validates and tests editors/claude-code: the linux-x64
+  # platform package, which is the native binary and nothing else, fetched from
+  # the npm registry and verified against the SHA-512 the registry publishes as
+  # its integrity for this exact version. Not `npm install`: the wrapper
+  # package's postinstall links the binary, and the dependency graph would put
+  # a proprietary-licensed package in front of dependency-review for a tool
+  # that is only ever executed here.
+  CLAUDE_CODE_VERSION: 2.1.295
+  CLAUDE_CODE_SHA512: 9c2f5167a640ac46afc80885744b462bafd73e18df13bf6d3f6b4287e3e399153148effa5b722e5effeb9a8f1ceaed94cc7caf80aa1d463d73e947011a56e7c8
 
 jobs:
   neovim:
@@ -148,6 +172,11 @@ jobs:
       - name: Drive flow lsp through Neovim
         run: nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
 
+      # The same syntax test the Vim package ships, run on Neovim's runtime: it
+      # asks the syntax engine where CEL starts and stops in a Flowfile.
+      - name: Check the Vim syntax file
+        run: nvim --headless -u NONE -S editors/vim/test/syntax_test.vim
+
   vscode:
     name: VS Code extension
     runs-on: ubuntu-latest
@@ -185,3 +214,123 @@ jobs:
 
       - name: Unit test
         run: npm test
+
+  tree-sitter:
+    name: Tree-sitter CEL grammar
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: editors/tree-sitter-cel
+    steps:
+      # persist-credentials: false — see the same note on the neovim job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the tree-sitter CLI
+        run: |
+          set -euo pipefail
+          url="https://github.com/tree-sitter/tree-sitter/releases/download/${TREE_SITTER_VERSION}/tree-sitter-linux-x64.gz"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/tree-sitter.gz" "$url"
+          echo "${TREE_SITTER_SHA256}  ${RUNNER_TEMP}/tree-sitter.gz" | sha256sum --check --strict
+          gunzip --stdout "${RUNNER_TEMP}/tree-sitter.gz" > "${RUNNER_TEMP}/tree-sitter"
+          chmod +x "${RUNNER_TEMP}/tree-sitter"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      - name: Report CLI version
+        run: tree-sitter --version
+
+      # The parser is generated from grammar.js and not checked in, like every
+      # other derived artifact here.
+      - name: Generate the parser
+        run: tree-sitter generate
+
+      - name: Test the corpus
+        run: tree-sitter test
+
+      # The highlight query must compile against the generated grammar; a
+      # renamed node makes `tree-sitter query` fail rather than colour nothing.
+      - name: Compile the highlight query
+        run: tree-sitter query queries/highlights.scm test/highlight.cel > /dev/null
+
+  neovim-treesitter:
+    name: Neovim tree-sitter injection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials: false — see the same note on the neovim job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Neovim
+        run: |
+          set -euo pipefail
+          url="https://github.com/neovim/neovim/releases/download/${NVIM_VERSION}/nvim-linux-x86_64.tar.gz"
+          curl --fail --silent --show-error --location --output nvim.tar.gz "$url"
+          echo "${NVIM_SHA256}  nvim.tar.gz" | sha256sum --check --strict
+          tar -xzf nvim.tar.gz
+          echo "${PWD}/nvim-linux-x86_64/bin" >> "$GITHUB_PATH"
+
+      - name: Install the tree-sitter CLI
+        run: |
+          set -euo pipefail
+          url="https://github.com/tree-sitter/tree-sitter/releases/download/${TREE_SITTER_VERSION}/tree-sitter-linux-x64.gz"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/tree-sitter.gz" "$url"
+          echo "${TREE_SITTER_SHA256}  ${RUNNER_TEMP}/tree-sitter.gz" | sha256sum --check --strict
+          gunzip --stdout "${RUNNER_TEMP}/tree-sitter.gz" > "${RUNNER_TEMP}/tree-sitter"
+          chmod +x "${RUNNER_TEMP}/tree-sitter"
+          echo "${RUNNER_TEMP}" >> "$GITHUB_PATH"
+
+      # Both parsers are compiled from source into a runtimepath directory, the
+      # layout an editor's plugin manager produces.
+      - name: Build the parsers
+        run: |
+          set -euo pipefail
+          parsers="${RUNNER_TEMP}/parsers/parser"
+          mkdir -p "$parsers" "${RUNNER_TEMP}/yaml"
+          git -C "${RUNNER_TEMP}/yaml" init --quiet
+          git -C "${RUNNER_TEMP}/yaml" fetch --quiet --depth 1 https://github.com/tree-sitter-grammars/tree-sitter-yaml "${YAML_PARSER_REV}"
+          git -C "${RUNNER_TEMP}/yaml" checkout --quiet FETCH_HEAD
+          test "$(git -C "${RUNNER_TEMP}/yaml" rev-parse HEAD)" = "${YAML_PARSER_REV}"
+          cc -shared -fPIC -O1 -I"${RUNNER_TEMP}/yaml/src" -o "$parsers/yaml.so" \
+            "${RUNNER_TEMP}/yaml/src/parser.c" "${RUNNER_TEMP}/yaml/src/scanner.c"
+          (cd editors/tree-sitter-cel && tree-sitter generate)
+          cc -shared -fPIC -O1 -Ieditors/tree-sitter-cel/src -o "$parsers/cel.so" editors/tree-sitter-cel/src/parser.c
+          echo "TS_PARSERS=${RUNNER_TEMP}/parsers" >> "$GITHUB_ENV"
+
+      - name: Check the injections in Neovim
+        run: nvim --headless -u NONE -l editors/nvim/test/ts_test.lua
+
+  claude-code:
+    name: Claude Code plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials: false — see the same note on the neovim job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The CLI is the only tool that can say whether the plugin loads and
+      # whether the mod's tests pass. The digest is checked before the binary is
+      # extracted or run; bumping the CLI is a commit that changes both values.
+      - name: Install the claude CLI
+        run: |
+          set -euo pipefail
+          url="https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${CLAUDE_CODE_VERSION}.tgz"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/claude.tgz" "$url"
+          echo "${CLAUDE_CODE_SHA512}  ${RUNNER_TEMP}/claude.tgz" | sha512sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/claude.tgz" -C "${RUNNER_TEMP}" --strip-components=1 package/claude
+          chmod +x "${RUNNER_TEMP}/claude"
+          "${RUNNER_TEMP}/claude" --version
+          echo "CLAUDE_BIN=${RUNNER_TEMP}/claude" >> "$GITHUB_ENV"
+
+      # Both commands run with an empty home and a minimal environment: no
+      # credentials, no account, no network call the check depends on.
+      - name: Validate the plugin
+        run: env -i PATH="$PATH" HOME="$(mktemp -d)" "$CLAUDE_BIN" plugin validate editors/claude-code
+
+      - name: Test the plugin
+        run: env -i PATH="$PATH" HOME="$(mktemp -d)" DISABLE_AUTOUPDATER=1 "$CLAUDE_BIN" plugin test editors/claude-code

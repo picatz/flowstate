@@ -143,25 +143,19 @@ func TestAnUndeclaredTypeInAHandBuiltSpecificationIsRefusedAtSubmit(t *testing.T
 	assert.Contains(t, err.Error(), "Order")
 }
 
-func TestRecordDeclarationsRefuseWhatAFieldDoesNotCarry(t *testing.T) {
+func TestARecordDeclarationHoldingASensitiveFieldMustBeMarked(t *testing.T) {
 	t.Parallel()
 
-	for name, mutate := range map[string]func(*v1.InputDeclaration){
-		"default":   func(f *v1.InputDeclaration) { f.Default = v1.NewLiteral("x") },
-		"example":   func(f *v1.InputDeclaration) { f.Example = v1.NewLiteral("x") },
-		"sensitive": func(f *v1.InputDeclaration) { f.Sensitive = true },
-	} {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
+	wf := recordOrderWorkflow()
+	wf.DeclaredTypes[0].Fields[0].Sensitive = true
 
-			wf := recordOrderWorkflow()
-			mutate(wf.DeclaredTypes[0].Fields[0])
+	err := v1.CheckRecordDeclarations(wf)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "`sensitive: true`")
 
-			err := v1.CheckRecordDeclarations(wf)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "`"+name+"`")
-		})
-	}
+	v1.DeriveSensitive(wf)
+	require.NoError(t, v1.CheckRecordDeclarations(wf))
+	assert.True(t, wf.DeclaredInputs[0].GetSensitive())
 }
 
 // A field carries the bounds an input does, judged by the same functions: the
@@ -631,4 +625,75 @@ func TestEvalRunOutputsWithCostChargesRecordRules(t *testing.T) {
 			assert.Positive(t, cost, "the rule is CEL work whether or not it held")
 		})
 	}
+}
+
+// The largest-int bound holds inside a record too, in a field and in a list, not
+// only at the top of a value, and the refusal never prints the number.
+func TestAnUnsignedAboveTheSignedRangeIsNotAnIntInsideARecord(t *testing.T) {
+	t.Parallel()
+
+	huge := &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: 18446744073709551615}}
+	fits := &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: 3}}
+
+	line := func(quantity *expr.Value) *expr.Value {
+		return mapLit(recordStr("sku"), recordStr("kb"), recordStr("quantity"), quantity)
+	}
+	order := func(quantity *expr.Value) *expr.Value {
+		return mapLit(recordStr("id"), recordStr("o-1"), recordStr("lines"),
+			&expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{line(quantity)}}}})
+	}
+
+	require.NoError(t, bindOrder(t, order(fits)))
+
+	err := bindOrder(t, order(huge))
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "18446744073709551615")
+}
+
+func TestAnUnsignedAboveTheSignedRangeIsNotAnIntInAList(t *testing.T) {
+	t.Parallel()
+
+	declaration := &v1.InputDeclaration{
+		Name: "xs", Type: v1.InputDeclaration_TYPE_LIST,
+		ValueType: &v1.Type{Kind: &v1.Type_List{List: v1.TypeOfLegacy(v1.InputDeclaration_TYPE_INT)}},
+	}
+	list := func(n uint64) *v1.Value {
+		return &v1.Value{Kind: &v1.Value_Literal{Literal: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{
+			Values: []*expr.Value{{Kind: &expr.Value_Uint64Value{Uint64Value: n}}},
+		}}}}}
+	}
+
+	require.NoError(t, v1.CheckInputValue("xs", declaration, list(3)))
+	require.Error(t, v1.CheckInputValue("xs", declaration, list(18446744073709551615)))
+}
+
+func TestHoldsSensitiveReachesThroughMapsListsAndStopsOnACycle(t *testing.T) {
+	t.Parallel()
+
+	secret := &v1.TypeDeclaration{Name: "Secret", Fields: []*v1.InputDeclaration{
+		{Name: "token", Type: v1.InputDeclaration_TYPE_STRING, Sensitive: true},
+	}}
+	plain := &v1.TypeDeclaration{Name: "Plain", Fields: []*v1.InputDeclaration{
+		{Name: "id", Type: v1.InputDeclaration_TYPE_STRING},
+	}}
+	holder := &v1.TypeDeclaration{Name: "Holder", Fields: []*v1.InputDeclaration{
+		{Name: "by", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: &v1.Type{Kind: &v1.Type_Map_{
+			Map: &v1.Type_Map{Value: recordTypeOf("Secret")},
+		}}},
+	}}
+	loop := &v1.TypeDeclaration{Name: "Loop", Fields: []*v1.InputDeclaration{
+		{Name: "next", Type: v1.InputDeclaration_TYPE_STRUCT, ValueType: recordTypeOf("Loop")},
+	}}
+	table := v1.TypeTable{"Secret": secret, "Plain": plain, "Holder": holder, "Loop": loop}
+
+	listOf := func(name string) *v1.Type {
+		return &v1.Type{Kind: &v1.Type_List{List: recordTypeOf(name)}}
+	}
+
+	assert.True(t, table.HoldsSensitive(recordTypeOf("Secret")))
+	assert.True(t, table.HoldsSensitive(recordTypeOf("Holder")), "through a map value")
+	assert.True(t, table.HoldsSensitive(listOf("Holder")), "through a list of records")
+	assert.False(t, table.HoldsSensitive(recordTypeOf("Plain")))
+	assert.False(t, table.HoldsSensitive(listOf("Plain")))
+	assert.False(t, table.HoldsSensitive(recordTypeOf("Loop")), "a cycle ends rather than looping")
 }

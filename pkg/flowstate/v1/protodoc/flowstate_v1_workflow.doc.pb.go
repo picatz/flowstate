@@ -631,8 +631,10 @@ func init() {
 				"\n" +
 				" Only `name`, `type`, `value_type`, `required`, `description`, an enum's\n" +
 				" `values`, the length and item bounds (`min_len`, `max_len`, `min_items`,\n" +
-				" `max_items`) and `must` are carried by a field today. `default`, `example` and\n" +
-				" `sensitive` are refused by the compiler and at submit, not ignored.\n" +
+				" `max_items`), `must`, `default`, `example` and `sensitive` are carried by a\n" +
+				" field. A `sensitive` field makes every input and output typed by the record,\n" +
+				" at any depth, sensitive whole: the Flowfile compiler marks them, and a\n" +
+				" specification that does not is refused at submit.\n" +
 				"\n" +
 				" A value of a record type is a map at run time, keyed by field name, so a\n" +
 				" reader that does not know the type (an older worker, a CEL expression the\n" +
@@ -658,11 +660,9 @@ func init() {
 			Leading: " Fields are the record's members in the order they were written, which is the\n" +
 				" order every report of them uses. Each name is unique within the type.\n" +
 				"\n" +
-				" `default`, `example` and `sensitive` are not carried by a field yet: a\n" +
-				" default would have to be applied inside a value, an example checked, and a\n" +
-				" sensitive field withheld wherever the record travels, and each of those is a\n" +
-				" decision that has not been made. A field that sets one is refused rather\n" +
-				" than silently not enforced.\n",
+				" A field carries what an input does, including `default`, `example` and\n" +
+				" `sensitive`. A `sensitive` field makes every input and output typed by the\n" +
+				" record sensitive whole; see the message comment.\n",
 		},
 		{
 			Name: "flowstate.v1.TypeDeclaration.must",
@@ -1476,6 +1476,12 @@ func init() {
 				" Field 15 and a bare bool rather than an arm of the `kind` oneof, for the\n" +
 				" reason `undo` is field 10: departing from written order is not a kind of\n" +
 				" work, it is a property of a step doing some other kind.\n",
+		},
+		{
+			Name: "flowstate.v1.Node.source",
+			Leading: " Source is where this step is written, set by the compiler front end that read\n" +
+				" a file and cleared from every digest. Advisory: absent on a hand-built\n" +
+				" specification and on a step whose id the file declares more than once.\n",
 		},
 		{
 			Name:    "flowstate.v1.Node.kind",

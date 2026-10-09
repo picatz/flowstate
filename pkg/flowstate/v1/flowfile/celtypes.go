@@ -84,6 +84,12 @@ type typeTable struct {
 	// workflow, by id, with the type each of their named outputs holds.
 	outputs map[string]*stepOutputs
 
+	// scopes are the `for_each` iterators each step is written inside, outermost
+	// first, by step id. A step is placed in the scope of every loop whose body
+	// holds it, never in the scope of its own `for_each:` (its `items:` is read
+	// outside the loop). See [typeTable.bindingsFor].
+	scopes map[string][]*loopBinding
+
 	// owner is the index, among the workflow's top-level steps, of the top-level
 	// step that holds each step id (itself, for a top-level one). It is how a
 	// position is placed in written order: it may read a value step only when
@@ -116,6 +122,31 @@ type valueStep struct {
 	resolved bool
 }
 
+// A loopBinding is the name a `for_each` binds to its current item, and what its
+// `items:` says about the type of one.
+type loopBinding struct {
+	name string
+
+	// items is the `items:` expression and owner the step it is written in, which
+	// is where it is checked; before is that step's position among the top-level
+	// steps.
+	items  *expr.ParsedExpr
+	owner  string
+	before int
+
+	// typed is the element type, nil when the file does not pin one down, set once
+	// resolved is true. Resolution reads only the enclosing loops of owner, which
+	// are strictly outer, so it cannot meet itself.
+	typed    *cel.Type
+	resolved bool
+
+	// declared is the item's declared type when `items:` names a list of records
+	// the file declares (see [typeTable.elementDeclared]), set once
+	// declaredResolved is true.
+	declared         *v1.Type
+	declaredResolved bool
+}
+
 // stepOutputs are the typed outputs of one task, call or wait step.
 type stepOutputs struct {
 	// types are the CEL type of each output name the step's definition types.
@@ -134,6 +165,7 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		values:     map[string]*valueStep{},
 		outputs:    map[string]*stepOutputs{},
 		owner:      map[string]int{},
+		scopes:     map[string][]*loopBinding{},
 	}
 
 	for _, declaration := range wf.GetDeclaredInputs() {
@@ -157,6 +189,10 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		v1.WalkNodes([]*v1.Node{top}, v1.Walk{Node: func(node *v1.Node) {
 			seen[node.GetId()]++
 			table.owner[node.GetId()] = index
+
+			if each := node.GetForEach(); each != nil {
+				table.bind(node.GetId(), each, index)
+			}
 		}})
 		if value, ok := top.GetKind().(*v1.Node_Value); ok {
 			table.values[top.GetId()] = &valueStep{value: value.Value, index: index}
@@ -168,10 +204,120 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		if count > 1 {
 			delete(table.values, id)
 			delete(table.outputs, id)
+			delete(table.scopes, id)
 		}
 	}
 
 	return table
+}
+
+// bind records the iterator of a `for_each` for every step its body holds.
+//
+// Only an `items:` written as an expression is typed: a literal list says nothing
+// about its elements (see [literalCELType]).
+func (t *typeTable) bind(id string, each *v1.ForEach, index int) {
+	parsed := each.GetItems().GetExpr()
+	if parsed == nil {
+		return
+	}
+
+	binding := &loopBinding{
+		name:   v1.IteratorName(each),
+		items:  parsed,
+		owner:  id,
+		before: index,
+	}
+
+	v1.WalkNodes(each.GetBody(), v1.Walk{Node: func(node *v1.Node) {
+		t.scopes[node.GetId()] = append(t.scopes[node.GetId()], binding)
+	}})
+}
+
+// bindingsFor returns the typed declarations of the iterators visible from a step,
+// by name: the element type of each enclosing `for_each`'s `items:`, for the names
+// the expression mentions. The innermost loop wins a name two loops share.
+func (t *typeTable) bindingsFor(step string, names []string) map[string]*cel.Type {
+	if t == nil {
+		return nil
+	}
+
+	var typed map[string]*cel.Type
+	for _, binding := range t.scopes[step] {
+		if !slices.Contains(names, binding.name) {
+			continue
+		}
+		if typed == nil {
+			typed = map[string]*cel.Type{}
+		}
+		if element := t.elementType(binding); element != nil {
+			typed[binding.name] = element
+		} else {
+			// An inner loop rebinding the name to something unknown hides the outer's.
+			delete(typed, binding.name)
+		}
+	}
+
+	return typed
+}
+
+// elementDeclared is the declared type of one item of a loop, nil unless `items:`
+// is a plain read of a declared `list(T)`: an input, a record field, or a field of
+// an enclosing loop's record item. It is what a record item's fields are read
+// from; [typeTable.elementType] is what CEL is told.
+func (t *typeTable) elementDeclared(binding *loopBinding) *v1.Type {
+	if !binding.declaredResolved {
+		binding.declaredResolved = true
+
+		if root, fields, ok := fieldChain(binding.items.GetExpr()); ok {
+			if listed := t.chainType(binding.owner, root, fields); listed.GetList() != nil {
+				binding.declared = listed.GetList()
+			}
+		}
+	}
+
+	return binding.declared
+}
+
+// chainType is the declared type of a chain of field reads from step: rooted at
+// `inputs` (the input, then its record fields) or at the iterator of an enclosing
+// loop whose item is a record. Nil where the chain leaves what the file declares.
+func (t *typeTable) chainType(step, root string, fields []string) *v1.Type {
+	var declared *v1.Type
+	switch {
+	case root == v1.InputsRoot:
+		if len(fields) == 0 {
+			return nil
+		}
+		declared, fields = t.inputTypes[fields[0]], fields[1:]
+	default:
+		declared = t.recordIterators(step)[root]
+	}
+
+	for _, name := range fields {
+		record := t.records[declared.GetMessage()]
+		i := slices.IndexFunc(record.GetFields(), func(f *v1.InputDeclaration) bool { return f.GetName() == name })
+		if i < 0 {
+			return nil
+		}
+		declared = record.GetFields()[i].DeclaredType()
+	}
+
+	return declared
+}
+
+// elementType is the type of one item of a loop, nil when `items:` does not say.
+func (t *typeTable) elementType(binding *loopBinding) *cel.Type {
+	if !binding.resolved {
+		binding.resolved = true
+
+		if listed, ok := checkedType(t, binding.items, binding.before, binding.owner); ok && listed.Kind() == types.ListKind {
+			if params := listed.Parameters(); len(params) == 1 {
+				binding.typed = knownType(params[0])
+			}
+		}
+	}
+
+	return binding.typed
 }
 
 // typedOutputs are the output names of a task, call or wait step that its own
@@ -180,7 +326,7 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 // other kind, and for a step whose names the file cannot know.
 func typedOutputs(node *v1.Node) map[string]*cel.Type {
 	switch node.GetKind().(type) {
-	case *v1.Node_Task, *v1.Node_Call, *v1.Node_Wait:
+	case *v1.Node_Task, *v1.Node_Call, *v1.Node_Wait, *v1.Node_ForEach, *v1.Node_Loop:
 	default:
 		return nil
 	}
@@ -218,7 +364,7 @@ func typedOutputs(node *v1.Node) map[string]*cel.Type {
 //
 // Nil-safe, and nil when there is nothing to declare, so a caller without a table
 // (a subtree checked on its own) gets the `dyn` environment it always had.
-func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*cel.Type {
+func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int, step string) map[string]*cel.Type {
 	if t == nil || parsed == nil {
 		return nil
 	}
@@ -238,18 +384,22 @@ func (t *typeTable) leavesFor(parsed *expr.ParsedExpr, before int) map[string]*c
 			add(v1.InputsRoot+"."+name, typed)
 		}
 	}
-	for _, path := range t.fieldPaths(parsed) {
+	for _, path := range t.fieldPaths(parsed, step) {
 		for i, field := range path.fields {
 			if field == nil {
 				break
 			}
-			add(v1.InputsRoot+"."+strings.Join(path.names[:i+2], "."), v1.CELType(field.DeclaredType()))
+			add(path.prefix+strings.Join(path.names[:i+2], "."), v1.CELType(field.DeclaredType()))
 		}
 	}
 	for _, ref := range rooted {
 		if typed := t.outputType(ref.ID, ref.Output, before); typed != nil {
 			add(v1.StepsRoot+"."+ref.ID+"."+ref.Output, typed)
 		}
+	}
+
+	for name, typed := range t.bindingsFor(step, referencedNames(parsed.GetExpr())) {
+		add(name, typed)
 	}
 
 	// The two instants a run is given, typed as the timestamps they render as, so
@@ -330,7 +480,7 @@ func (t *typeTable) inferValue(value *v1.Value, before int) *cel.Type {
 		return knownType(literalCELType(kind.Literal))
 
 	case *v1.Value_Expr:
-		checked, ok := checkedType(t, kind.Expr, before)
+		checked, ok := checkedType(t, kind.Expr, before, "")
 		if !ok {
 			return nil
 		}
@@ -357,13 +507,14 @@ func (t *typeTable) inferValue(value *v1.Value, before int) *cel.Type {
 //
 // False when the expression does not check, which [checkExpressionTypes] reports
 // in its own sentence.
-func checkedType(t *typeTable, parsed *expr.ParsedExpr, before int) (*cel.Type, bool) {
-	env, err := envDeclaring(referencedNames(parsed.GetExpr()), t.leavesFor(parsed, before))
+func checkedType(t *typeTable, parsed *expr.ParsedExpr, before int, step string) (*cel.Type, bool) {
+	leaves := t.leavesFor(parsed, before, step)
+	env, err := envDeclaring(referencedNames(parsed.GetExpr()), leaves)
 	if err != nil {
 		return nil, false
 	}
 
-	checked, issues := env.Check(cel.ParsedExprToAst(parsed))
+	checked, issues := env.Check(cel.ParsedExprToAst(typeReads(parsed, leaves)))
 	if issues != nil && issues.Err() != nil {
 		return nil, false
 	}
@@ -479,4 +630,26 @@ func cacheKeyFor(names []string, leaves map[string]*cel.Type) string {
 	}
 
 	return key.String()
+}
+
+// IteratorType is the type the checker gives the item a `for_each` binds as name in
+// the expressions of the step with the given id, spelled as CEL spells it, and false
+// where it gives none. It reads the same table [Validate] judges the body with, so
+// a hover cannot say something the diagnostics disagree with.
+//
+// An item that is a record is spelled as the record (`Line`), since CEL holds a
+// record as `dyn` and a reader asking what the item is wants the name the file gave it.
+func IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
+	table := newTypeTable(wf)
+	if record := table.recordIterators(step)[name]; record != nil {
+		return v1.TypeString(record), true
+	}
+
+	bound := table.bindingsFor(step, []string{name})
+	typed, ok := bound[name]
+	if !ok {
+		return "", false
+	}
+
+	return typed.String(), true
 }

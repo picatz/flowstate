@@ -805,6 +805,56 @@ func init() {
 				" before its lines are trusted to describe this run.\n",
 		},
 		{
+			Name: "flowstate.v1.DebugSnapshot.timeline",
+			Leading: " Timeline is the stops this session has shown and where it stands among\n" +
+				" them, for a front that lets a person travel to one. Empty where the target\n" +
+				" keeps no account of its stops.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugTimelinePoint",
+			Leading: " DebugTimelinePoint is one stop a session showed, as a front draws it on a\n" +
+				" strip and names it to travel there.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimelinePoint.revision",
+			Leading: " Revision is the revision shown at that stop, or zero for a point never shown.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimelinePoint.event_id",
+			Leading: " EventId is the history boundary the point is, for a durable history.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimelinePoint.occurrence",
+			Leading: " Occurrence is where the run was held, redacted as [DebugSnapshot.occurrence] is.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimelinePoint.fidelity",
+			Leading: " Fidelity is reconstructed for a history point and unspecified for a live stop.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugTimelinePoint.reachable",
+			Leading: " Reachable is whether a travel to the point would be tried now. A point the\n" +
+				" session is at is not reachable, and neither is one a travel found the run\n" +
+				" could not reproduce.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimeline",
+			Leading: " DebugTimeline is the bounded account of the stops a session has shown.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimeline.points",
+			Leading: " Points are the stops, oldest first.\n",
+		},
+		{
+			Name: "flowstate.v1.DebugTimeline.current",
+			Leading: " Current is the index in [points] of the stop the session is at, or -1\n" +
+				" between stops.\n",
+		},
+		{
+			Name:    "flowstate.v1.DebugTimeline.dropped",
+			Leading: " Dropped counts the stops evicted from the front to keep [points] bounded.\n",
+		},
+		{
 			Name:    "flowstate.v1.DebugReceipt",
 			Leading: " DebugReceipt is the outcome of one command.\n",
 		},

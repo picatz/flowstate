@@ -221,6 +221,18 @@ func TestTheSchemasOwnRuleStillAnswersFirst(t *testing.T) {
 			// perfectly good URI. This is the whole gap the check exists for.
 			wantsay: "cannot request a ftp:// URL",
 		},
+		{
+			name: "a loopback written the way a resolver, not the policy, reads it",
+			url:  "http://127.1/health",
+			// Decidable from the text, the same in every deployment, and refused at
+			// run time for every request whatever the policy (#1768).
+			wantsay: "is not a canonical IPv4 address; write 127.0.0.1",
+		},
+		{
+			name:    "a decimal address",
+			url:     "https://2130706433/",
+			wantsay: "write 127.0.0.1",
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
@@ -232,5 +244,19 @@ func TestTheSchemasOwnRuleStillAnswersFirst(t *testing.T) {
 
 			assert.Contains(t, strings.Join(ds, "\n"), test.wantsay)
 		})
+	}
+}
+
+// TestCanonicalAddressesAndNamesAreNotCalledNonCanonical is the other direction of
+// #1768's validate rule: only an inet_aton spelling is refused, never a canonical
+// address, an IPv6 literal, or a name that happens to be made of digits and dots.
+func TestCanonicalAddressesAndNamesAreNotCalledNonCanonical(t *testing.T) {
+	t.Parallel()
+
+	for _, url := range []string{
+		"http://127.0.0.1/", "http://[::1]/", "https://example.com/", "http://1.2.3.4.nip.io/",
+		"http://10.0.0.1:8080/x", "http://localhost/",
+	} {
+		assert.Empty(t, diagnosticsFor(t, fetching(url)), url)
 	}
 }

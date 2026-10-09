@@ -177,6 +177,11 @@ const (
 
 	// ToneDanger is a step failure the run does not absorb.
 	ToneDanger
+
+	// ToneValue is an inspected value as [RenderValue] wrote it. A front that
+	// can colour hands the text to [ValueTokens]; one that cannot writes it
+	// as it is, so the tone changes how a value looks and never what it says.
+	ToneValue
 )
 
 // Options configures a [Session].
@@ -277,6 +282,13 @@ type Options struct {
 	// SourceMap relates the program's sites to its sources. Optional: without
 	// one, every site is still addressable, and a source-line breakpoint is
 	// reported unverified rather than guessed.
+	//
+	// With [Options.Workflow] it must describe that program, and is refused
+	// otherwise. Without one it is offered: the program arrives later through
+	// [Session.Program] (a `flow test` case compiles its own), and the map is
+	// used only while that program is the one it describes, so a case whose
+	// program differs from the file the map was made from, a stubbed `call:`
+	// for one, is debugged by address.
 	SourceMap *v1.DebugSourceMap
 }
 
@@ -605,6 +617,10 @@ type promptSubject struct {
 	step string
 	kind string
 
+	// shapes names the record types the program's inputs are declared as, so
+	// an inspection can label a value by its type. Nil where none is known.
+	shapes *declaredShapes
+
 	// workflow is which workflow's steps those are — see [Position.Workflow].
 	// Empty at an autopsy, and empty on a run carrying no runtime position.
 	workflow string
@@ -642,10 +658,7 @@ func New(opts Options) (*Session, error) {
 	// A source map names the program it describes. One for another program
 	// would verify line breakpoints that never match and point frames at the
 	// wrong lines, so it is refused rather than used.
-	if opts.SourceMap != nil {
-		if opts.Workflow == nil {
-			return nil, errors.New("a source map needs the workflow it describes")
-		}
+	if opts.SourceMap != nil && opts.Workflow != nil {
 		if got, want := opts.SourceMap.GetIrDigest(), v1.WorkflowIRDigest(opts.Workflow); got != want {
 			return nil, fmt.Errorf("the source map describes program %s, and this session runs %s", got, want)
 		}
@@ -2094,25 +2107,25 @@ func nativeText(native any) string {
 	return string(encoded)
 }
 
-// refValTextWith renders an inspection's result through the same conversion
-// a `value:` step's result takes — [cel.RefValueToValue] then
-// [v1.LiteralToGo], exactly as EvalValueNode does — so what an inspection
-// prints and what the same expression would produce in the file are one
-// rendering of one value, rather than two that can drift.
+// redactedTree is the native tree an inspection renders, after both
+// redactions, and whether out could be converted. It is converted the way a
+// `value:` step's result is — [cel.RefValueToValue] then [v1.LiteralToGo],
+// exactly as EvalValueNode does — so what an inspection prints and what the
+// same expression would produce in the file are one rendering of one value.
 //
-// Redacted as a tree first, through value and then [withheldLeaves] with
-// text, for the reason [withheldLeaves] gives; the caller's pass over the
-// rendered line is the backstop behind it.
-func refValTextWith(out ref.Val, text func(string) string, value func(any) any) string {
+// Redacted as a tree first, through value and then [withheldLeaves] with text,
+// for the reason [withheldLeaves] gives; the caller's pass over the rendered
+// text is the backstop behind it.
+func redactedTree(out ref.Val, text func(string) string, value func(any) any) (any, bool) {
 	native, ok := redactedNative(out, nil)
 	if !ok {
-		return unrenderedText(out, text != nil || value != nil)
+		return nil, false
 	}
 	if value != nil {
 		native = value(native)
 	}
 
-	return nativeText(withheldLeaves(text, native))
+	return withheldLeaves(text, native), true
 }
 
 // pauseRedactors are the redactors an answer at the current pause renders

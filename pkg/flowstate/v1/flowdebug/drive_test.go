@@ -65,8 +65,14 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	require.NotNil(t, stop.Snapshot)
 	assert.Equal(t, "each[1]/touch", stop.Snapshot.GetOccurrence().GetAddress())
 	assert.Contains(t, stop.Text, "breakpoint")
-	assert.Equal(t, "2\n", do("inspect item").Text)
+	live := do("inspect item")
+	assert.Equal(t, "2\n", live.Text)
+	assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED, live.Fidelity, "a live answer carried a fidelity")
 	assert.Contains(t, do("expand [1, [2, 3]]").Text, "list")
+	// And a page the first one cut off is the driver's to read too.
+	long := longList(flowdebug.DefaultInspectLimit + 3)
+	assert.Contains(t, do("expand "+long).Text, "… and 3 more (repeat the expand with `from 100`)")
+	assert.Contains(t, do("expand "+long+" from 100").Text, "102  int  102")
 	assert.Contains(t, do("bt").Text, "iteration 1")
 	assert.Contains(t, do("scope").Text, "locals: item")
 	assert.Contains(t, do("breakpoints").Text, "each/touch  hits 1")
@@ -547,3 +553,14 @@ func (s *scriptedTarget) Inspect(context.Context, *v1.DebugInspectRequest) (*v1.
 }
 
 func (s *scriptedTarget) Close() error { return nil }
+
+func TestMovesForwardIsTheForwardVerbsOnly(t *testing.T) {
+	t.Parallel()
+
+	for _, line := range []string{"step", "s", "continue", "c", "until second", "  step  "} {
+		assert.True(t, flowdebug.MovesForward(line), line)
+	}
+	for _, line := range []string{"back", "reverse-continue", "rc", "status", "inspect steps", "break x", "frobnicate", ""} {
+		assert.False(t, flowdebug.MovesForward(line), line)
+	}
+}

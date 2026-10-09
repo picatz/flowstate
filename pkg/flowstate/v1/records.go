@@ -154,6 +154,10 @@ func (table TypeTable) checkField(r valueRendering, field *InputDeclaration, val
 		return fmt.Errorf("%s%s, but the field is declared %s", literalKindName(value), atPath(path), fieldTypeName(field))
 	}
 
+	if declared == InputDeclaration_TYPE_INT && aboveLargestInt(value) {
+		return fmt.Errorf("a value above the largest int%s, but the field is declared %s", atPath(path), fieldTypeName(field))
+	}
+
 	if declared == InputDeclaration_TYPE_FLOAT {
 		if spelling, nonFinite := nonFiniteSpelling(value.GetDoubleValue()); nonFinite {
 			return fmt.Errorf("%s%s, which is not a finite number", spelling, atPath(path))
@@ -209,9 +213,9 @@ func recordFieldNames(fields []*InputDeclaration) string {
 // twice, a field repeated, a type that refers to a record nobody declared, and a
 // cycle. A cycle is refused because a value of a recursive record has no bound
 // until the type has one, and the checks that walk a value would be the only
-// thing standing between an author and an unbounded literal. A field that sets
-// `default`, `example` or `sensitive` is refused with the reason
-// [TypeDeclaration] gives, rather than carrying a promise nothing keeps.
+// thing standing between an author and an unbounded literal. An input or an
+// output whose type holds a `sensitive` field must be sensitive itself (see
+// [TypeTable.HoldsSensitive]).
 //
 // The compiler runs it with a position to point at through the same
 // function, and [CheckDeclarationTypes] runs it again for a specification that
@@ -268,10 +272,16 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		if err := checkTypeResolves(declaration.GetValueType(), table); err != nil {
 			return fmt.Errorf("input %q: %w", declaration.GetName(), err)
 		}
+		if err := checkHoldsSensitive("input", declaration, table); err != nil {
+			return err
+		}
 	}
 	for _, declaration := range wf.GetDeclaredOutputs() {
 		if err := checkTypeResolves(declaration.GetValueType(), table); err != nil {
 			return fmt.Errorf("output %q: %w", declaration.GetName(), err)
+		}
+		if err := checkHoldsSensitive("output", declaration, table); err != nil {
+			return err
 		}
 	}
 
@@ -279,8 +289,47 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		return err
 	}
 
-	return checkRecordDepth(wf.GetDeclaredTypes(), table)
+	if err := checkRecordDepth(wf.GetDeclaredTypes(), table); err != nil {
+		return err
+	}
+
+	if err := checkRecordFillBound(wf.GetDeclaredTypes(), table); err != nil {
+		return err
+	}
+
+	for _, declaration := range wf.GetDeclaredTypes() {
+		for _, field := range declaration.GetFields() {
+			if err := checkRecordFieldValues(declaration.GetName(), field, table, wf.GetProfile()); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
+
+// maxTypeFill bounds the field defaults one record, left empty, expands to once its
+// nested records take their own defaults. Each default is a small literal, but a
+// default can be a record whose fields default to records, so the expansion
+// multiplies down the type; it is refused where the type is declared, ahead of any
+// value that reaches it.
+const maxTypeFill = 4096
+
+func checkRecordFillBound(declared []*TypeDeclaration, table TypeTable) error {
+	empty := &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{}}}
+	for _, declaration := range declared {
+		budget := maxTypeFill
+		countFills(table, recordTypeNamed(declaration.GetName()), empty, 0, &budget)
+		if budget < 0 {
+			return fmt.Errorf("type %q expands to more than %d field defaults when a value leaves its fields out; "+
+				"flatten the defaults of the records it names", declaration.GetName(), maxTypeFill)
+		}
+	}
+
+	return nil
+}
+
+func recordTypeNamed(name string) *Type { return &Type{Kind: &Type_Message{Message: name}} }
 
 func checkRecordField(record string, field *InputDeclaration, table TypeTable, profile string) error {
 	name := field.GetName()
@@ -297,20 +346,6 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable, p
 		return err
 	}
 
-	for _, unsupported := range []struct {
-		word string
-		set  bool
-	}{
-		{"default", field.GetDefault() != nil},
-		{"example", field.GetExample() != nil},
-		{"sensitive", field.GetSensitive()},
-	} {
-		if unsupported.set {
-			return fmt.Errorf("type %q field %q sets `%s`, which a record field does not carry yet; "+
-				"put it on the input or output that uses the type", record, name, unsupported.word)
-		}
-	}
-
 	if field.Must != nil {
 		if _, err := CompileMustExpression(profile, field.GetMust(), field.GetType()); err != nil {
 			return fmt.Errorf("type %q field %q %w", record, name, err)
@@ -321,7 +356,100 @@ func checkRecordField(record string, field *InputDeclaration, table TypeTable, p
 		return fmt.Errorf("type %q field %q: %w", record, name, err)
 	}
 
+	if field.GetRequired() && field.GetDefault() != nil {
+		return fmt.Errorf("type %q field %q is `required: true` and also has a `default:`, which contradict: "+
+			"a required field is never absent, so the default can never be used; remove one", record, name)
+	}
+
 	return nil
+}
+
+// checkRecordFieldValues holds a field's default and example to what an input's are:
+// a literal of the field's type that satisfies the field's own rules, so a stale one
+// is a defect in the file rather than a surprise at the first run that leaves the
+// field out. It runs once the whole table has passed its structural checks (cycles,
+// depth and the fill bound), because judging a default fills the records it names.
+func checkRecordFieldValues(record string, field *InputDeclaration, table TypeTable, profile string) error {
+	if err := CheckInputDefaultIn(table, profile, field); err != nil {
+		return fmt.Errorf("type %q field %q default: %w", record, field.GetName(), err)
+	}
+	if err := CheckInputExampleIn(table, profile, field); err != nil {
+		return fmt.Errorf("type %q field %q %w", record, field.GetName(), err)
+	}
+
+	return nil
+}
+
+// HoldsSensitive reports whether a value of t can carry a field declared
+// `sensitive`, at any depth: t is a record with one, or a list or map of records
+// that reach one.
+//
+// Sensitivity is whole-value everywhere a run is shown (results, timelines, the
+// debugger, failure text), so a value that holds a sensitive field is withheld
+// whole rather than field by field. Each record is entered once, so the work is
+// bounded by the number of declared types.
+func (table TypeTable) HoldsSensitive(t *Type) bool {
+	seen := map[string]bool{}
+
+	var walk func(*Type) bool
+	walk = func(t *Type) bool {
+		for _, name := range messageNames(t, nil, 0) {
+			if seen[name] {
+				continue
+			}
+			seen[name] = true
+
+			for _, field := range table[name].GetFields() {
+				if field.GetSensitive() || walk(field.GetValueType()) {
+					return true
+				}
+			}
+		}
+
+		return false
+	}
+
+	return walk(t)
+}
+
+// DeriveSensitive marks every input and output whose type holds a sensitive field
+// `sensitive` itself, so what is withheld is decided where the type is declared and
+// not repeated at each use. The Flowfile compiler runs it; the specification check
+// ([CheckRecordDeclarations]) refuses a declaration it has not been run for.
+func DeriveSensitive(wf *Workflow) {
+	table := TypesOf(wf)
+	if table == nil {
+		return
+	}
+
+	for _, declaration := range wf.GetDeclaredInputs() {
+		if table.HoldsSensitive(declaration.GetValueType()) {
+			declaration.Sensitive = true
+		}
+	}
+	for _, declaration := range wf.GetDeclaredOutputs() {
+		if table.HoldsSensitive(declaration.GetValueType()) {
+			declaration.Sensitive = true
+		}
+	}
+}
+
+// typedDeclaration is what an input and an output share that the sensitivity
+// check reads.
+type typedDeclaration interface {
+	GetName() string
+	GetSensitive() bool
+	GetValueType() *Type
+	TypeText() string
+}
+
+func checkHoldsSensitive(kind string, declaration typedDeclaration, table TypeTable) error {
+	if declaration.GetSensitive() || !table.HoldsSensitive(declaration.GetValueType()) {
+		return nil
+	}
+
+	return fmt.Errorf("%s %q is typed %s, which holds a sensitive field, so it must be declared `sensitive: true`",
+		kind, declaration.GetName(), declaration.TypeText())
 }
 
 // messageNames appends to into every record name t mentions, at any depth.

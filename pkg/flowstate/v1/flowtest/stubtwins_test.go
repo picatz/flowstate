@@ -7,6 +7,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowtest"
 )
 
@@ -136,4 +137,189 @@ func TestAFilteredCaseStubAheadOfACatchAllDefaultIsNotAWarning(t *testing.T) {
 	c := report.GetCases()[0]
 	require.True(t, c.GetPassed(), "%v / %v", c.GetError(), c.GetFailures())
 	assert.Empty(t, c.GetWarnings(), "a catch-all default is a fallthrough, not a shadow")
+}
+
+// A catch-all stub with no `times:` answers every call to its target, so a
+// filtered stub written after it can never be reached. It is refused at both
+// positions; the same two stubs in the other order are the ordinary ladder,
+// and a catch-all that drains (`times:`) lets the filtered stub answer after.
+func TestACatchAllAheadOfAFilteredStubShadowsIt(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, stubs string) *v1.TestReport {
+		t.Helper()
+
+		dir := t.TempDir()
+		writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+
+		return flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: the ladder
+    workflow: ./workflow.yaml
+    stubs:
+`+stubs+`
+    expect:
+      ran: [greet]
+`))
+	}
+
+	t.Run("catch-all first is refused", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		refused := report.GetRefused()
+		require.NotEmpty(t, refused)
+		assert.Contains(t, refused, `answers every call to its target and has no times:`)
+		assert.Contains(t, refused, `which filters with where: inputs.message == "hello", can never be reached`)
+		assert.Contains(t, refused, `is behind test "the ladder" stub 1 above`)
+		assert.Empty(t, report.GetCases())
+	})
+
+	t.Run("filtered first is the ordinary ladder", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+      - task: log
+        returns: {}`)
+		assert.Empty(t, report.GetRefused())
+	})
+
+	t.Run("a catch-all that drains lets the next answer", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        times: 1
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		assert.Empty(t, report.GetRefused())
+	})
+
+	t.Run("a different target is not shadowed", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - step: greet
+        returns: {}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		assert.Empty(t, report.GetRefused())
+	})
+
+	t.Run("two catch-alls are a twin, once", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        returns: {}
+      - task: log
+        returns: {}`)
+		refused := report.GetRefused()
+		require.NotEmpty(t, refused)
+		assert.Contains(t, refused, "selected again, the same way")
+		assert.NotContains(t, refused, "can never be reached")
+	})
+
+	t.Run("a catch-all that fails shadows too", func(t *testing.T) {
+		t.Parallel()
+
+		report := run(t, `      - task: log
+        fails: {kind: Upstream, message: down}
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}`)
+		assert.Contains(t, report.GetRefused(), "can never be reached")
+	})
+}
+
+// A case that answers a target with its own catch-all over a filtered stub from
+// the file's `defaults:` is the ordinary override: inherited stubs are ordered
+// after the case's own, so the author cannot reorder them and they are not judged.
+func TestACaseCatchAllOverAFilteredDefaultStubIsNotShadowRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+defaults:
+  stubs:
+    - task: log
+      where: inputs.message == "hello"
+      returns: {}
+tests:
+  - name: the override
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        returns: {}
+    expect:
+      ran: [greet]
+`))
+	assert.Empty(t, report.GetRefused())
+	assert.NotEmpty(t, report.GetCases())
+}
+
+// A table row that overrides a filtered entry stub with its own catch-all is the
+// same ordinary override: the entry's stubs are inherited after the row's.
+func TestATableRowCatchAllOverAFilteredEntryStubIsNotShadowRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: the table
+    workflow: ./workflow.yaml
+    stubs:
+      - task: log
+        where: inputs.message == "hello"
+        returns: {}
+    cases:
+      - name: overridden
+        stubs:
+          - task: log
+            returns: {}
+        expect:
+          ran: [greet]
+`))
+	assert.Empty(t, report.GetRefused())
+	assert.NotEmpty(t, report.GetCases())
+}
+
+// A suite's `defaults:` catch-all over a filtered stub from the directory's
+// testdefaults.yaml is the same override one fold level up: the directory's stub
+// is ordered after the suite's and cannot be moved from the suite.
+func TestASuiteDefaultsCatchAllOverADirectoryFilteredStubIsNotShadowRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/workflow.yaml", ghostWorkflow)
+	writeFile(t, dir+"/"+flowtest.DirDefaultsName, `
+defaults:
+  stubs:
+    - task: log
+      where: inputs.message == "hello"
+      returns: {}
+`)
+	path := dir + "/workflow.test.yaml"
+	writeFile(t, path, `
+defaults:
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: the override
+    workflow: ./workflow.yaml
+    expect:
+      ran: [greet]
+`)
+	report := flowtest.RunFile(path)
+	assert.Empty(t, report.GetRefused())
+	assert.NotEmpty(t, report.GetCases())
 }

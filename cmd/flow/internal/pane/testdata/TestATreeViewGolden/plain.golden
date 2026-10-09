@@ -1,0 +1,8 @@
+ ▾ inputs     {2}
+     version  "2026.9.0"
+     region   "eu-west-1"
+ ▾ steps      {40}
+→  ▸ build    {artifact: build.tar.gz}
+     test     {ok: true}
+    … 38 more
+   run        {}

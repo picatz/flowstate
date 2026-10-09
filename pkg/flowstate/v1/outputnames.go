@@ -100,6 +100,7 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 	case *Node_Loop:
 		out := []NamedOutput{{
 			Name:        LoopResultsField,
+			Type:        &Type{Kind: &Type_List{List: dynType()}},
 			Description: "One entry per iteration, each a map of body step id to that step's named outputs. Body outputs do not escape the loop.",
 		}}
 		if LoopCarriesState(kind.Loop) {
@@ -113,6 +114,7 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 	case *Node_ForEach:
 		return []NamedOutput{{
 			Name:        LoopResultsField,
+			Type:        &Type{Kind: &Type_List{List: dynType()}},
 			Description: "One entry per iteration, each a map of body step id to that step's named outputs. Body outputs do not escape the loop.",
 		}}, true
 
@@ -136,13 +138,6 @@ func OutputNames(node *Node, tasks *Registry) (names []NamedOutput, ok bool) {
 				desc = p
 			}
 			named := NamedOutput{Name: d.GetName(), Description: desc, Type: TypeOfLegacy(d.GetType())}
-			if d.GetType() == InputDeclaration_TYPE_INT {
-				// [CheckOutputValue] reads a `uint` as satisfying `int`, so a callee
-				// that declares `int` may store one, and `int` would refuse the
-				// `uint` arithmetic that runs. Until the numeric model decides, it
-				// is not known.
-				named.Type = nil
-			}
 			out = append(out, named)
 		}
 		return out, true

@@ -2671,7 +2671,7 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	// One pass, not [flowfile.ParseFile] followed by [flowfile.ValidateSourceFile]:
 	// the second compiled the file again from its bytes, every expression parsed
 	// twice before a step ran (#1795).
-	workflow, diagnostics, err := flowfile.ParseAndValidateFile(path)
+	workflow, positions, diagnostics, err := flowfile.ParseAndValidateFileAt(path)
 	if err != nil {
 		// Positioned diagnostics get a line each naming this file, like every
 		// other diagnostic surface. Wrapping the error instead put the filename on
@@ -2686,6 +2686,11 @@ func loadWorkflow(path string) (*v1.Workflow, error) {
 	if len(diagnostics) > 0 {
 		return nil, diagnosticsError(path, diagnostics)
 	}
+
+	// Where each step is written travels with the specification it is run from, so
+	// a failure can point back at this file wherever it is read, not only in this
+	// process. Advisory, and cleared from every digest.
+	flowfile.AttachSources(workflow, positions, path)
 
 	return workflow, nil
 }
@@ -2943,7 +2948,11 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 	runLocalCmd.Flags().Bool("debug", false,
 		"hold the run before each step and read commands from the terminal — step, "+
 			"continue, until, break, inspect, scope, quit; the console shares stderr "+
-			"with the run's account, so stdout stays the answer under every `--output`")
+			"with the run's account, so stdout stays the answer under every `--output`; at a terminal "+
+			"of at least 60x12 it is the full-screen debugger unless --tui=false")
+	addRecordFlag(runLocalCmd)
+	addReverseFlag(runLocalCmd)
+	addTUIFlag(runLocalCmd)
 
 	// Supplying signals up front, and naming who they are from. Declared
 	// through a helper because `flow debug replay` is the same local run with
@@ -3832,6 +3841,18 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	compileCmd := newCompileCommand()
 	compileCmd.GroupID = "workflow"
 	rootCmd.AddCommand(compileCmd)
+
+	// The same files read as a whole rather than one at a time: how a directory of
+	// workflows connects, where `compile` shows what one file becomes.
+	graphCmd := newGraphCommand()
+	graphCmd.GroupID = "workflow"
+	rootCmd.AddCommand(graphCmd)
+
+	// Beside `graph`, which writes the same graph as text or data: this is the
+	// screen you move around in, over the same sources and flags.
+	exploreCmd := newExploreCommand()
+	exploreCmd.GroupID = "workflow"
+	rootCmd.AddCommand(exploreCmd)
 
 	// Beside `validate` and `test`, the other two commands that read a Flowfile
 	// without running it. `buf breaking` guards the proto contract; this guards

@@ -1924,3 +1924,40 @@ func TestRemoteCatalogAddressForRespectsExplicitAddress(t *testing.T) {
 			"FLOWSTATE_ADDRESS names a deployment exactly as --address does")
 	})
 }
+
+// TestTheToolListIsSmallEnoughForAHostToHold pins #1288: the compiled
+// specification embeds the whole expression AST, and three tools carried it
+// whole, so `tools/list` was over a megabyte and a host that puts tool schemas in
+// the model's prompt spent most of its context on arguments no model builds by
+// hand. The bounds are generous on purpose: they catch the specification coming
+// back, not a new field.
+func TestTheToolListIsSmallEnoughForAHostToHold(t *testing.T) {
+	t.Parallel()
+
+	var total int
+	for _, tool := range registeredTools(t) {
+		encoded, err := json.Marshal(tool)
+		require.NoError(t, err)
+		total += len(encoded)
+
+		input, err := json.Marshal(tool.InputSchema)
+		require.NoError(t, err)
+		assert.Less(t, len(input), 40_000,
+			"%s: an input schema this large is spent on every prompt that lists the tools", tool.Name)
+	}
+
+	assert.Less(t, total, 400_000, "tools/list outgrew what a host can hold")
+
+	for _, tool := range registeredTools(t) {
+		if tool.Name != "flowstate_run" {
+			continue
+		}
+		schema, ok := tool.InputSchema.(map[string]any)
+		require.True(t, ok, "flowstate_run's input schema is %T", tool.InputSchema)
+		properties, _ := schema["properties"].(map[string]any)
+		workflow, _ := properties["workflow"].(map[string]any)
+		require.NotNil(t, workflow, "flowstate_run lost its workflow argument")
+		assert.Contains(t, workflow["description"], "flowstate_compile",
+			"dropping the schema must not drop the instruction for where the specification comes from")
+	}
+}

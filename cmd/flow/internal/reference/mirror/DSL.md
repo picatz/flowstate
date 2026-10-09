@@ -699,14 +699,20 @@ null (`has(inputs.x)` asks whether it was given).
 states.** `steps.get.status_code` on an `http` step is an `int`, `headers` a `map(string,
 string)` and `body` a `string`, so `steps.get.status_code == "200"` and
 `steps.get.headers["X-Count"] + 1` are refused where they are written rather than at the
-step that reads them. A `call:` step's declared outputs have their declared `type:` (except `int`, which a callee may fill with a `uint`),
+step that reads them. A `call:` step's declared outputs have their declared `type:` (an `int` is an `int`: a `uint` that fits is narrowed to one and one above the largest int is refused),
 which both drivers already enforce on the callee's answer, and a wait's `timed_out` is a
 bool and its batch `count` an int. Each is the type the run stores, not the type the
 schema spells (the same projection `flow tasks` describes), and anything the definition
 leaves open stays `dyn`: a response's `json`, an `outputs:` the step shapes itself, an
-output with no declared `type:`, a loop's `results`. Like a `value:` step, a task, call or
-wait is typed only for positions written after it, and only when its id is unique. What a
-loop's `as:` carries is the rest of #1634.
+output with no declared `type:`. Like a `value:` step, a task, call, wait or
+loop is typed only for positions written after it, and only when its id is unique. What a
+loop's `as:` carries is typed just below.
+
+A `for_each` binds its `as:` name (`item` by default) with the element type of `items:`: over a
+`list(string)` input the item is a `string`, so `n.first_name` is refused where it is written, and
+over a `list(dyn)` it stays `dyn`. A loop's `results` is a list, so `steps.loop.results.first` is refused
+too. Over a `list(Order)` the item is an `Order`: `order.id` is typed at its leaf, `order.idd` is refused with the
+fields the record declares, and an inner loop over `order.lines` binds a `Line` the same way. A `loop:`'s `state` is not typed yet.
 
 *Since written, a type of your own (slice 1):* **`types:` names a record.** A shape
 that more than one declaration repeats is declared once, under `types:`, and used by name
@@ -742,8 +748,21 @@ submit and on completion for a value that arrives, on both drivers through one f
 type that refers to itself, directly or through others, is refused, because a value of a
 recursive record has no bound until the type has one; so is a name nobody declared. At run
 time a record is a map keyed by field name, so an older reader sees what it sees for a
-`struct`. Beyond the shape, those bounds and `must:` nothing is carried yet: a field that sets `default:`, `example:`
-or `sensitive:` is refused with that reason rather than parsed and silently not enforced.
+`struct`. A field's `default:` is the value a record takes where it leaves the field out: it is filled in
+where the value is bound (a run's input, a call's argument, an output), at any depth and in a list
+too, so `inputs.order.status` is there to read whether or not the caller sent it, and a supplied
+value, including a zero one, always wins. A default is held when the type is declared to what
+an input's is (the field's type, its `values:`, `min_len:`, `max_len:`, `min_items:`, `max_items:`
+and `must:`), and a field marked `required:` cannot have one, since a required field is never
+absent. A type whose defaults expand past 4096 entries once a value leaves every field out (a
+default that is a record whose fields default to records) is refused where it is declared, and a
+submitted value that would fill more than 65536 defaults is refused before it is filled.
+`example:` is held the same way and never bound. A record an expression builds mid-run is its own: defaults apply at the boundaries a value
+crosses, not inside an expression. A field marked `sensitive:` makes every input and output
+typed by the record (at any depth, through lists and maps) sensitive whole: the compiler marks the
+declaration, so what is withheld is decided once where the type is declared, and a specification
+that types a declaration by such a record without marking it is refused. A run shows a value that
+holds a sensitive field the way it shows any sensitive value, never field by field.
 
 *Slice 2:* an expression reading a field is checked against the record. `inputs.order.id` is a
 `string` wherever an expression is checked, so `inputs.order.id + 1` and an `if:` that reads a
@@ -753,8 +772,8 @@ closed record does not declare is refused with the ones it does and, for a near 
 meant (`the record Order has no field "idd"; it declares "id", "status". Did you mean "id"?`).
 Hovering `inputs.order` or any field after it shows the field's type, whether it is required,
 its description and, for a record, the fields it holds. An optional read (`inputs.order.?id`) and an index by a literal key
-(`inputs.order["id"]`) name the same field and are checked for existing, though only a plain
-select is typed at its leaf. A path that leaves the record into a
+(`inputs.order["id"]`) name the same field, checked for existing and typed like it: the optional
+read is an `optional(string)` and the index a `string`. A path that leaves the record into a
 list or a map ends there: the element of a `list(Line)` is not typed yet.
 
 ### `state:` gets a byte bound now, not an open question

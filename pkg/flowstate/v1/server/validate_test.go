@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -235,6 +236,13 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		// Present and empty rather than absent: "compiled clean" is stated.
 		require.NotNil(t, resp.Msg.GetReport())
 		assert.Empty(t, resp.Msg.GetReport().GetDiagnostics())
+
+		// The contract rides along as JSON Schema, in step with the specification.
+		var inputs, outputs map[string]any
+		require.NoError(t, json.Unmarshal([]byte(resp.Msg.GetInputsJsonSchema()), &inputs))
+		require.NoError(t, json.Unmarshal([]byte(resp.Msg.GetOutputsJsonSchema()), &outputs))
+		assert.Equal(t, "remote-check inputs", inputs["title"])
+		assert.Equal(t, "remote-check outputs", outputs["title"])
 	})
 
 	t.Run("a broken file answers with diagnostics and no specification", func(t *testing.T) {
@@ -252,6 +260,8 @@ func TestCompileAnswersWithWhatRunTakes(t *testing.T) {
 		assert.Nil(t, resp.Msg.GetWorkflow(),
 			"a specification was handed out beside a list of its problems")
 		assert.NotEmpty(t, resp.Msg.GetReport().GetDiagnostics())
+		assert.Empty(t, resp.Msg.GetInputsJsonSchema(), "a contract was handed out beside a list of problems")
+		assert.Empty(t, resp.Msg.GetOutputsJsonSchema())
 	})
 
 	t.Run("the bounds hold here too", func(t *testing.T) {

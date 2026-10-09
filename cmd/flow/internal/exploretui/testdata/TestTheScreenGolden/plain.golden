@@ -1,0 +1,35 @@
+=== 120x16
+flow explore fixtures                                                                                                   
+→ graph 3 workflows ───────────────────────────────────────────── details ──────────────────────────────────────────────
+ ▸ audit       1 COMPLETED                                        kind       workflow                                   
+ ▸ charge                                                         name       charge                                     
+ ▾ checkout    1 FAILED, 2 RUNNING                                id         workflow:charge                            
+→  ▾ charge    calls                                              calls      audit                                      
+     ▸ audit   calls  1 COMPLETED                                 uses       http                                       
+       http    uses                                               called by  checkout                                   
+     approved  waits for                                                                                                
+     http      uses x2                                                                                                  
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+f filter  r refresh  ? help  q quit                                                                                     
+=== 60x16
+flow explore fixtures                                       
+→ graph 3 workflows ────────────────────────────────────────
+ ▸ audit      1 COMPLETED                                   
+ ▸ charge                                                   
+ ▾ checkout   1 FAILED, 2 RUNNING                           
+→  ▾ charge   calls                                         
+     ▸ audit  calls  1 COMPLETED                            
+       http   uses                                          
+details ────────────────────────────────────────────────────
+kind       workflow                                         
+name       charge                                           
+id         workflow:charge                                  
+calls      audit                                            
+…                                                           
+                                                            
+f filter  r refresh  ? help  q quit                         
+

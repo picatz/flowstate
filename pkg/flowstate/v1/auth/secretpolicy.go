@@ -255,6 +255,7 @@ func newSecretEnv() (*cel.Env, error) {
 		cel.Variable(attrWorkload, cel.ObjectType(workloadTypeName)),
 		cel.Variable(attrSecret, cel.ObjectType(secretTypeName)),
 		ext.Strings(ext.StringsVersion(5)),
+		celrule.Literals(),
 	)
 }
 

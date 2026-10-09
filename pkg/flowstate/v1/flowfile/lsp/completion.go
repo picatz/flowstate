@@ -522,6 +522,18 @@ type refScope struct {
 	// things and completing one as the other is the mistake this package exists to
 	// avoid.
 	vars []celcomplete.Candidate
+
+	// inputs are the workflow's declared inputs, offered after `inputs.` and
+	// never bare, and the same list wherever the cursor is for the reason vars
+	// are. Their detail and documentation come from the compiled declaration when
+	// the file compiles — which a file with a half-typed `${inputs.` often does
+	// not — and are the declared names alone when it does not.
+	inputs []celcomplete.Candidate
+
+	// documentLevel marks an expression in one of the document's own blocks (the
+	// workflow `vars:`), evaluated before the run exists: no `run`, no `trigger`.
+	// The validator refuses both there, so the menu does not offer them.
+	documentLevel bool
 }
 
 // referenceScope returns the names an expression at pos may reference.
@@ -556,9 +568,11 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	// where the model is unavailable but this block usually still parsed.
 	if doc.parsed != nil {
 		scope.vars = varsCandidates(doc.parsed.varsEntry, "a variable declared by the workflow")
+		scope.inputs = declaredInputCandidates(doc)
 	}
 
 	scope.locals = append(scope.locals, declaredFunctionCandidates(doc)...)
+	scope.documentLevel = inDocumentExpression(doc, pos)
 
 	if clock {
 		// Bound by the engine for a wait's expressions and nowhere else, which is
@@ -864,7 +878,7 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 			continue
 		}
 		seen[s.id] = true
-		scope.steps = append(scope.steps, stepCandidate(s, doc.tasks))
+		scope.steps = append(scope.steps, stepCandidate(doc, s, doc.tasks))
 	}
 
 	// A `vars:` on an enclosing block binds for that block's whole body, so a step
@@ -880,6 +894,64 @@ func scopeFromModel(doc *document, from *parsedStep, ls loopScope) refScope {
 	}
 
 	return scope
+}
+
+// declaredInputCandidates lists the file's declared inputs as names for after `inputs.`.
+func declaredInputCandidates(doc *document) []celcomplete.Candidate {
+	var top *entry
+	for _, e := range doc.parsed.entries {
+		if e.key == "inputs" {
+			top = e
+		}
+	}
+	if top == nil {
+		return nil
+	}
+
+	wf := compiledWorkflow(doc)
+	var out []celcomplete.Candidate
+	for _, e := range nestedEntries(top) {
+		if e.key == "" {
+			continue
+		}
+		c := celcomplete.Candidate{Name: e.key, Kind: celcomplete.KindValue, Detail: writtenInputDetail(e)}
+		if wf != nil {
+			if d := declaredInput(wf, e.key); d != nil {
+				c.Detail = v1.TypeString(d.DeclaredType())
+				if d.GetRequired() {
+					c.Detail += " (required)"
+				}
+				c.Docs = declarationDoc(e.key, d, "")
+			}
+		}
+		out = append(out, c)
+	}
+
+	return out
+}
+
+// writtenInputDetail summarizes an input from the keys the author wrote under it,
+// for the moment the file does not compile (a half-typed `${inputs.` is such a
+// moment) and the compiled declaration is unavailable.
+func writtenInputDetail(e *entry) string {
+	var kind string
+	var required bool
+	for _, field := range nestedEntries(e) {
+		switch field.key {
+		case "type":
+			kind = field.valueText()
+		case "required":
+			required = field.valueText() == "true"
+		}
+	}
+	if kind == "" {
+		return "an input declared by the workflow"
+	}
+	if required {
+		kind += " (required)"
+	}
+
+	return kind
 }
 
 // varsCandidates offers the keys of a `vars:` block.
@@ -971,7 +1043,7 @@ func scopeFromOutline(earlier []*outlineStep, currentIndent int, tasks *v1.Regis
 }
 
 // stepCandidate describes one step as a reference candidate.
-func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
+func stepCandidate(doc *document, s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 	c := celcomplete.Candidate{Name: s.id, Kind: celcomplete.KindValue, Detail: s.kind()}
 
 	switch {
@@ -1019,6 +1091,41 @@ func stepCandidate(s *parsedStep, tasks *v1.Registry) celcomplete.Candidate {
 					Docs: n.Description,
 				})
 			}
+		}
+
+	case s.callEntry != nil:
+		// A `call:` produces what the callee declares under `outputs:`, read from
+		// the callee the way the compiler reads it ([callee]), so a callee that
+		// does not compile offers nothing rather than names out of a broken file.
+		//
+		// Resolved only when the cursor is after this step's own dot: every
+		// visible step candidate is built before the completer knows which
+		// qualifier is being completed, and reading and compiling each earlier
+		// call target on every request would multiply file and parse work by the
+		// number of calls in the file.
+		c.Detail = "call"
+		target := s.callEntry.valueText()
+		c.MemberSource = func(prefix string) ([]celcomplete.Candidate, bool) {
+			called, ok := callee(doc, target)
+			if !ok {
+				return nil, false
+			}
+			var members []celcomplete.Candidate
+			for _, declaration := range called.workflow.GetDeclaredOutputs() {
+				if !strings.HasPrefix(declaration.GetName(), prefix) {
+					continue
+				}
+				if len(members) == celcomplete.MaxCandidates {
+					return members, true
+				}
+				members = append(members, celcomplete.Candidate{
+					Name:   declaration.GetName(),
+					Kind:   celcomplete.KindField,
+					Detail: declaration.TypeText(),
+					Docs:   declaration.GetDescription(),
+				})
+			}
+			return members, false
 		}
 
 	case s.valueEntry != nil:
@@ -1129,9 +1236,7 @@ func taskOutputs(def v1.TaskDef) []celcomplete.Candidate {
 // a file is written before there is anything to reference and the name is still
 // what an author needs to learn. The vars root is offered only where the file
 // declares one, because a root that resolves to an empty map is a name nobody
-// should be taught. There is no inputs root, and that is a gap rather than a
-// decision: a Flowfile's `inputs:` are declared in the file and an editor could
-// offer them — see the note on [refScope.vars].
+// should be taught. The inputs root follows the vars rule.
 func (s refScope) shared() celcomplete.Scope {
 	shared := celcomplete.Scope{
 		// The editor completes against the vocabulary this build compiles
@@ -1140,8 +1245,18 @@ func (s refScope) shared() celcomplete.Scope {
 		Locals:  s.locals,
 		Roots:   []celcomplete.Candidate{celcomplete.StepsRoot(s.steps)},
 	}
+	if !s.documentLevel {
+		// Closed sets the validator refuses an unknown field against, read from
+		// the same lists rather than spelled a third time.
+		shared.Roots = append(shared.Roots,
+			celcomplete.RunRoot(flowfile.RunFields(), flowfile.RunIdentityFields()),
+			celcomplete.TriggerRoot(v1.TriggerContextFields()))
+	}
 	if len(s.vars) > 0 {
 		shared.Roots = append(shared.Roots, celcomplete.VarsRoot(s.vars))
+	}
+	if len(s.inputs) > 0 {
+		shared.Roots = append(shared.Roots, celcomplete.InputsRoot(s.inputs))
 	}
 
 	return shared
@@ -1340,6 +1455,104 @@ func taskCandidates(prefix string, replace lsp.Range, tasks *v1.Registry) []lsp.
 		})
 	}
 	return items
+}
+
+// snippetizeTasks turns each task-name candidate into a snippet that also writes
+// the task's required inputs as tabstops, so choosing `http` leaves the cursor on
+// `url:` instead of on a line the author then has to look up.
+//
+// A separate pass over the list rather than a second set of candidates: the
+// plain candidate is what a client without snippet support gets, and both are the
+// same item. A task with no required inputs is left alone, because a snippet that
+// adds nothing is only a way for a client to treat the item differently.
+//
+// The protocol has the client re-indent a snippet's continuation lines by the
+// leading whitespace of the line it is inserted on, so the snippet carries only
+// what is relative to that: two spaces, plus however far the task key sits past
+// the line's own indentation. That second part is nonzero in the commonest place
+// a task is written, `- http`, where the key starts after the list marker and its
+// inputs must line up under it, not under the dash.
+func snippetizeTasks(doc *document, list *lsp.CompletionList, tasks *v1.Registry) {
+	for i, item := range list.Items {
+		if item.Kind != lsp.CIKFunction || item.TextEdit == nil || item.TextEdit.NewText != item.Label+": " {
+			continue
+		}
+		def, ok := tasks.Lookup(item.Label)
+		if !ok || def.Inputs == nil {
+			continue
+		}
+
+		indent := strings.Repeat(" ", keyOffset(doc, item.TextEdit.Range.Start)+2)
+		var b strings.Builder
+		fields := def.Inputs.Fields()
+		n := 0
+		for j := range fields.Len() {
+			fd := fields.Get(j)
+			if !required(fd) {
+				continue
+			}
+			n++
+			if n == 1 {
+				b.WriteString(def.Name + ":")
+			}
+			fmt.Fprintf(&b, "\n%s%s: $%d", indent, fd.Name(), n)
+		}
+		if n == 0 {
+			continue
+		}
+
+		list.Items[i].TextEdit = &lsp.TextEdit{Range: item.TextEdit.Range, NewText: b.String()}
+		list.Items[i].InsertTextFormat = lsp.ITFSnippet
+	}
+}
+
+// insertTextModeAdjustIndentation is InsertTextMode.adjustIndentation (LSP 3.16):
+// the client re-indents a multi-line insertion by the indentation of the line it
+// lands on, which is what the relative indentation of a snippet assumes.
+const insertTextModeAdjustIndentation = 2
+
+// wireCompletionItem is a completion item with the field go-lsp lacks.
+type wireCompletionItem struct {
+	lsp.CompletionItem
+
+	InsertTextMode int `json:"insertTextMode,omitempty"`
+}
+
+// wireCompletionList is [lsp.CompletionList] over [wireCompletionItem].
+type wireCompletionList struct {
+	IsIncomplete bool                 `json:"isIncomplete"`
+	Items        []wireCompletionItem `json:"items"`
+}
+
+// withAdjustedIndentation states the indentation mode on every snippet item
+// rather than leaving it to the client's default: snippetSupport says a client
+// expands snippets, not that it re-indents them.
+func withAdjustedIndentation(list *lsp.CompletionList) *wireCompletionList {
+	out := &wireCompletionList{IsIncomplete: list.IsIncomplete, Items: make([]wireCompletionItem, len(list.Items))}
+	for i, it := range list.Items {
+		out.Items[i].CompletionItem = it
+		if it.InsertTextFormat == lsp.ITFSnippet {
+			out.Items[i].InsertTextMode = insertTextModeAdjustIndentation
+		}
+	}
+	return out
+}
+
+// keyOffset is how many columns the key starting at pos sits past the
+// indentation of its line, which is the list marker's width when the key follows
+// one. Zero when the line cannot be read.
+func keyOffset(doc *document, pos lsp.Position) int {
+	if pos.Line < 0 || pos.Line >= doc.index.lineCount() {
+		return 0
+	}
+	line := doc.index.line(pos.Line)
+	if pos.Character < 0 || pos.Character > len(line) {
+		return 0
+	}
+	before := line[:pos.Character]
+	trimmed := strings.TrimLeft(before, " \t")
+
+	return len(trimmed)
 }
 
 // inputCandidates offers the inputs the enclosing step's task declares, required
@@ -1544,4 +1757,24 @@ func list(items []lsp.CompletionItem) *lsp.CompletionList {
 		return strings.Compare(a.Label, b.Label)
 	})
 	return &lsp.CompletionList{IsIncomplete: false, Items: items}
+}
+
+// inDocumentExpression reports whether pos is inside one of the document's own
+// expressions, the ones [hoverDocumentExpression] answers for.
+func inDocumentExpression(doc *document, pos lsp.Position) bool {
+	if doc.parsed == nil {
+		return false
+	}
+	for _, in := range doc.parsed.expressionEntries() {
+		inside := false
+		walkValues(in.value, func(v *value) {
+			if _, _, ok := v.fenceAt(doc.index, pos); ok {
+				inside = true
+			}
+		})
+		if inside {
+			return true
+		}
+	}
+	return false
 }

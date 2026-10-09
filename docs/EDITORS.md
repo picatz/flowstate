@@ -12,10 +12,12 @@ that only ever offers things the engine will accept.
 
 | Feature | What you get |
 | --- | --- |
-| **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, an input a task used to accept and no longer does — reported as a key that can be deleted rather than as a misspelling of something else, malformed step timeouts and retry intervals, a `log:` message that interpolates an input declared `sensitive:` — the `sensitive-in-log` lint, which names what to log instead — a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. |
-| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces when the registry declares one (an output shaped by the step's own `outputs:` has no type to claim), and which line declared it; what the root `steps` itself is; what a loop's iterator binds; what `now` is inside a wait's own expressions and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
-| **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). |
-| **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration, from a loop's bare iterator name to the loop that binds it, and from a `call:` target to the called Flowfile — opened at its `name:`, and resolved relative to the calling file's own directory by the same rule the compiler uses, so the file you arrive in is the file the run compiles. A call the compiler would refuse, or one naming a file that is not there, navigates nowhere rather than somewhere wrong. |
+| **Diagnostics** | YAML syntax errors, CEL syntax errors underlined inside the expression, unknown tasks, duplicate and unusable step ids, references to steps that do not exist or have not run yet, inputs a task does not declare (with a spelling suggestion), required inputs left out, an input a task used to accept and no longer does — reported as a key that can be deleted rather than as a misspelling of something else, malformed step timeouts and retry intervals, a `log:` message that interpolates an input declared `sensitive:` — the `sensitive-in-log` lint, which names what to log instead — a step that is no kind of work or more than one, a step named the retired bare way rather than under `steps.` — reported as a migration with the command that performs it, not as an unknown name — and an `edition:` this build does not compile, which is reported on its own since every other complaint would be describing the wrong grammar. A duplicate id lists the other declarations, and a reference to a step that runs later or is out of scope points at where that step is declared, as related information a client shows beside the diagnostic. |
+| **Hover** | A task's summary and full typed signature; an input's type, whether it is required, and the value constraints the schema enforces; what a `${steps.<id>.<output>}` reference resolves to, what type it produces when the registry declares one (an output shaped by the step's own `outputs:` has no type to claim), and which line declared it, and for a `call:` step the callee's declared output with its type and description (completion after `steps.<call>.` lists exactly those names); what the root `steps` itself is, and the closed field sets of `run` and `trigger` (offered by completion too, read from the lists the validator refuses an unknown field against); what a workflow input is, on its declaration and on `${inputs.<name>}` (type, requiredness and default, enum members, bounds, `must:`, example), the same account a `call:` argument gets from the callee; what `${vars.<name>}` is bound to and where it is declared; what a loop's iterator binds; what `now` is inside a wait's own expressions and why it is bound only there; what a `${secret('scheme:name')}` reference names; what each `Flowfile` key means. |
+| **Completion** | Task names where a step's keys go, alongside `id`/`if`/`timeout` and the other kinds; input keys under the task's own name, required ones first, already-written ones omitted; the names in scope inside `${...}` (see the scoping rules below); and the document's own keys (`id`, `if`, `timeout`, `retry`, `for_each`, `parallel`, …). A client that supports snippets gets each task name that has required inputs as a snippet writing them out (`http:` then `url:` with the cursor on it); other clients get the plain task name. |
+| **Signature help** | Inside the parentheses of a CEL call in `${...}`: the call form of each overload of a profile function (`math.abs(double) -> double`, `string.replace(string, string, int) -> string`) or of a function the file's own `functions:` declares, with the argument under the cursor marked and the overload that has an argument there chosen. Read lexically, so it works while the call is still unfinished. Macros (`map`, `filter`, `sortBy`) have no overloads and answer nothing. |
+| **Go to definition** | Jump from a `${steps.<id>.<output>}` reference to that step's `id:` declaration, from a loop's bare iterator name to the loop that binds it, from `vars.<name>`, `inputs.<name>` and a bare step var to the key that declares it, and from a `call:` target to the called Flowfile — opened at its `name:`, and resolved relative to the calling file's own directory by the same rule the compiler uses, so the file you arrive in is the file the run compiles. A call the compiler would refuse, or one naming a file that is not there, navigates nowhere rather than somewhere wrong. |
+| **References, highlight, rename** | For a step id: every `${steps.<id>…}` that resolves to it, with or without the `id:` itself; the same sites highlighted under the cursor, the declaration as a write; and a rename that edits the `id:` and each reference together. Resolution is the one go-to-definition uses, so a body step that two sibling loops both name renames only its own loop's references. Rename refuses rather than renames partway: a name that is not a usable step id, one another step already holds, a reference inside a folded block scalar the server cannot place, or an expression the server does not walk that still names the step. A `steps.<id>` inside a string literal is text, not a reference. The same three requests also cover a loop's `as:` iterator (its declaration and every bare read in the body, apart from names a comprehension rebinds) and a workflow `vars:` name (its key and every `vars.<name>` read). Rename refuses rather than leaving a read behind: when a read sits in an expression the server does not walk, when the new name collides with a var, another loop in scope or a name written in an expression that reads the iterator, or when the new name is a CEL reserved word, or when `vars` is used in a form the server cannot attribute to a name, such as `vars[key]`. A step's own `vars:`, an implicit `item` iterator and reads written as bare CEL outside `${...}` are not covered; the validator reports a name left behind there. |
 | **Document symbols** | An outline of the workflow's steps, each labelled with the task it runs, and for a nested step the block it belongs to. |
 | **Formatting** | Rewrites the whole document into the form `flow fmt` and `flowfile.Format` write. Comments are kept, carried onto the rewritten document at the key, value or list entry they were written against; whitespace is not, so a blank line, a mapping's key order, and a string literal's quote style are all normalized away. A document that does not compile draws no edit at all, never a partial or guessed one, and neither does one carrying a comment the rewrite cannot keep. Because of the rewrite, this is opt-in in most editors' configuration rather than run on every save; see the per-editor notes below for how to bind it deliberately. |
 | **Semantic tokens** | Colour inside `${...}` and inside a bare-CEL value such as `must:`: the engine's roots (`inputs`, `vars`, `steps`, `run`, `this`, …) apart from names an author chose, members, functions and methods, strings, numbers, operators and keywords. Lexical, so a half-typed expression is already coloured; full-document answers only. An expression whose bytes cannot be tied to document positions — a folded `>` block scalar — is left to the editor's own grammar. Token types are standard LSP names, so an editor's default theme needs no Flowstate knowledge. |
@@ -204,6 +206,8 @@ specific they are:
 
 - a file literally named `Flowfile` or `Flowfile.yaml`
 - `workflow.yaml` or `workflow.yml`
+- `*.flow.yaml` or `*.flow.yml` — the name to give a Flowfile that is not alone in
+  its directory (`orders.flow.yaml`); a suite for it is `orders.flow.test.yaml`
 - anything under a `workflows/` directory
 - `*.test.yaml` and `testdefaults.yaml` — `flow test`'s suite format and its
   shared directory fixture, which the server recognizes by name and checks with
@@ -212,6 +216,11 @@ specific they are:
 
 Adjust these to your layout. Pointing the server at every `*.yaml` in a repository
 works, but you will get Flowfile diagnostics on your Kubernetes manifests.
+
+GitHub does not recognize Flowfiles yet. The Linguist entry, samples and grammar
+scopes are prepared in [`editors/linguist`](../editors/linguist) and not submitted,
+because Linguist asks for thousands of indexed files per extension first (see its
+[usage requirements](https://github.com/github-linguist/linguist/blob/main/CONTRIBUTING.md)).
 
 ### What the server provides for a test file
 
@@ -328,6 +337,7 @@ vim.filetype.add({
   },
   pattern = {
     ['.*/workflows/.*%.ya?ml'] = 'flowfile',
+    ['.*%.flow%.ya?ml'] = 'flowfile',
     ['.*%.test%.ya?ml'] = 'flowfile',
   },
 })
@@ -394,6 +404,26 @@ filetype does not have to be `flowfile`:
 :lua vim.lsp.start({ name = 'flowstate', cmd = { 'flow', 'lsp' } })
 ```
 
+## Vim
+
+`editors/vim/` is a runtime path with filetype detection, a small syntax file
+that colours `${...}` and `must:` as CEL, and an `ftplugin`. It also carries the
+`vim-lsp`, `coc.nvim` and `yegappan/lsp` snippets that start `flow lsp`; see
+[`editors/vim/README.md`](../editors/vim/README.md). Neovim does not need it —
+the section above gets semantic tokens from the server — though its runtime
+accepts the same files.
+
+## Tree-sitter
+
+`editors/tree-sitter-cel` holds a tree-sitter grammar for CEL, with highlight
+queries, and Flowfile injection queries that run over the stock YAML parser and
+hand the `must:` values and whole-scalar `${...}` fences to it. It is the parser
+an editor needs to colour and fold CEL structurally; `flow lsp` supplies the
+scope-aware part. [Its README](../editors/tree-sitter-cel/README.md) says what is
+covered and what is not, and CI builds and tests it. For Neovim,
+[`editors/nvim`](../editors/nvim/README.md) wires it into a `flowfile` buffer and
+CI asserts which ranges Neovim injects.
+
 ## Visual Studio Code
 
 `editors/vscode/` in this repository is a thin client over `flow lsp`, built to
@@ -447,6 +477,8 @@ file-types = [
   { glob = "Flowfile.yaml" },
   { glob = "workflow.yaml" },
   { glob = "workflow.yml" },
+  { glob = "*.flow.yaml" },
+  { glob = "*.flow.yml" },
   { glob = "workflows/*.yaml" },
 ]
 language-servers = ["flowstate"]
@@ -494,6 +526,37 @@ glob matching a real nested path, and the editor behaviour itself — Helix is a
 terminal UI with no headless mode, so `--health` is as far as a scripted check
 reaches.
 
+### CEL files in Helix
+
+Helix can colour a standalone `.cel` file once it has the CEL grammar. The
+grammar's parser is generated, not checked in, so generate it first and point Helix
+at the directory:
+
+```console
+$ (cd editors/tree-sitter-cel && tree-sitter generate)
+$ mkdir -p ~/.config/helix/runtime/queries/cel
+$ cp editors/tree-sitter-cel/queries/highlights.scm ~/.config/helix/runtime/queries/cel/
+```
+
+```toml
+[[language]]
+name = "cel"
+scope = "source.cel"
+file-types = ["cel"]
+grammar = "cel"
+
+[[grammar]]
+name = "cel"
+source = { path = "/path/to/flowstate/editors/tree-sitter-cel" }
+```
+
+Then `hx --grammar build`. **Unverified:** written from Helix's documentation and
+not run. There is deliberately no injection of CEL *into* a Flowfile for Helix:
+`must:` is CEL only beneath `inputs:`, `outputs:` and `types:` and not inside a
+`default:` or `example:`, which a tree-sitter query cannot state at unbounded depth,
+and an injection that fires on every `must` key colours ordinary data as CEL. `flow
+lsp` semantic tokens enforce that scope and colour the CEL in a Flowfile.
+
 ## Zed
 
 Zed needs an extension to register a language server, but you can point it at the
@@ -519,6 +582,9 @@ elsewhere until a proper Flowfile extension exists.
 
 > **Untested.** Zed is a GUI application and was not run while writing this. The
 > settings shape is from Zed's documentation, not from a session anyone had.
+> CEL injection needs a Zed extension that bundles the `tree-sitter-cel` grammar,
+> which does not exist yet; until it does, Zed gets the language server's
+> semantic tokens and nothing from the tree-sitter queries.
 
 ## Emacs (eglot)
 
@@ -541,6 +607,7 @@ whichever of the three you actually have:
 (add-to-list 'auto-mode-alist '("/Flowfile\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflow\\.ya?ml\\'" . flowfile-mode))
 (add-to-list 'auto-mode-alist '("/workflows/.*\\.ya?ml\\'" . flowfile-mode))
+(add-to-list 'auto-mode-alist '("\\.flow\\.ya?ml\\'" . flowfile-mode))
 
 (with-eval-after-load 'eglot
   (add-to-list 'eglot-server-programs
@@ -572,7 +639,9 @@ $ flow dap
 Run by hand it prints a banner saying so and waits — like `flow lsp`, it is meant
 to be launched by an editor rather than typed. For a terminal debugger, use
 `flow run local --debug` or `flow debug attach`, which are the same sessions
-behind the same commands.
+behind the same commands; at a terminal they open the
+[full-screen debugger](DEBUGGING.md#the-default-is-a-full-screen-debugger), and
+`--tui=false` keeps the line editor.
 
 A launch *runs* the workflow, so it takes the same deployment policy flags the
 worker and `flow run local` take. Pass `--egress-policy` and `--task-policy` in
@@ -818,6 +887,13 @@ console is a REPL over the held run, and hovering a name evaluates it:
 true
 ```
 
+The console completes as you type, on `.` and on demand (the `completions`
+request): `steps.` offers the steps that have finished, and `steps.flagged.`
+offers that step's outputs. A completion is a name and never a value, and it
+stops at the names an author wrote: a key inside a produced value is data, so
+`steps.flagged.value.` offers nothing, as the terminal prompt's tab does not. A
+name the redactor would change is left out rather than shown redacted.
+
 A map or list answers with a reference the variables pane expands, a page at a
 time. The pane is the same scope, grouped as `scope` groups it: `steps`, `vars`,
 `inputs`, a loop's binding, `run` and `trigger`. A very large scope is rendered
@@ -845,8 +921,10 @@ Open a Flowfile and try each of these:
    `outputs:` shaped them.
 3. **Hover.** Put the cursor on a task name. You should see its summary and a table
    of typed inputs and outputs, with required inputs marked.
-4. **Go to definition.** With the cursor on a `${steps.<id>.<output>}` reference,
-   jump to that step's `id:`.
+4. **Go to definition, references, rename.** With the cursor on a
+   `${steps.<id>.<output>}` reference, jump to that step's `id:`. From the `id:`,
+   list its references, or rename it: every reference moves with it, and the
+   rename refuses if one could not be moved.
 5. **Outline.** Open your editor's symbol list. Each step appears, labelled with
    its task.
 6. **Formatting.** Run your editor's "Format Document" command on a file with a
@@ -935,7 +1013,7 @@ You can run the same thing yourself; it needs `flow` on `PATH` and nothing else:
 $ go build -o /usr/local/bin/flow ./cmd/flow
 $ nvim --clean --headless -u tools/editorsmoke/init.lua -l tools/editorsmoke/probe.lua
 …
-36 checks, 0 failed
+40 checks, 0 failed
 ```
 
 **Verified by hand, not by CI:** Helix 25.07.1 (`hx --health flowfile`, including

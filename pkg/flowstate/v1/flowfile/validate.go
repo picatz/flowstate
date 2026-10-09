@@ -35,6 +35,13 @@ var celReservedIdentifiers = []string{
 	"return", "true", "var", "void", "while",
 }
 
+// IsCELReservedIdentifier reports whether CEL refuses name as an identifier, so a
+// tool that proposes a binding name (an editor's rename) can refuse it before the
+// validator has to.
+func IsCELReservedIdentifier(name string) bool {
+	return slices.Contains(celReservedIdentifiers, name)
+}
+
 // stepProperties are the fields belonging to a step itself rather than to the task
 // it runs, so a diagnostic can name them the way the file writes them.
 var stepProperties = map[string]bool{
@@ -458,6 +465,32 @@ func validateStepIDs(wf *v1.Workflow) Diagnostics {
 	return ds
 }
 
+// bindingNameDiagnostic is the one rule for a name an author chooses that an
+// expression then reads: `vars.<name>`, a step's bare `vars:` binding, a wait's
+// shaped `steps.<id>.<name>`. It must be a CEL identifier and not one of the
+// lexer's own words, and is refused where it is declared, naming the spelling
+// that would fail, rather than at a use site that can only say "unknown name"
+// (#1427). ref is how an expression would spell it, with %s for the name; bare
+// names are also refused a reserved word, which a selector after a root is not.
+//
+// Step ids, `inputs:` and `outputs:` names are held to the same grammar by
+// [v1.StepIDIssues] and the schema's pattern; this is the rule for the places
+// that had no such check.
+func bindingNameDiagnostic(step, field, ref, name string, bare bool) (Diagnostic, bool) {
+	spelled := fmt.Sprintf(ref, name)
+	var message string
+	switch {
+	case v1.IsCELUnusableStepID(name) || (bare && slices.Contains(celReservedIdentifiers, name)):
+		message = fmt.Sprintf("%q is punctuation or a reserved word in CEL rather than a name, so ${%s} cannot be parsed; choose another name", name, spelled)
+	case !v1.IsCELIdentifier(name):
+		message = fmt.Sprintf("%q is not a valid identifier, so ${%s} cannot be parsed; use letters, digits, and underscores, starting with a letter or underscore", name, spelled)
+	default:
+		return Diagnostic{}, false
+	}
+
+	return Diagnostic{Step: step, Field: field, Value: name, Message: message}, true
+}
+
 // validateWorkflowVars reports references in the workflow's own `vars:` block, where
 // the answer for every one of them is that it cannot resolve.
 //
@@ -476,6 +509,10 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 	var ds Diagnostics
 
 	for _, name := range slices.Sorted(maps.Keys(wf.GetVars())) {
+		if d, bad := bindingNameDiagnostic("", v1.VarsRoot+"."+name, v1.VarsRoot+".%s", name, false); bad {
+			ds = append(ds, d)
+		}
+
 		parsed := wf.GetVars()[name].GetExpr()
 		if parsed == nil {
 			continue
@@ -671,11 +708,12 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// about the task.
 	ds = append(ds, validateTaskInputs(id, task)...)
 
-	// A literal input is type-checked against the field by validateTaskInputs; an
-	// input written as a direct reference to a name this file types — `${inputs.x}`,
-	// `${vars.x}` — is checked here, where the workflow is in hand to read the
-	// declaration from (#158). A computed expression stays unchecked, deliberately.
-	ds = append(ds, checkExpressionInputTypes(id, task, wf)...)
+	// A literal input is type-checked against the field by validateTaskInputs. An
+	// expression is checked here, where the workflow and its type table are in hand:
+	// a direct reference to a name this file types — `${inputs.x}`, `${vars.x}` — by
+	// that declaration (#158), and any other expression whose type the checker
+	// decides by that type (#1637). One it cannot type (`dyn`) stays unchecked.
+	ds = append(ds, checkExpressionInputTypes(id, task, wf, scope.types)...)
 
 	// Some inputs are evaluated by the task itself, in a scope this validator does
 	// not model — the http task's `outputs` expression references the response, not
@@ -1315,6 +1353,9 @@ func scopeWithStepVars(id string, node *v1.Node, scope refScope, index int, wf *
 
 	for _, name := range slices.Sorted(maps.Keys(vars)) {
 		ds = append(ds, validateInputRefs(id, "vars."+name, vars[name], scope, index, wf)...)
+		if d, bad := bindingNameDiagnostic(id, "vars."+name, "%s", name, true); bad {
+			ds = append(ds, d)
+		}
 
 		switch {
 		case scope.locals[name]:
@@ -1450,7 +1491,7 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 		})
 	}
 
-	ds = append(ds, validateUndoInputs(id, task)...)
+	ds = append(ds, validateUndoInputs(id, task, wf, scope.types)...)
 
 	// The step's own outputs, added to a copy: this scope is for the compensation
 	// and is thrown away, so nothing after the step can reference itself by having
@@ -1476,8 +1517,8 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 // the *step's own* task and resolve to nothing or, worse, to a same-named input of
 // it — so the field is the `undo:` key, and the input's name moves into the
 // message where it is unambiguous.
-func validateUndoInputs(id string, task *v1.Task) Diagnostics {
-	inner := validateTaskInputs(id, task)
+func validateUndoInputs(id string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
+	inner := append(validateTaskInputs(id, task), checkExpressionInputTypes(id, task, wf, table)...)
 
 	ds := make(Diagnostics, 0, len(inner))
 	for _, d := range inner {
@@ -2130,6 +2171,18 @@ func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 	return wf, ds, err
 }
 
+// ParseAndValidateFileAt is [ParseAndValidateFile] that also answers where the
+// file's steps are written, from the same read, for a caller that reports a
+// run-time failure against the file it came from.
+func ParseAndValidateFileAt(path string) (*v1.Workflow, *Positions, Diagnostics, error) {
+	data, err := readBoundedSource(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return ParseAndValidateSourceAt(data, path)
+}
+
 // ParseAndValidateSourceAt is [ParseAndValidateFile] for bytes already read,
 // resolving a `call:` step relative to path's directory, and answering the
 // positions of the same compilation too. A caller that needs both the program
@@ -2498,6 +2551,9 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+			if d, bad := bindingNameDiagnostic(id, "outputs."+name, v1.StepsRoot+"."+id+".%s", name, false); bad {
+				ds = append(ds, d)
+			}
 		}
 	}
 
@@ -2530,6 +2586,9 @@ func validateWait(id string, wait *v1.Wait, scope refScope, index int, wf *v1.Wo
 
 		for _, name := range slices.Sorted(maps.Keys(shaped)) {
 			ds = append(ds, validateInputRefs(id, "outputs."+name, shaped[name], shaping, index, wf)...)
+			if d, bad := bindingNameDiagnostic(id, "outputs."+name, v1.StepsRoot+"."+id+".%s", name, false); bad {
+				ds = append(ds, d)
+			}
 		}
 	}
 
@@ -2622,11 +2681,112 @@ func unresolvedStep(stepID, inputName, ref string, index int, wf *v1.Workflow) D
 			}}
 		}
 	}
+	if where, ok := hiddenStepScope(stepID, ref, wf); ok {
+		if where == "" {
+			return Diagnostics{{
+				Step: stepID, Field: inputName,
+				Message: fmt.Sprintf(
+					"references step %q, which runs later; steps can only reference steps defined before them", ref),
+				Code: v1.DiagnosticCodeUnresolvedReference,
+			}}
+		}
+		return Diagnostics{{
+			Step: stepID, Field: inputName,
+			Message: fmt.Sprintf("references step %q, which is not visible from here; it is declared %s", ref, where),
+			Code:    v1.DiagnosticCodeUnresolvedReference,
+		}}
+	}
 	return Diagnostics{{
 		Step: stepID, Field: inputName,
 		Message: fmt.Sprintf("references unknown step %q", ref),
 		Code:    v1.DiagnosticCodeUnresolvedReference,
 	}}
+}
+
+// blockStep is one enclosing block on the way to a step: the block's node and which
+// of its bodies (a parallel branch, a switch case) the step sits in.
+type blockStep struct {
+	node *v1.Node
+	body int
+}
+
+// blockBodies are the step lists a block runs, in the order [blockStep.body]
+// indexes them; nil for a node that is not a block.
+func blockBodies(node *v1.Node) [][]*v1.Node {
+	switch kind := node.GetKind().(type) {
+	case *v1.Node_ForEach:
+		return [][]*v1.Node{kind.ForEach.GetBody()}
+	case *v1.Node_Loop:
+		return [][]*v1.Node{kind.Loop.GetBody()}
+	case *v1.Node_Parallel:
+		bodies := make([][]*v1.Node, 0, len(kind.Parallel.GetBranches()))
+		for _, branch := range kind.Parallel.GetBranches() {
+			bodies = append(bodies, branch.GetSteps())
+		}
+		return bodies
+	case *v1.Node_Switch:
+		return v1.SwitchBodies(kind.Switch)
+	}
+	return nil
+}
+
+// enclosingBlocks returns the blocks around the first step with this id, outermost
+// first, and whether the id was found at all. A top-level step has none.
+func enclosingBlocks(nodes []*v1.Node, id string) ([]blockStep, bool) {
+	for _, node := range nodes {
+		if node.GetId() == id {
+			return nil, true
+		}
+		for i, body := range blockBodies(node) {
+			if path, ok := enclosingBlocks(body, id); ok {
+				return append([]blockStep{{node, i}}, path...), true
+			}
+		}
+	}
+	return nil, false
+}
+
+// hiddenStepScope says why a step that exists in the file cannot be read from the
+// step `from`, so the reference that missed it can say "declared, but not visible"
+// rather than "unknown". It returns ("", true) when the reason is order, not
+// scope, and false when no step has the id.
+//
+// The answer is relative to the referencing step: the first block around the
+// declaration that does not also hold the reader is the boundary. A loop or
+// for_each boundary hides the id behind its accumulated `results`; a different
+// branch or case of a block that holds the reader is a sibling the reader cannot
+// see; a parallel or switch that holds only the declaration lays its ids out after
+// the block, so a reader that could not see it is simply ahead of it, as is a
+// reader inside the very body that declares the id later. The first declaration in
+// document order wins when an id repeats.
+func hiddenStepScope(from, id string, wf *v1.Workflow) (string, bool) {
+	declared, ok := enclosingBlocks(wf.GetSteps(), id)
+	if !ok {
+		return "", false
+	}
+	reader, _ := enclosingBlocks(wf.GetSteps(), from)
+	for i, block := range declared {
+		name := block.node.GetId()
+		if i < len(reader) && reader[i].node == block.node {
+			if reader[i].body == block.body {
+				continue
+			}
+			switch block.node.GetKind().(type) {
+			case *v1.Node_Parallel:
+				return fmt.Sprintf("in another branch of parallel %q (branches cannot read each other)", name), true
+			default:
+				return fmt.Sprintf("in another case of switch %q (only that case's own steps can read it)", name), true
+			}
+		}
+		switch block.node.GetKind().(type) {
+		case *v1.Node_ForEach:
+			return fmt.Sprintf("inside the body of for_each %q (read its values through `steps.%s.results`)", name, name), true
+		case *v1.Node_Loop:
+			return fmt.Sprintf("inside the body of loop %q (read its values through `steps.%s.results`)", name, name), true
+		}
+		return "", true
+	}
+	return "", true
 }
 
 // toleratedErrorOutput is the output a step gains by being allowed to fail.
@@ -2664,6 +2824,13 @@ var runIdentityFields = []string{"subject", "issuer", "namespace", "claims", "pr
 // wait precisely so a task cannot read a clock. [v1.RunAddress] records both
 // halves of that.
 var runFields = []string{"identity", "local", "workflow_id", "run_id", "started_at"}
+
+// RunFields returns the fields an expression may select directly on `run`, in the
+// order a diagnostic lists them. The editor offers exactly these.
+func RunFields() []string { return slices.Clone(runFields) }
+
+// RunIdentityFields returns the fields an expression may select on `run.identity`.
+func RunIdentityFields() []string { return slices.Clone(runIdentityFields) }
 
 // unknownRunField reports a reference to a field `run` does not have.
 //

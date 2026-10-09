@@ -138,6 +138,13 @@ type contractState struct {
 	sequence     uint64
 	dropped      uint64
 
+	// stops is the ring of the stops this session held, oldest first, and
+	// stopsDropped how many it evicted to stay within [MaxTimelinePoints]: the
+	// timeline a snapshot carries.
+	stops        []heldStop
+	stopsDropped uint32
+	stopsBytes   int
+
 	receipts     map[string]*v1.DebugReceipt
 	receiptOrder []string
 
@@ -165,9 +172,18 @@ type contractState struct {
 	program           *v1.Workflow
 	declaredInProgram map[string]struct{}
 
+	// shapes is what the program declares its inputs as, for naming a value by
+	// its record type; nil when the program declares no record.
+	shapes *declaredShapes
+
 	sourceMap *v1.DebugSourceMap
 	sources   map[string]*v1.DebugSourceLocation
 	nextID    int
+
+	// offered is a source map given before the program was known
+	// ([Options.SourceMap] without [Options.Workflow]): it becomes sourceMap
+	// only while the program [Session.Program] gives is the one it describes.
+	offered *v1.DebugSourceMap
 
 	// irDigest is the digest of the program under debug, when it is known:
 	// what a source map is checked against and what a snapshot reports.
@@ -185,21 +201,28 @@ func newContractState(opts Options) contractState {
 		failureMode: v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE,
 		receipts:    map[string]*v1.DebugReceipt{},
 		profile:     v1.CurrentProfile,
-		sourceMap:   opts.SourceMap,
 		sources:     map[string]*v1.DebugSourceLocation{},
 	}
 	if opts.Workflow != nil {
 		c.setProgram(opts.Workflow)
 		c.programGiven = true
+		c.useSourceMap(opts.SourceMap)
+	} else {
+		c.offered = opts.SourceMap
 	}
-	for _, entry := range opts.SourceMap.GetEntries() {
+
+	return c
+}
+
+// useSourceMap makes sourceMap the one lines are resolved through, or none.
+func (c *contractState) useSourceMap(sourceMap *v1.DebugSourceMap) {
+	c.sourceMap, c.sources = sourceMap, map[string]*v1.DebugSourceLocation{}
+	for _, entry := range sourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
 		if _, seen := c.sources[key]; !seen {
 			c.sources[key] = entry.GetLocation()
 		}
 	}
-
-	return c
 }
 
 // setProgram records the program under debug: its sites, what it declares
@@ -212,6 +235,7 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 	c.sitesKnown = !truncated
 	c.names, c.program, c.declaredInProgram = nil, nil, nil
 	c.profile = v1.CurrentProfile
+	c.shapes = shapesOf(wf)
 	if !truncated {
 		c.names = v1.NewDebugProgramNames(c.sites)
 	}
@@ -226,6 +250,15 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 		c.profile = profile
 	}
 	c.irDigest = v1.WorkflowIRDigest(wf)
+	if c.offered != nil {
+		// The rule a durable attach applies to the digest a snapshot reports:
+		// lines are trusted for the program the map describes and no other.
+		if c.offered.GetIrDigest() == c.irDigest {
+			c.useSourceMap(c.offered)
+		} else {
+			c.useSourceMap(nil)
+		}
+	}
 }
 
 // Program gives a session built without [Options.Workflow] the program its
@@ -241,8 +274,11 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 // one, as [Session.ReplaceBreakpoints] would judge it now, and one this
 // program refuses is removed with a notice saying why, rather than left armed
 // for a case it cannot answer in. A line breakpoint is judged by the source
-// map, which a program does not change, and is kept. A pending `until` is
-// judged the same way, and one this program refuses is dropped for
+// map in force, so it is kept while that map is trusted and removed, with the
+// same notice, when this program is one the map does not describe. A
+// map offered to [New] without a program is trusted from the program given
+// here on only if its digest is this program's ([Options.SourceMap]). A pending
+// `until` is judged the same way, and one this program refuses is dropped for
 // `continue`, which it was already: a run to its breakpoints.
 func (s *Session) Program(wf *v1.Workflow) {
 	if wf == nil {
@@ -272,7 +308,7 @@ func (s *Session) Program(wf *v1.Workflow) {
 	var refused []string
 	for _, key := range slices.Sorted(maps.Keys(installed)) {
 		at := installed[key]
-		if at.definition == nil || at.definition.GetLine() != nil {
+		if at.definition == nil {
 			continue
 		}
 		definition := proto.CloneOf(at.definition)
@@ -581,11 +617,19 @@ func (s *Session) hold(
 		sensitive: s.sensitiveAt(ctx),
 	})
 	defer s.prompting(promptSubject{})
+	// The heading is written before the stop is published, not after: a front
+	// that waits for the held state and then writes its own prompt would
+	// otherwise put the prompt ahead of the line that says where the run is.
+	// A detach or an end that lands between this check and enterHeld costs one
+	// heading for a stop that is not held, which is harmless; the other order
+	// loses the heading's place at the prompt.
+	if s.cannotHold() {
+		return nil
+	}
+	announce()
 	if !s.enterHeld(occurrence, reason, hitIDs, failure) {
 		return nil
 	}
-
-	announce()
 
 	for {
 		line, ok, readErr := s.readCommand(ctx)
@@ -661,8 +705,28 @@ func (s *Session) enterHeld(occurrence *v1.DebugOccurrence, reason v1.DebugStopR
 	s.contract.pauseAsked = false
 	s.contract.message = ""
 	s.bump()
+	size := proto.Size(occurrence)
+	for len(s.contract.stops) > 0 &&
+		(len(s.contract.stops) >= MaxTimelinePoints || s.contract.stopsBytes+size > MaxTimelineBytes) {
+		s.contract.stopsBytes -= s.contract.stops[0].size
+		s.contract.stops = slices.Delete(s.contract.stops, 0, 1)
+		s.contract.stopsDropped++
+	}
+	s.contract.stopsBytes += size
+	s.contract.stops = append(s.contract.stops, heldStop{
+		revision: s.contract.revision, occurrence: proto.CloneOf(occurrence), reason: reason, size: size,
+	})
 
 	return true
+}
+
+// cannotHold is whether a stop would be refused: the run has ended or the
+// debugger has detached.
+func (s *Session) cannotHold() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return terminal(s.contract.state) || s.contract.detached
 }
 
 // leaveHeld records that the run left its stop.
@@ -1065,8 +1129,29 @@ func (s *Session) snapshotLocked() *v1.DebugSnapshot {
 		snapshot.Failure = c.failure
 		snapshot.Frames = s.framesLocked(c.occurrence)
 	}
+	snapshot.Timeline = s.timelineLocked()
 
 	return snapshot
+}
+
+// timelineLocked is the stops this session held, none reachable: a plain
+// session cannot go back to one. Nil until it has held a run.
+func (s *Session) timelineLocked() *v1.DebugTimeline {
+	c := &s.contract
+	if len(c.stops) == 0 {
+		return nil
+	}
+	timeline := &v1.DebugTimeline{Current: -1, Dropped: c.stopsDropped}
+	for _, at := range c.stops {
+		timeline.Points = append(timeline.Points, &v1.DebugTimelinePoint{
+			Revision: at.revision, Occurrence: s.redactedOccurrence(at.occurrence), Reason: at.reason,
+		})
+	}
+	if c.state == v1.DebugRunState_DEBUG_RUN_STATE_HELD {
+		timeline.Current = int32(len(timeline.Points) - 1)
+	}
+
+	return timeline
 }
 
 // redactedOccurrence is an occurrence with its names passed through the
@@ -1656,6 +1741,13 @@ func (s *Session) siteAtLine(line *v1.DebugSourceLine) (*v1.DebugSite, *v1.Debug
 	return siteAtLine(sourceMap, line)
 }
 
+// SiteAtLine resolves a source line through a verified source map to the
+// innermost site whose span contains it, or says why it cannot: the answer a
+// target gives a line breakpoint, for a client that wants it before it asks.
+func SiteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.DebugSite, *v1.DebugSourceLocation, string) {
+	return siteAtLine(sourceMap, line)
+}
+
 // siteAtLine resolves a source line through a source map to the innermost site
 // whose span contains it, or says why it cannot.
 func siteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.DebugSite, *v1.DebugSourceLocation, string) {
@@ -1855,6 +1947,7 @@ func (s *Session) logpoint(ctx context.Context, at breakpoint, scope *v1.Scope, 
 func (s *Session) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
 	s.mu.Lock()
 	subject, revision, state := s.at, s.contract.revision, s.contract.state
+	subject.shapes = s.contract.shapes
 	s.mu.Unlock()
 
 	if subject.scope == nil || (state != v1.DebugRunState_DEBUG_RUN_STATE_HELD && !subject.autopsy) {
@@ -1874,15 +1967,18 @@ func (s *Session) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (*v1
 //
 // The redactors control what is printed; they are not a confidentiality
 // boundary against whoever may evaluate expressions.
+//
+// program is the workflow the scope belongs to, or nil: it names a value by the
+// record type an input is declared as, which a scope alone cannot say.
 func InspectScope(
-	ctx context.Context, scope *v1.Scope, redactText func(string) string, redactValue func(any) any,
+	ctx context.Context, scope *v1.Scope, program *v1.Workflow, redactText func(string) string, redactValue func(any) any,
 	req *v1.DebugInspectRequest, revision uint64,
 ) (*v1.DebugInspectResponse, error) {
 	if scope == nil {
 		return nil, ErrNotPaused
 	}
 
-	return inspectSubject(ctx, promptSubject{scope: scope, redactText: redactText, redactValue: redactValue}, req, revision)
+	return inspectSubject(ctx, promptSubject{scope: scope, shapes: shapesOf(program), redactText: redactText, redactValue: redactValue}, req, revision)
 }
 
 func inspectSubject(ctx context.Context, subject promptSubject, req *v1.DebugInspectRequest, revision uint64) (*v1.DebugInspectResponse, error) {
@@ -1975,6 +2071,11 @@ func typedNative(ctx context.Context, subject promptSubject, expression string) 
 		return nil, nil, err
 	}
 
+	// A record is a map at runtime; its declaration is where its name lives.
+	if typeName == "map" {
+		typeName = cmp.Or(subject.shapes.recordAt(expression, subject.workflow), typeName)
+	}
+
 	return &v1.DebugValue{
 		Type:       typeName,
 		Rendered:   text,
@@ -2007,7 +2108,7 @@ func childrenOf(subject promptSubject, expression string, native any, offset, li
 		text := capRunes(applyText(subject.redactText, nativeText(child)), MaxInspectRunes)
 
 		return &v1.DebugVariable{Name: name, Value: &v1.DebugValue{
-			Type:       nativeTypeName(child),
+			Type:       childTypeName(subject, path, child),
 			Rendered:   text,
 			Truncated:  utf8.RuneCountInString(text) >= MaxInspectRunes,
 			Children:   int32(childCount(child)),
@@ -2065,6 +2166,17 @@ func simplePath(expression string) bool {
 	}
 
 	return true
+}
+
+// childTypeName is [nativeTypeName], naming a map the program declares a record
+// by that record.
+func childTypeName(subject promptSubject, path string, native any) string {
+	name := nativeTypeName(native)
+	if name == "map" {
+		return cmp.Or(subject.shapes.recordAt(path, subject.workflow), name)
+	}
+
+	return name
 }
 
 // nativeTypeName names a native value's CEL type.

@@ -570,8 +570,11 @@ func TestLineBreakpointsResolveThroughTheSourceMap(t *testing.T) {
 	other.IrDigest = "sha256:" + strings.Repeat("0", 64)
 	_, err = flowdebug.New(flowdebug.Options{Controlled: true, Workflow: workflow, SourceMap: other})
 	require.Error(t, err, "a source map for another program was accepted")
-	_, err = flowdebug.New(flowdebug.Options{Controlled: true, SourceMap: sourceMap})
-	require.Error(t, err, "a source map was accepted with no program to check it against")
+	// With no program yet the map is offered, not used: see
+	// TestAnOfferedSourceMapIsUsedOnlyForTheProgramItDescribes.
+	offered, err := flowdebug.New(flowdebug.Options{Controlled: true, SourceMap: sourceMap})
+	require.NoError(t, err)
+	_ = offered.Close()
 
 	run := startDebugWorkflow(t, workflow, func(opts *flowdebug.Options) { opts.SourceMap = sourceMap })
 	target := flowdebug.Target(run.session)
@@ -770,4 +773,64 @@ func TestADeclinedTypedBreakpointIsNamedByWhereItWasSet(t *testing.T) {
 	mu.Unlock()
 	assert.Contains(t, out, "breakpoint at each/touch: the condition could not be evaluated here")
 	assert.NotContains(t, out, "function:1", "the notice named the client's key rather than the step")
+}
+
+const recordInspectFlowfile = `edition: v2026.4
+name: records
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true}
+  Order:
+    fields:
+      id: {type: string, required: true}
+      lines: {type: "list(Line)", required: true}
+inputs:
+  order:
+    type: Order
+    default: {id: "o-1", lines: [{sku: "ab"}]}
+steps:
+  - id: done
+    log:
+      message: ${inputs.order.id}
+`
+
+// TestInspectNamesAValueByTheRecordItIsDeclaredAs: at runtime a record is a
+// map, so the type an inspection reports has to come from the declaration.
+func TestInspectNamesAValueByTheRecordItIsDeclaredAs(t *testing.T) {
+	t.Parallel()
+
+	run := startDebugRun(t, "main.yaml", map[string]string{"main.yaml": recordInspectFlowfile}, nil)
+	target := flowdebug.Target(run.session)
+	at := waitHeld(t, target, 0)
+
+	typeOf := func(expression string) string {
+		t.Helper()
+
+		got, err := target.Inspect(t.Context(), &v1.DebugInspectRequest{Revision: at.GetRevision(), Expression: expression})
+		require.NoError(t, err)
+		require.Empty(t, got.GetError(), expression)
+
+		return got.GetValue().GetType()
+	}
+
+	assert.Equal(t, "Order", typeOf("inputs.order"))
+	assert.Equal(t, "Line", typeOf("inputs.order.lines[0]"))
+	assert.Equal(t, "list", typeOf("inputs.order.lines"))
+	assert.Equal(t, "string", typeOf("inputs.order.id"))
+	assert.Equal(t, "map", typeOf("{'sku': 'ab'}"),
+		"a map literal is not the declared record, whatever its keys")
+	assert.Equal(t, "map", typeOf("true ? inputs.order.lines[0] : {}"),
+		"an expression is not a path, so it is not labelled by the path's declaration")
+
+	listed, err := target.Inspect(t.Context(), &v1.DebugInspectRequest{
+		Revision: at.GetRevision(), Expression: "inputs.order.lines", Children: true,
+	})
+	require.NoError(t, err)
+	require.Len(t, listed.GetChildren(), 1)
+	assert.Equal(t, "Line", listed.GetChildren()[0].GetValue().GetType(),
+		"an element of a list(Line) is shown as the record it is")
+
+	_ = move(t, target, at, v1.DebugResumeAction_DEBUG_RESUME_ACTION_CONTINUE, "")
+	require.NoError(t, <-run.done)
 }

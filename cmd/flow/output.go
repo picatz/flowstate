@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -159,6 +160,26 @@ func resolveRawOutput(cmd *cobra.Command) bool {
 	raw, _ := cmd.Flags().GetBool("raw")
 
 	return raw
+}
+
+// writeSchema writes a JSON Schema document the way [writeJSON] writes a message:
+// indented for a person, compact for the line-per-record form.
+func writeSchema(surface *ui.UI, format OutputFormat, schema map[string]any) error {
+	// An encoder rather than json.Marshal, which would write `>` in a `must:` as
+	// \u003e in a document meant to be read.
+	var buffer strings.Builder
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if format != FormatJSONL {
+		encoder.SetIndent("", "  ")
+	}
+	if err := encoder.Encode(schema); err != nil {
+		return fmt.Errorf("rendering the schema as %s: %w", format, err)
+	}
+
+	_, err := fmt.Fprint(surface.Out, buffer.String())
+
+	return err
 }
 
 // writeJSON writes one document, indented for a person who is about to read it and
