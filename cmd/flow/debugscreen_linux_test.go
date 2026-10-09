@@ -266,9 +266,9 @@ func TestRunLocalDebugIsTheScreenAtATerminal(t *testing.T) {
 	run := onATerminal(t, 100, 30, "run", "local", path, "--debug", "--record", recording)
 
 	run.waitFor(t, "flow debug")
-	run.waitFor(t, "held at first")
+	run.waitFor(t, "workflow.yaml:4")
 	run.typed(t, "s")
-	run.waitFor(t, "held at second")
+	run.waitFor(t, `held at second (task "log")`)
 
 	result := run.finish(t, "q")
 	require.NoError(t, result.Err)
@@ -292,7 +292,7 @@ func TestRunLocalDebugCtrlCEndsTheRunUnderTheScreen(t *testing.T) {
 	run := onATerminal(t, 100, 30, "run", "local", path, "--debug")
 
 	run.waitFor(t, "flow debug")
-	run.waitFor(t, "held at first")
+	run.waitFor(t, "workflow.yaml:4")
 
 	result := run.finish(t, "\x03")
 	require.Error(t, result.Err, "ctrl-C let the run finish")
@@ -308,16 +308,15 @@ func TestRunLocalReverseIsTheScreenAtATerminal(t *testing.T) {
 	run := onATerminal(t, 100, 30, "run", "local", path, "--debug", "--reverse", "--record", recording)
 
 	run.waitFor(t, "flow debug")
-	run.waitFor(t, "held at first")
+	run.waitFor(t, "workflow.yaml:4")
 	run.typed(t, "s")
-	run.waitFor(t, "held at second")
+	run.waitFor(t, `held at second (task "log")`)
 	run.typed(t, "b")
 
 	// The step back is taken once the run is held at the first step again; a
 	// key typed before the screen takes it is lost, so q is not pressed until
-	// the recording says it was.
-	require.Eventually(t, func() bool { return strings.Count(run.screen.String(), "held at first") >= 2 }, 30*time.Second, 10*time.Millisecond,
-		"the step back never repainted the first stop")
+	// the console says it was.
+	run.waitFor(t, `held at first (task "log")`)
 
 	result := run.finish(t, "q")
 	require.NoError(t, result.Err)
@@ -333,9 +332,9 @@ func TestTestDebugIsTheScreenAtATerminal(t *testing.T) {
 	run := onATerminal(t, 100, 30, "test", "--debug", "--run", "the debugged case", dir)
 
 	run.waitFor(t, "flow debug")
-	run.waitFor(t, "held at first")
+	run.waitFor(t, "workflow.yaml:4")
 	run.typed(t, "s")
-	run.waitFor(t, "held at second")
+	run.waitFor(t, `held at second (task "log")`)
 
 	result := run.finish(t, "q")
 	require.NoError(t, result.Err)

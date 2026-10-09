@@ -17,6 +17,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -153,7 +154,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	workflow, err := loadWorkflow(args[0])
+	// A debugged run reads the file once for both the program and the lines its
+	// steps are written on, so the full-screen debugger can show the Flowfile
+	// beside the run it holds.
+	debugging, _ := cmd.Flags().GetBool("debug")
+	workflow, source, err := loadRunWorkflow(args[0], debugging)
 	if err != nil {
 		return err
 	}
@@ -241,7 +246,6 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// prompt is drawn is a staircase down the screen with the half-typed
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
-	debugging, _ := cmd.Flags().GetBool("debug")
 	record, err := recordPath(cmd)
 	if err != nil {
 		return err
@@ -259,6 +263,9 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		screenSession *flowdebug.Session
 		screen        bool
 		over          = screenOver{Local: true, Recording: &attachRecording{}}
+		// sourceMap is the lines of the program as run, for the screen and for
+		// the session that resolves a line breakpoint through it.
+		sourceMap *v1.DebugSourceMap
 	)
 	reverse, err := reverseRequested(cmd, workflow, debugging, localSignals)
 	if err != nil {
@@ -292,6 +299,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			// The program is the one this process runs, so it can name the
 			// steps the run will reach.
 			over.Frames = flowdebug.FrameOptions{Program: workflow, Inventory: stepList(workflow)}
+			// And the lines they are written on: the map is of the program this
+			// process runs, so it is verified by construction.
+			sourceMap, over.Documents = source.screenSource(workflow)
+			over.Frames.SourceMap = sourceMap
 			account := &screenNarration{}
 			narrate, restore = account, func() { account.flushTo(surface.Err) }
 		} else {
@@ -330,13 +341,16 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 		if reverse != "" {
 			front = &reversibleFront{
-				Steps:   stepList(workflow),
-				Out:     narrate,
-				Emit:    emit,
-				Prompt:  flowdebug.Prompt,
-				Console: console,
-				Panes:   panes,
-				Theme:   surface.ErrTheme,
+				Steps: stepList(workflow),
+				// Offered to every pass's session, so a line breakpoint the screen
+				// sets resolves in a replay as it did in the pass that set it.
+				SourceMap: sourceMap,
+				Out:       narrate,
+				Emit:      emit,
+				Prompt:    flowdebug.Prompt,
+				Console:   console,
+				Panes:     panes,
+				Theme:     surface.ErrTheme,
 				// The explicit opt-in, held by every pass's session.
 				RevealSensitive: reveal,
 				// A script that steps back is replayed by this same front, so
@@ -386,6 +400,10 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 				// And the program itself, so a target or a condition is judged
 				// against where it can fire, as every other front judges it.
 				Workflow: workflow,
+				// The lines of that program, which `break` on a line resolves
+				// through. Only the screen sets one: the line editor has no line to
+				// name.
+				SourceMap: sourceMap,
 				// Authorized by --reveal-sensitive, without which a program
 				// declaring sensitive values is refused above.
 				RevealSensitive: reveal,
@@ -680,4 +698,25 @@ func failureExcerpt(failure *v1.ExpressionFailure) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// loadRunWorkflow is [loadWorkflow] for `flow run local`, which reads the file
+// through [loadDebuggedWorkflow] instead when the run is debugged: the program
+// and the lines of the bytes it was compiled from come from one read. The source
+// is nil for a run that is not debugged.
+func loadRunWorkflow(path string, debugging bool) (*v1.Workflow, *debugSource, error) {
+	if !debugging {
+		workflow, err := loadWorkflow(path)
+
+		return workflow, nil, err
+	}
+	workflow, source, err := loadDebuggedWorkflow(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Where each step is written travels with the specification, as it does
+	// from [loadWorkflow], so a failure points back at the file.
+	flowfile.AttachSources(workflow, source.positions, path)
+
+	return workflow, source, nil
 }

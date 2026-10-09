@@ -37,6 +37,10 @@ type reversibleFront struct {
 	Steps   []flowdebug.Step
 	Program *v1.Workflow
 
+	// SourceMap, when set, is offered to every pass's session for line
+	// breakpoints: see [stubbedCase.SourceMap].
+	SourceMap *v1.DebugSourceMap
+
 	// RevealSensitive is `--reveal-sensitive`, for every pass's session.
 	RevealSensitive bool
 
@@ -137,6 +141,7 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		RevealSensitive: f.RevealSensitive,
 		Failure:         f.Failure,
 		Steps:           f.Steps,
+		SourceMap:       f.SourceMap,
 		Speak:           emit,
 		Shown: func(session *flowdebug.Session) {
 			f.shown.Store(session)

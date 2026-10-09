@@ -176,6 +176,11 @@ type contractState struct {
 	sources   map[string]*v1.DebugSourceLocation
 	nextID    int
 
+	// offered is a source map given before the program was known
+	// ([Options.SourceMap] without [Options.Workflow]): it becomes sourceMap
+	// only while the program [Session.Program] gives is the one it describes.
+	offered *v1.DebugSourceMap
+
 	// irDigest is the digest of the program under debug, when it is known:
 	// what a source map is checked against and what a snapshot reports.
 	irDigest string
@@ -192,21 +197,28 @@ func newContractState(opts Options) contractState {
 		failureMode: v1.DebugFailureMode_DEBUG_FAILURE_MODE_NONE,
 		receipts:    map[string]*v1.DebugReceipt{},
 		profile:     v1.CurrentProfile,
-		sourceMap:   opts.SourceMap,
 		sources:     map[string]*v1.DebugSourceLocation{},
 	}
 	if opts.Workflow != nil {
 		c.setProgram(opts.Workflow)
 		c.programGiven = true
+		c.useSourceMap(opts.SourceMap)
+	} else {
+		c.offered = opts.SourceMap
 	}
-	for _, entry := range opts.SourceMap.GetEntries() {
+
+	return c
+}
+
+// useSourceMap makes sourceMap the one lines are resolved through, or none.
+func (c *contractState) useSourceMap(sourceMap *v1.DebugSourceMap) {
+	c.sourceMap, c.sources = sourceMap, map[string]*v1.DebugSourceLocation{}
+	for _, entry := range sourceMap.GetEntries() {
 		key := v1.DebugSiteKey(entry.GetSite())
 		if _, seen := c.sources[key]; !seen {
 			c.sources[key] = entry.GetLocation()
 		}
 	}
-
-	return c
 }
 
 // setProgram records the program under debug: its sites, what it declares
@@ -233,6 +245,15 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 		c.profile = profile
 	}
 	c.irDigest = v1.WorkflowIRDigest(wf)
+	if c.offered != nil {
+		// The rule a durable attach applies to the digest a snapshot reports:
+		// lines are trusted for the program the map describes and no other.
+		if c.offered.GetIrDigest() == c.irDigest {
+			c.useSourceMap(c.offered)
+		} else {
+			c.useSourceMap(nil)
+		}
+	}
 }
 
 // Program gives a session built without [Options.Workflow] the program its
@@ -248,8 +269,11 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 // one, as [Session.ReplaceBreakpoints] would judge it now, and one this
 // program refuses is removed with a notice saying why, rather than left armed
 // for a case it cannot answer in. A line breakpoint is judged by the source
-// map, which a program does not change, and is kept. A pending `until` is
-// judged the same way, and one this program refuses is dropped for
+// map in force, so it is kept while that map is trusted and removed, with the
+// same notice, when this program is one the map does not describe. A
+// map offered to [New] without a program is trusted from the program given
+// here on only if its digest is this program's ([Options.SourceMap]). A pending
+// `until` is judged the same way, and one this program refuses is dropped for
 // `continue`, which it was already: a run to its breakpoints.
 func (s *Session) Program(wf *v1.Workflow) {
 	if wf == nil {
@@ -279,7 +303,7 @@ func (s *Session) Program(wf *v1.Workflow) {
 	var refused []string
 	for _, key := range slices.Sorted(maps.Keys(installed)) {
 		at := installed[key]
-		if at.definition == nil || at.definition.GetLine() != nil {
+		if at.definition == nil {
 			continue
 		}
 		definition := proto.CloneOf(at.definition)

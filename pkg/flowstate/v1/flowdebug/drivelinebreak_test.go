@@ -93,3 +93,93 @@ func TestTwoFilesOfOneNameGetDifferentLineBreakpointIDs(t *testing.T) {
 	assert.NotEqual(t, a, flowdebug.LineBreakpointID("/one/steps.yaml", 4))
 	assert.LessOrEqual(t, len(flowdebug.LineBreakpointID("/"+strings.Repeat("d", 4000)+"/"+strings.Repeat("n", 300)+".yaml", 99999)), 128)
 }
+
+// TestAnOfferedSourceMapIsUsedOnlyForTheProgramItDescribes: a session built
+// with a map and no program (a `flow test` case compiles its own) takes the map
+// from the program [flowdebug.Session.Program] gives, and only when that is the
+// program the map is bound to. A program that differs is debugged by address,
+// and a line breakpoint is refused rather than resolved to the wrong step.
+func TestAnOfferedSourceMapIsUsedOnlyForTheProgramItDescribes(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "main.yaml")
+	require.NoError(t, os.WriteFile(root, []byte(journeyFlowfile), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childFlowfile), 0o600))
+	workflow, positions, err := flowfile.ParseFile(root)
+	require.NoError(t, err)
+	sourceMap := flowfile.SourceMap(root, []byte(journeyFlowfile), workflow, positions)
+
+	for name, test := range map[string]struct {
+		program func() *v1.Workflow
+		armed   bool
+	}{
+		"the program the map describes": {program: func() *v1.Workflow { return workflow }, armed: true},
+		"another program": {program: func() *v1.Workflow {
+			other, _, err := flowfile.ParseFile(root)
+			require.NoError(t, err)
+			other.Name += "-changed"
+
+			return other
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			program := test.program()
+			session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &strings.Builder{}, SourceMap: sourceMap})
+			require.NoError(t, err, "a map offered without a program is held until the program arrives")
+			t.Cleanup(func() { _ = session.Close() })
+			session.Program(program)
+
+			armed, err := flowdebug.NewDriver(session).BreakLine(t.Context(), root, 15)
+			require.NoError(t, err)
+			if test.armed {
+				require.Len(t, armed.Breakpoints, 1)
+				assert.True(t, armed.Breakpoints[0].GetVerified(), armed.Breakpoints[0].GetMessage())
+				assert.Nil(t, armed.Unarmed)
+
+				return
+			}
+			require.NotNil(t, armed.Unarmed, "a line was resolved through a map of another program")
+			assert.Contains(t, armed.Unarmed.GetMessage(), "no source map")
+		})
+	}
+}
+
+// TestALineBreakpointDoesNotOutliveTheMapThatResolvedIt: a session reused for
+// another program (`flow test --debug` runs each case under one) drops a line
+// breakpoint the previous program's map resolved, rather than stopping the new
+// program at a site key from a map it rejected.
+func TestALineBreakpointDoesNotOutliveTheMapThatResolvedIt(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "main.yaml")
+	require.NoError(t, os.WriteFile(root, []byte(journeyFlowfile), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childFlowfile), 0o600))
+	workflow, positions, err := flowfile.ParseFile(root)
+	require.NoError(t, err)
+	sourceMap := flowfile.SourceMap(root, []byte(journeyFlowfile), workflow, positions)
+	other, _, err := flowfile.ParseFile(root)
+	require.NoError(t, err)
+	other.Name += "-changed"
+
+	var printed strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &printed, SourceMap: sourceMap})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.Program(workflow)
+	armed, err := flowdebug.NewDriver(session).BreakLine(t.Context(), root, 15)
+	require.NoError(t, err)
+	require.Len(t, armed.Breakpoints, 1)
+	require.True(t, armed.Breakpoints[0].GetVerified(), armed.Breakpoints[0].GetMessage())
+
+	session.Program(other)
+
+	snapshot, err := session.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.GetBreakpoints(), "the line stayed armed through a map the program does not match")
+	assert.Contains(t, printed.String(), "no longer applies to this program")
+}

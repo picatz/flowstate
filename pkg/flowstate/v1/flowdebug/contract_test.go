@@ -570,8 +570,11 @@ func TestLineBreakpointsResolveThroughTheSourceMap(t *testing.T) {
 	other.IrDigest = "sha256:" + strings.Repeat("0", 64)
 	_, err = flowdebug.New(flowdebug.Options{Controlled: true, Workflow: workflow, SourceMap: other})
 	require.Error(t, err, "a source map for another program was accepted")
-	_, err = flowdebug.New(flowdebug.Options{Controlled: true, SourceMap: sourceMap})
-	require.Error(t, err, "a source map was accepted with no program to check it against")
+	// With no program yet the map is offered, not used: see
+	// TestAnOfferedSourceMapIsUsedOnlyForTheProgramItDescribes.
+	offered, err := flowdebug.New(flowdebug.Options{Controlled: true, SourceMap: sourceMap})
+	require.NoError(t, err)
+	_ = offered.Close()
 
 	run := startDebugWorkflow(t, workflow, func(opts *flowdebug.Options) { opts.SourceMap = sourceMap })
 	target := flowdebug.Target(run.session)

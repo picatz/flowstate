@@ -145,19 +145,43 @@ func endRun(session *flowdebug.Session, cancel context.CancelFunc) {
 // what a step does, never which steps there are, so the inventory is the one
 // the run reaches; a workflow that does not parse offers none, and the run is
 // about to say why.
+//
+// The same file gives the lines, with a stricter rule than the inventory. The
+// case compiles its own program, which a `step:` stub on a `call:` rewrites, and
+// a stub can name a plugin task only the case's registry knows, so the file
+// compiled here is not always the program that runs. The map is therefore offered
+// to the case's sessions, which keep it only for the program the case gives them
+// that the map is bound to, and shown by the screen only when the run's own
+// snapshot names that program. A case that cannot give a truthful map, one whose
+// file does not compile here or whose program a stub rewrote, is left on
+// addresses.
 func screenFront(cmd *cobra.Command, surface *ui.UI, path string) (*reversibleFront, func()) {
 	account := &screenNarration{}
-	steps := workflowStepList(path)
+
+	var (
+		steps     []flowdebug.Step
+		sourceMap *v1.DebugSourceMap
+		documents []debugtui.Document
+	)
+	if workflow, source, err := loadMappedWorkflow(path); err == nil {
+		steps = stepList(workflow)
+		sourceMap, documents = source.screenSource(workflow)
+	}
 
 	front := &reversibleFront{
-		Steps:  steps,
-		Out:    account,
-		Emit:   debugEmitter(account, surface.Theme),
-		Prompt: flowdebug.Prompt,
-		Theme:  surface.Theme,
+		Steps:     steps,
+		SourceMap: sourceMap,
+		Out:       account,
+		Emit:      debugEmitter(account, surface.Theme),
+		Prompt:    flowdebug.Prompt,
+		Theme:     surface.Theme,
 	}
 	front.Screen = func(ctx context.Context, shown screenOver) (debugtui.Outcome, error) {
 		shown.Frames = flowdebug.FrameOptions{Inventory: steps}
+		shown.Documents = documents
+		if mapDescribesRun(ctx, shown.Target, sourceMap) {
+			shown.Frames.SourceMap = sourceMap
+		}
 		shown.Recording = front.Record
 		if shown.Recording == nil {
 			shown.Recording = &attachRecording{}

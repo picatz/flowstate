@@ -282,6 +282,13 @@ type Options struct {
 	// SourceMap relates the program's sites to its sources. Optional: without
 	// one, every site is still addressable, and a source-line breakpoint is
 	// reported unverified rather than guessed.
+	//
+	// With [Options.Workflow] it must describe that program, and is refused
+	// otherwise. Without one it is offered: the program arrives later through
+	// [Session.Program] (a `flow test` case compiles its own), and the map is
+	// used only while that program is the one it describes, so a case whose
+	// program differs from the file the map was made from, a stubbed `call:`
+	// for one, is debugged by address.
 	SourceMap *v1.DebugSourceMap
 }
 
@@ -647,10 +654,7 @@ func New(opts Options) (*Session, error) {
 	// A source map names the program it describes. One for another program
 	// would verify line breakpoints that never match and point frames at the
 	// wrong lines, so it is refused rather than used.
-	if opts.SourceMap != nil {
-		if opts.Workflow == nil {
-			return nil, errors.New("a source map needs the workflow it describes")
-		}
+	if opts.SourceMap != nil && opts.Workflow != nil {
 		if got, want := opts.SourceMap.GetIrDigest(), v1.WorkflowIRDigest(opts.Workflow); got != want {
 			return nil, fmt.Errorf("the source map describes program %s, and this session runs %s", got, want)
 		}

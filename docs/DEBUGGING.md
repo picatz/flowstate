@@ -111,9 +111,13 @@ In the live view of `flow watch`, `d` hands the terminal to `flow debug attach
 the watch was given, and returns to the watch when the debugger ends; the footer
 shows the key.
 
-The screen shows source lines for a durable attach given `--program`; over a
-local run it names steps by address. The line editor below is what you get with
-`--tui=false` and wherever the screen is not used.
+The screen shows the Flowfile's lines for a durable attach given `--program` and
+for `flow run local --debug` (with or without `--reverse`), which compiles the
+file it runs and so knows where each step is written. `flow test --debug` shows
+them for a case that runs the file's own program; a case whose stubs rewrite it
+(a `step:` stub that answers a `call:`), or whose file does not compile outside
+the case, names steps by address, and the pane says why. The line editor below is
+what you get with `--tui=false` and wherever the screen is not used.
 
 To try it, step through a loop yourself, or replay a recorded session over the
 same file:
@@ -1078,6 +1082,16 @@ file's bytes are the ones the map was made from (a file saved since, even only t
 move a line, is not). Otherwise the pane shows the held step's address and one
 sentence saying why it does not show lines, never a line that could mark the
 wrong step, and a click or `B` on the source says the same and sends nothing.
+
+A run in this process is given the same: `flow run local --debug` reads the file
+once for both the program and its source map, so the map is of the program it
+runs, and the Flowfile's text is the one it compiled. A file it `call:`s is read
+again when the screen opens, and is shown only if it is still the bytes the
+compiler recorded. `flow test --debug` cannot know the program a case runs until
+the case compiles it, so it offers the file's map to the case and the screen
+shows lines only when the case's own program is the one the map is bound to; a
+`step:` stub that answers a `call:` makes it another, and that case is debugged by
+address.
 
 Like the flow, the view centres on the held lines and the selection follows them
 until you scroll (the wheel, or `up` and `down` with the source focused), after
