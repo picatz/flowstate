@@ -39,6 +39,19 @@ declare module 'claude-code' {
       /** The output cards show the raw values (sensitive ones still hidden) instead of the labelled cards (hooks/outputs.ts). */
       outputsRaw: boolean
       /** This turn's Flowfile edits and the checks since (hooks/verify.ts); reset when a turn starts. */
+      /** The `flow test` band above the prompt (hooks/testband.ts); null for none. Cleared when a Flowfile or test file is edited. */
+      testBand: {
+        outcome: 'passed' | 'failed' | 'unknown'
+        detailed: boolean
+        passed: number
+        failed: number
+        skipped: number
+        uncovered: number
+        failing: { name: string; file: string; line: number; reason: string }[]
+        more: number
+        cut: boolean
+        note: string
+      } | null
       verify: { edited: string[]; validated: boolean; tested: boolean; nudged: boolean }
     }
   }

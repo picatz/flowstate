@@ -5,7 +5,7 @@ import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
-import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
+import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
@@ -13,6 +13,8 @@ import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
+import { bandFor, bandText, headOf, summaryOf } from './testband'
+import type { Band } from './testband'
 import { NO_SEEN, seenFrom, statusText } from './statusline'
 import type { Seen } from './statusline'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from './vocab'
@@ -28,6 +30,7 @@ const reports = atom({ plugin: 'flowstate', key: 'reports' } as const, [])
 const selected = atom({ plugin: 'flowstate', key: 'selected' } as const, '')
 const summary = atom({ plugin: 'flowstate', key: 'summary' } as const, { name: '', status: '', startTime: '', closeTime: '' })
 const filter = atom({ plugin: 'flowstate', key: 'filter' } as const, '')
+const testBand = atom({ plugin: 'flowstate', key: 'testBand' } as const, null as Band | null)
 const verify = atom({ plugin: 'flowstate', key: 'verify' } as const, EMPTY)
 /** The Send press that awaits its Confirm: which run, which signal, and the server it was aimed at. Empty id for none. */
 const NO_CONFIRM = { id: '', signal: '', address: '' }
@@ -294,9 +297,13 @@ export const register: Register = (on, options) => {
   for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
     on('tool.call', { tool }, async ($, e, next) => {
       const ran = await next(e)
-      if (nudges && ran.deny === undefined && ran.isError !== true) {
-        await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
-        await refreshStatus($, nudges, heard)
+      if (ran.deny === undefined && ran.isError !== true) {
+        // A result for the old files must not stand as current.
+        if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await update($, testBand, () => null).catch(() => undefined)
+        if (nudges) {
+          await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
+          await refreshStatus($, nudges, heard)
+        }
       }
       return ran
     })
@@ -304,11 +311,17 @@ export const register: Register = (on, options) => {
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
-    if (!nudges) return ran
     const check = checkOf((e as { command?: unknown }).command, flow)
     if (check === undefined) return ran
-    const result = 'result' in ran ? (ran.result as { interrupted?: boolean; backgroundTaskId?: string } | undefined) : undefined
-    const passed = ran.deny === undefined && ran.isError !== true && result?.interrupted !== true && result?.backgroundTaskId === undefined
+    const result = 'result' in ran ? (ran.result as { stdout?: unknown; interrupted?: boolean; backgroundTaskId?: string; timedOutAfterMs?: number; persistedOutputPath?: string } | undefined) : undefined
+    const unfinished = result?.interrupted === true || result?.backgroundTaskId !== undefined || result?.timedOutAfterMs !== undefined
+    const passed = ran.deny === undefined && ran.isError !== true && !unfinished
+    // The band reads the output the tool already holds; nothing is started for it.
+    if (check === 'test' && ran.deny === undefined) {
+      const stdout = typeof result?.stdout === 'string' ? result.stdout : ''
+      await update($, testBand, () => bandFor({ stdout, ok: passed, unfinished, partial: result?.persistedOutputPath !== undefined })).catch(() => undefined)
+    }
+    if (!nudges) return ran
     await update($, verify, s => recordCheck(s, check, passed)).catch(() => undefined)
     await refreshStatus($, nudges, heard)
     return ran
@@ -334,6 +347,31 @@ export const register: Register = (on, options) => {
     } catch {
       return out
     }
+  })
+
+  // The result of the last `flow test` the model ran, above the prompt: a headline chip, the counts and
+  // the first failing cases. Drawn from state; an edit of a Flowfile or test file clears it.
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    const band = await read($, testBand).catch(() => null)
+    if (band === null || e.props.hasSurvey) return next(e)
+    const { Box, Button, Text } = $.ui.resolve(e)
+    const head = headOf(band)
+    const rest = bandText(band).slice(1)
+    const sum = summaryOf(band)
+    return (
+      <Box flexDirection="column">
+        <Box>
+          <Text>
+            test <Text color={COLOR[head.tone]}>{head.symbol} {head.word}</Text>
+            {sum === '' ? '' : ` · ${sum}`}{' '}
+          </Text>
+          <Button key="hide" label="Hide" onPress={() => update($, testBand, () => null)} />
+        </Box>
+        {rest.map((line, i) => (
+          <Text key={i} dimColor={!line.includes('✗')}>{line}</Text>
+        ))}
+      </Box>
+    )
   })
 
   // The decision comes after the rules and settings hooks have spoken, so a

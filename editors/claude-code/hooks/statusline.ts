@@ -29,7 +29,7 @@ export const seenFrom = (runs: readonly RunSummary[], address: string, at: numbe
   return { at, address, failed }
 }
 
-const count = (n: number): string => (n > MAX_COUNT ? `${MAX_COUNT}+` : String(Math.max(0, Math.trunc(n) || 0)))
+export const count = (n: number): string => (n > MAX_COUNT ? `${MAX_COUNT}+` : String(Math.max(0, Math.trunc(n) || 0)))
 const file = (name: unknown): string => middleTruncate(name, 28).replaceAll('`', "'")
 const clock = (at: number): string => {
   const d = new Date(at)
