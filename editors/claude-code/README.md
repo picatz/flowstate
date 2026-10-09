@@ -87,6 +87,13 @@ confirm movement at the default run count before acting on it. The suite does
 not prove the plugin is safe, and the secret and server-run cases show intent
 under a prompt, not the guard's enforcement (`tests/guard.test.ts` covers that).
 
+A one-run trial of `no-secret-literal` with haiku and no `Bash` grant ran end to
+end (the suite format is accepted), and showed something worth knowing: the
+with-plugin arm stopped because the `flowfile-author` skill points at the MCP
+tools and the sandbox had neither them nor `Bash`, so it could not validate.
+Grant `Bash` (the sandbox needs `bwrap` and `socat`) and the plugin's MCP
+server (`--allow-real-servers`) for a fair comparison.
+
 ## Types come from the schema
 
 The mod reads `flow validate -o jsonl`, which is the schema's
