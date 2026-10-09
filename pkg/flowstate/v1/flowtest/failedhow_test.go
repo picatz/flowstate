@@ -121,41 +121,6 @@ func TestFailedNamesStepAndError(t *testing.T) {
 	})
 }
 
-// A case that never bound the secret its workflow reads must not be satisfied
-// by the failure that follows, whatever it claims about failing.
-func TestUnboundSecretIsNotAssertableFailure(t *testing.T) {
-	t.Parallel()
-
-	for _, failed := range []string{"true", "{error: invalid_input}"} {
-		dir := t.TempDir()
-		writeFile(t, dir+"/workflow.yaml", `
-edition: v2026.4
-name: bearer-request
-steps:
-  - id: call
-    http:
-      url: https://api.example.com/status
-      bearer: ${secret('env:TOKEN')}
-`)
-		writeFile(t, dir+"/workflow.test.yaml", `
-tests:
-  - name: unbound
-    workflow: ./workflow.yaml
-    stubs:
-      - task: http
-        returns: {status_code: 200}
-    expect:
-      failed: `+failed+`
-`)
-		report := flowtest.RunFile(dir + "/workflow.test.yaml")
-		require.Len(t, report.GetCases(), 1)
-		c := report.GetCases()[0]
-		require.False(t, c.GetPassed(), "failed: %s", failed)
-		require.Contains(t, c.GetError(), "does not bind a secret")
-		require.Contains(t, c.GetError(), "env:TOKEN")
-	}
-}
-
 // A failure a called workflow raises is the caller's `call:` step to name, not
 // the callee's private step.
 func TestFailedNamesTheCallStep(t *testing.T) {

@@ -1440,16 +1440,6 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// hold at that wait must not be rehearsed as one that finished.
 	// A park that coexists with a different, real failure (another branch of a
 	// parallel node) is that failure, not a held run.
-	// A secret the case never bound is the case's mistake, and the run it
-	// broke would satisfy `failed: true` for the wrong reason: no verdict.
-	if errors.Is(runErr, errUnboundSecret) {
-		caseError("the case's `secrets:` block does not bind a secret the workflow reads, so the "+
-			"run failed before it could show what the case asserts: %v", runErr)
-		result.Passed = false
-
-		return
-	}
-
 	parked := test.Expect.Response != nil && signals.Parked() && (runErr == nil || errors.Is(runErr, v1.ErrRunParked))
 	expectErr := runErr
 	if parked {

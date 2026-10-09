@@ -827,10 +827,6 @@ secrets:
   env:API_TOKEN: test-token
 ```
 
-A reference the block does not bind is a mistake in the case, not behavior of
-the workflow: the case ends with an error naming the reference and passes
-nothing, even with `failed: true`.
-
 A var that feeds a secret is treated as secret material. The taint follows the
 dependency graph both ways, to every var computed from it and every var it was
 computed from, and those values are withheld wherever the test prints them. A

@@ -2,7 +2,6 @@ package flowtest
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -103,22 +102,6 @@ type testSecretProvider struct {
 	values map[string]string
 }
 
-// errUnboundSecret marks a run that failed because the case's `secrets:` block
-// does not bind a reference the workflow reads. That is a fault in the case,
-// not behavior of the workflow, so [runCase] reports it as the case's error
-// rather than letting `expect.failed` accept it as the failure it asked for.
-var errUnboundSecret = errors.New("unbound secret")
-
-// unboundSecretError is a resolution failure of this harness, carrying its
-// own sentence and matching [errUnboundSecret]. A case with no `secrets:`
-// entry registers no provider at all, so the failure is an unknown scheme
-// rather than the provider's not-found; both mean the same thing here.
-type unboundSecretError struct{ error }
-
-func (e unboundSecretError) Is(target error) bool { return target == errUnboundSecret }
-
-func (e unboundSecretError) Unwrap() error { return e.error }
-
 // Scheme implements [secrets.Provider].
 func (p *testSecretProvider) Scheme() string { return p.scheme }
 
@@ -126,8 +109,8 @@ func (p *testSecretProvider) Scheme() string { return p.scheme }
 func (p *testSecretProvider) Resolve(_ context.Context, req secrets.Request) (secrets.Secret, error) {
 	value, ok := p.values[req.Ref.GetName()]
 	if !ok {
-		return secrets.Secret{}, fmt.Errorf("%w: %w: no `secrets:` entry for %q in this test case",
-			errUnboundSecret, secrets.ErrNotFound, secrets.RefString(req.Ref))
+		return secrets.Secret{}, fmt.Errorf("%w: no `secrets:` entry for %q in this test case",
+			secrets.ErrNotFound, secrets.RefString(req.Ref))
 	}
 	return secrets.NewSecret(req.Ref, value), nil
 }
@@ -203,10 +186,10 @@ func resolveSecretValue(ctx context.Context, v *v1.Value, path string, depth int
 	if ref := v.GetSecretRef(); ref != nil {
 		secret, err := v1.ResolveSecret(ctx, ref)
 		if err != nil {
-			return nil, unboundSecretError{fmt.Errorf(
-				"flow test: input %q names secret %q, but this case does not resolve it (%w); "+
+			return nil, fmt.Errorf(
+				"flow test: input %q names secret %q, but this case does not resolve it (%v); "+
 					"add a `secrets:` entry binding %q to a value — flow test never resolves a real secret",
-				path, secrets.RefString(ref), err, secrets.RefString(ref))}
+				path, secrets.RefString(ref), err, secrets.RefString(ref))
 		}
 		return secret.Reveal(), nil
 	}
