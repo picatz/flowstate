@@ -24,6 +24,10 @@ declare module 'claude-code' {
       summary: { name: string; status: string; startTime: string; closeTime: string }
       /** The CEL text in the Runs filter box, passed to `flow list --filter` unchanged; empty for none. */
       filter: string
+      /** A Send press awaiting its Confirm (hooks/signal.ts): the run, the signal and the server it was aimed at; empty id for none. Nothing is sent while this is set. */
+      confirm: { id: string; signal: string; address: string }
+      /** What the last Confirm did for the card: delivered, or the server's refusal (cleaned, bounded). */
+      outcome: { id: string; signal: string; ok: boolean; text: string }
       /** This turn's Flowfile edits and the checks since (hooks/verify.ts); reset when a turn starts. */
       verify: { edited: string[]; validated: boolean; tested: boolean; nudged: boolean }
     }
