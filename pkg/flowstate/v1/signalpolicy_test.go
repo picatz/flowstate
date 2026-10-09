@@ -182,6 +182,14 @@ func TestSignalPolicyClosedPrincipals(t *testing.T) {
 		`sender.identity.principal == "` + a + `" && sender.identity.claims["team"] == "x"`:                                            {a},
 		`(sender.identity.principal == "` + a + `" || sender.identity.principal == "` + b + `") && sender.identity.claims["t"] == "x"`: {a, b},
 		`sender.identity.principal == "` + a + `" && sender.identity.principal != run.identity.principal`:                              {a},
+		// What a declared function's expansion looks like: a bind around the term.
+		`cel.bind(who, sender.identity.claims.team, sender.identity.principal == "` + a + `")`:            {a},
+		`cel.bind(p, sender.identity.principal, sender.identity.principal in ["` + a + `", "` + b + `"])`: {a, b},
+		// The form an expanded function takes: the caller's principal passed in as an argument.
+		`cel.bind(p, sender.identity.principal, p == "` + a + `")`:                                                             {a},
+		`cel.bind(p, sender.identity.principal, p in ["` + a + `", "` + b + `"])`:                                              {a, b},
+		`cel.bind(p, sender.identity.principal, cel.bind(q, p, q == "` + a + `")) || sender.identity.principal == "` + b + `"`: {a, b},
+		`cel.bind(x, 1, cel.bind(y, 2, sender.identity.principal == "` + a + `")) || sender.identity.principal == "` + b + `"`: {a, b},
 	}
 	for expression, want := range closed {
 		got, ok := v1.SignalPolicyClosedPrincipals(&v1.SignalPolicy{Allow: expression})
@@ -196,6 +204,14 @@ func TestSignalPolicyClosedPrincipals(t *testing.T) {
 		`sender.identity.principal == "x#" + inputs.who && sender.identity.claims["t"] == "x"`,
 		`!(sender.identity.principal == "` + a + `")`,
 		`sender.identity.principal.startsWith("https://i#")`,
+		// A bind never closes a set it cannot name: the bound name is the thing read,
+		// or it shadows the caller, or its result names no principals.
+		`cel.bind(p, sender.identity.claims.team, p == "` + a + `")`,
+		`cel.bind(p, sender.identity.principal, cel.bind(p, sender.identity.claims.team, p == "` + a + `"))`,
+		`cel.bind(p, sender.identity.principal, p == "x#" + inputs.who)`,
+		`cel.bind(sender, run, sender.identity.principal == "` + a + `")`,
+		`cel.bind(x, 1, sender.identity.claims.team == "x")`,
+		`cel.bind(x, 1, sender.identity.principal == "` + a + `") || sender.identity.claims.team == "x"`,
 		`not a valid ((expression`,
 		``,
 	} {

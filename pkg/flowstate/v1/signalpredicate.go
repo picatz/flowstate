@@ -406,6 +406,14 @@ func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 	// has one, keyed by node ID and consumed by its parent.
 	sets := map[int64]map[string]struct{}{}
 
+	// principalIdents holds the IDs of identifiers that name the caller's
+	// principal through a `cel.bind` of exactly `sender.identity.principal`, which
+	// is how a declared function's body reaches it: it sees only its parameters, so
+	// the call passes the principal in. Such an identifier compares as the select
+	// does; any other bound name stays opaque.
+	principalIdents := map[int64]bool{}
+	isPrincipal := func(x celast.Expr) bool { return isSenderPrincipal(x) || principalIdents[x.ID()] }
+
 	type frame struct {
 		node     celast.NavigableExpr
 		children []celast.NavigableExpr
@@ -448,8 +456,16 @@ func analyzeSignalPredicate(checked *cel.Ast) signalPredicateAnalysis {
 			if global(identity.Children()[0], "sender") {
 				reads.claims = true
 			}
+		case e.Kind() == celast.IdentKind:
+			if boundPrincipal(e, isPrincipal) {
+				principalIdents[e.ID()] = true
+			}
 		case e.Kind() == celast.CallKind:
-			if set, ok := closedOfCall(e.AsCall(), sets); ok {
+			if set, ok := closedOfCall(e.AsCall(), sets, isPrincipal); ok {
+				sets[e.ID()] = set
+			}
+		case e.Kind() == celast.ComprehensionKind:
+			if set, ok := closedOfBind(e.AsComprehension(), sets); ok {
 				sets[e.ID()] = set
 			}
 		}
@@ -707,7 +723,60 @@ func SignalPolicyClosedPrincipals(policy *SignalPolicy) (principals []string, cl
 // results of its operands in sets (keyed by node ID, filled by the walk in
 // operand-first order). ok is false when the call admits a sender it cannot
 // name.
-func closedOfCall(call celast.CallExpr, sets map[int64]map[string]struct{}) (map[string]struct{}, bool) {
+// closedOfBind passes the closed set of a `cel.bind(name, value, result)` through
+// to the comprehension node, because that is what a declared function's expansion
+// is (see [FunctionSet.ExpandText]) and wrapping a comparison in a function must
+// not change what the policy is known to admit. It is the bind's result that
+// decides the sender; the bound value only names a local.
+//
+// Conservative on purpose. Any other comprehension stays open, and so does a bind
+// whose name is `sender`: the result's `sender.identity.principal` would then read
+// the local, not the caller, and the term must not close a set.
+func closedOfBind(comp celast.ComprehensionExpr, sets map[int64]map[string]struct{}) (map[string]struct{}, bool) {
+	if !isBindComprehension(comp) || comp.AccuVar() == "sender" {
+		return nil, false
+	}
+	set, ok := sets[comp.Result().ID()]
+	if !ok {
+		return nil, false
+	}
+	delete(sets, comp.Result().ID())
+
+	return set, true
+}
+
+// isBindComprehension reports whether comp is the comprehension `cel.bind` expands
+// to: no iteration, one accumulator holding the bound value.
+func isBindComprehension(comp celast.ComprehensionExpr) bool {
+	rng := comp.IterRange()
+
+	return comp.IterVar() == "#unused" && rng.Kind() == celast.ListKind && rng.AsList().Size() == 0
+}
+
+// boundPrincipal reports whether the identifier e is the name of the nearest
+// enclosing `cel.bind` whose value is the caller's principal. The nearest binding
+// of the name decides, so a shadowing local of the same name is not mistaken for
+// it, and an identifier in the bound value itself is not yet in scope.
+func boundPrincipal(e celast.NavigableExpr, isPrincipal func(celast.Expr) bool) bool {
+	name := e.AsIdent()
+	child := e
+	for {
+		parent, ok := child.Parent()
+		if !ok {
+			return false
+		}
+		if parent.Kind() == celast.ComprehensionKind {
+			comp := parent.AsComprehension()
+			inScope := child.ID() != comp.IterRange().ID() && child.ID() != comp.AccuInit().ID()
+			if inScope && (comp.IterVar() == name || comp.IterVar2() == name || comp.AccuVar() == name) {
+				return isBindComprehension(comp) && comp.AccuVar() == name && isPrincipal(comp.AccuInit())
+			}
+		}
+		child = parent
+	}
+}
+
+func closedOfCall(call celast.CallExpr, sets map[int64]map[string]struct{}, isPrincipal func(celast.Expr) bool) (map[string]struct{}, bool) {
 	args := call.Args()
 
 	switch call.FunctionName() {
@@ -760,7 +829,7 @@ func closedOfCall(call celast.CallExpr, sets map[int64]map[string]struct{}) (map
 			return nil, false
 		}
 		for i, side := range args {
-			if !isSenderPrincipal(side) {
+			if !isPrincipal(side) {
 				continue
 			}
 			if literal, ok := policyStringLiteral(args[1-i]); ok {
@@ -770,7 +839,7 @@ func closedOfCall(call celast.CallExpr, sets map[int64]map[string]struct{}) (map
 
 		return nil, false
 	case operators.In:
-		if len(args) != 2 || !isSenderPrincipal(args[0]) || args[1].Kind() != celast.ListKind {
+		if len(args) != 2 || !isPrincipal(args[0]) || args[1].Kind() != celast.ListKind {
 			return nil, false
 		}
 		set := make(map[string]struct{})

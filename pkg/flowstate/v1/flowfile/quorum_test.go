@@ -134,3 +134,44 @@ func TestAQuorumPolicyThatAdmitsByClaimIsNotCounted(t *testing.T) {
 		assert.NotEqual(t, "wait_for_signals.quorum.approve", d.Field, d.Message)
 	}
 }
+
+// A predicate wrapped in a declared function is the same predicate: its expansion
+// is a bind around the term, and the count of principals it permits survives that,
+// so the unreachable quorum is still refused and the reachable one is still not.
+func TestAQuorumPolicyBehindAFunctionIsCountedAsTheBareOneIs(t *testing.T) {
+	t.Parallel()
+
+	source := func(approve string, allow string) string {
+		return "edition: v2026.4\nname: release-gate\nfunctions:\n  isOneOf:\n    params:\n      who: string\n    returns: bool\n" +
+			"    body: ${who in [\"https://idp.example#alice\", \"https://idp.example#bob\"]}\n" +
+			"steps:\n  - id: gate\n    wait_for_signals:\n      name: release-approved\n      timeout: 1h\n      quorum:\n        approve: " + approve + "\n" +
+			"signals:\n  release-approved:\n    allow: ${" + allow + "}\n"
+	}
+
+	for _, test := range []struct {
+		name     string
+		approve  string
+		allow    string
+		wantDiag bool
+	}{
+		{"approve beyond a function-backed closed policy", "3", "isOneOf(sender.identity.principal)", true},
+		{"approve within it", "2", "isOneOf(sender.identity.principal)", false},
+		{"a function-backed term narrowed by a claim still closes the set", "3", "isOneOf(sender.identity.principal) && sender.identity.claims.team == \"x\"", true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			diagnostics, err := flowfile.ValidateSource([]byte(source(test.approve, test.allow)))
+			require.NoError(t, err)
+
+			var found bool
+			for _, d := range diagnostics {
+				if d.Field == "wait_for_signals.quorum.approve" {
+					found = true
+					assert.Contains(t, d.Message, "can never be met")
+				}
+			}
+			assert.Equal(t, test.wantDiag, found, "diagnostics: %v", diagnostics)
+		})
+	}
+}
