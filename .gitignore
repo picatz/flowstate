@@ -108,3 +108,6 @@ go.work
 
 # Per-orb portal metadata is runtime state, not repository configuration.
 .amp/portals/*
+
+# Plugin eval run output.
+/editors/claude-code/evals/results/
