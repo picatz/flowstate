@@ -82,6 +82,8 @@ const (
 	GraphNodeKind_GRAPH_NODE_KIND_TASK GraphNodeKind = 2
 	// A signal channel a workflow waits on, by name.
 	GraphNodeKind_GRAPH_NODE_KIND_SIGNAL GraphNodeKind = 3
+	// A step of a workflow, by the id the author gave it. Its address says where.
+	GraphNodeKind_GRAPH_NODE_KIND_STEP GraphNodeKind = 4
 )
 
 // Enum value maps for GraphNodeKind.
@@ -91,12 +93,14 @@ var (
 		1: "GRAPH_NODE_KIND_WORKFLOW",
 		2: "GRAPH_NODE_KIND_TASK",
 		3: "GRAPH_NODE_KIND_SIGNAL",
+		4: "GRAPH_NODE_KIND_STEP",
 	}
 	GraphNodeKind_value = map[string]int32{
 		"GRAPH_NODE_KIND_UNSPECIFIED": 0,
 		"GRAPH_NODE_KIND_WORKFLOW":    1,
 		"GRAPH_NODE_KIND_TASK":        2,
 		"GRAPH_NODE_KIND_SIGNAL":      3,
+		"GRAPH_NODE_KIND_STEP":        4,
 	}
 )
 
@@ -138,6 +142,9 @@ const (
 	GraphEdgeKind_GRAPH_EDGE_KIND_USES GraphEdgeKind = 2
 	// A workflow waits for a signal.
 	GraphEdgeKind_GRAPH_EDGE_KIND_WAITS GraphEdgeKind = 3
+	// A workflow or a step holds a step: the workflow its top-level steps, a
+	// loop, a parallel branch or a switch arm the steps in its body.
+	GraphEdgeKind_GRAPH_EDGE_KIND_CONTAINS GraphEdgeKind = 4
 )
 
 // Enum value maps for GraphEdgeKind.
@@ -147,12 +154,14 @@ var (
 		1: "GRAPH_EDGE_KIND_CALL",
 		2: "GRAPH_EDGE_KIND_USES",
 		3: "GRAPH_EDGE_KIND_WAITS",
+		4: "GRAPH_EDGE_KIND_CONTAINS",
 	}
 	GraphEdgeKind_value = map[string]int32{
 		"GRAPH_EDGE_KIND_UNSPECIFIED": 0,
 		"GRAPH_EDGE_KIND_CALL":        1,
 		"GRAPH_EDGE_KIND_USES":        2,
 		"GRAPH_EDGE_KIND_WAITS":       3,
+		"GRAPH_EDGE_KIND_CONTAINS":    4,
 	}
 )
 
@@ -204,10 +213,15 @@ func (GraphEdgeKind) EnumDescriptor() ([]byte, []int) {
 type Graph struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Nodes are the things in the graph, ordered by id so two builds of the same
-	// input are the same bytes.
+	// input are the same bytes. The one exception is the view of a workflow's own
+	// steps, where the order of the steps is part of what the graph says: the
+	// workflow comes first and its steps follow in document order, which is the
+	// same bytes for the same workflow all the same.
 	Nodes []*GraphNode `protobuf:"bytes,1,rep,name=nodes,proto3" json:"nodes,omitempty"`
-	// Edges connect nodes by id, ordered by (from, to, kind). Two relations of the
-	// same kind between the same nodes are one edge with a count.
+	// Edges connect nodes by id, ordered by (from, to, kind); in a view of a
+	// workflow's own steps they follow the document order of the steps they reach.
+	// Two relations of the same kind between the same nodes are one edge with a
+	// count.
 	Edges []*GraphEdge `protobuf:"bytes,2,rep,name=edges,proto3" json:"edges,omitempty"`
 	// Partial is true when the graph is missing something it was asked for: an
 	// input that did not compile, or a bound that was reached. Never silent.
@@ -415,7 +429,15 @@ type GraphNode struct {
 	Kind GraphNodeKind `protobuf:"varint,2,opt,name=kind,proto3,enum=flowstate.v1.GraphNodeKind" json:"kind,omitempty"`
 	// Label is the name to show, as the author wrote it. It is author-controlled
 	// text, so a renderer must treat it as untrusted.
-	Label         string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	Label string `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	// Address is where the node is in the program, for a STEP: the debug address
+	// `FormatDebugAddress` writes, so a step the explorer shows opens at the same
+	// place in the debugger. Other kinds have none.
+	Address string `protobuf:"bytes,4,opt,name=address,proto3" json:"address,omitempty"`
+	// Detail is what a STEP does, in the words the debugger uses for it: `task
+	// "http"`, `wait_for_signal "approved"`, `loop`. It is author-controlled text,
+	// so a renderer must treat it as untrusted.
+	Detail        string `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -467,6 +489,20 @@ func (x *GraphNode) GetKind() GraphNodeKind {
 func (x *GraphNode) GetLabel() string {
 	if x != nil {
 		return x.Label
+	}
+	return ""
+}
+
+func (x *GraphNode) GetAddress() string {
+	if x != nil {
+		return x.Address
+	}
+	return ""
+}
+
+func (x *GraphNode) GetDetail() string {
+	if x != nil {
+		return x.Detail
 	}
 	return ""
 }
@@ -661,13 +697,15 @@ const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\x04node\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x04node\x12\x1f\n" +
 	"\x05value\x18\x02 \x01(\tB\t\xbaH\x06r\x04\x10\x01\x18@R\x05value\x12\x14\n" +
-	"\x05count\x18\x03 \x01(\rR\x05count\"\x84\x01\n" +
+	"\x05count\x18\x03 \x01(\rR\x05count\"\xca\x01\n" +
 	"\tGraphNode\x12\x1a\n" +
 	"\x02id\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x02id\x12;\n" +
 	"\x04kind\x18\x02 \x01(\x0e2\x1b.flowstate.v1.GraphNodeKindB\n" +
 	"\xbaH\a\x82\x01\x04\x10\x01 \x00R\x04kind\x12\x1e\n" +
-	"\x05label\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05label\"\x9a\x01\n" +
+	"\x05label\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x05label\x12\"\n" +
+	"\aaddress\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\aaddress\x12 \n" +
+	"\x06detail\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x06detail\"\x9a\x01\n" +
 	"\tGraphEdge\x12\x1e\n" +
 	"\x04from\x18\x01 \x01(\tB\n" +
 	"\xbaH\ar\x05\x10\x03\x18\xac\x02R\x04from\x12\x1a\n" +
@@ -691,17 +729,19 @@ const file_flowstate_v1_graph_proto_rawDesc = "" +
 	"\b_attempt*Y\n" +
 	"\x10GraphOverlayKind\x12\"\n" +
 	"\x1eGRAPH_OVERLAY_KIND_UNSPECIFIED\x10\x00\x12!\n" +
-	"\x1dGRAPH_OVERLAY_KIND_RUN_STATUS\x10\x01*\x84\x01\n" +
+	"\x1dGRAPH_OVERLAY_KIND_RUN_STATUS\x10\x01*\x9e\x01\n" +
 	"\rGraphNodeKind\x12\x1f\n" +
 	"\x1bGRAPH_NODE_KIND_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18GRAPH_NODE_KIND_WORKFLOW\x10\x01\x12\x18\n" +
 	"\x14GRAPH_NODE_KIND_TASK\x10\x02\x12\x1a\n" +
-	"\x16GRAPH_NODE_KIND_SIGNAL\x10\x03*\x7f\n" +
+	"\x16GRAPH_NODE_KIND_SIGNAL\x10\x03\x12\x18\n" +
+	"\x14GRAPH_NODE_KIND_STEP\x10\x04*\x9d\x01\n" +
 	"\rGraphEdgeKind\x12\x1f\n" +
 	"\x1bGRAPH_EDGE_KIND_UNSPECIFIED\x10\x00\x12\x18\n" +
 	"\x14GRAPH_EDGE_KIND_CALL\x10\x01\x12\x18\n" +
 	"\x14GRAPH_EDGE_KIND_USES\x10\x02\x12\x19\n" +
-	"\x15GRAPH_EDGE_KIND_WAITS\x10\x03B\xa9\x01\n" +
+	"\x15GRAPH_EDGE_KIND_WAITS\x10\x03\x12\x1c\n" +
+	"\x18GRAPH_EDGE_KIND_CONTAINS\x10\x04B\xa9\x01\n" +
 	"\x10com.flowstate.v1B\n" +
 	"GraphProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 

@@ -961,6 +961,9 @@ flow graph examples/call-a-workflow/workflow.yaml
 # The same graph for a program or an agent:
 flow graph examples -o json | jq '.edges[] | select(.count > 1)'
 
+# The steps of one workflow, each with its debugger address:
+flow graph examples --workflow deploy
+
 # What is running now, over what the files declare:
 flow graph examples --live
 
@@ -980,6 +983,7 @@ flow graph --live --filter 'status == "FAILED" && name == "billing"'
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
+| `--workflow <string>` | `string` | — | — | zoom in on the named workflow: its own steps, each with the address the debugger uses for it |
 
 ## `flow init`
 

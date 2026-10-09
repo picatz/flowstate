@@ -45,6 +45,8 @@ func prefix(kind v1.GraphNodeKind) string {
 		return "task"
 	case v1.GraphNodeKind_GRAPH_NODE_KIND_SIGNAL:
 		return "signal"
+	case v1.GraphNodeKind_GRAPH_NODE_KIND_STEP:
+		return "step"
 	default:
 		return "unknown"
 	}
