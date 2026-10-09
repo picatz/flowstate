@@ -48,3 +48,12 @@ test('a stray line does not hide the runs and the list stays bounded', async ($,
   expect(await ui.find({ type: 'Text', text: /completed w8$/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('terminal control characters in a name or an error never reach the pane', async ($, on) => {
+  stub(on, { exitCode: 0, stdout: '{"workflowId":"w1","status":"STATUS_RUNNING","name":"a\\u001b[31mred\\u009b"}\n', stderr: '' })
+  const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
+
+  expect(await ui.find({ type: 'Text', text: /running a\[31mred \(w1\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /[\u001b\u009b]/ })).toBeUndefined()
+  await ui.unmount()
+})

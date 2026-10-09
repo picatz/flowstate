@@ -81,7 +81,7 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column">
         <Text bold>Runs</Text>
         {'offline' in runs ? (
-          <Text dimColor>  No server answering ({runs.offline.slice(0, 100)}). Local runs need none; set FLOWSTATE_ADDRESS to see a server's.</Text>
+          <Text dimColor>  No server answering ({runs.offline}). Local runs need none; set FLOWSTATE_ADDRESS to see a server's.</Text>
         ) : runs.runs.length === 0 ? (
           <Text dimColor>  No runs yet.</Text>
         ) : (
