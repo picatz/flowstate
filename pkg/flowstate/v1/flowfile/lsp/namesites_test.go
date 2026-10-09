@@ -160,3 +160,50 @@ func TestRenameVarRefusesAReadItCannotSee(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does not track")
 }
+
+func TestRenameVarRefusesFormsItCannotAttribute(t *testing.T) {
+	t.Parallel()
+	for name, read := range map[string]string{
+		"indexed":        `vars["greeting"]`,
+		"spaced index":   `vars[ "greeting" ]`,
+		"computed index": `vars[string("greeting")]`,
+		"bare":           `size(vars)`,
+		"method on vars": `vars.size()`,
+	} {
+		src := strings.Replace(namesSource, "name: names\n", "name: names\noutputs:\n  o:\n    value: ${"+read+"}\n", 1)
+		_, err := renameTo(t, src, "greeting: hello", 0, "salute")
+		require.Error(t, err, name)
+	}
+}
+
+func TestRenameIteratorRefusesACaptureByABinder(t *testing.T) {
+	t.Parallel()
+	src := `edition: v2026.4
+name: capture
+steps:
+  - id: each
+    for_each:
+      items: ${[1]}
+      as: n
+      steps:
+        - id: say
+          log:
+            message: ${string([1, 2].exists(i, i == n))}
+`
+	_, err := renameTo(t, src, "as: n", len("as: "), "i")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already written")
+
+	got, err := renameTo(t, src, "as: n", len("as: "), "j")
+	require.NoError(t, err)
+	assert.Contains(t, got, "i == j")
+}
+
+func TestRenameVarFollowsAnOptionalSelection(t *testing.T) {
+	t.Parallel()
+	src := strings.Replace(namesSource, "name: names\n", "name: names\noutputs:\n  o:\n    value: ${vars.?greeting.orValue(\"z\")}\n", 1)
+	got, err := renameTo(t, src, "greeting: hello", 0, "salute")
+	require.NoError(t, err)
+	assert.Contains(t, got, `vars.?salute.orValue`)
+	assert.NotContains(t, got, "greeting")
+}

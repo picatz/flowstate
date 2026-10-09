@@ -45,6 +45,11 @@ type nameSites struct {
 	// loop is the step whose `as:` declares an iterator.
 	loop *parsedStep
 
+	// spelled holds every variable name written in a fence that reads the
+	// iterator, bound or free. Renaming to one of them would capture a read or
+	// be captured by a comprehension's binder.
+	spelled map[string]bool
+
 	// unplaced counts reads the model found but cannot place, as [stepSites] does.
 	unplaced int
 
@@ -121,28 +126,53 @@ func varMemberUnder(src string, cursor int) (string, bool) {
 	return "", false
 }
 
-// varReadsIn lists the spans of the `<name>` in each free `vars.<name>` read.
-func varReadsIn(src string) []celToken {
-	var out []celToken
+// varUse is one free `vars` root in an expression, with the member it selects
+// when it selects a plain one.
+type varUse struct {
+	// member is the span of `<name>` in `vars.<name>` or `vars.?<name>`, and is
+	// nil for every other use: indexed, bare, or a method call on the map.
+	member *celToken
+}
+
+// varUsesIn lists every free `vars` root in src. A use with no member is one the
+// server cannot attribute to a name, so a rename must not proceed past it.
+func varUsesIn(src string) []varUse {
+	var out []varUse
 	toks := lexCEL(src)
 	for i, t := range toks {
 		if t.kind != tokVariable || t.shadowed || src[t.start:t.end] != v1.VarsRoot {
 			continue
 		}
-		rest := src[t.end:]
-		trimmed := strings.TrimLeft(rest, " \t")
-		if !strings.HasPrefix(trimmed, ".") {
-			continue
+		use := varUse{}
+		rest := strings.TrimLeft(src[t.end:], " \t")
+		if strings.HasPrefix(rest, ".") {
+			after := len(src) - len(rest) + 1
+			if strings.HasPrefix(src[after:], "?") { // optional selection, `vars.?name`
+				after++
+			}
+			for j := i + 1; j < len(toks); j++ {
+				if toks[j].start < after {
+					continue
+				}
+				if strings.TrimSpace(src[after:toks[j].start]) == "" &&
+					!strings.HasPrefix(strings.TrimLeft(src[toks[j].end:], " \t"), "(") {
+					use.member = &celToken{start: toks[j].start, end: toks[j].end}
+				}
+				break
+			}
 		}
-		after := t.end + (len(rest) - len(trimmed)) + 1
-		for j := i + 1; j < len(toks); j++ {
-			if toks[j].start < after {
-				continue
-			}
-			if toks[j].start == after || strings.TrimSpace(src[after:toks[j].start]) == "" {
-				out = append(out, celToken{start: toks[j].start, end: toks[j].end})
-			}
-			break
+		out = append(out, use)
+	}
+
+	return out
+}
+
+// varReadsIn lists the spans of the `<name>` in each plain `vars.<name>` read.
+func varReadsIn(src string) []celToken {
+	var out []celToken
+	for _, u := range varUsesIn(src) {
+		if u.member != nil {
+			out = append(out, *u.member)
 		}
 	}
 
@@ -214,7 +244,7 @@ func varDeclaredAt(doc *document, pos lsp.Position) string {
 // resolves to its loop.
 func collectIteratorSites(doc *document, loop *parsedStep) nameSites {
 	name := loop.iteratorName()
-	out := nameSites{kind: nameIterator, name: name, loop: loop}
+	out := nameSites{kind: nameIterator, name: name, loop: loop, spelled: map[string]bool{}}
 	seen := map[lsp.Range]struct{}{}
 
 	if e := asEntry(loop); e != nil {
@@ -223,7 +253,9 @@ func collectIteratorSites(doc *document, loop *parsedStep) nameSites {
 	}
 	forEachExpression(doc, func(from *parsedStep, ls loopScope, v *value) {
 		for _, f := range v.fences {
-			for _, t := range lexCEL(f.source) {
+			toks := lexCEL(f.source)
+			reads := false
+			for _, t := range toks {
 				if t.kind != tokVariable || t.shadowed || f.source[t.start:t.end] != name {
 					continue
 				}
@@ -231,6 +263,7 @@ func collectIteratorSites(doc *document, loop *parsedStep) nameSites {
 				if resolveIterator(from, ls, name) != loop {
 					continue
 				}
+				reads = true
 				rng, ok := v.fenceSpan(doc.index, f, t.start, t.end)
 				if !ok {
 					out.unplaced++
@@ -239,6 +272,13 @@ func collectIteratorSites(doc *document, loop *parsedStep) nameSites {
 				if _, dup := seen[rng]; !dup {
 					seen[rng] = struct{}{}
 					out.sites = append(out.sites, stepSite{rng: rng})
+				}
+			}
+			if reads {
+				for _, t := range toks {
+					if t.kind == tokVariable {
+						out.spelled[f.source[t.start:t.end]] = true
+					}
 				}
 			}
 		}
@@ -283,9 +323,12 @@ func collectVarSites(doc *document, name string) nameSites {
 			}
 		}
 	})
+	// Every read of this name, plus every use of `vars` that names nothing the
+	// server can read back (`vars[k]`, a bare `vars`): the latter are never
+	// visited, so they leave total above visited and the rename is refused.
 	for _, body := range fenceBodies(doc.text) {
-		for _, m := range varReadsIn(body) {
-			if body[m.start:m.end] == name {
+		for _, u := range varUsesIn(body) {
+			if u.member == nil || body[u.member.start:u.member.end] == name {
 				out.total++
 			}
 		}
@@ -339,10 +382,10 @@ func (ns nameSites) checkRename(doc *document, newName string) error {
 		if varEntry(doc.parsed.varsEntry, newName) != nil {
 			return renameError(fmt.Sprintf("a var is already named %q", newName))
 		}
-		if strings.Contains(doc.text, `vars["`+ns.name+`"]`) || strings.Contains(doc.text, `vars['`+ns.name+`']`) {
-			return renameError(fmt.Sprintf("vars[%q] is read by index, which the server does not track", ns.name))
-		}
 	case nameIterator:
+		if ns.spelled[newName] {
+			return renameError(fmt.Sprintf("%q is already written in an expression that reads %q; renaming would change what it refers to", newName, ns.name))
+		}
 		// A bare name another binder owns would capture the renamed reads or
 		// have its own captured by them.
 		for _, s := range doc.parsed.steps {
