@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 
@@ -426,6 +427,23 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 				"ordinary input cannot name something that does not exist yet. These the task "+
 				"evaluates itself, in its own scope, after it has run far enough to have one: it "+
 				"is how `http`'s `outputs` may name `status_code`.", width)); err != nil {
+			return err
+		}
+	}
+
+	// A credential input is bound once under the plugin's `plugins:` entry, which
+	// the type column's "whole secret reference" does not say and an author would
+	// otherwise learn from the refusal. Read from the descriptor's claims, the
+	// same source the compiler binds from.
+	if claimed, err := v1.TaskCredentialInputs(def); err == nil && len(claimed) > 0 {
+		var lines []string
+		for _, input := range slices.Sorted(maps.Keys(claimed)) {
+			lines = append(lines, fmt.Sprintf("`%s` receives the plugin's `%s` credential.", input, claimed[input]))
+		}
+		if _, err := fmt.Fprintf(out, "\n%s\n%s\n",
+			theme.Accent.Render("Needs a credential: "+strings.Join(slices.Compact(slices.Sorted(maps.Values(claimed))), ", ")),
+			wrap(strings.Join(lines, " ")+" Bind it once under the plugin's entry in `plugins:`, or write the input "+
+				"on a step to override the binding there.", width)); err != nil {
 			return err
 		}
 	}

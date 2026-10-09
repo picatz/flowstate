@@ -57,6 +57,9 @@ func hoverAt(doc *document, pos lsp.Position) *lsp.Hover {
 		if h := hoverInputDeclaration(doc, pos); h != nil {
 			return h
 		}
+		if h := hoverPluginCredential(doc, pos); h != nil {
+			return h
+		}
 		if k, rng, ok := documentKeyAt(doc.parsed, pos); ok {
 			return dslKeyHover(k, rng)
 		}
@@ -326,6 +329,11 @@ func inputDoc(def v1.TaskDef, name string, fd protoreflect.FieldDescriptor) stri
 		b.WriteString(" · optional")
 	}
 	fmt.Fprintf(&b, "\n\nInput of the `%s` task.", def.Name)
+	if credential, claimed := inputCredential(def, name); claimed {
+		plugin, _, _ := strings.Cut(def.Name, ".")
+		fmt.Fprintf(&b, " It receives the `%s` plugin's `%s` credential: bind that once under `plugins:`, or write a whole `${secret('...')}` here to override the binding for this step.",
+			plugin, credential)
+	}
 	if slices.Contains(def.DeferredInputs, name) {
 		// Worth saying: an input the task evaluates itself has a different scope
 		// from every other input, which is otherwise surprising.
@@ -1448,4 +1456,18 @@ func joinNames(names []string) string {
 func failureHoverText(stepID string) string {
 	return fmt.Sprintf("\n\nHow step `%s` failed, recorded because the step carries `continue_on_error:`: `%s` (the classification, such as `Upstream` or `Timeout`), `%s` (the same sentence as `error`) and `%s` (whether that kind is worth retrying).",
 		stepID, v1.FailureKindField, v1.FailureMessageField, v1.FailureRetryableField)
+}
+
+// inputCredential reports the plugin credential an input claims, if it does.
+func inputCredential(def v1.TaskDef, input string) (string, bool) {
+	if def.Inputs == nil {
+		return "", false
+	}
+	claims, err := v1.TaskCredentialInputs(def)
+	if err != nil {
+		return "", false
+	}
+	credential, claimed := claims[input]
+
+	return credential, claimed
 }
