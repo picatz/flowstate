@@ -1,6 +1,6 @@
 ---
 type: regex
 target: { source: file, path: workflow.yaml }
-pattern: 'sk-live-51Hq7xT3vNd8Rk2LmPz9Yw4Ab6Cc0Ee'
+pattern: 'sk-live-EXAMPLEEXAMPLEEXAMPLE0000'
 match: not_contains
 ---
