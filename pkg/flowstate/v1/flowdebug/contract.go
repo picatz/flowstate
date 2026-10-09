@@ -172,6 +172,10 @@ type contractState struct {
 	program           *v1.Workflow
 	declaredInProgram map[string]struct{}
 
+	// shapes is what the program declares its inputs as, for naming a value by
+	// its record type; nil when the program declares no record.
+	shapes *declaredShapes
+
 	sourceMap *v1.DebugSourceMap
 	sources   map[string]*v1.DebugSourceLocation
 	nextID    int
@@ -219,6 +223,7 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 	c.sitesKnown = !truncated
 	c.names, c.program, c.declaredInProgram = nil, nil, nil
 	c.profile = v1.CurrentProfile
+	c.shapes = shapesOf(wf)
 	if !truncated {
 		c.names = v1.NewDebugProgramNames(c.sites)
 	}
@@ -1911,6 +1916,7 @@ func (s *Session) logpoint(ctx context.Context, at breakpoint, scope *v1.Scope, 
 func (s *Session) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (*v1.DebugInspectResponse, error) {
 	s.mu.Lock()
 	subject, revision, state := s.at, s.contract.revision, s.contract.state
+	subject.shapes = s.contract.shapes
 	s.mu.Unlock()
 
 	if subject.scope == nil || (state != v1.DebugRunState_DEBUG_RUN_STATE_HELD && !subject.autopsy) {
@@ -1930,15 +1936,18 @@ func (s *Session) Inspect(ctx context.Context, req *v1.DebugInspectRequest) (*v1
 //
 // The redactors control what is printed; they are not a confidentiality
 // boundary against whoever may evaluate expressions.
+//
+// program is the workflow the scope belongs to, or nil: it names a value by the
+// record type an input is declared as, which a scope alone cannot say.
 func InspectScope(
-	ctx context.Context, scope *v1.Scope, redactText func(string) string, redactValue func(any) any,
+	ctx context.Context, scope *v1.Scope, program *v1.Workflow, redactText func(string) string, redactValue func(any) any,
 	req *v1.DebugInspectRequest, revision uint64,
 ) (*v1.DebugInspectResponse, error) {
 	if scope == nil {
 		return nil, ErrNotPaused
 	}
 
-	return inspectSubject(ctx, promptSubject{scope: scope, redactText: redactText, redactValue: redactValue}, req, revision)
+	return inspectSubject(ctx, promptSubject{scope: scope, shapes: shapesOf(program), redactText: redactText, redactValue: redactValue}, req, revision)
 }
 
 func inspectSubject(ctx context.Context, subject promptSubject, req *v1.DebugInspectRequest, revision uint64) (*v1.DebugInspectResponse, error) {
@@ -2031,6 +2040,11 @@ func typedNative(ctx context.Context, subject promptSubject, expression string) 
 		return nil, nil, err
 	}
 
+	// A record is a map at runtime; its declaration is where its name lives.
+	if typeName == "map" {
+		typeName = cmp.Or(subject.shapes.recordAt(expression, subject.workflow), typeName)
+	}
+
 	return &v1.DebugValue{
 		Type:       typeName,
 		Rendered:   text,
@@ -2063,7 +2077,7 @@ func childrenOf(subject promptSubject, expression string, native any, offset, li
 		text := capRunes(applyText(subject.redactText, nativeText(child)), MaxInspectRunes)
 
 		return &v1.DebugVariable{Name: name, Value: &v1.DebugValue{
-			Type:       nativeTypeName(child),
+			Type:       childTypeName(subject, path, child),
 			Rendered:   text,
 			Truncated:  utf8.RuneCountInString(text) >= MaxInspectRunes,
 			Children:   int32(childCount(child)),
@@ -2121,6 +2135,17 @@ func simplePath(expression string) bool {
 	}
 
 	return true
+}
+
+// childTypeName is [nativeTypeName], naming a map the program declares a record
+// by that record.
+func childTypeName(subject promptSubject, path string, native any) string {
+	name := nativeTypeName(native)
+	if name == "map" {
+		return cmp.Or(subject.shapes.recordAt(path, subject.workflow), name)
+	}
+
+	return name
 }
 
 // nativeTypeName names a native value's CEL type.

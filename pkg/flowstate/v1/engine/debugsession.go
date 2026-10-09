@@ -1256,6 +1256,6 @@ func setDebugQueries(ctx workflow.Context, d *debugControl, spec func() *v1.Work
 		evalCtx, cancel := context.WithTimeout(context.Background(), debugInspectTimeout)
 		defer cancel()
 
-		return flowdebug.InspectScope(evalCtx, scope, redactText, redactValue, req, d.carry.GetRevision())
+		return flowdebug.InspectScope(evalCtx, scope, held, redactText, redactValue, req, d.carry.GetRevision())
 	})
 }
