@@ -185,6 +185,9 @@ secrets:
   receives. They are empty where the read does not say (a built-in task's `bearer:`
   has a task and no credential), and a rule naming either matches nothing there, so
   an `allow` that pins them cannot be satisfied by a read that does not carry them.
+  That holds for `==`, `startsWith` and `in`; a negation (`task != "x"`,
+  `credential.plugin != "x"`) is true when the attribute is unset, so write `allow`
+  rules positively.
   Least privilege is one line: `secret.name == "SLACK_BOT_TOKEN" && credential.plugin == "slack"`
   lets that secret reach the Slack plugin's credential and nothing else, and
   `deny: ['task == "slack.delete"']` withholds every secret from one task. Pin

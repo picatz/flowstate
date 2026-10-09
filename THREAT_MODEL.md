@@ -501,7 +501,11 @@ value once it holds it (the scrubber caveat above). The `task` a rule sees is th
 registry's name for the step, set at the one place both drivers call a task, and the
 attributes are empty for a read that is not a plugin credential's (a built-in
 task's `bearer:` has a task and no credential), so a rule that names a credential
-never permits such a read. `flow validate` without `--plugin-dir` cannot check a
+never permits such a read. That holds for rules written positively (`==`, `startsWith`, `in`): a negation such
+as `task != "x"` is true for an unset attribute, so allow rules should be positive.
+A plugin can also evade a deny keyed on `credential.name` by declaring an unclaimed
+secret input, which carries a task and no credential; deny rules should pin `task`
+or `credential.plugin`. `flow validate` without `--plugin-dir` cannot check a
 binding against a declaration (it has none to read); admission and dispatch still do.
 
 **Planned.** Vetting or signing what runs before a binary is trusted with a socket,

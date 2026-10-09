@@ -76,7 +76,9 @@ type SecretAccessPolicy struct {
 	// the task whose step reads it ("slack.post"), and credential, the plugin
 	// credential the input receives (credential.plugin and credential.name).
 	// Both are empty where the use does not say, and a rule naming either
-	// matches nothing there, so least privilege is one line:
+	// matches nothing there when written positively (==, startsWith, in); a
+	// negation such as task != "x" is true for the empty value, so write allow
+	// rules positively. Least privilege is one line:
 	//
 	//	allow:
 	//	  - 'secret.name == "SLACK_BOT_TOKEN" && credential.plugin == "slack"'
