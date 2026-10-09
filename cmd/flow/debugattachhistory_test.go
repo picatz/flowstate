@@ -166,7 +166,7 @@ func TestDebugAttachHistoryWalksARecordedRun(t *testing.T) {
 	assert.Contains(t, res.Stdout, "Recorded run, point 3 of 3")
 	assert.Contains(t, res.Stdout, "Recorded run, point 2 of 3", "back did not read the point before")
 	assert.Contains(t, res.Stdout, "Recorded run, point 1 of 3", "goto 0 did not read the first point")
-	assert.Contains(t, res.Stdout, `"2026.9.0"`)
+	assert.Contains(t, res.Stdout, `[hyp] "2026.9.0"`, "a typed inspect did not say it is hypothetical")
 
 	// The events read, in order: the last point to open, then each move. The
 	// scope is read once the run is at a point that held a session.
@@ -207,6 +207,7 @@ type historyReply struct {
 	SessionID string `json:"session_id"`
 	Note      string `json:"note"`
 	Text      string `json:"text"`
+	Fidelity  string `json:"fidelity"`
 	Receipt   struct {
 		Status  string `json:"status"`
 		Message string `json:"message"`
@@ -283,6 +284,11 @@ func TestAnAttachCanWalkAClosedRunsRecord(t *testing.T) {
 
 	_, forward := command("next")
 	assert.Equal(t, "ship", forward.Snapshot.Occurrence.Address, "next did not walk forward again")
+	_, typed := command("inspect inputs.release")
+	assert.Equal(t, "DEBUG_FIDELITY_HYPOTHETICAL", typed.Fidelity, typed.raw)
+	assert.Contains(t, typed.Text, "[hyp] ")
+	_, plain := command("status")
+	assert.Empty(t, plain.Fidelity, "a command with no inspect answer carried a fidelity")
 	_, first := command("goto 0")
 	assert.Equal(t, 0, first.Snapshot.Timeline.Current)
 	assert.Empty(t, first.Snapshot.Occurrence.Address, "the first point held no session")

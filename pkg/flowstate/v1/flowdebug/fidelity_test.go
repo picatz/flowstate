@@ -260,3 +260,26 @@ func TestADriverMovesARecordedRunForwardWithoutWaiting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), result.Snapshot.GetTimeline().GetCurrent())
 }
+
+// TestADriversInspectSaysHowTheValueIsKnown: a typed inspect or expand at a
+// recorded point carries the hypothetical badge in its text and its fidelity in
+// its result, by the rule every front shares; a value that could not be produced
+// is n/a; and a live stop's answer carries neither (the live tests assert its
+// text byte for byte).
+func TestADriversInspectSaysHowTheValueIsKnown(t *testing.T) {
+	t.Parallel()
+
+	h, _ := openScoped(t)
+	driver := flowdebug.NewDriver(h)
+
+	result, err := driver.Do(t.Context(), "inspect steps.build")
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL, result.Fidelity)
+	assert.Equal(t, "[hyp] 7\n", result.Text)
+
+	result, err = driver.Do(t.Context(), "expand @scope:steps")
+	require.NoError(t, err)
+	assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_HYPOTHETICAL, result.Fidelity)
+	assert.Contains(t, result.Text, "[hyp] build  int  7\n")
+	assert.Contains(t, result.Text, "[n/a] lost  error  no such key\n", "an unproduced child was not marked")
+}

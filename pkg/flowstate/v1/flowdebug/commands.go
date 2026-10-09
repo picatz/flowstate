@@ -1518,7 +1518,7 @@ func (s *Session) expand(ctx context.Context, expression string, offset int) {
 	case answer.GetError() != "":
 		s.emitTone(ToneWarning, answer.GetError()+"\n")
 	default:
-		s.printf("%s", formatChildren(expression, offset, answer))
+		s.printf("%s", formatChildren(expression, offset, answer, Frame{}))
 	}
 }
 

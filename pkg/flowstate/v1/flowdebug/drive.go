@@ -98,6 +98,12 @@ type DriveResult struct {
 	// program never declares. Nil when the line set none, the target armed
 	// it, or the set is pending and its verdict not yet known.
 	Unarmed *v1.DebugBreakpointState
+
+	// Fidelity is how an Inspect answer is known: unspecified at a live stop,
+	// so nothing about a live answer changes, and at a recorded point whatever
+	// [Frame.ValueFidelity] says of an expression somebody typed, the one rule
+	// every front shares (#2248).
+	Fidelity v1.DebugFidelity
 }
 
 // maxRememberedRequests bounds [Driver]'s memory of the request ids it has
@@ -788,16 +794,34 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool, 
 	}
 
 	result := &DriveResult{Inspect: answer}
+	at := Frame{Fidelity: fidelityOf(snapshot)}
+	// A page of children has no value of its own; the expression listed is the
+	// typed thing, so it is as hypothetical as the value it would have been.
+	listed := answer.GetValue()
+	if children && answer.GetError() == "" {
+		listed = &v1.DebugValue{}
+	}
+	result.Fidelity = at.ValueFidelity(listed, true)
 	switch {
 	case answer.GetError() != "":
 		result.Text = answer.GetError() + "\n"
 	case children:
-		result.Text = formatChildren(expression, offset, answer)
+		result.Text = formatChildren(expression, offset, answer, at)
 	default:
-		result.Text = answer.GetValue().GetRendered() + "\n"
+		result.Text = badged(result.Fidelity) + answer.GetValue().GetRendered() + "\n"
 	}
 
 	return result, nil
+}
+
+// badged is a value's fidelity badge as a line prefix, "[hyp] ", or nothing for
+// a live value, so a live line stays byte for byte what it was.
+func badged(fidelity v1.DebugFidelity) string {
+	if badge := FidelityBadge(fidelity); badge != "" {
+		return "[" + badge + "] "
+	}
+
+	return ""
 }
 
 // maxQuotedExpression is how long an expression may be for the line that says
@@ -827,10 +851,10 @@ func ExpandPage(rest string) (expression string, offset int) {
 // the page left out and how to ask for them. The prompt's `expand` and the
 // driver's read the same answer the same way, so a value pages identically on
 // both. offset is the child the page began at.
-func formatChildren(expression string, offset int, answer *v1.DebugInspectResponse) string {
+func formatChildren(expression string, offset int, answer *v1.DebugInspectResponse, at Frame) string {
 	var b strings.Builder
 	for _, child := range answer.GetChildren() {
-		fmt.Fprintf(&b, "%s  %s  %s\n", child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
+		fmt.Fprintf(&b, "%s%s  %s  %s\n", badged(at.ValueFidelity(child.GetValue(), true)), child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
 	}
 	shown := offset + len(answer.GetChildren())
 	if more := int(answer.GetTotal()) - shown; more > 0 {

@@ -865,13 +865,18 @@ func schemaJSON(message proto.Message) json.RawMessage {
 }
 
 type sessionAnswer struct {
-	SessionID  string          `json:"session_id"`
-	Expires    string          `json:"lease_expires_at,omitempty"`
-	Command    string          `json:"command,omitempty"`
-	Text       string          `json:"text,omitempty"`
-	Receipt    json.RawMessage `json:"receipt,omitempty"`
-	Snapshot   json.RawMessage `json:"snapshot,omitempty"`
-	Inspect    json.RawMessage `json:"inspect,omitempty"`
+	SessionID string          `json:"session_id"`
+	Expires   string          `json:"lease_expires_at,omitempty"`
+	Command   string          `json:"command,omitempty"`
+	Text      string          `json:"text,omitempty"`
+	Receipt   json.RawMessage `json:"receipt,omitempty"`
+	Snapshot  json.RawMessage `json:"snapshot,omitempty"`
+	Inspect   json.RawMessage `json:"inspect,omitempty"`
+	// Fidelity is how an inspect answer is known at a recorded point:
+	// DEBUG_FIDELITY_HYPOTHETICAL for an expression evaluated now over the
+	// reconstructed scope that the run never held, DEBUG_FIDELITY_UNAVAILABLE
+	// when it could not be produced. Absent at a live stop.
+	Fidelity   string          `json:"fidelity,omitempty"`
 	Transcript []debugFragment `json:"transcript,omitempty"`
 	Report     json.RawMessage `json:"report,omitempty"`
 	Note       string          `json:"note,omitempty"`
@@ -1423,6 +1428,9 @@ func (r *debugSessions) commandOn(ctx context.Context, entry *debugSessionEntry,
 	answer.Receipt = schemaJSON(result.Receipt)
 	answer.snapshot, answer.Snapshot = result.Snapshot, schemaJSON(result.Snapshot)
 	answer.Inspect = schemaJSON(result.Inspect)
+	if result.Inspect != nil && result.Fidelity != v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED {
+		answer.Fidelity = result.Fidelity.String()
+	}
 
 	entry.mu.Lock()
 	defer entry.mu.Unlock()
