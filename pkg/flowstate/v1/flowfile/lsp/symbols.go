@@ -54,6 +54,9 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 	if doc.parsed == nil {
 		return out
 	}
+	// What the file declares comes before what it does, as it is written. A module
+	// has nothing else to show, so without these its outline would be empty.
+	out = append(out, declarationSymbols(doc)...)
 	for _, s := range doc.parsed.steps {
 		name := s.id
 		if name == "" {
@@ -80,6 +83,40 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 			ContainerName: container,
 			Location:      lsp.Location{URI: doc.uri, Range: s.rng},
 		})
+	}
+	return out
+}
+
+// declarationBlocks are the top-level keys whose entries are named
+// declarations, with the symbol kind and container each is listed under.
+var declarationBlocks = []struct {
+	key       string
+	kind      lsp.SymbolKind
+	container string
+}{
+	{"types", lsp.SKStruct, "type"},
+	{"errors", lsp.SKEvent, "error"},
+	{"functions", lsp.SKFunction, "function"},
+}
+
+// declarationSymbols lists the types, errors and functions a file declares, one
+// symbol per name, in the order the file writes them.
+func declarationSymbols(doc *document) []lsp.SymbolInformation {
+	var out []lsp.SymbolInformation
+	for _, e := range doc.parsed.entries {
+		for _, block := range declarationBlocks {
+			if e.key != block.key {
+				continue
+			}
+			for _, d := range nestedEntries(e) {
+				out = append(out, lsp.SymbolInformation{
+					Name:          d.key,
+					Kind:          block.kind,
+					ContainerName: block.container,
+					Location:      lsp.Location{URI: doc.uri, Range: d.keyRange},
+				})
+			}
+		}
 	}
 	return out
 }

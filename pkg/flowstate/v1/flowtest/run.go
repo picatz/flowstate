@@ -271,6 +271,9 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 				if p.err != nil {
 					return nil, fmt.Errorf("loading workflow %q: %w%s", test.Workflow, p.err, missingWorkflowRemedy(identity))
 				}
+				if v1.IsModule(p.workflow) {
+					return nil, fmt.Errorf("loading workflow %q: %w", test.Workflow, v1.ErrModule)
+				}
 				positions = p.positions
 				return proto.Clone(p.workflow).(*v1.Workflow), nil
 			},

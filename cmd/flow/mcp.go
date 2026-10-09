@@ -1110,6 +1110,12 @@ func parseFlowfileSource(source []byte) (*v1.Workflow, error) {
 		return nil, errors.New(strings.Join(lines, "\n"))
 	}
 
+	// Valid, and nothing to run: said here, where the author is, rather than by
+	// the driver after the run has been set up.
+	if v1.IsModule(workflow) {
+		return nil, fmt.Errorf("the submitted Flowfile %w", v1.ErrModule)
+	}
+
 	return workflow, nil
 }
 

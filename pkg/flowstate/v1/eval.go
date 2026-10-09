@@ -1289,8 +1289,8 @@ func Run(ctx context.Context, w *Workflow) (*Workflow_StepOutputs, error) {
 // the failure now can. The refusals *above* the run, an undeclared input, a
 // submission past its size, still hand back nothing, because no step ran.
 func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
-	if w == nil || len(w.Steps) == 0 {
-		return nil, fmt.Errorf("workflow cannot be nil or empty")
+	if err := RefuseEmpty(w); err != nil {
+		return nil, err
 	}
 
 	// The run-level span, opened at the submit boundary rather than around
@@ -1356,8 +1356,8 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 }
 
 func eval(ctx context.Context, w *Workflow, inputs map[string]*Value) (*Workflow_StepOutputs, error) {
-	if w == nil || len(w.Steps) == 0 {
-		return nil, fmt.Errorf("workflow cannot be nil or empty")
+	if err := RefuseEmpty(w); err != nil {
+		return nil, err
 	}
 
 	// Which workflow's steps are about to run. Stamped here, unconditionally,
