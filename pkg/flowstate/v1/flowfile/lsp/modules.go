@@ -5,7 +5,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sourcegraph/go-lsp"
@@ -210,8 +212,11 @@ type qualifiedSite struct {
 // qualifiedSites is every qualified name of a used module the document writes,
 // with how many the model found and could not place (in a folded block scalar).
 type qualifiedSites struct {
-	sites    []qualifiedSite
-	unplaced int
+	sites []qualifiedSite
+
+	// unplaced names the qualified names found and not placed (in a folded block
+	// scalar, or written with an escape), one entry per occurrence.
+	unplaced []string
 }
 
 // proseKeys are the keys whose scalar values are text for a reader, not names.
@@ -232,7 +237,7 @@ func collectQualified(doc *document, mods []usedModule) qualifiedSites {
 		whole, ok1 := span(tok.start, tok.end)
 		name, ok2 := span(tok.nameStart, tok.end)
 		if !ok1 || !ok2 {
-			out.unplaced++
+			out.unplaced = append(out.unplaced, tok.name)
 			return
 		}
 		out.sites = append(out.sites, qualifiedSite{module: byAlias[tok.alias], alias: tok.alias, name: tok.name, rng: whole, nameRng: name})
@@ -265,7 +270,10 @@ func collectQualified(doc *document, mods []usedModule) qualifiedSites {
 	}
 	walkEntries = func(entries []*entry) {
 		for _, e := range entries {
-			if e.key == "use" || (slices.Contains(proseKeys, e.key) && e.value != nil && e.value.kind == kindScalar) {
+			// Literal prose names nothing; the same key holding a `${...}` is an
+			// expression and is read like any other.
+			prose := slices.Contains(proseKeys, e.key) && e.value != nil && e.value.kind == kindScalar && len(e.value.fences) == 0
+			if e.key == "use" || prose {
 				continue
 			}
 			walk(e.value)
@@ -472,45 +480,65 @@ func canonicalPath(path string) string {
 	return filepath.Clean(path)
 }
 
-// flowfiles lists the Flowfile-shaped YAML files under dir, in walk order.
+// flowfiles lists the Flowfile-shaped YAML files under the roots, in walk order.
 //
-// Bounded twice: by directory entries visited and by files returned. truncated
-// reports that either bound stopped the walk, which the callers that edit refuse
-// on. A symlink is never followed, `.git` and `node_modules` are not entered, a
-// hidden directory is entered only when hidden is set, and a test suite is not a
-// Flowfile.
-func flowfiles(dir string, hidden bool) (paths []string, truncated bool) {
-	visits := 0
-	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		if visits++; visits > maxWorkspaceVisits {
-			truncated = true
-			return filepath.SkipAll
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if path != dir && (name == ".git" || name == "node_modules" || (!hidden && strings.HasPrefix(name, "."))) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		ext := filepath.Ext(name)
-		if !d.Type().IsRegular() || (ext != ".yaml" && ext != ".yml") ||
-			strings.HasSuffix(name, ".test"+ext) || name == "testdefaults.yaml" {
-			return nil
-		}
-		if len(paths) == maxWorkspaceFiles {
-			truncated = true
-			return filepath.SkipAll
-		}
-		paths = append(paths, path)
-
-		return nil
+// One budget covers the whole request: [maxWorkspaceVisits] directory entries and
+// [maxWorkspaceFiles] files however many roots there are. Roots are followed
+// through symlinks once (they are the folders the client authorised), nested and
+// duplicate roots are walked once, and below a root a symlink is never followed.
+// `.git` and `node_modules` are not entered, a hidden directory is entered only
+// when hidden is set, and a test suite is not a Flowfile.
+//
+// incomplete reports that the listing may be missing files: a budget was spent or
+// an entry could not be read. The callers that edit refuse on it.
+func flowfiles(roots []string, hidden bool) (paths []string, incomplete bool) {
+	var dirs []string
+	for _, root := range roots {
+		dirs = append(dirs, canonicalPath(root))
+	}
+	slices.Sort(dirs)
+	dirs = slices.Compact(dirs)
+	dirs = slices.DeleteFunc(dirs, func(d string) bool {
+		return slices.ContainsFunc(dirs, func(o string) bool { return o != d && strings.HasPrefix(d, o+string(filepath.Separator)) })
 	})
 
-	return paths, truncated
+	visits := 0
+	for _, dir := range dirs {
+		_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				incomplete = true
+				return nil
+			}
+			if visits++; visits > maxWorkspaceVisits {
+				incomplete = true
+				return filepath.SkipAll
+			}
+			name := d.Name()
+			if d.IsDir() {
+				if path != dir && (name == ".git" || name == "node_modules" || (!hidden && strings.HasPrefix(name, "."))) {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			ext := filepath.Ext(name)
+			if !d.Type().IsRegular() || (ext != ".yaml" && ext != ".yml") ||
+				strings.HasSuffix(name, ".test"+ext) || name == "testdefaults.yaml" {
+				return nil
+			}
+			if len(paths) == maxWorkspaceFiles {
+				incomplete = true
+				return filepath.SkipAll
+			}
+			paths = append(paths, path)
+
+			return nil
+		})
+		if visits > maxWorkspaceVisits || len(paths) == maxWorkspaceFiles && incomplete {
+			break
+		}
+	}
+
+	return paths, incomplete
 }
 
 // isModule reports whether doc is a declarations-only file: it declares something
@@ -525,8 +553,8 @@ func isModule(doc *document) bool {
 
 // moduleFiles lists the modules under dir, cheaply rejecting a file that declares
 // nothing before parsing it.
-func (w workspace) moduleFiles(dir string) (modules []*document, truncated bool) {
-	paths, truncated := flowfiles(dir, false)
+func (w workspace) moduleFiles(roots []string) (modules []*document, truncated bool) {
+	paths, truncated := flowfiles(roots, false)
 	for _, path := range paths {
 		doc, ok := w.document(path)
 		if !ok || !(declaresKey(doc.text, "types") || declaresKey(doc.text, "errors") || declaresKey(doc.text, "functions")) {
@@ -548,8 +576,8 @@ func workspaceSymbols(w workspace, query string) []lsp.SymbolInformation {
 	out := []lsp.SymbolInformation{}
 	seen := map[string]bool{}
 	query = strings.ToLower(query)
-	for _, root := range w.roots {
-		modules, _ := w.moduleFiles(root)
+	{
+		modules, _ := w.moduleFiles(w.roots)
 		for _, module := range modules {
 			if seen[string(module.uri)] {
 				continue
@@ -592,7 +620,7 @@ func addUseActions(doc *document, params codeActionParams) []codeAction {
 	}
 	used := usedModules(doc)
 	accept := func(a string) bool {
-		return !v1.IsDeclarationRoot(a) && !flowfile.IsCELReservedIdentifier(a) &&
+		return v1.ValidModuleAlias(a) == nil &&
 			!slices.ContainsFunc(used, func(m usedModule) bool { return m.alias == a })
 	}
 
@@ -629,7 +657,7 @@ func addUseActions(doc *document, params codeActionParams) []codeAction {
 	}
 
 	dir := filepath.Dir(callerPath)
-	modules, _ := workspace{}.moduleFiles(dir)
+	modules, _ := workspace{}.moduleFiles([]string{dir})
 	var actions []codeAction
 	for _, tok := range unresolved {
 		for _, module := range modules {
@@ -687,7 +715,7 @@ func useEdit(doc *document, alias, path string) (lsp.TextEdit, bool) {
 
 		return lsp.TextEdit{
 			Range:   lsp.Range{Start: at, End: at},
-			NewText: fmt.Sprintf("use:%[3]s  %[1]s:%[3]s    path: %[2]s%[3]s", alias, path, eol),
+			NewText: fmt.Sprintf("use:%[3]s  %[1]s:%[3]s    path: %[2]s%[3]s", yamlScalar(alias), yamlScalar(path), eol),
 		}, true
 	}
 
@@ -714,8 +742,23 @@ func useEdit(doc *document, alias, path string) (lsp.TextEdit, bool) {
 
 	return lsp.TextEdit{
 		Range:   lsp.Range{Start: at, End: at},
-		NewText: fmt.Sprintf("%s%s:%s%spath: %s%s", indent, alias, eol, inner, path, eol),
+		NewText: fmt.Sprintf("%s%s:%s%spath: %s%s", indent, yamlScalar(alias), eol, inner, yamlScalar(path), eol),
 	}, true
+}
+
+// plainScalar is a word that is a plain YAML scalar of the same text everywhere:
+// letters, digits and the punctuation of a relative path, starting with a letter,
+// a dot or an underscore.
+var plainScalar = regexp.MustCompile(`^[A-Za-z_.][A-Za-z0-9_./-]*$`)
+
+// yamlScalar renders s as a YAML scalar that reads back as exactly s: plain when
+// that is certain, double-quoted otherwise (`yes`, `./lib/a # b.yaml`).
+func yamlScalar(s string) string {
+	if plainScalar.MatchString(s) && !yamlAmbiguous(s) && s != "~" {
+		return s
+	}
+
+	return strconv.Quote(s)
 }
 
 // repinActions offers to re-stamp the digests of the `use:` entries when a
@@ -837,40 +880,39 @@ func renameQualified(doc *document, w workspace, pos lsp.Position, newName strin
 		}
 	}
 	consider(doc)
-	for _, root := range w.roots {
-		paths, truncated := flowfiles(canonicalPath(root), true)
-		if truncated {
-			return refuse("the workspace has more than %d Flowfiles; open a narrower folder so every importer of `%s` is seen", maxWorkspaceFiles, site.module.written)
+	paths, incomplete := flowfiles(w.roots, true)
+	if incomplete {
+		return refuse("the workspace could not be listed completely (more than %d Flowfiles or %d entries, or an unreadable folder); open a narrower folder so every importer of `%s` is seen", maxWorkspaceFiles, maxWorkspaceVisits, site.module.written)
+	}
+	for _, p := range paths {
+		if seen[canonicalPath(p)] {
+			continue
 		}
-		for _, p := range paths {
-			if seen[canonicalPath(p)] {
-				continue
+		d, ok := w.document(p)
+		if buffer, open := w.openBuffer(p); open && !ok {
+			if strings.Contains(buffer.text, site.name) {
+				return refuse("the open buffer %s mentions `%s` but does not parse, so it cannot be renamed safely; fix it or rename by hand", buffer.uri, site.name)
 			}
-			d, ok := w.document(p)
-			if buffer, open := w.openBuffer(p); open && !ok {
-				if strings.Contains(buffer.text, site.name) {
-					return refuse("the open buffer %s mentions `%s` but does not parse, so it cannot be renamed safely; fix it or rename by hand", buffer.uri, site.name)
-				}
-				continue
-			}
-			if !ok {
-				// A file the server cannot read as a Flowfile might still be an
-				// importer, so it is a reason unless it provably is not one.
-				raw, readable := readCalleeSource(p)
-				switch {
-				case !readable:
-					return refuse("%s cannot be read within the %d byte bound, so it cannot be ruled out as an importer of `%s`", p, maxDocumentBytes, site.module.written)
-				case strings.Contains(string(raw), site.name):
-					return refuse("%s mentions `%s` but does not parse, so it cannot be renamed safely; fix it or rename by hand", p, site.name)
-				}
-				continue
-			}
-			if strings.Contains(d.text, site.name) {
-				consider(d)
-			}
+			continue
 		}
+		if !ok {
+			// A file the server cannot read as a Flowfile might still be an
+			// importer, so it is a reason unless it provably is not one.
+			raw, readable := readCalleeSource(p)
+			switch {
+			case !readable:
+				return refuse("%s cannot be read within the %d byte bound, so it cannot be ruled out as an importer of `%s`", p, maxDocumentBytes, site.module.written)
+			case strings.Contains(string(raw), site.name):
+				return refuse("%s mentions `%s` but does not parse, so it cannot be renamed safely; fix it or rename by hand", p, site.name)
+			}
+			continue
+		}
+		// Every loaded file is analysed, not only those whose raw text spells the
+		// name: a name written with an escape decodes to it without containing it.
+		consider(d)
 	}
 
+	edited := map[string]bool{canonicalPath(site.module.path): true}
 	for _, importer := range candidates {
 		mods := usedModules(importer)
 		aliases := map[string]bool{}
@@ -889,14 +931,37 @@ func renameQualified(doc *document, w workspace, pos lsp.Position, newName strin
 				edits = append(edits, lsp.TextEdit{Range: s.nameRng, NewText: newName})
 			}
 		}
-		if found.unplaced > 0 {
-			return refuse("%d name(s) in %s sit in a folded block scalar the server cannot place; rename by hand", found.unplaced, importer.uri)
+		if slices.Contains(found.unplaced, site.name) {
+			return refuse("`%s` is written in %s where the server cannot place it (a folded block scalar or an escape); rename by hand", site.name, importer.uri)
 		}
 		if written := writtenTokens(importer.text, func(a string) bool { return aliases[a] }, site.name); written != len(edits) {
 			return refuse("%d spelling(s) of `%s` in %s are in text the server does not track; renaming would leave them stale", written-len(edits), site.name, importer.uri)
 		}
 		if len(edits) > 0 {
 			changes[string(importer.uri)] = edits
+			if p, ok := importer.filesystemPath(); ok {
+				edited[canonicalPath(p)] = true
+			}
+		}
+	}
+
+	// An edit changes the bytes of every file it touches, so a `digest:` pin on any
+	// of them goes stale. The server does not stamp pins (a pin is the author's
+	// statement that they read the bytes), so it refuses and leaves the order to
+	// `flow fix --repin` after the rename.
+	for _, d := range candidates {
+		path, ok := d.filesystemPath()
+		if !ok {
+			continue
+		}
+		pins, err := flowfile.CallPins([]byte(d.text))
+		if err != nil {
+			return refuse("%s could not be read for pins: %s", d.uri, err)
+		}
+		for _, pin := range pins {
+			if located := flowfile.ResolveCallTarget(path, pin.Call); pin.Alias != "" && located.Refusal == flowfile.CallTargetResolved && edited[canonicalPath(located.Path)] {
+				return refuse("%s pins `%s` by digest, and a rename changes that file; rename by hand and repin with `flow fix --repin`", d.uri, pin.Call)
+			}
 		}
 	}
 

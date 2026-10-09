@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -120,6 +121,146 @@ func TestRenameNeverFallsBackToDiskForAnOpenBuffer(t *testing.T) {
 	edit, err := rename("name: [unclosed\n")
 	require.NoError(t, err)
 	assert.Len(t, edit.Changes, 2, "the module and the file the cursor is in")
+}
+
+// TestRenameRefusesWhenAPinWouldGoStale: an edit changes the bytes of the module and
+// of each importer it touches, so a digest pin on any of them is refused rather than
+// left failing with module-pin-mismatch.
+func TestRenameRefusesWhenAPinWouldGoStale(t *testing.T) {
+	t.Parallel()
+
+	dir := moduleTree(t)
+	ws := workspace{roots: []string{dir}}
+	doc := docAt(dir, "bill.yaml", useSource)
+	at := positionOf(t, useSource, "ids.Uuid", 5)
+	pin := v1.ContentDigest([]byte(usedModuleSource))
+
+	// The importer pins the module that is being edited.
+	pinned := strings.Replace(otherImporterSource, "    path: ./lib/ids.yaml\n", "    path: ./lib/ids.yaml\n    digest: "+pin+"\n", 1)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.yaml"), []byte(pinned), 0o644))
+	_, handled, err := renameQualified(doc, ws, at, "Id")
+	assert.True(t, handled)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pins")
+	assert.Contains(t, err.Error(), "flow fix --repin")
+
+	// A third file pins an importer that the rename edits (transitive).
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.yaml"), []byte(otherImporterSource), 0o644))
+	third := "edition: " + flowfile.CurrentEdition + "\nname: third\nuse:\n  o:\n    path: ./other.yaml\n    digest: " + v1.ContentDigest([]byte(otherImporterSource)) + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "third.yaml"), []byte(third), 0o644))
+	_, _, err = renameQualified(doc, ws, at, "Id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pins")
+
+	// A pin on a file the rename does not touch is none of its business.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "third.yaml"), []byte(third), 0o644))
+	edit, _, err := renameQualified(doc, ws, positionOf(t, useSource, "ids.NotFound", 5), "Gone")
+	require.NoError(t, err)
+	assert.NotEmpty(t, edit.Changes)
+}
+
+// TestQualifiedNamesInAnEvaluatedMessageAreRead: a `message:` that is an expression
+// is read like any other; only literal prose is skipped.
+func TestQualifiedNamesInAnEvaluatedMessageAreRead(t *testing.T) {
+	t.Parallel()
+
+	dir := moduleTree(t)
+	src := strings.Replace(useSource, "      error: ids.NotFound\n", "      error: ids.NotFound\n      message: ${ids.isUuid(inputs.ref)}\n", 1)
+	doc := docAt(dir, "bill.yaml", src)
+	require.Len(t, definitionAt(doc, positionOf(t, src, "ids.isUuid(inputs.ref)}", 5)), 1)
+
+	prose := strings.Replace(useSource, "      error: ids.NotFound\n", "      error: ids.NotFound\n      message: see ids.Uuid\n", 1)
+	_, ok := qualifiedAt(docAt(dir, "bill.yaml", prose), positionOf(t, prose, "see ids.Uuid", 6))
+	assert.False(t, ok, "literal prose names nothing")
+}
+
+// TestWorkspaceListingIsCompleteOrSaysSo: a root reached through a symlink is
+// walked, overlapping roots are walked once under one budget, and a root that
+// cannot be listed makes a rename refuse.
+func TestWorkspaceListingIsCompleteOrSaysSo(t *testing.T) {
+	t.Parallel()
+
+	dir := moduleTree(t)
+	link := filepath.Join(t.TempDir(), "link")
+	require.NoError(t, os.Symlink(dir, link))
+
+	viaLink, incomplete := flowfiles([]string{link}, false)
+	assert.False(t, incomplete)
+	assert.Len(t, viaLink, 3, "a symlinked root is followed")
+
+	overlap, incomplete := flowfiles([]string{dir, filepath.Join(dir, "lib"), dir, link}, false)
+	assert.False(t, incomplete)
+	assert.Len(t, overlap, 3, "nested and duplicate roots are walked once")
+
+	// Two roots share one file budget instead of spending one each.
+	a, b := t.TempDir(), t.TempDir()
+	for i := range maxWorkspaceFiles - 10 {
+		name := "f" + strings.Repeat("x", i) + ".yaml"
+		require.NoError(t, os.WriteFile(filepath.Join(a, name), []byte("name: a\n"), 0o644))
+		require.NoError(t, os.WriteFile(filepath.Join(b, name), []byte("name: b\n"), 0o644))
+	}
+	paths, incomplete := flowfiles([]string{a, b}, false)
+	assert.True(t, incomplete)
+	assert.Len(t, paths, maxWorkspaceFiles)
+
+	_, _, err := renameQualified(docAt(dir, "bill.yaml", useSource), workspace{roots: []string{dir, filepath.Join(t.TempDir(), "missing")}},
+		positionOf(t, useSource, "ids.Uuid", 5), "Id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not be listed completely")
+}
+
+// TestAddUseOnlyOffersAliasesTheCompilerAccepts: a name whose alias the compiler
+// would reject (`Ids`, the `math` namespace) is not offered a `use:`.
+func TestAddUseOnlyOffersAliasesTheCompilerAccepts(t *testing.T) {
+	t.Parallel()
+
+	dir := moduleTree(t)
+	for _, alias := range []string{"Ids", "math"} {
+		src := "edition: " + flowfile.CurrentEdition + "\nname: bill\ninputs:\n  c:\n    type: " + alias + ".Uuid\nsteps:\n  - id: a\n    log:\n      message: hi\n"
+		for _, a := range codeActions(docAt(dir, "bill.yaml", src), codeActionParams{Range: wholeOf(src)}) {
+			assert.False(t, strings.HasPrefix(a.Title, "Add `use:"), "%s: %s", alias, a.Title)
+		}
+	}
+}
+
+// TestUseEditWritesScalarsThatReadBack: an alias or path that is not a plain YAML
+// scalar is quoted, in a new block and in an existing one.
+func TestUseEditWritesScalarsThatReadBack(t *testing.T) {
+	t.Parallel()
+
+	assert.Equal(t, "ids", yamlScalar("ids"))
+	assert.Equal(t, "./lib/ids.yaml", yamlScalar("./lib/ids.yaml"))
+	assert.Equal(t, `"yes"`, yamlScalar("yes"))
+	assert.Equal(t, `"./lib/a # ids.yaml"`, yamlScalar("./lib/a # ids.yaml"))
+
+	dir := moduleTree(t)
+	for name, src := range map[string]string{
+		"new block":      "edition: " + flowfile.CurrentEdition + "\nname: bill\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+		"existing block": "edition: " + flowfile.CurrentEdition + "\nname: bill\nuse:\n  other:\n    path: ./lib/ids.yaml\nsteps:\n  - id: a\n    log:\n      message: hi\n",
+	} {
+		doc := docAt(dir, "bill.yaml", src)
+		edit, ok := useEdit(doc, "yes", "./lib/a # ids.yaml")
+		require.True(t, ok, name)
+		got := usedModules(docAt(dir, "bill.yaml", applyAll(t, src, []lsp.TextEdit{edit})))
+		require.NotEmpty(t, got, name)
+		last := got[len(got)-1]
+		assert.Equal(t, "yes", last.alias, name)
+		assert.Equal(t, "./lib/a # ids.yaml", last.written, name)
+	}
+}
+
+// TestRenameRefusesAnEscapedSpelling: a name written with an escape decodes to the
+// name without containing it, so the importer is analysed and refused, not skipped.
+func TestRenameRefusesAnEscapedSpelling(t *testing.T) {
+	t.Parallel()
+
+	dir := moduleTree(t)
+	escaped := strings.Replace(otherImporterSource, "type: shared.Uuid", `type: "shared.\x55uid"`, 1)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "other.yaml"), []byte(escaped), 0o644))
+	_, handled, err := renameQualified(docAt(dir, "bill.yaml", useSource), workspace{roots: []string{dir}}, positionOf(t, useSource, "ids.Uuid", 5), "Id")
+	assert.True(t, handled)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot place")
 }
 
 // TestAddUseKeepsTheDocumentsLineEndings: a CRLF document gets a CRLF insertion.
