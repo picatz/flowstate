@@ -6,7 +6,6 @@ paths:
   - "**/Flowfile.y*ml"
   - "**/workflow.y*ml"
   - "**/*.flow.y*ml"
-  - "**/workflows/**/*.y*ml"
 ---
 
 # Flowfile conventions
@@ -49,7 +48,7 @@ an edit that puts a literal in a Flowfile.
 - A field that may be absent: `x.?y.orValue(d)`, not `has(x.y) ? x.y : d`. To
   ask whether it was sent at all, `x.?y.hasValue()` or `has(x.y)`;
   `orValue(false)` cannot tell absent from false.
-- Expressions are pure: no I/O, no clocks, no randomness. Anything that waits,
+- Expressions are pure: no I/O, no randomness, no clock outside a wait. Anything that waits,
   retries, branches, or fans out is a step kind.
 - Do not guess a function or step key. If `flow validate` rejects it, read the
   guide (`flowstate://docs/language`) instead of trying spellings.
