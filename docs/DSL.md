@@ -1396,6 +1396,21 @@ steps:
   behind it is read by `must` alone. A rule spends the same per-expression bounds and the
   file's 100000-node budget a step expression does. A refusal at submit quotes the stored
   rule, the expansion, not the call.
+- **Callable in every `allow:`.** The one predicate that says who may act, on a
+  `signals:` entry, on `debug:` and on `triggers: manual:`, calls a declared function too:
+  `allow: ${isOps(sender.identity.claims.team)}`, the caller's claim passed as an argument
+  because a body sees only its parameters. The server reads and evaluates this predicate as
+  source text and has no functions, so the compiler stores the expansion in `allow` and the
+  call as written, without the fence, in `allow_source` (on `SignalPolicy` and
+  `ManualTrigger`), which `flow fmt` writes back and nothing evaluates. Every rule of the
+  predicate is asked of the expansion, since that is what runs: the closed scope, a bool
+  result, the cost bound, the 2048-character limit, and the narrowing rule (a predicate that
+  reads `inputs` must also read the caller), so a function cannot hide the caller's claim
+  from it or the inputs from the rule. The server's predicate environment carries `cel.bind`
+  for the expansion, which is the one thing a server older than this change refuses, closed.
+  With this, a function is callable in every expression position the language has: `if`,
+  `switch`, `for_each`, `loop`, `wait_until`, a task input, `vars`, an output, a trigger's
+  `when:`, key and `with:`, a `must:` and an `allow:`.
 - **Parameters only.** A body sees its parameters and the profile's vocabulary and
   nothing else: not `inputs`, `vars`, `steps` or `run`. A function that needs a value
   takes it as an argument, so a call shows every value the computation depends on and

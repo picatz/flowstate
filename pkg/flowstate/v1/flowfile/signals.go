@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"cmp"
 	"fmt"
 	"maps"
 	"slices"
@@ -140,12 +141,12 @@ func (c *compiler) signalPolicy(n ast.Node, path string, r ref) *v1.SignalPolicy
 		return nil
 	}
 
-	expression, ok := c.signalPolicyPredicate(resolved, allowPath, allowRef)
+	expression, source, ok := c.signalPolicyPredicate(resolved, allowPath, allowRef)
 	if !ok {
 		return nil
 	}
 
-	return &v1.SignalPolicy{Allow: expression}
+	return &v1.SignalPolicy{Allow: expression, AllowSource: source}
 }
 
 // retiredAllowListMessage says why a non-string `allow:` is refused. A list is
@@ -181,7 +182,7 @@ func isScalarNode(n ast.Node) bool {
 //
 // The one reader for all three stanzas that take `allow: ${...}` (`signals:`,
 // `debug:`, `triggers: manual:`).
-func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref) (string, bool) {
+func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref) (expression string, source *string, ok bool) {
 	c.pos.record(path, spanOfNode(n))
 
 	var raw string
@@ -196,25 +197,25 @@ func (c *compiler) signalPolicyPredicate(n ast.Node, path string, r ref) (string
 	if !fenced {
 		if err := fenceError(raw); err != nil {
 			c.report(spanOfNode(n), r, "%s", err)
-			return "", false
+			return "", nil, false
 		}
 		c.report(spanOfNode(n), r,
 			"is a string that is not a `${...}` expression; write the whole predicate as one `${...}` "+
 				"(for example `${sender.identity.claims.team == \"release-managers\"}`)")
-		return "", false
+		return "", nil, false
 	}
 
-	expression := strings.TrimSpace(inner)
+	expression = strings.TrimSpace(inner)
 	span := spanWithin(n, inner)
 	c.recordExpr(path, span)
 
 	if val := v1.NewExpr(expression); val.Error() != nil {
 		at, msg := celFailure(val, span, expression)
 		c.report(at, r, "is not a valid expression: %s", msg)
-		return "", false
+		return "", nil, false
 	}
 
-	return expression, true
+	return c.expandPredicate(expression, span, r)
 }
 
 // stringMap compiles a mapping of string to string, such as `claims:`.
@@ -268,7 +269,7 @@ func sortedPolicyNames(policies map[string]*v1.SignalPolicy) []string {
 
 // signalPolicyToYAML writes one signal's policy.
 func signalPolicyToYAML(policy *v1.SignalPolicy) (yaml.MapSlice, error) {
-	return yaml.MapSlice{{Key: "allow", Value: fencedToYAML(policy.GetAllow())}}, nil
+	return yaml.MapSlice{{Key: "allow", Value: fencedToYAML(cmp.Or(policy.GetAllowSource(), policy.GetAllow()))}}, nil
 }
 
 // validateDebug reports what is wrong with the declared `debug:` stanza.

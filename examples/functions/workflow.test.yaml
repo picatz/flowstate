@@ -58,3 +58,34 @@ tests:
       author: {handle: ada}
     expect:
       ran: [publish]
+
+  # An `allow:` that calls a function admits and refuses as the plain predicate does.
+  # The sender is checked against the expanded predicate, the one the server evaluates.
+  - name: a sender whose team the function admits signs the post off
+    inputs:
+      title: Hello World
+      review: true
+    signals:
+      - name: sign-off
+        sender:
+          subject: ada@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: editors
+    expect:
+      ran: [publish, signoff, signed]
+
+  - name: a sender whose team the function refuses never reaches the gate
+    inputs:
+      title: Hello World
+      review: true
+    signals:
+      - name: sign-off
+        sender:
+          subject: eve@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: sales
+    expect:
+      ran: [publish, signoff]
+      skipped: [signed]

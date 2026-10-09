@@ -150,6 +150,15 @@ message ManualTrigger {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).string.max_len = 2048
   ];
+
+  // AllowSource is `allow` as the author wrote it, set only when it differs: an
+  // `allow` that calls a declared function (`FunctionDeclaration`) is stored
+  // expanded in `allow`, so the server evaluates plain CEL, and written here in
+  // the call form, without the `${` `}` fence, so `flow fmt` and Marshal write
+  // the file back as it was authored. Never evaluated, compiled or checked; a
+  // specification that carries one without a matching expansion is read by
+  // `allow` alone.
+  optional string allow_source = 5 [(buf.validate.field).string.max_len = 2048];
 }
 
 // TriggerContext is how a run was started, as its own steps may read it:

@@ -130,6 +130,12 @@ func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 		cel.Variable("sender", cel.ObjectType(signalPolicyActorTypeName)),
 		cel.Variable(InputsRoot, cel.MapType(cel.StringType, cel.DynType)),
 		ext.Strings(ext.StringsVersion(5)),
+		// `cel.bind`, which the profile has and a declared function's expansion
+		// is built from: the compiler stores a predicate that calls one expanded
+		// (see [FunctionSet.ExpandText]), and this environment is the one that
+		// reads it. Pure, so it widens what a predicate can say and not what it
+		// can reach.
+		ext.Bindings(),
 		// The literal check every other checker carries (see buildEnv): a
 		// `matches('[')` is refused where it is written instead of denying every
 		// delivery at run time. It replaces the coverage the retired computed
