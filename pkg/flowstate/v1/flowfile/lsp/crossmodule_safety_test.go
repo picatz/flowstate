@@ -152,6 +152,13 @@ func TestRenameRefusesWhenAPinWouldGoStale(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pins")
 
+	// A step's `call:` pin on an edited importer goes stale the same way.
+	callPin := "edition: " + flowfile.CurrentEdition + "\nname: third\nsteps:\n  - id: c\n    call: ./bill.yaml\n    digest: " + v1.ContentDigest([]byte(useSource)) + "\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "third.yaml"), []byte(callPin), 0o644))
+	_, _, err = renameQualified(doc, ws, at, "Id")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pins `./bill.yaml`")
+
 	// A pin on a file the rename does not touch is none of its business.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "third.yaml"), []byte(third), 0o644))
 	edit, _, err := renameQualified(doc, ws, positionOf(t, useSource, "ids.NotFound", 5), "Gone")
@@ -191,6 +198,21 @@ func TestWorkspaceListingIsCompleteOrSaysSo(t *testing.T) {
 	overlap, incomplete := flowfiles([]string{dir, filepath.Join(dir, "lib"), dir, link}, false)
 	assert.False(t, incomplete)
 	assert.Len(t, overlap, 3, "nested and duplicate roots are walked once")
+
+	// A root behind a directory the walk above skips is a folder of its own.
+	hiddenRoot := filepath.Join(dir, ".config", "flows")
+	require.NoError(t, os.MkdirAll(hiddenRoot, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(hiddenRoot, "x.yaml"), []byte("name: x\n"), 0o644))
+	modulesRoot := filepath.Join(dir, "node_modules", "pkg")
+	require.NoError(t, os.MkdirAll(modulesRoot, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modulesRoot, "y.yaml"), []byte("name: y\n"), 0o644))
+	nested, incomplete := flowfiles([]string{dir, hiddenRoot, modulesRoot}, false)
+	assert.False(t, incomplete)
+	assert.Len(t, nested, 5, "the three files under dir, and one from each explicit root the walk of dir skips")
+	assert.True(t, walkReaches(dir, filepath.Join(dir, "lib"), false))
+	assert.False(t, walkReaches(dir, hiddenRoot, false))
+	assert.True(t, walkReaches(dir, hiddenRoot, true))
+	assert.False(t, walkReaches(dir, modulesRoot, true))
 
 	// Two roots share one file budget instead of spending one each.
 	a, b := t.TempDir(), t.TempDir()

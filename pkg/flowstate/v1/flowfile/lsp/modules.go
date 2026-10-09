@@ -498,9 +498,15 @@ func flowfiles(roots []string, hidden bool) (paths []string, incomplete bool) {
 	}
 	slices.Sort(dirs)
 	dirs = slices.Compact(dirs)
-	dirs = slices.DeleteFunc(dirs, func(d string) bool {
-		return slices.ContainsFunc(dirs, func(o string) bool { return o != d && strings.HasPrefix(d, o+string(filepath.Separator)) })
-	})
+	// A nested root is dropped only when the walk of the root above it would enter
+	// it; one behind a directory that walk skips is an explicit folder of its own.
+	var kept []string
+	for _, d := range dirs {
+		if !slices.ContainsFunc(dirs, func(o string) bool { return o != d && walkReaches(o, d, hidden) }) {
+			kept = append(kept, d)
+		}
+	}
+	dirs = kept
 
 	visits := 0
 	for _, dir := range dirs {
@@ -539,6 +545,22 @@ func flowfiles(roots []string, hidden bool) (paths []string, incomplete bool) {
 	}
 
 	return paths, incomplete
+}
+
+// walkReaches reports whether a [flowfiles] walk of ancestor enters dir: dir is
+// below it and no directory between them is one the walk skips.
+func walkReaches(ancestor, dir string, hidden bool) bool {
+	rel, err := filepath.Rel(ancestor, dir)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		if part == ".git" || part == "node_modules" || (!hidden && strings.HasPrefix(part, ".")) {
+			return false
+		}
+	}
+
+	return true
 }
 
 // isModule reports whether doc is a declarations-only file: it declares something
@@ -959,7 +981,7 @@ func renameQualified(doc *document, w workspace, pos lsp.Position, newName strin
 			return refuse("%s could not be read for pins: %s", d.uri, err)
 		}
 		for _, pin := range pins {
-			if located := flowfile.ResolveCallTarget(path, pin.Call); pin.Alias != "" && located.Refusal == flowfile.CallTargetResolved && edited[canonicalPath(located.Path)] {
+			if located := flowfile.ResolveCallTarget(path, pin.Call); located.Refusal == flowfile.CallTargetResolved && edited[canonicalPath(located.Path)] {
 				return refuse("%s pins `%s` by digest, and a rename changes that file; rename by hand and repin with `flow fix --repin`", d.uri, pin.Call)
 			}
 		}
