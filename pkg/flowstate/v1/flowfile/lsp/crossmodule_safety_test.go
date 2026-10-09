@@ -89,6 +89,39 @@ func TestRenameThroughASymlinkedWorkspaceEditsEachFileOnce(t *testing.T) {
 	assert.Contains(t, edit.Changes, string(fileURI(filepath.Join(link, "other.yaml"))), "the open buffer's own URI")
 }
 
+// TestRenameNeverFallsBackToDiskForAnOpenBuffer: an importer the editor holds that
+// does not parse is judged by the buffer, not by the file on disk, which is not what
+// the editor will apply an edit to.
+func TestRenameNeverFallsBackToDiskForAnOpenBuffer(t *testing.T) {
+	t.Parallel()
+
+	dir := moduleTree(t)
+	other := filepath.Join(dir, "other.yaml")
+	doc := docAt(dir, "bill.yaml", useSource)
+	at := positionOf(t, useSource, "ids.Uuid", 5)
+	rename := func(buffer string) (*lsp.WorkspaceEdit, error) {
+		store := &documentStore{}
+		store.open(fileURI(other), 1, buffer, nil)
+		edit, _, err := renameQualified(doc, workspace{roots: []string{dir}, open: store.getByFilesystemPath}, at, "Id")
+		return edit, err
+	}
+
+	// The disk copy parses and mentions the name; the buffer mentions it and does not parse.
+	_, err := rename("name: [unclosed\ntype: shared.Uuid\n")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "open buffer")
+
+	// The disk copy lacks the name; only the unsaved buffer has it.
+	require.NoError(t, os.WriteFile(other, []byte("edition: "+flowfile.CurrentEdition+"\nname: other\nsteps:\n  - id: a\n    log:\n      message: hi\n"), 0o644))
+	_, err = rename("name: [unclosed\ntype: shared.Uuid\n")
+	require.Error(t, err)
+
+	// An unparsable buffer that never mentions the name is not an importer.
+	edit, err := rename("name: [unclosed\n")
+	require.NoError(t, err)
+	assert.Len(t, edit.Changes, 2, "the module and the file the cursor is in")
+}
+
 // TestAddUseKeepsTheDocumentsLineEndings: a CRLF document gets a CRLF insertion.
 func TestAddUseKeepsTheDocumentsLineEndings(t *testing.T) {
 	t.Parallel()

@@ -433,16 +433,32 @@ type workspace struct {
 
 // document is the file at path as the editor sees it: the open buffer when there
 // is one, else the file read within the usual bounds.
+//
+// An open buffer that does not parse answers false and never falls back to the
+// disk copy: the disk is not what the editor holds, and an edit computed from it
+// would be sent for the buffer's URI.
 func (w workspace) document(path string) (*document, bool) {
-	if w.open != nil {
-		for _, p := range []string{path, canonicalPath(path)} {
-			if doc, ok := w.open(p); ok && doc.parsed != nil {
-				return doc, true
-			}
-		}
+	if doc, open := w.openBuffer(path); open {
+		return doc, doc.parsed != nil
 	}
 
 	return loadModule(path)
+}
+
+// openBuffer is the open document for path, found under the path as written and
+// under its canonical spelling.
+func (w workspace) openBuffer(path string) (*document, bool) {
+	if w.open == nil {
+		return nil, false
+	}
+	if doc, ok := w.open(path); ok {
+		return doc, true
+	}
+	if canon := canonicalPath(path); canon != path {
+		return w.open(canon)
+	}
+
+	return nil, false
 }
 
 // canonicalPath is path with symlinks followed, or path itself when they cannot
@@ -831,6 +847,12 @@ func renameQualified(doc *document, w workspace, pos lsp.Position, newName strin
 				continue
 			}
 			d, ok := w.document(p)
+			if buffer, open := w.openBuffer(p); open && !ok {
+				if strings.Contains(buffer.text, site.name) {
+					return refuse("the open buffer %s mentions `%s` but does not parse, so it cannot be renamed safely; fix it or rename by hand", buffer.uri, site.name)
+				}
+				continue
+			}
 			if !ok {
 				// A file the server cannot read as a Flowfile might still be an
 				// importer, so it is a reason unless it provably is not one.
