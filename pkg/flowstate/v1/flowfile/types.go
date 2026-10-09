@@ -65,17 +65,21 @@ func (c *compiler) declaredTypes(n ast.Node, path string, r ref) []*v1.TypeDecla
 
 	// Bounded before anything is built from the names: the environment holds one
 	// constant per name, and the file is the sender's.
-	if len(entries) > v1.MaxRecordTypes {
+	if total := len(c.uses.types) + len(entries); total > v1.MaxRecordTypes {
 		c.report(spanOfNode(c.resolveQuiet(n)), r,
-			"declares %d types; the most a workflow declares is %d", len(entries), v1.MaxRecordTypes)
+			"declares %d types%s; the most a workflow declares is %d", len(entries), c.uses.carriedCount("type", len(c.uses.types)), v1.MaxRecordTypes)
 
 		return nil
 	}
 
-	c.typeNames = make(map[string]bool, len(entries))
-	c.scalarNames = map[string]bool{}
-	c.scalarTypes = map[string]*v1.TypeDeclaration{}
+	c.initTypeScope()
 	for _, e := range entries {
+		if v1.IsCarried(e.name) {
+			c.report(spanOfNode(e.key), ref{path: fieldPath(path, e.name), label: "type " + e.name},
+				"is named with a dot, which is how a module's types are named (`ids.Uuid`); a type this file declares is a single word")
+
+			continue
+		}
 		c.typeNames[e.name] = true
 		if c.isScalarEntry(e.value) {
 			c.scalarNames[e.name] = true
@@ -91,6 +95,9 @@ func (c *compiler) declaredTypes(n ast.Node, path string, r ref) []*v1.TypeDecla
 
 	declarations := make([]*v1.TypeDeclaration, 0, len(entries))
 	for _, e := range entries {
+		if v1.IsCarried(e.name) {
+			continue
+		}
 		if declaration := c.declaredType(e, path); declaration != nil {
 			declarations = append(declarations, declaration)
 		}
@@ -219,7 +226,7 @@ func (c *compiler) scalarBase(declaration *v1.TypeDeclaration, f field, path, na
 	switch {
 	case err != nil:
 		c.report(spanOfNode(f.value), typeRef,
-			"is %q, which is not a scalar a type can constrain: %s; the bases are %s", text, err, scalarBaseWords)
+			"is %q, which is not a scalar a type can constrain: %s; the bases are %s", text, c.typeProblem(text, err), scalarBaseWords)
 	case !v1.ScalarBase(legacy) || (structural != nil && structural.GetScalar() == v1.Type_SCALAR_UNSPECIFIED):
 		c.report(spanOfNode(f.value), typeRef,
 			"is %q, which is not a scalar; the bases are %s. A record is declared with `fields:` instead", text, scalarBaseWords)

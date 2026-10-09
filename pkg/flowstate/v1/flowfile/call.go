@@ -178,6 +178,47 @@ func ResolveCallTarget(callerPath, target string) CallTarget {
 	return CallTarget{Path: resolved, CallerDir: callerDir}
 }
 
+// A fileReach is how a file names the other file it reads, for the sentences that
+// refuse one: a `call:` calls and a `use:` uses, and the rule both are held to is
+// the same.
+type fileReach struct {
+	// verb is what the file does to its target, in the third person: "calls".
+	verb string
+
+	// noun is the construct, as it is written: "call".
+	noun string
+}
+
+var (
+	callingFile = fileReach{verb: "calls", noun: "call"}
+	usingFile   = fileReach{verb: "uses", noun: "use"}
+)
+
+// explainRefusal says why [ResolveCallTarget] refused a target, or returns "" when
+// it did not. One function for the two constructs that resolve a path the same way,
+// so the refusals read the same and a rule added to one is added to both.
+func explainRefusal(located CallTarget, target string, reach fileReach) string {
+	switch located.Refusal {
+	case CallRefusedNoCallerLocation:
+		return fmt.Sprintf("%s %q, but this file was compiled with no location of its own to resolve a "+
+			"relative path against; compile it as a file rather than from bytes alone, as "+
+			"`flow validate`, `flow run` and the language server all do", reach.verb, target)
+	case CallRefusedAbsolute:
+		return fmt.Sprintf("%s %q, an absolute path; a %s is resolved relative to the file that %s "+
+			"it and may not name an absolute one", reach.verb, target, reach.noun, reach.verb)
+	case CallRefusedClimbs:
+		return fmt.Sprintf("%s %q, which climbs above the directory of the file that %s it; a %s may "+
+			"reach anything at or below its own file's directory and nothing above it", reach.verb, target, reach.verb, reach.noun)
+	case CallRefusedEscapesThroughSymlink:
+		return fmt.Sprintf("%s %q, which resolves (through a symlink) to %q, outside %q; a %s may "+
+			"reach anything at or below its own file's directory and nothing above it, "+
+			"and a symlink does not change what \"at or below\" means",
+			reach.verb, target, located.Path, located.CallerDir, reach.noun)
+	}
+
+	return ""
+}
+
 // call compiles a `call:` step: resolves the callee relative to this file's
 // own directory, compiles it, and checks `with:` against what it declares.
 //
@@ -193,28 +234,8 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	}
 
 	located := ResolveCallTarget(c.filePath, target)
-	switch located.Refusal {
-	case CallRefusedNoCallerLocation:
-		c.report(spanOfNode(pathNode), callRef,
-			"calls %q, but this file was compiled with no location of its own to resolve a "+
-				"relative path against; compile it as a file rather than from bytes alone, as "+
-				"`flow validate`, `flow run` and the language server all do", target)
-		return nil
-	case CallRefusedAbsolute:
-		c.report(spanOfNode(pathNode), callRef,
-			"calls %q, an absolute path; a call is resolved relative to the file that calls "+
-				"it and may not name an absolute one", target)
-		return nil
-	case CallRefusedClimbs:
-		c.report(spanOfNode(pathNode), callRef,
-			"calls %q, which climbs above the directory of the file that calls it; a call may "+
-				"reach anything at or below its own file's directory and nothing above it", target)
-		return nil
-	case CallRefusedEscapesThroughSymlink:
-		c.report(spanOfNode(pathNode), callRef,
-			"calls %q, which resolves (through a symlink) to %q, outside %q; a call may "+
-				"reach anything at or below its own file's directory and nothing above it, "+
-				"and a symlink does not change what \"at or below\" means", target, located.Path, located.CallerDir)
+	if message := explainRefusal(located, target, callingFile); message != "" {
+		c.report(spanOfNode(pathNode), callRef, "%s", message)
 		return nil
 	}
 	resolved := located.Path
@@ -278,7 +299,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	callee, _, err := parse(data, resolved, ancestors, c.callBudget)
+	callee, _, err := parse(data, resolved, ancestors, c.callBudget, nil)
 	if err != nil {
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, which failed to compile:\n%s", target, indentLines(err.Error()))

@@ -497,6 +497,23 @@ built-in. The compiler inlines each call, so a compiled spec holds plain CEL and
 the runtime has no user-defined function. At most 64 functions per file and 16
 parameters each. A `call:` does not carry them across. See `examples/functions/`.
 
+### Sharing declarations: `use:`
+
+A file with no steps that declares `types:`, `functions:` and `errors:` is a module,
+and a file imports it by alias:
+
+```yaml
+use:
+  ids:
+    path: ./lib/ids.yaml
+```
+
+A name from the module is always written with the alias: the type `ids.Customer`, the
+call `ids.isUuid(x)` and the error `ids.NotFound`. The path is relative to the file,
+cannot climb above its directory or leave it through a symlink, and is read from
+disk; a cycle is refused, and a file names at most 16 modules. A path that is a
+workflow, not a module, is refused: run it with `call:`. See `examples/use-modules/`.
+
 ### Where expressions run, and why they are limited
 
 An expression cannot read the network, the filesystem, or the clock, and cannot
@@ -1727,8 +1744,8 @@ the run is refused before it starts rather than failing partway.
 
 ## Keys at a glance
 
-**Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `types`,
-`errors`, `functions`, `inputs`, `triggers`, `concurrency`, `signals`, `debug`,
+**Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `use` (each
+alias takes a `path`), `types`, `errors`, `functions`, `inputs`, `triggers`, `concurrency`, `signals`, `debug`,
 `vars`, `steps`, `outputs`.
 
 **Type declaration:** `description`, `fields` (each written like an input), `must`.

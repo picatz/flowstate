@@ -159,6 +159,14 @@ var functionFieldExclusions = map[string]string{
 	"name": "the key a function or a parameter is declared under; an identifier is not a capability",
 }
 
+// moduleFieldExclusions are the [v1.Module] fields that are not capabilities an
+// example demonstrates: the alias is the key a `use:` is written under, and the
+// digest is the compiler's record of the bytes it read, never typed by an author.
+var moduleFieldExclusions = map[string]string{
+	"alias":         "the key a module is used under; an identifier is not a capability",
+	"source_digest": "recorded by the compiler from the bytes it read; an author writes the path, and the pin that checks it is a later construct",
+}
+
 // blockFieldExclusions are the fields of the block-node messages that are
 // structural rather than capabilities an example demonstrates. A block's own
 // `steps:` is the block, not a construct inside it, and the node-kind construct
@@ -216,6 +224,7 @@ func writableSpecs() map[protoreflect.FullName]messageWritableSpec {
 		{&v1.Fail{}, "fail", nil},
 		{&v1.FunctionDeclaration{}, "function", functionFieldExclusions},
 		{&v1.FunctionParameter{}, "function_parameter", functionFieldExclusions},
+		{&v1.Module{}, "module", moduleFieldExclusions},
 		{&v1.Triggers{}, "triggers", nil},
 		{&v1.WebhookTrigger{}, "webhook", nil},
 		{&v1.WebhookTrigger_Signal{}, "webhook_signal", nil},

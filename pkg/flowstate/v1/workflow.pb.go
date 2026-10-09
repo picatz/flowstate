@@ -121,7 +121,7 @@ func (x Concurrency_OnConflict) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use Concurrency_OnConflict.Descriptor instead.
 func (Concurrency_OnConflict) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{6, 0}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{7, 0}
 }
 
 // Type is the legacy declaration vocabulary. Edition-aware specifications use
@@ -217,7 +217,7 @@ func (x InputDeclaration_Type) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use InputDeclaration_Type.Descriptor instead.
 func (InputDeclaration_Type) EnumDescriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{11, 0}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{12, 0}
 }
 
 // Workflow is a collection of steps that can be executed in a
@@ -573,7 +573,7 @@ type Workflow struct {
 	ResolvedCapabilityBindings []*ResolvedCapabilityBinding `protobuf:"bytes,18,rep,name=resolved_capability_bindings,json=resolvedCapabilityBindings,proto3" json:"resolved_capability_bindings,omitempty"`
 	// SourceDigest is a content digest of the bytes this workflow was compiled
 	// from, formatted `sha256:<hex>`, when a client compiled it from a file. It
-	// is the root's counterpart of [Call.source_digest], recorded by the same
+	// is the root's counterpart of `Call.source_digest`, recorded by the same
 	// compiler from the same read.
 	//
 	// Recorded rather than verified, and never a basis for trust: nothing
@@ -625,8 +625,27 @@ type Workflow struct {
 	// A declared name shares the namespace of the built-in [ErrorKind]s and may not
 	// spell one of them. See [ErrorDeclaration].
 	DeclaredErrors []*ErrorDeclaration `protobuf:"bytes,22,rep,name=declared_errors,json=declaredErrors,proto3" json:"declared_errors,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Modules record the files whose declarations this workflow carries, one entry
+	// per `use:` in the file and one per module those files use in turn.
+	//
+	// A module is a Flowfile with no steps that declares types, functions and
+	// errors. The compiler reads it, as it reads a `call:` target, and carries what
+	// it declares into [declared_types], [declared_functions] and [declared_errors]
+	// under the module's alias and a dot (`ids.Uuid`), inlined at each use exactly
+	// as a declaration written in this file is. Nothing here is resolved or
+	// evaluated again: this is provenance, so a run can state which module bytes
+	// it was built from, and it travels across every Continue-As-New unchanged.
+	//
+	// The alias of a module the file uses itself is a single word; a module that
+	// module uses is recorded under both aliases joined by `_` (`ids_core`), and its
+	// record types are carried under that name. Only the first kind is written back
+	// by `flow fmt`.
+	//
+	// Bounded at 64 entries, which is also the bound on a compiled workflow's
+	// modules however deep they nest.
+	Modules       []*Module `protobuf:"bytes,23,rep,name=modules,proto3" json:"modules,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Workflow) Reset() {
@@ -806,6 +825,86 @@ func (x *Workflow) GetDeclaredErrors() []*ErrorDeclaration {
 	return nil
 }
 
+func (x *Workflow) GetModules() []*Module {
+	if x != nil {
+		return x.Modules
+	}
+	return nil
+}
+
+// Module records one file a workflow's declarations were carried from, mirroring
+// what [Call] records of its callee (`Call.source`, `Call.source_digest`).
+//
+// Provenance only. Nothing reads `source` back to a file, and a specification
+// that names a module whose bytes it does not match is not refused for it: the
+// declarations it carries are what run. The digest is what an operator audits.
+type Module struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Alias is the word the declarations are qualified by: `ids` for `ids.Uuid`.
+	// A lowerCamel identifier of at most 32 characters, with no underscore, so it
+	// can never be the `_`-joined alias of a module reached through another.
+	Alias string `protobuf:"bytes,1,opt,name=alias,proto3" json:"alias,omitempty"`
+	// Source is where the module was read from, as written in the `use:` that
+	// named it, relative to the file that wrote it.
+	Source string `protobuf:"bytes,2,opt,name=source,proto3" json:"source,omitempty"`
+	// SourceDigest is a content digest of the module file's bytes, taken at the
+	// same moment the resolver reads them, formatted `sha256:<hex>`.
+	SourceDigest  string `protobuf:"bytes,3,opt,name=source_digest,json=sourceDigest,proto3" json:"source_digest,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Module) Reset() {
+	*x = Module{}
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Module) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Module) ProtoMessage() {}
+
+func (x *Module) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Module.ProtoReflect.Descriptor instead.
+func (*Module) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *Module) GetAlias() string {
+	if x != nil {
+		return x.Alias
+	}
+	return ""
+}
+
+func (x *Module) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *Module) GetSourceDigest() string {
+	if x != nil {
+		return x.SourceDigest
+	}
+	return ""
+}
+
 // ErrorDeclaration names one failure a workflow may raise with a `fail:` step.
 //
 //	errors:
@@ -825,7 +924,8 @@ type ErrorDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is the kind. Capitalised and an identifier, like a record type's name,
 	// and not one of the built-in kinds (`Timeout`, `Upstream`, ...), which a
-	// declaration could otherwise redefine.
+	// declaration could otherwise redefine. An error a module declared is carried
+	// under the module's alias and a dot (`ids.NotFound`); see [Workflow.modules].
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Description is prose for whoever reads the error: an editor's hover, a
 	// generated reference, an agent deciding how to react.
@@ -836,7 +936,7 @@ type ErrorDeclaration struct {
 
 func (x *ErrorDeclaration) Reset() {
 	*x = ErrorDeclaration{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[1]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -848,7 +948,7 @@ func (x *ErrorDeclaration) String() string {
 func (*ErrorDeclaration) ProtoMessage() {}
 
 func (x *ErrorDeclaration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[1]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -861,7 +961,7 @@ func (x *ErrorDeclaration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ErrorDeclaration.ProtoReflect.Descriptor instead.
 func (*ErrorDeclaration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ErrorDeclaration) GetName() string {
@@ -901,7 +1001,7 @@ type Fail struct {
 
 func (x *Fail) Reset() {
 	*x = Fail{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[2]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -913,7 +1013,7 @@ func (x *Fail) String() string {
 func (*Fail) ProtoMessage() {}
 
 func (x *Fail) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[2]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -926,7 +1026,7 @@ func (x *Fail) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Fail.ProtoReflect.Descriptor instead.
 func (*Fail) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *Fail) GetError() string {
@@ -974,7 +1074,8 @@ type FunctionDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is what an expression calls: lowerCamel, and never a name the profile
 	// already has (`size`, `has`, `sum`), so a definition can never change what an
-	// existing expression means.
+	// existing expression means. A function a module declared is carried under the
+	// module's alias and a dot (`ids.isUuid`); see [Workflow.modules].
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Parameters are the arguments in the order a call passes them. Each name is
 	// unique within the function.
@@ -993,7 +1094,7 @@ type FunctionDeclaration struct {
 
 func (x *FunctionDeclaration) Reset() {
 	*x = FunctionDeclaration{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[3]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1005,7 +1106,7 @@ func (x *FunctionDeclaration) String() string {
 func (*FunctionDeclaration) ProtoMessage() {}
 
 func (x *FunctionDeclaration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[3]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1018,7 +1119,7 @@ func (x *FunctionDeclaration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FunctionDeclaration.ProtoReflect.Descriptor instead.
 func (*FunctionDeclaration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *FunctionDeclaration) GetName() string {
@@ -1070,7 +1171,7 @@ type FunctionParameter struct {
 
 func (x *FunctionParameter) Reset() {
 	*x = FunctionParameter{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[4]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1082,7 +1183,7 @@ func (x *FunctionParameter) String() string {
 func (*FunctionParameter) ProtoMessage() {}
 
 func (x *FunctionParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[4]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1095,7 +1196,7 @@ func (x *FunctionParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FunctionParameter.ProtoReflect.Descriptor instead.
 func (*FunctionParameter) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *FunctionParameter) GetName() string {
@@ -1141,6 +1242,9 @@ type TypeDeclaration struct {
 	// Name is what the type is called: `type: <name>`, and the [Type.message] of
 	// every declaration that uses it. Capitalised and an identifier, so it cannot be
 	// spelled like a scalar (`string`), a legacy word (`struct`) or a field.
+	//
+	// A name a module declared is carried under the module's alias and a dot
+	// (`ids.Uuid`); see [Workflow.modules]. One alias prefix, never two.
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Description is prose for whoever reads the type: an editor's hover, a
 	// generated reference, an agent choosing arguments.
@@ -1193,7 +1297,7 @@ type TypeDeclaration struct {
 
 func (x *TypeDeclaration) Reset() {
 	*x = TypeDeclaration{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[5]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1205,7 +1309,7 @@ func (x *TypeDeclaration) String() string {
 func (*TypeDeclaration) ProtoMessage() {}
 
 func (x *TypeDeclaration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[5]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1218,7 +1322,7 @@ func (x *TypeDeclaration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TypeDeclaration.ProtoReflect.Descriptor instead.
 func (*TypeDeclaration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TypeDeclaration) GetName() string {
@@ -1355,7 +1459,7 @@ type Concurrency struct {
 
 func (x *Concurrency) Reset() {
 	*x = Concurrency{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[6]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1367,7 +1471,7 @@ func (x *Concurrency) String() string {
 func (*Concurrency) ProtoMessage() {}
 
 func (x *Concurrency) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[6]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1380,7 +1484,7 @@ func (x *Concurrency) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Concurrency.ProtoReflect.Descriptor instead.
 func (*Concurrency) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{6}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *Concurrency) GetKey() *Value {
@@ -1428,7 +1532,7 @@ type PluginRequirement struct {
 
 func (x *PluginRequirement) Reset() {
 	*x = PluginRequirement{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[7]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1440,7 +1544,7 @@ func (x *PluginRequirement) String() string {
 func (*PluginRequirement) ProtoMessage() {}
 
 func (x *PluginRequirement) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[7]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1453,7 +1557,7 @@ func (x *PluginRequirement) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginRequirement.ProtoReflect.Descriptor instead.
 func (*PluginRequirement) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{7}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *PluginRequirement) GetName() string {
@@ -1524,7 +1628,7 @@ type ResolvedPlugin struct {
 
 func (x *ResolvedPlugin) Reset() {
 	*x = ResolvedPlugin{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[8]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1536,7 +1640,7 @@ func (x *ResolvedPlugin) String() string {
 func (*ResolvedPlugin) ProtoMessage() {}
 
 func (x *ResolvedPlugin) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[8]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1549,7 +1653,7 @@ func (x *ResolvedPlugin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedPlugin.ProtoReflect.Descriptor instead.
 func (*ResolvedPlugin) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{8}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ResolvedPlugin) GetName() string {
@@ -1619,7 +1723,7 @@ type CapabilityParameter struct {
 
 func (x *CapabilityParameter) Reset() {
 	*x = CapabilityParameter{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[9]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1631,7 +1735,7 @@ func (x *CapabilityParameter) String() string {
 func (*CapabilityParameter) ProtoMessage() {}
 
 func (x *CapabilityParameter) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[9]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1644,7 +1748,7 @@ func (x *CapabilityParameter) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CapabilityParameter.ProtoReflect.Descriptor instead.
 func (*CapabilityParameter) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{9}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CapabilityParameter) GetName() string {
@@ -1693,7 +1797,7 @@ type ResolvedCapabilityBinding struct {
 
 func (x *ResolvedCapabilityBinding) Reset() {
 	*x = ResolvedCapabilityBinding{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[10]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1705,7 +1809,7 @@ func (x *ResolvedCapabilityBinding) String() string {
 func (*ResolvedCapabilityBinding) ProtoMessage() {}
 
 func (x *ResolvedCapabilityBinding) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[10]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1718,7 +1822,7 @@ func (x *ResolvedCapabilityBinding) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedCapabilityBinding.ProtoReflect.Descriptor instead.
 func (*ResolvedCapabilityBinding) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{10}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ResolvedCapabilityBinding) GetParameter() string {
@@ -2008,7 +2112,7 @@ type InputDeclaration struct {
 
 func (x *InputDeclaration) Reset() {
 	*x = InputDeclaration{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[11]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2020,7 +2124,7 @@ func (x *InputDeclaration) String() string {
 func (*InputDeclaration) ProtoMessage() {}
 
 func (x *InputDeclaration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[11]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2033,7 +2137,7 @@ func (x *InputDeclaration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InputDeclaration.ProtoReflect.Descriptor instead.
 func (*InputDeclaration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{11}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *InputDeclaration) GetName() string {
@@ -2256,7 +2360,7 @@ type OutputDeclaration struct {
 
 func (x *OutputDeclaration) Reset() {
 	*x = OutputDeclaration{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[12]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2268,7 +2372,7 @@ func (x *OutputDeclaration) String() string {
 func (*OutputDeclaration) ProtoMessage() {}
 
 func (x *OutputDeclaration) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[12]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2281,7 +2385,7 @@ func (x *OutputDeclaration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OutputDeclaration.ProtoReflect.Descriptor instead.
 func (*OutputDeclaration) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{12}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *OutputDeclaration) GetName() string {
@@ -2380,7 +2484,7 @@ type RunOutputs struct {
 
 func (x *RunOutputs) Reset() {
 	*x = RunOutputs{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[13]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2392,7 +2496,7 @@ func (x *RunOutputs) String() string {
 func (*RunOutputs) ProtoMessage() {}
 
 func (x *RunOutputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[13]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2405,7 +2509,7 @@ func (x *RunOutputs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RunOutputs.ProtoReflect.Descriptor instead.
 func (*RunOutputs) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{13}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *RunOutputs) GetValues() map[string]*Value {
@@ -2568,7 +2672,7 @@ type Node struct {
 
 func (x *Node) Reset() {
 	*x = Node{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[14]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2580,7 +2684,7 @@ func (x *Node) String() string {
 func (*Node) ProtoMessage() {}
 
 func (x *Node) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[14]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2593,7 +2697,7 @@ func (x *Node) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Node.ProtoReflect.Descriptor instead.
 func (*Node) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{14}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *Node) GetId() string {
@@ -2866,7 +2970,7 @@ type Compensation struct {
 
 func (x *Compensation) Reset() {
 	*x = Compensation{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[15]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2878,7 +2982,7 @@ func (x *Compensation) String() string {
 func (*Compensation) ProtoMessage() {}
 
 func (x *Compensation) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[15]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2891,7 +2995,7 @@ func (x *Compensation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Compensation.ProtoReflect.Descriptor instead.
 func (*Compensation) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{15}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *Compensation) GetTask() *Task {
@@ -2961,7 +3065,7 @@ type Wait struct {
 
 func (x *Wait) Reset() {
 	*x = Wait{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[16]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2973,7 +3077,7 @@ func (x *Wait) String() string {
 func (*Wait) ProtoMessage() {}
 
 func (x *Wait) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[16]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2986,7 +3090,7 @@ func (x *Wait) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Wait.ProtoReflect.Descriptor instead.
 func (*Wait) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{16}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *Wait) GetKind() isWait_Kind {
@@ -3192,7 +3296,7 @@ type ForEach struct {
 
 func (x *ForEach) Reset() {
 	*x = ForEach{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[17]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3204,7 +3308,7 @@ func (x *ForEach) String() string {
 func (*ForEach) ProtoMessage() {}
 
 func (x *ForEach) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[17]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3217,7 +3321,7 @@ func (x *ForEach) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ForEach.ProtoReflect.Descriptor instead.
 func (*ForEach) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{17}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ForEach) GetItems() *Value {
@@ -3266,7 +3370,7 @@ type Parallel struct {
 
 func (x *Parallel) Reset() {
 	*x = Parallel{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[18]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3278,7 +3382,7 @@ func (x *Parallel) String() string {
 func (*Parallel) ProtoMessage() {}
 
 func (x *Parallel) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[18]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3291,7 +3395,7 @@ func (x *Parallel) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Parallel.ProtoReflect.Descriptor instead.
 func (*Parallel) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{18}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *Parallel) GetBranches() []*Parallel_Branch {
@@ -3442,7 +3546,7 @@ type Loop struct {
 
 func (x *Loop) Reset() {
 	*x = Loop{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[19]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3454,7 +3558,7 @@ func (x *Loop) String() string {
 func (*Loop) ProtoMessage() {}
 
 func (x *Loop) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[19]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3467,7 +3571,7 @@ func (x *Loop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Loop.ProtoReflect.Descriptor instead.
 func (*Loop) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{19}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *Loop) GetBody() []*Node {
@@ -3586,7 +3690,7 @@ type Switch struct {
 
 func (x *Switch) Reset() {
 	*x = Switch{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[20]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3598,7 +3702,7 @@ func (x *Switch) String() string {
 func (*Switch) ProtoMessage() {}
 
 func (x *Switch) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[20]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3611,7 +3715,7 @@ func (x *Switch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Switch.ProtoReflect.Descriptor instead.
 func (*Switch) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{20}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Switch) GetValue() *Value {
@@ -3742,7 +3846,7 @@ type Call struct {
 
 func (x *Call) Reset() {
 	*x = Call{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[21]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3754,7 +3858,7 @@ func (x *Call) String() string {
 func (*Call) ProtoMessage() {}
 
 func (x *Call) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[21]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3767,7 +3871,7 @@ func (x *Call) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Call.ProtoReflect.Descriptor instead.
 func (*Call) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{21}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *Call) GetWorkflow() *Workflow {
@@ -3854,7 +3958,7 @@ type StepPolicy struct {
 
 func (x *StepPolicy) Reset() {
 	*x = StepPolicy{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[22]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3866,7 +3970,7 @@ func (x *StepPolicy) String() string {
 func (*StepPolicy) ProtoMessage() {}
 
 func (x *StepPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[22]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3879,7 +3983,7 @@ func (x *StepPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StepPolicy.ProtoReflect.Descriptor instead.
 func (*StepPolicy) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{22}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *StepPolicy) GetTimeout() *durationpb.Duration {
@@ -3948,7 +4052,7 @@ type RetryPolicy struct {
 
 func (x *RetryPolicy) Reset() {
 	*x = RetryPolicy{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[23]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3960,7 +4064,7 @@ func (x *RetryPolicy) String() string {
 func (*RetryPolicy) ProtoMessage() {}
 
 func (x *RetryPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[23]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3973,7 +4077,7 @@ func (x *RetryPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetryPolicy.ProtoReflect.Descriptor instead.
 func (*RetryPolicy) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{23}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *RetryPolicy) GetMaxAttempts() int32 {
@@ -4041,7 +4145,7 @@ type ResolvedTaskCapabilities struct {
 
 func (x *ResolvedTaskCapabilities) Reset() {
 	*x = ResolvedTaskCapabilities{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[24]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4053,7 +4157,7 @@ func (x *ResolvedTaskCapabilities) String() string {
 func (*ResolvedTaskCapabilities) ProtoMessage() {}
 
 func (x *ResolvedTaskCapabilities) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[24]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4066,7 +4170,7 @@ func (x *ResolvedTaskCapabilities) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolvedTaskCapabilities.ProtoReflect.Descriptor instead.
 func (*ResolvedTaskCapabilities) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{24}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *ResolvedTaskCapabilities) GetSchemaVersion() uint32 {
@@ -4131,7 +4235,7 @@ type Workflow_StepOutputs struct {
 
 func (x *Workflow_StepOutputs) Reset() {
 	*x = Workflow_StepOutputs{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[25]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4143,7 +4247,7 @@ func (x *Workflow_StepOutputs) String() string {
 func (*Workflow_StepOutputs) ProtoMessage() {}
 
 func (x *Workflow_StepOutputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[25]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4185,7 +4289,7 @@ type Node_Outputs struct {
 
 func (x *Node_Outputs) Reset() {
 	*x = Node_Outputs{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[32]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4197,7 +4301,7 @@ func (x *Node_Outputs) String() string {
 func (*Node_Outputs) ProtoMessage() {}
 
 func (x *Node_Outputs) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[32]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4210,7 +4314,7 @@ func (x *Node_Outputs) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Node_Outputs.ProtoReflect.Descriptor instead.
 func (*Node_Outputs) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{14, 0}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{15, 0}
 }
 
 func (x *Node_Outputs) GetNamedValues() map[string]*Value {
@@ -4229,7 +4333,7 @@ type Parallel_Branch struct {
 
 func (x *Parallel_Branch) Reset() {
 	*x = Parallel_Branch{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[35]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4241,7 +4345,7 @@ func (x *Parallel_Branch) String() string {
 func (*Parallel_Branch) ProtoMessage() {}
 
 func (x *Parallel_Branch) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[35]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4254,7 +4358,7 @@ func (x *Parallel_Branch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Parallel_Branch.ProtoReflect.Descriptor instead.
 func (*Parallel_Branch) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{18, 0}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{19, 0}
 }
 
 func (x *Parallel_Branch) GetSteps() []*Node {
@@ -4283,7 +4387,7 @@ type Switch_Case struct {
 
 func (x *Switch_Case) Reset() {
 	*x = Switch_Case{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[36]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4295,7 +4399,7 @@ func (x *Switch_Case) String() string {
 func (*Switch_Case) ProtoMessage() {}
 
 func (x *Switch_Case) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[36]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4308,7 +4412,7 @@ func (x *Switch_Case) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Switch_Case.ProtoReflect.Descriptor instead.
 func (*Switch_Case) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{20, 0}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{21, 0}
 }
 
 func (x *Switch_Case) GetValues() []*Value {
@@ -4339,7 +4443,7 @@ type Switch_Default struct {
 
 func (x *Switch_Default) Reset() {
 	*x = Switch_Default{}
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[37]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4351,7 +4455,7 @@ func (x *Switch_Default) String() string {
 func (*Switch_Default) ProtoMessage() {}
 
 func (x *Switch_Default) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_workflow_proto_msgTypes[37]
+	mi := &file_flowstate_v1_workflow_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4364,7 +4468,7 @@ func (x *Switch_Default) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Switch_Default.ProtoReflect.Descriptor instead.
 func (*Switch_Default) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{20, 1}
+	return file_flowstate_v1_workflow_proto_rawDescGZIP(), []int{21, 1}
 }
 
 func (x *Switch_Default) GetSteps() []*Node {
@@ -4378,7 +4482,7 @@ var File_flowstate_v1_workflow_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\n" +
-	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x17flowstate/v1/type.proto\x1a\x18flowstate/v1/value.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\x95\x11\n" +
+	"\x1bflowstate/v1/workflow.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/signal.proto\x1a\x17flowstate/v1/task.proto\x1a\x1aflowstate/v1/trigger.proto\x1a\x17flowstate/v1/type.proto\x1a\x18flowstate/v1/value.proto\x1a%google/api/expr/v1alpha1/syntax.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xd3\x11\n" +
 	"\bWorkflow\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18\x80\x012\x10^[A-Za-z0-9-_]+$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12;\n" +
@@ -4402,7 +4506,8 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\rsource_digest\x18\x13 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x01R\fsourceDigest\x12R\n" +
 	"\x0edeclared_types\x18\x14 \x03(\v2\x1d.flowstate.v1.TypeDeclarationB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\rdeclaredTypes\x12^\n" +
 	"\x12declared_functions\x18\x15 \x03(\v2!.flowstate.v1.FunctionDeclarationB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x11declaredFunctions\x12U\n" +
-	"\x0fdeclared_errors\x18\x16 \x03(\v2\x1e.flowstate.v1.ErrorDeclarationB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x0edeclaredErrors\x1a\x8d\x02\n" +
+	"\x0fdeclared_errors\x18\x16 \x03(\v2\x1e.flowstate.v1.ErrorDeclarationB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\x0edeclaredErrors\x12<\n" +
+	"\amodules\x18\x17 \x03(\v2\x14.flowstate.v1.ModuleB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10@R\amodules\x1a\x8d\x02\n" +
 	"\vStepOutputs\x12h\n" +
 	"\vstep_values\x18\x01 \x03(\v22.flowstate.v1.Workflow.StepOutputs.StepValuesEntryB\x13\xe2A\x01\x02\xbaH\f\xc8\x01\x01\x9a\x01\x06\"\x04r\x02\x10\x01R\n" +
 	"stepValues\x129\n" +
@@ -4420,17 +4525,22 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\fSignalsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x120\n" +
 	"\x05value\x18\x02 \x01(\v2\x1a.flowstate.v1.SignalPolicyR\x05value:\x028\x01B\x0e\n" +
-	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\x90\x01\n" +
-	"\x10ErrorDeclaration\x12;\n" +
-	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH \xc8\x01\x01r\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04name\x12/\n" +
+	"\f_descriptionJ\x04\b\x04\x10\x05R\x06inputs\"\xca\x01\n" +
+	"\x06Module\x12_\n" +
+	"\x05alias\x18\x01 \x01(\tBI\xe2A\x01\x02\xbaHB\xc8\x01\x01r=\x10\x01\x18\x83\x0126^[a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}$R\x05alias\x12)\n" +
+	"\x06source\x18\x02 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
+	"\xc8\x01\x01r\x05\x10\x01\x18\x80\bR\x06source\x124\n" +
+	"\rsource_digest\x18\x03 \x01(\tB\x0f\xe2A\x01\x02\xbaH\b\xc8\x01\x01r\x03\x18\x80\x01R\fsourceDigest\"\xcf\x01\n" +
+	"\x10ErrorDeclaration\x12z\n" +
+	"\x04name\x18\x01 \x01(\tBf\xe2A\x01\x02\xbaH_\xc8\x01\x01rZ\x10\x01\x18\x84\x022S^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01B\x0e\n" +
 	"\f_description\"^\n" +
 	"\x04Fail\x12'\n" +
 	"\x05error\x18\x01 \x01(\tB\x11\xe2A\x01\x02\xbaH\n" +
 	"\xc8\x01\x01r\x05\x10\x01\x18\x80\x01R\x05error\x12-\n" +
-	"\amessage\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\amessage\"\xda\x02\n" +
-	"\x13FunctionDeclaration\x129\n" +
-	"\x04name\x18\x01 \x01(\tB%\xe2A\x01\x02\xbaH\x1e\xc8\x01\x01r\x19\x10\x01\x18@2\x13^[a-z][A-Za-z0-9]*$R\x04name\x12I\n" +
+	"\amessage\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\amessage\"\x99\x03\n" +
+	"\x13FunctionDeclaration\x12x\n" +
+	"\x04name\x18\x01 \x01(\tBd\xe2A\x01\x02\xbaH]\xc8\x01\x01rX\x10\x01\x18\xc4\x012Q^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[a-z][A-Za-z0-9]{0,63}$R\x04name\x12I\n" +
 	"\n" +
 	"parameters\x18\x02 \x03(\v2\x1f.flowstate.v1.FunctionParameterB\b\xbaH\x05\x92\x01\x02\x10\x10R\n" +
 	"parameters\x126\n" +
@@ -4443,9 +4553,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x11FunctionParameter\x12>\n" +
 	"\x04name\x18\x01 \x01(\tB*\xe2A\x01\x02\xbaH#\xc8\x01\x01r\x1e\x10\x01\x18@2\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x122\n" +
 	"\x04type\x18\x02 \x01(\v2\x12.flowstate.v1.TypeB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04type\"\xa9\x03\n" +
-	"\x0fTypeDeclaration\x12;\n" +
-	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH \xc8\x01\x01r\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04name\x12/\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04type\"\xe8\x03\n" +
+	"\x0fTypeDeclaration\x12z\n" +
+	"\x04name\x18\x01 \x01(\tBf\xe2A\x01\x02\xbaH_\xc8\x01\x01rZ\x10\x01\x18\x84\x022S^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12@\n" +
 	"\x06fields\x18\x03 \x03(\v2\x1e.flowstate.v1.InputDeclarationB\b\xbaH\x05\x92\x01\x02\x10@R\x06fields\x12\x17\n" +
 	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12$\n" +
@@ -4661,20 +4771,20 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueR\x05value:\x028\x01\x1aF\n" +
 	"\x18CapabilityArgumentsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc6\x02\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\x86\x03\n" +
 	"\n" +
 	"StepPolicy\x12=\n" +
 	"\atimeout\x18\x01 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\atimeout\x12/\n" +
 	"\x05retry\x18\x02 \x01(\v2\x19.flowstate.v1.RetryPolicyR\x05retry\x12*\n" +
 	"\x11continue_on_error\x18\x03 \x01(\bR\x0fcontinueOnError\x12H\n" +
-	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\x12R\n" +
-	"\x0ftolerated_kinds\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x0etoleratedKinds\"\xe2\x02\n" +
+	"\rtotal_timeout\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\ftotalTimeout\x12\x91\x01\n" +
+	"\x0ftolerated_kinds\x18\x05 \x03(\tBh\xbaHe\x92\x01b\x10@\x18\x01\"\\rZ\x10\x01\x18\x84\x022S^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$R\x0etoleratedKinds\"\xa1\x03\n" +
 	"\vRetryPolicy\x12*\n" +
 	"\fmax_attempts\x18\x01 \x01(\x05B\a\xbaH\x04\x1a\x02(\x00R\vmaxAttempts\x12N\n" +
 	"\x10initial_interval\x18\x02 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\x0finitialInterval\x12B\n" +
 	"\x13backoff_coefficient\x18\x03 \x01(\x01B\x11\xbaH\x0e\xd8\x01\x01\x12\t)\x00\x00\x00\x00\x00\x00\xf0?R\x12backoffCoefficient\x12F\n" +
-	"\fmax_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\vmaxInterval\x12=\n" +
-	"\x04only\x18\x05 \x03(\tB)\xbaH&\x92\x01#\x10@\x18\x01\"\x1dr\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04onlyJ\x04\b\x06\x10\aR\x06except\"\xa5\x01\n" +
+	"\fmax_interval\x18\x04 \x01(\v2\x19.google.protobuf.DurationB\b\xbaH\x05\xaa\x01\x02*\x00R\vmaxInterval\x12|\n" +
+	"\x04only\x18\x05 \x03(\tBh\xbaHe\x92\x01b\x10@\x18\x01\"\\rZ\x10\x01\x18\x84\x022S^([a-z][A-Za-z0-9]{0,31}(_[a-z][A-Za-z0-9]{0,31}){0,3}\\.)?[A-Z][A-Za-z0-9_]{0,127}$R\x04onlyJ\x04\b\x06\x10\aR\x06except\"\xa5\x01\n" +
 	"\x18ResolvedTaskCapabilities\x12.\n" +
 	"\x0eschema_version\x18\x01 \x01(\rB\a\xbaH\x04*\x02 \x00R\rschemaVersion\x12Y\n" +
 	"\n" +
@@ -4694,158 +4804,160 @@ func file_flowstate_v1_workflow_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_workflow_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_workflow_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_flowstate_v1_workflow_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_flowstate_v1_workflow_proto_goTypes = []any{
 	(Concurrency_OnConflict)(0),       // 0: flowstate.v1.Concurrency.OnConflict
 	(InputDeclaration_Type)(0),        // 1: flowstate.v1.InputDeclaration.Type
 	(*Workflow)(nil),                  // 2: flowstate.v1.Workflow
-	(*ErrorDeclaration)(nil),          // 3: flowstate.v1.ErrorDeclaration
-	(*Fail)(nil),                      // 4: flowstate.v1.Fail
-	(*FunctionDeclaration)(nil),       // 5: flowstate.v1.FunctionDeclaration
-	(*FunctionParameter)(nil),         // 6: flowstate.v1.FunctionParameter
-	(*TypeDeclaration)(nil),           // 7: flowstate.v1.TypeDeclaration
-	(*Concurrency)(nil),               // 8: flowstate.v1.Concurrency
-	(*PluginRequirement)(nil),         // 9: flowstate.v1.PluginRequirement
-	(*ResolvedPlugin)(nil),            // 10: flowstate.v1.ResolvedPlugin
-	(*CapabilityParameter)(nil),       // 11: flowstate.v1.CapabilityParameter
-	(*ResolvedCapabilityBinding)(nil), // 12: flowstate.v1.ResolvedCapabilityBinding
-	(*InputDeclaration)(nil),          // 13: flowstate.v1.InputDeclaration
-	(*OutputDeclaration)(nil),         // 14: flowstate.v1.OutputDeclaration
-	(*RunOutputs)(nil),                // 15: flowstate.v1.RunOutputs
-	(*Node)(nil),                      // 16: flowstate.v1.Node
-	(*Compensation)(nil),              // 17: flowstate.v1.Compensation
-	(*Wait)(nil),                      // 18: flowstate.v1.Wait
-	(*ForEach)(nil),                   // 19: flowstate.v1.ForEach
-	(*Parallel)(nil),                  // 20: flowstate.v1.Parallel
-	(*Loop)(nil),                      // 21: flowstate.v1.Loop
-	(*Switch)(nil),                    // 22: flowstate.v1.Switch
-	(*Call)(nil),                      // 23: flowstate.v1.Call
-	(*StepPolicy)(nil),                // 24: flowstate.v1.StepPolicy
-	(*RetryPolicy)(nil),               // 25: flowstate.v1.RetryPolicy
-	(*ResolvedTaskCapabilities)(nil),  // 26: flowstate.v1.ResolvedTaskCapabilities
-	(*Workflow_StepOutputs)(nil),      // 27: flowstate.v1.Workflow.StepOutputs
-	nil,                               // 28: flowstate.v1.Workflow.LabelsEntry
-	nil,                               // 29: flowstate.v1.Workflow.VarsEntry
-	nil,                               // 30: flowstate.v1.Workflow.SignalsEntry
-	nil,                               // 31: flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	nil,                               // 32: flowstate.v1.PluginRequirement.CredentialsEntry
-	nil,                               // 33: flowstate.v1.RunOutputs.ValuesEntry
-	(*Node_Outputs)(nil),              // 34: flowstate.v1.Node.Outputs
-	nil,                               // 35: flowstate.v1.Node.VarsEntry
-	nil,                               // 36: flowstate.v1.Node.Outputs.NamedValuesEntry
-	(*Parallel_Branch)(nil),           // 37: flowstate.v1.Parallel.Branch
-	(*Switch_Case)(nil),               // 38: flowstate.v1.Switch.Case
-	(*Switch_Default)(nil),            // 39: flowstate.v1.Switch.Default
-	nil,                               // 40: flowstate.v1.Call.ArgumentsEntry
-	nil,                               // 41: flowstate.v1.Call.CapabilityArgumentsEntry
-	(*Triggers)(nil),                  // 42: flowstate.v1.Triggers
-	(*SignalPolicy)(nil),              // 43: flowstate.v1.SignalPolicy
-	(*Value)(nil),                     // 44: flowstate.v1.Value
-	(*Type)(nil),                      // 45: flowstate.v1.Type
-	(*v1alpha1.ParsedExpr)(nil),       // 46: google.api.expr.v1alpha1.ParsedExpr
-	(*Task)(nil),                      // 47: flowstate.v1.Task
-	(*SourceLocation)(nil),            // 48: flowstate.v1.SourceLocation
-	(*durationpb.Duration)(nil),       // 49: google.protobuf.Duration
-	(*Signal)(nil),                    // 50: flowstate.v1.Signal
-	(*SignalBatch)(nil),               // 51: flowstate.v1.SignalBatch
+	(*Module)(nil),                    // 3: flowstate.v1.Module
+	(*ErrorDeclaration)(nil),          // 4: flowstate.v1.ErrorDeclaration
+	(*Fail)(nil),                      // 5: flowstate.v1.Fail
+	(*FunctionDeclaration)(nil),       // 6: flowstate.v1.FunctionDeclaration
+	(*FunctionParameter)(nil),         // 7: flowstate.v1.FunctionParameter
+	(*TypeDeclaration)(nil),           // 8: flowstate.v1.TypeDeclaration
+	(*Concurrency)(nil),               // 9: flowstate.v1.Concurrency
+	(*PluginRequirement)(nil),         // 10: flowstate.v1.PluginRequirement
+	(*ResolvedPlugin)(nil),            // 11: flowstate.v1.ResolvedPlugin
+	(*CapabilityParameter)(nil),       // 12: flowstate.v1.CapabilityParameter
+	(*ResolvedCapabilityBinding)(nil), // 13: flowstate.v1.ResolvedCapabilityBinding
+	(*InputDeclaration)(nil),          // 14: flowstate.v1.InputDeclaration
+	(*OutputDeclaration)(nil),         // 15: flowstate.v1.OutputDeclaration
+	(*RunOutputs)(nil),                // 16: flowstate.v1.RunOutputs
+	(*Node)(nil),                      // 17: flowstate.v1.Node
+	(*Compensation)(nil),              // 18: flowstate.v1.Compensation
+	(*Wait)(nil),                      // 19: flowstate.v1.Wait
+	(*ForEach)(nil),                   // 20: flowstate.v1.ForEach
+	(*Parallel)(nil),                  // 21: flowstate.v1.Parallel
+	(*Loop)(nil),                      // 22: flowstate.v1.Loop
+	(*Switch)(nil),                    // 23: flowstate.v1.Switch
+	(*Call)(nil),                      // 24: flowstate.v1.Call
+	(*StepPolicy)(nil),                // 25: flowstate.v1.StepPolicy
+	(*RetryPolicy)(nil),               // 26: flowstate.v1.RetryPolicy
+	(*ResolvedTaskCapabilities)(nil),  // 27: flowstate.v1.ResolvedTaskCapabilities
+	(*Workflow_StepOutputs)(nil),      // 28: flowstate.v1.Workflow.StepOutputs
+	nil,                               // 29: flowstate.v1.Workflow.LabelsEntry
+	nil,                               // 30: flowstate.v1.Workflow.VarsEntry
+	nil,                               // 31: flowstate.v1.Workflow.SignalsEntry
+	nil,                               // 32: flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	nil,                               // 33: flowstate.v1.PluginRequirement.CredentialsEntry
+	nil,                               // 34: flowstate.v1.RunOutputs.ValuesEntry
+	(*Node_Outputs)(nil),              // 35: flowstate.v1.Node.Outputs
+	nil,                               // 36: flowstate.v1.Node.VarsEntry
+	nil,                               // 37: flowstate.v1.Node.Outputs.NamedValuesEntry
+	(*Parallel_Branch)(nil),           // 38: flowstate.v1.Parallel.Branch
+	(*Switch_Case)(nil),               // 39: flowstate.v1.Switch.Case
+	(*Switch_Default)(nil),            // 40: flowstate.v1.Switch.Default
+	nil,                               // 41: flowstate.v1.Call.ArgumentsEntry
+	nil,                               // 42: flowstate.v1.Call.CapabilityArgumentsEntry
+	(*Triggers)(nil),                  // 43: flowstate.v1.Triggers
+	(*SignalPolicy)(nil),              // 44: flowstate.v1.SignalPolicy
+	(*Value)(nil),                     // 45: flowstate.v1.Value
+	(*Type)(nil),                      // 46: flowstate.v1.Type
+	(*v1alpha1.ParsedExpr)(nil),       // 47: google.api.expr.v1alpha1.ParsedExpr
+	(*Task)(nil),                      // 48: flowstate.v1.Task
+	(*SourceLocation)(nil),            // 49: flowstate.v1.SourceLocation
+	(*durationpb.Duration)(nil),       // 50: google.protobuf.Duration
+	(*Signal)(nil),                    // 51: flowstate.v1.Signal
+	(*SignalBatch)(nil),               // 52: flowstate.v1.SignalBatch
 }
 var file_flowstate_v1_workflow_proto_depIdxs = []int32{
-	16, // 0: flowstate.v1.Workflow.steps:type_name -> flowstate.v1.Node
-	28, // 1: flowstate.v1.Workflow.labels:type_name -> flowstate.v1.Workflow.LabelsEntry
-	29, // 2: flowstate.v1.Workflow.vars:type_name -> flowstate.v1.Workflow.VarsEntry
-	13, // 3: flowstate.v1.Workflow.declared_inputs:type_name -> flowstate.v1.InputDeclaration
-	14, // 4: flowstate.v1.Workflow.declared_outputs:type_name -> flowstate.v1.OutputDeclaration
-	42, // 5: flowstate.v1.Workflow.triggers:type_name -> flowstate.v1.Triggers
-	30, // 6: flowstate.v1.Workflow.signals:type_name -> flowstate.v1.Workflow.SignalsEntry
-	9,  // 7: flowstate.v1.Workflow.plugin_requirements:type_name -> flowstate.v1.PluginRequirement
-	10, // 8: flowstate.v1.Workflow.resolved_plugins:type_name -> flowstate.v1.ResolvedPlugin
-	8,  // 9: flowstate.v1.Workflow.concurrency:type_name -> flowstate.v1.Concurrency
-	43, // 10: flowstate.v1.Workflow.debug:type_name -> flowstate.v1.SignalPolicy
-	26, // 11: flowstate.v1.Workflow.resolved_task_capabilities:type_name -> flowstate.v1.ResolvedTaskCapabilities
-	11, // 12: flowstate.v1.Workflow.capability_parameters:type_name -> flowstate.v1.CapabilityParameter
-	12, // 13: flowstate.v1.Workflow.resolved_capability_bindings:type_name -> flowstate.v1.ResolvedCapabilityBinding
-	7,  // 14: flowstate.v1.Workflow.declared_types:type_name -> flowstate.v1.TypeDeclaration
-	5,  // 15: flowstate.v1.Workflow.declared_functions:type_name -> flowstate.v1.FunctionDeclaration
-	3,  // 16: flowstate.v1.Workflow.declared_errors:type_name -> flowstate.v1.ErrorDeclaration
-	44, // 17: flowstate.v1.Fail.message:type_name -> flowstate.v1.Value
-	6,  // 18: flowstate.v1.FunctionDeclaration.parameters:type_name -> flowstate.v1.FunctionParameter
-	45, // 19: flowstate.v1.FunctionDeclaration.result:type_name -> flowstate.v1.Type
-	46, // 20: flowstate.v1.FunctionDeclaration.body:type_name -> google.api.expr.v1alpha1.ParsedExpr
-	45, // 21: flowstate.v1.FunctionParameter.type:type_name -> flowstate.v1.Type
-	13, // 22: flowstate.v1.TypeDeclaration.fields:type_name -> flowstate.v1.InputDeclaration
-	1,  // 23: flowstate.v1.TypeDeclaration.base:type_name -> flowstate.v1.InputDeclaration.Type
-	44, // 24: flowstate.v1.TypeDeclaration.example:type_name -> flowstate.v1.Value
-	44, // 25: flowstate.v1.Concurrency.key:type_name -> flowstate.v1.Value
-	0,  // 26: flowstate.v1.Concurrency.on_conflict:type_name -> flowstate.v1.Concurrency.OnConflict
-	32, // 27: flowstate.v1.PluginRequirement.credentials:type_name -> flowstate.v1.PluginRequirement.CredentialsEntry
-	1,  // 28: flowstate.v1.InputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
-	44, // 29: flowstate.v1.InputDeclaration.default:type_name -> flowstate.v1.Value
-	44, // 30: flowstate.v1.InputDeclaration.example:type_name -> flowstate.v1.Value
-	45, // 31: flowstate.v1.InputDeclaration.value_type:type_name -> flowstate.v1.Type
-	44, // 32: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
-	1,  // 33: flowstate.v1.OutputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
-	45, // 34: flowstate.v1.OutputDeclaration.value_type:type_name -> flowstate.v1.Type
-	33, // 35: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
-	47, // 36: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
-	19, // 37: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
-	20, // 38: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
-	18, // 39: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
-	23, // 40: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
-	21, // 41: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
-	44, // 42: flowstate.v1.Node.value:type_name -> flowstate.v1.Value
-	22, // 43: flowstate.v1.Node.switch:type_name -> flowstate.v1.Switch
-	4,  // 44: flowstate.v1.Node.fail:type_name -> flowstate.v1.Fail
-	44, // 45: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
-	24, // 46: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
-	35, // 47: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
-	17, // 48: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
-	48, // 49: flowstate.v1.Node.source:type_name -> flowstate.v1.SourceLocation
-	47, // 50: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
-	49, // 51: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
-	44, // 52: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
-	50, // 53: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
-	44, // 54: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
-	51, // 55: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
-	49, // 56: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
-	44, // 57: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
-	44, // 58: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
-	16, // 59: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
-	37, // 60: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
-	16, // 61: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
-	44, // 62: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
-	44, // 63: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
-	44, // 64: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
-	44, // 65: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
-	38, // 66: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
-	39, // 67: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
-	2,  // 68: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
-	40, // 69: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
-	41, // 70: flowstate.v1.Call.capability_arguments:type_name -> flowstate.v1.Call.CapabilityArgumentsEntry
-	49, // 71: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
-	25, // 72: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
-	49, // 73: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
-	49, // 74: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
-	49, // 75: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
-	31, // 76: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
-	15, // 77: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
-	44, // 78: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
-	43, // 79: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
-	34, // 80: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
-	44, // 81: flowstate.v1.PluginRequirement.CredentialsEntry.value:type_name -> flowstate.v1.Value
-	44, // 82: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
-	36, // 83: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
-	44, // 84: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
-	44, // 85: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
-	16, // 86: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
-	44, // 87: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
-	16, // 88: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
-	16, // 89: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
-	44, // 90: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
-	91, // [91:91] is the sub-list for method output_type
-	91, // [91:91] is the sub-list for method input_type
-	91, // [91:91] is the sub-list for extension type_name
-	91, // [91:91] is the sub-list for extension extendee
-	0,  // [0:91] is the sub-list for field type_name
+	17, // 0: flowstate.v1.Workflow.steps:type_name -> flowstate.v1.Node
+	29, // 1: flowstate.v1.Workflow.labels:type_name -> flowstate.v1.Workflow.LabelsEntry
+	30, // 2: flowstate.v1.Workflow.vars:type_name -> flowstate.v1.Workflow.VarsEntry
+	14, // 3: flowstate.v1.Workflow.declared_inputs:type_name -> flowstate.v1.InputDeclaration
+	15, // 4: flowstate.v1.Workflow.declared_outputs:type_name -> flowstate.v1.OutputDeclaration
+	43, // 5: flowstate.v1.Workflow.triggers:type_name -> flowstate.v1.Triggers
+	31, // 6: flowstate.v1.Workflow.signals:type_name -> flowstate.v1.Workflow.SignalsEntry
+	10, // 7: flowstate.v1.Workflow.plugin_requirements:type_name -> flowstate.v1.PluginRequirement
+	11, // 8: flowstate.v1.Workflow.resolved_plugins:type_name -> flowstate.v1.ResolvedPlugin
+	9,  // 9: flowstate.v1.Workflow.concurrency:type_name -> flowstate.v1.Concurrency
+	44, // 10: flowstate.v1.Workflow.debug:type_name -> flowstate.v1.SignalPolicy
+	27, // 11: flowstate.v1.Workflow.resolved_task_capabilities:type_name -> flowstate.v1.ResolvedTaskCapabilities
+	12, // 12: flowstate.v1.Workflow.capability_parameters:type_name -> flowstate.v1.CapabilityParameter
+	13, // 13: flowstate.v1.Workflow.resolved_capability_bindings:type_name -> flowstate.v1.ResolvedCapabilityBinding
+	8,  // 14: flowstate.v1.Workflow.declared_types:type_name -> flowstate.v1.TypeDeclaration
+	6,  // 15: flowstate.v1.Workflow.declared_functions:type_name -> flowstate.v1.FunctionDeclaration
+	4,  // 16: flowstate.v1.Workflow.declared_errors:type_name -> flowstate.v1.ErrorDeclaration
+	3,  // 17: flowstate.v1.Workflow.modules:type_name -> flowstate.v1.Module
+	45, // 18: flowstate.v1.Fail.message:type_name -> flowstate.v1.Value
+	7,  // 19: flowstate.v1.FunctionDeclaration.parameters:type_name -> flowstate.v1.FunctionParameter
+	46, // 20: flowstate.v1.FunctionDeclaration.result:type_name -> flowstate.v1.Type
+	47, // 21: flowstate.v1.FunctionDeclaration.body:type_name -> google.api.expr.v1alpha1.ParsedExpr
+	46, // 22: flowstate.v1.FunctionParameter.type:type_name -> flowstate.v1.Type
+	14, // 23: flowstate.v1.TypeDeclaration.fields:type_name -> flowstate.v1.InputDeclaration
+	1,  // 24: flowstate.v1.TypeDeclaration.base:type_name -> flowstate.v1.InputDeclaration.Type
+	45, // 25: flowstate.v1.TypeDeclaration.example:type_name -> flowstate.v1.Value
+	45, // 26: flowstate.v1.Concurrency.key:type_name -> flowstate.v1.Value
+	0,  // 27: flowstate.v1.Concurrency.on_conflict:type_name -> flowstate.v1.Concurrency.OnConflict
+	33, // 28: flowstate.v1.PluginRequirement.credentials:type_name -> flowstate.v1.PluginRequirement.CredentialsEntry
+	1,  // 29: flowstate.v1.InputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
+	45, // 30: flowstate.v1.InputDeclaration.default:type_name -> flowstate.v1.Value
+	45, // 31: flowstate.v1.InputDeclaration.example:type_name -> flowstate.v1.Value
+	46, // 32: flowstate.v1.InputDeclaration.value_type:type_name -> flowstate.v1.Type
+	45, // 33: flowstate.v1.OutputDeclaration.value:type_name -> flowstate.v1.Value
+	1,  // 34: flowstate.v1.OutputDeclaration.type:type_name -> flowstate.v1.InputDeclaration.Type
+	46, // 35: flowstate.v1.OutputDeclaration.value_type:type_name -> flowstate.v1.Type
+	34, // 36: flowstate.v1.RunOutputs.values:type_name -> flowstate.v1.RunOutputs.ValuesEntry
+	48, // 37: flowstate.v1.Node.task:type_name -> flowstate.v1.Task
+	20, // 38: flowstate.v1.Node.for_each:type_name -> flowstate.v1.ForEach
+	21, // 39: flowstate.v1.Node.parallel:type_name -> flowstate.v1.Parallel
+	19, // 40: flowstate.v1.Node.wait:type_name -> flowstate.v1.Wait
+	24, // 41: flowstate.v1.Node.call:type_name -> flowstate.v1.Call
+	22, // 42: flowstate.v1.Node.loop:type_name -> flowstate.v1.Loop
+	45, // 43: flowstate.v1.Node.value:type_name -> flowstate.v1.Value
+	23, // 44: flowstate.v1.Node.switch:type_name -> flowstate.v1.Switch
+	5,  // 45: flowstate.v1.Node.fail:type_name -> flowstate.v1.Fail
+	45, // 46: flowstate.v1.Node.condition:type_name -> flowstate.v1.Value
+	25, // 47: flowstate.v1.Node.policy:type_name -> flowstate.v1.StepPolicy
+	36, // 48: flowstate.v1.Node.vars:type_name -> flowstate.v1.Node.VarsEntry
+	18, // 49: flowstate.v1.Node.undo:type_name -> flowstate.v1.Compensation
+	49, // 50: flowstate.v1.Node.source:type_name -> flowstate.v1.SourceLocation
+	48, // 51: flowstate.v1.Compensation.task:type_name -> flowstate.v1.Task
+	50, // 52: flowstate.v1.Wait.duration:type_name -> google.protobuf.Duration
+	45, // 53: flowstate.v1.Wait.until:type_name -> flowstate.v1.Value
+	51, // 54: flowstate.v1.Wait.signal:type_name -> flowstate.v1.Signal
+	45, // 55: flowstate.v1.Wait.duration_expr:type_name -> flowstate.v1.Value
+	52, // 56: flowstate.v1.Wait.signal_batch:type_name -> flowstate.v1.SignalBatch
+	50, // 57: flowstate.v1.Wait.timeout:type_name -> google.protobuf.Duration
+	45, // 58: flowstate.v1.Wait.timeout_expr:type_name -> flowstate.v1.Value
+	45, // 59: flowstate.v1.ForEach.items:type_name -> flowstate.v1.Value
+	17, // 60: flowstate.v1.ForEach.body:type_name -> flowstate.v1.Node
+	38, // 61: flowstate.v1.Parallel.branches:type_name -> flowstate.v1.Parallel.Branch
+	17, // 62: flowstate.v1.Loop.body:type_name -> flowstate.v1.Node
+	45, // 63: flowstate.v1.Loop.until:type_name -> flowstate.v1.Value
+	45, // 64: flowstate.v1.Loop.initial:type_name -> flowstate.v1.Value
+	45, // 65: flowstate.v1.Loop.update:type_name -> flowstate.v1.Value
+	45, // 66: flowstate.v1.Switch.value:type_name -> flowstate.v1.Value
+	39, // 67: flowstate.v1.Switch.cases:type_name -> flowstate.v1.Switch.Case
+	40, // 68: flowstate.v1.Switch.default:type_name -> flowstate.v1.Switch.Default
+	2,  // 69: flowstate.v1.Call.workflow:type_name -> flowstate.v1.Workflow
+	41, // 70: flowstate.v1.Call.arguments:type_name -> flowstate.v1.Call.ArgumentsEntry
+	42, // 71: flowstate.v1.Call.capability_arguments:type_name -> flowstate.v1.Call.CapabilityArgumentsEntry
+	50, // 72: flowstate.v1.StepPolicy.timeout:type_name -> google.protobuf.Duration
+	26, // 73: flowstate.v1.StepPolicy.retry:type_name -> flowstate.v1.RetryPolicy
+	50, // 74: flowstate.v1.StepPolicy.total_timeout:type_name -> google.protobuf.Duration
+	50, // 75: flowstate.v1.RetryPolicy.initial_interval:type_name -> google.protobuf.Duration
+	50, // 76: flowstate.v1.RetryPolicy.max_interval:type_name -> google.protobuf.Duration
+	32, // 77: flowstate.v1.Workflow.StepOutputs.step_values:type_name -> flowstate.v1.Workflow.StepOutputs.StepValuesEntry
+	16, // 78: flowstate.v1.Workflow.StepOutputs.run_outputs:type_name -> flowstate.v1.RunOutputs
+	45, // 79: flowstate.v1.Workflow.VarsEntry.value:type_name -> flowstate.v1.Value
+	44, // 80: flowstate.v1.Workflow.SignalsEntry.value:type_name -> flowstate.v1.SignalPolicy
+	35, // 81: flowstate.v1.Workflow.StepOutputs.StepValuesEntry.value:type_name -> flowstate.v1.Node.Outputs
+	45, // 82: flowstate.v1.PluginRequirement.CredentialsEntry.value:type_name -> flowstate.v1.Value
+	45, // 83: flowstate.v1.RunOutputs.ValuesEntry.value:type_name -> flowstate.v1.Value
+	37, // 84: flowstate.v1.Node.Outputs.named_values:type_name -> flowstate.v1.Node.Outputs.NamedValuesEntry
+	45, // 85: flowstate.v1.Node.VarsEntry.value:type_name -> flowstate.v1.Value
+	45, // 86: flowstate.v1.Node.Outputs.NamedValuesEntry.value:type_name -> flowstate.v1.Value
+	17, // 87: flowstate.v1.Parallel.Branch.steps:type_name -> flowstate.v1.Node
+	45, // 88: flowstate.v1.Switch.Case.values:type_name -> flowstate.v1.Value
+	17, // 89: flowstate.v1.Switch.Case.steps:type_name -> flowstate.v1.Node
+	17, // 90: flowstate.v1.Switch.Default.steps:type_name -> flowstate.v1.Node
+	45, // 91: flowstate.v1.Call.ArgumentsEntry.value:type_name -> flowstate.v1.Value
+	92, // [92:92] is the sub-list for method output_type
+	92, // [92:92] is the sub-list for method input_type
+	92, // [92:92] is the sub-list for extension type_name
+	92, // [92:92] is the sub-list for extension extendee
+	0,  // [0:92] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_workflow_proto_init() }
@@ -4859,12 +4971,12 @@ func file_flowstate_v1_workflow_proto_init() {
 	file_flowstate_v1_type_proto_init()
 	file_flowstate_v1_value_proto_init()
 	file_flowstate_v1_workflow_proto_msgTypes[0].OneofWrappers = []any{}
-	file_flowstate_v1_workflow_proto_msgTypes[1].OneofWrappers = []any{}
-	file_flowstate_v1_workflow_proto_msgTypes[3].OneofWrappers = []any{}
-	file_flowstate_v1_workflow_proto_msgTypes[5].OneofWrappers = []any{}
-	file_flowstate_v1_workflow_proto_msgTypes[11].OneofWrappers = []any{}
+	file_flowstate_v1_workflow_proto_msgTypes[2].OneofWrappers = []any{}
+	file_flowstate_v1_workflow_proto_msgTypes[4].OneofWrappers = []any{}
+	file_flowstate_v1_workflow_proto_msgTypes[6].OneofWrappers = []any{}
 	file_flowstate_v1_workflow_proto_msgTypes[12].OneofWrappers = []any{}
-	file_flowstate_v1_workflow_proto_msgTypes[14].OneofWrappers = []any{
+	file_flowstate_v1_workflow_proto_msgTypes[13].OneofWrappers = []any{}
+	file_flowstate_v1_workflow_proto_msgTypes[15].OneofWrappers = []any{
 		(*Node_Task)(nil),
 		(*Node_ForEach)(nil),
 		(*Node_Parallel)(nil),
@@ -4875,7 +4987,7 @@ func file_flowstate_v1_workflow_proto_init() {
 		(*Node_Switch)(nil),
 		(*Node_Fail)(nil),
 	}
-	file_flowstate_v1_workflow_proto_msgTypes[16].OneofWrappers = []any{
+	file_flowstate_v1_workflow_proto_msgTypes[17].OneofWrappers = []any{
 		(*Wait_Duration)(nil),
 		(*Wait_Until)(nil),
 		(*Wait_Signal)(nil),
@@ -4888,7 +5000,7 @@ func file_flowstate_v1_workflow_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_workflow_proto_rawDesc), len(file_flowstate_v1_workflow_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   40,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

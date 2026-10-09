@@ -275,6 +275,7 @@ func ValidateModule(wf *v1.Workflow) Diagnostics {
 		return Validate(wf)
 	}
 	ds := validateName(wf)
+	ds = append(ds, validateModules(wf)...)
 	ds = append(ds, validateDeclaredTypes(wf)...)
 	ds = append(ds, validateDeclaredErrors(wf)...)
 	ds = append(ds, checkExpressionTypes(wf, newTypeTable(wf))...)
@@ -353,6 +354,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// Step IDs are the names expressions use, so they are validated before
 	// anything that depends on resolving a reference.
 	ds = append(ds, validateStepIDs(wf)...)
+	ds = append(ds, validateModules(wf)...)
 
 	ds = append(ds, validateDeclaredTypes(wf)...)
 	ds = append(ds, validateDeclaredErrors(wf)...)
@@ -2239,7 +2241,7 @@ func ParseAndValidateFileAt(path string) (*v1.Workflow, *Positions, Diagnostics,
 // and where its steps are written — a debugger's source map — gets them from
 // one read, so the lines cannot belong to a different revision of the file.
 func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Positions, Diagnostics, error) {
-	wf, positions, err := parse(data, path, nil, new(int))
+	wf, positions, err := parse(data, path, nil, new(int), nil)
 	if err != nil {
 		var gate Diagnostics
 		if errors.As(err, &gate) && isEditionGate(gate) {
@@ -2405,7 +2407,7 @@ func isEditionDeclaration(line string) bool {
 // the compiler reports diagnostics, the partial workflow is still available for
 // [validateParsed] to run the step-id checks against.
 func parseAndValidate(data []byte, path string) (Diagnostics, error) {
-	return validateParsed(parse(data, path, nil, new(int)))
+	return validateParsed(parse(data, path, nil, new(int), nil))
 }
 
 func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {

@@ -258,6 +258,14 @@ func Complete(text string, scope Scope) Result {
 		}
 	}
 
+	// A namespace the file itself binds, such as the alias of a module it uses.
+	// Only a namespace: a local value's members are not known statically.
+	if local, ok := find(scope.Locals, qualifier); ok && local.Kind == KindNamespace {
+		members, short := membersOf(local, member)
+
+		return carry(short, bound(member, members))
+	}
+
 	if fns := FunctionsAfter(scope.Profile, qualifier); fns != nil {
 		return bound(member, fns)
 	}

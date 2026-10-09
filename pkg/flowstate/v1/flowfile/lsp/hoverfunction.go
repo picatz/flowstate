@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -281,29 +282,39 @@ func hoverDeclaredFunction(doc *document, v *value, f fence, cursor int) *lsp.Ho
 	if insideStringLiteral(f.source, cursor) {
 		return nil
 	}
-	segments, at, ok := segmentAt(f.source, cursor)
-	if !ok || len(segments) != 1 {
+	segments, _, ok := segmentAt(f.source, cursor)
+	if !ok || len(segments) < 1 || len(segments) > 2 {
 		return nil
 	}
-	segment := segments[at]
-	if !strings.HasPrefix(f.source[segment.end:], "(") {
+
+	// A module's function is called through its alias, `ids.isUuid(x)`: the two
+	// segments are one name, and the cursor on either describes it.
+	name, first, last := segments[0].text, segments[0], segments[len(segments)-1]
+	if len(segments) == 2 {
+		name += "." + segments[1].text
+	}
+	if !strings.HasPrefix(f.source[last.end:], "(") {
 		return nil
 	}
 
 	wf := compiledWorkflow(doc)
-	i := slices.IndexFunc(wf.GetDeclaredFunctions(), func(d *v1.FunctionDeclaration) bool { return d.GetName() == segment.text })
+	i := slices.IndexFunc(wf.GetDeclaredFunctions(), func(d *v1.FunctionDeclaration) bool { return d.GetName() == name })
 	if i < 0 {
 		return nil
 	}
 
 	return markdownHover(declaredFunctionDoc(wf.GetDeclaredFunctions()[i]),
-		v.fenceSpanOrWhole(doc.index, f, segment.start, segment.end))
+		v.fenceSpanOrWhole(doc.index, f, first.start, last.end))
 }
 
 // declaredFunctionDoc is the hover text for a declared function.
 func declaredFunctionDoc(d *v1.FunctionDeclaration) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**`%s`** — a function declared in this file.", declaredFunctionSignature(d))
+	if alias, _, carried := v1.SplitQualified(d.GetName()); carried {
+		fmt.Fprintf(&b, "**`%s`** — a function declared by the module `%s`.", declaredFunctionSignature(d), alias)
+	} else {
+		fmt.Fprintf(&b, "**`%s`** — a function declared in this file.", declaredFunctionSignature(d))
+	}
 	if d.Description != nil {
 		fmt.Fprintf(&b, "\n\n%s", d.GetDescription())
 	}
@@ -320,23 +331,79 @@ func declaredFunctionDoc(d *v1.FunctionDeclaration) string {
 // level, which is nearly every file: completion runs on every keystroke, and
 // compiling a document to learn there is nothing to offer is the cost this check
 // exists to avoid.
-func declaredFunctionCandidates(doc *document) []celcomplete.Candidate {
-	if !strings.HasPrefix(doc.text, "functions:") && !strings.Contains(doc.text, "\nfunctions:") {
+func declaredFunctionCandidates(doc *document, pos lsp.Position) []celcomplete.Candidate {
+	if !declaresKey(doc.text, "functions") && !declaresKey(doc.text, "use") {
 		return nil
 	}
 
 	wf := compiledWorkflow(doc)
+	if wf == nil {
+		// An expression being typed rarely compiles, and a document that does not
+		// compile declares nothing, so the fence under the cursor is compiled as
+		// `null`: the declarations are the part of the file the author is not editing.
+		wf = compiledText(doc, withoutFenceAt(doc, pos))
+	}
 	out := make([]celcomplete.Candidate, 0, len(wf.GetDeclaredFunctions()))
 	for _, d := range wf.GetDeclaredFunctions() {
-		out = append(out, celcomplete.Candidate{
-			Name:   d.GetName(),
+		alias, bare, carried := v1.SplitQualified(d.GetName())
+		candidate := celcomplete.Candidate{
+			Name:   cmp.Or(bare, d.GetName()),
 			Kind:   celcomplete.KindFunction,
 			Detail: declaredFunctionSignature(d),
 			Docs:   declaredFunctionDoc(d),
+		}
+		if !carried {
+			out = append(out, candidate)
+
+			continue
+		}
+
+		// A module's functions are written through its alias, so they are offered
+		// after the alias and its dot, the way a library's are after `math.`.
+		i := slices.IndexFunc(out, func(c celcomplete.Candidate) bool {
+			return c.Kind == celcomplete.KindNamespace && c.Name == alias
 		})
+		if i < 0 {
+			out = append(out, celcomplete.Candidate{
+				Name:   alias,
+				Detail: "module",
+				Docs:   "A module this file uses. Its functions are written " + alias + ".<name>(...); type the dot to see them.",
+				Insert: alias + ".",
+				Kind:   celcomplete.KindNamespace,
+			})
+			i = len(out) - 1
+		}
+		out[i].Members = append(out[i].Members, candidate)
 	}
 
 	return out
+}
+
+// withoutFenceAt is the document text with the `${...}` around pos replaced by
+// `${null}`, or the text unchanged when pos is not inside one on its line.
+func withoutFenceAt(doc *document, pos lsp.Position) string {
+	at := doc.index.offsetOfPosition(pos)
+	if at < 0 || at > len(doc.text) {
+		return doc.text
+	}
+	open := strings.LastIndex(doc.text[:at], "${")
+	if open < 0 || strings.Contains(doc.text[open:at], "\n") {
+		return doc.text
+	}
+	end := len(doc.text)
+	if i := strings.IndexAny(doc.text[at:], "}\n"); i >= 0 {
+		end = at + i
+		if doc.text[end] == '}' {
+			end++
+		}
+	}
+
+	return doc.text[:open] + "${null}" + doc.text[end:]
+}
+
+// declaresKey reports whether text has key as a top-level key, without parsing it.
+func declaresKey(text, key string) bool {
+	return strings.HasPrefix(text, key+":") || strings.Contains(text, "\n"+key+":")
 }
 
 // declaredFunctionSignature is `name(param: type, ...) -> type`.

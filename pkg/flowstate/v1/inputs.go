@@ -321,6 +321,9 @@ func bindRunInputs(wf *Workflow, profile string, submitted map[string]*Value) (m
 // requests before discovering that the callee's contract cannot be enforced.
 func CheckDeclarationTypes(wf *Workflow) error {
 	return walkEmbeddedWorkflows(wf, 0, func(current *Workflow) error {
+		if err := CheckModules(current); err != nil {
+			return err
+		}
 		if err := CheckRecordDeclarations(current); err != nil {
 			return err
 		}

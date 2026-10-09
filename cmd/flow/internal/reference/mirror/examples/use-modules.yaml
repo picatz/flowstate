@@ -1,0 +1,53 @@
+# `use:` takes the types, functions and errors a module declares, by an alias.
+#
+# `./lib/ids.yaml` is a module (see it for what one is). Naming it under `use:` makes
+# its declarations available here, always qualified by the alias: a type is
+# `ids.Customer`, a function is called as `ids.isUuid(x)`, and an error is raised as
+# `ids.NotFound`. There is no bare import and no re-export, so a name says where it is
+# declared, and a module can add a declaration without changing what any file that
+# uses it means.
+#
+# The path is resolved the way a `call:` is: relative to this file, never absolute,
+# never above this file's directory as written or through a symlink, and read from
+# disk by whoever compiles the file. Nothing reaches a worker. Everything the module
+# declares is inlined where it is used, exactly as a declaration written in this file
+# is, so both drivers run plain CEL, and the compiled workflow records which module
+# bytes it was built from (`flow compile` shows them under `modules`).
+#
+# A module may use modules, up to four deep; a file names at most sixteen, and a
+# workflow's modules together are at most sixty-four. A cycle is refused, and so is a
+# path that is not a module: a file with steps is a workflow, and a step runs it with
+# `call:` instead.
+#
+#   flow run local examples/use-modules/workflow.yaml \
+#       --input-file examples/use-modules/inputs.json
+edition: v2026.4
+name: use-modules
+use:
+  ids:
+    path: ./lib/ids.yaml
+inputs:
+  customer:
+    type: ids.Customer
+    required: true
+    description: who is billed; its id is a UUID and its email has an @
+  referrer:
+    type: ids.Uuid
+    description: the customer who referred this one, as a UUID that is not the all-zero placeholder
+    must: this != "00000000-0000-1000-8000-000000000000"
+steps:
+  - id: domain
+    value: ${ids.domain(inputs.customer.email)}
+  - id: screen
+    if: ${steps.domain.value == "blocked.example"}
+    fail:
+      error: ids.NotFound
+      message: ${"no one at " + steps.domain.value + " may be billed"}
+  - id: bill
+    log:
+      message: ${"billing " + inputs.customer.email + " as " + inputs.customer.id}
+outputs:
+  billed:
+    value: ${inputs.customer.id}
+    type: ids.Uuid
+    description: the customer that was billed
