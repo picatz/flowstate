@@ -16,6 +16,12 @@ export type FileReport = {
 
 declare module 'claude-code' {
   interface PluginState {
-    flowstate: { reports: FileReport[] }
+    flowstate: {
+      reports: FileReport[]
+      /** The workflow id whose detail card the pane shows; empty for none. */
+      selected: string
+      /** The CEL text in the Runs filter box, passed to `flow list --filter` unchanged; empty for none. */
+      filter: string
+    }
   }
 }
