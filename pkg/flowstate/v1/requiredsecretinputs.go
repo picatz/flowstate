@@ -2,6 +2,8 @@ package flowstatev1
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 )
 
 // RequiredSecretInputMessage is the sentence every admission-time refusal of a
@@ -10,7 +12,7 @@ import (
 //
 // One function rather than one string per caller because two paths reach this
 // refusal — compiling a Flowfile (`pkg/flowstate/v1/flowfile`'s task schema
-// check) and [CheckRequiredSecretInputs] on the RPC path that has no compiler —
+// check) and [CheckInputClaims] on the RPC path that has no compiler —
 // and an author who moved from one to the other should meet the same sentence
 // rather than discover that the two mechanisms disagree about what they want.
 // It names the spelling that works, because the next thing the author needs is
@@ -21,10 +23,30 @@ func RequiredSecretInputMessage(taskName, input string) string {
 		taskName, input)
 }
 
-// CheckRequiredSecretInputs refuses a workflow that writes anything but a whole
+// CredentialInputUnboundMessage is the sentence every refusal of a step that
+// leaves a credential input unwritten says, from the compiler and from
+// [CheckInputClaims] alike: the input claims a plugin credential, so it is
+// either written on the step or bound once under `plugins:`. It names both
+// spellings, because the next thing the author needs is what to write.
+func CredentialInputUnboundMessage(taskName, input, credential string) string {
+	plugin, _ := pluginOfTask(taskName)
+
+	return fmt.Sprintf(
+		"task %q input %q receives the plugin's credential %q, so write it as a whole secret reference such as ${secret('env:NAME')}, "+
+			"or bind it once under `plugins:` with `%s: {version: ..., credentials: {%s: ${secret('env:NAME')}}}`",
+		taskName, input, credential, plugin, credential)
+}
+
+// CheckInputClaims refuses a workflow that writes anything but a whole
 // secret reference into an input its task declares in
 // [TaskDef.RequiredSecretInputs] — for a task step, for an `undo:` step, and
-// inside a `call:`'s inlined callee.
+// inside a `call:`'s inlined callee — and one that leaves unwritten an input its
+// task claims a plugin credential for.
+//
+// The second half is the one claim an absent input violates: a credential input
+// is required, and [BindPluginCredentials] is what fills an omitted one from
+// `plugins:`, so by the time this runs an absent one is bound nowhere and
+// nothing can resolve it. Run this after binding.
 //
 // This is the RPC-path half of the bound the Flowfile compiler enforces while
 // compiling, and it is not parity for its own sake. The other half of the
@@ -47,9 +69,11 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // time here could only add a second sentence about the same missing task. A nil
 // registry decides nothing, and a check that cannot decide must not admit.
 //
-// An input the workflow does not supply at all is not this check's business —
-// a required input left unset is a different mistake with its own diagnostic —
-// so only supplied inputs are examined, and only the ones the task named. The
+// An input the workflow does not supply at all is not this check's business
+// for a required secret input — a required input left unset is a different
+// mistake with its own diagnostic — so only supplied inputs are examined for
+// that, and only the ones the task named; a credential input is the exception
+// above. The
 // walk is [specNodes], the one [RequiredTaskNames] performs, so a position that
 // can reach a task is a position this reaches: [WalkWorkflow] for nested control
 // flow and compensations, walkEmbeddedWorkflows for the bounded callee edge. It
@@ -64,19 +88,20 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // The refusal names the step and the input and never the value: the value is
 // the credential this exists to keep out of durable state, and an error message
 // is a place values are read from.
-func CheckRequiredSecretInputs(wf *Workflow, registry *Registry) error {
+func CheckInputClaims(wf *Workflow, registry *Registry) error {
 	if registry == nil {
 		return fmt.Errorf("no task registry: cannot decide which task inputs must be whole secret references")
 	}
 
+	claims := newCredentialClaimCache(registry)
 	for node, err := range specNodes(wf) {
 		if err != nil {
 			return fmt.Errorf("checking which task inputs must be whole secret references: %w", err)
 		}
-		if err := checkNodeRequiredSecretInputs(node.GetId(), "", node.GetTask(), registry); err != nil {
+		if err := checkNodeRequiredSecretInputs(node.GetId(), "", node.GetTask(), registry, claims); err != nil {
 			return err
 		}
-		if err := checkNodeRequiredSecretInputs(node.GetId(), "undo", node.GetUndo().GetTask(), registry); err != nil {
+		if err := checkNodeRequiredSecretInputs(node.GetId(), "undo", node.GetUndo().GetTask(), registry, claims); err != nil {
 			return err
 		}
 
@@ -98,7 +123,7 @@ func CheckRequiredSecretInputs(wf *Workflow, registry *Registry) error {
 // compensation's input is not reported as if it were the step's — the same
 // distinction the compiler makes by refiling an `undo:` diagnostic onto that
 // key.
-func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry *Registry) error {
+func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry *Registry, claims *credentialClaimCache) error {
 	if task == nil {
 		return nil
 	}
@@ -123,6 +148,22 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 			step = fmt.Sprintf("step %q %s", stepID, position)
 		}
 		return fmt.Errorf("%s: %s", step, RequiredSecretInputMessage(def.Name, name))
+	}
+
+	credentialInputs, err := claims.of(def.Name)
+	if err != nil {
+		return err
+	}
+	for _, name := range slices.Sorted(maps.Keys(credentialInputs)) {
+		if _, supplied := task.GetInputs()[name]; supplied {
+			continue
+		}
+		step := fmt.Sprintf("step %q", stepID)
+		if position != "" {
+			step = fmt.Sprintf("step %q %s", stepID, position)
+		}
+
+		return fmt.Errorf("%s: %s", step, CredentialInputUnboundMessage(def.Name, name, credentialInputs[name]))
 	}
 
 	return nil

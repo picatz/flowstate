@@ -631,6 +631,8 @@ func plural(n int) string {
 func readsSteps(slot v1.ValueSlot) bool {
 	switch slot {
 	case v1.SlotWorkflowVar,
+		// A plugin's credential binding is a secret reference: it reads nothing.
+		v1.SlotPluginCredential,
 		v1.SlotConcurrencyKey,
 		v1.SlotWebhookIdempotencyKey,
 		v1.SlotWebhookWhen,

@@ -2,7 +2,13 @@ edition: v2026.4
 name: slack-approval-notification
 description: Posts an approval card to Slack, waits durably for the separately verified Flowstate signal, then replaces the card with its recorded outcome.
 plugins:
-  slack: v0.2.0
+  slack:
+    version: v0.2.0
+    credentials:
+      # Bound once for every slack step. The host resolves it under the run's
+      # namespace; a literal is refused before durable history, and a step that
+      # writes its own `token:` overrides this one.
+      bot_token: ${secret('env:SLACK_BOT_TOKEN')}
 inputs:
   channel:
     type: string
@@ -82,9 +88,6 @@ steps:
       # The notification text and what a screen reader says. The card below is
       # the message people see.
       text: '${"Approval required: " + inputs.change}'
-      # The whole credential input is a secret reference. The host resolves it
-      # under the run's namespace; literals are refused before durable history.
-      token: ${secret('env:SLACK_BOT_TOKEN')}
   - id: approval
     wait_for_signal:
       name: change-approved
@@ -121,7 +124,6 @@ steps:
                 plain: ${inputs.expected_approver}
       channel: ${steps.notify.channel}
       text: '${steps.outcome_title.value + ": " + inputs.change}'
-      token: ${secret('env:SLACK_BOT_TOKEN')}
       ts: ${steps.notify.ts}
   # Editing a card does not notify anyone, so the outcome is also posted in the
   # card's thread, under its own key so a retry cannot post it twice.
@@ -131,7 +133,6 @@ steps:
       idempotency_key: ${inputs.outcome_message_key}
       text: '${steps.outcome_title.value + ": " + inputs.change}'
       thread_ts: ${steps.notify.ts}
-      token: ${secret('env:SLACK_BOT_TOKEN')}
 outputs:
   approved:
     value: ${steps.approval.approved && !steps.approval.timed_out}

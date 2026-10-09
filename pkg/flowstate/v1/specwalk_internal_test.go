@@ -108,7 +108,7 @@ func TestSpecNodesYieldsEveryStepExactlyOnce(t *testing.T) {
 
 // TestSpecWorkflowsStopsWhereTheConsumerStops is the behavior a callback could
 // not express without cost. Before this iterator, the caller that had its
-// answer either kept walking — CheckRequiredSecretInputs' latched variable,
+// answer either kept walking — CheckInputClaims' latched variable,
 // which entered every remaining callee to do nothing in — or bought its stop
 // with a sentinel error it then had to filter back out.
 func TestSpecWorkflowsStopsWhereTheConsumerStops(t *testing.T) {

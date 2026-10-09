@@ -990,31 +990,113 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// A declaration typed by a record with a `sensitive:` field is sensitive whole.
 	v1.DeriveSensitive(workflow)
 
+	// The bindings of `plugins:` become the per-step references the engine
+	// enforces, against the plugins this process knows. A plugin it does not know
+	// is bound at the server's admission instead, which refuses what it cannot.
+	if f, found := fields.get("plugins"); found && len(c.diags) == 0 {
+		if err := v1.BindPluginCredentials(workflow, v1.DefaultRegistry()); err != nil {
+			c.report(spanOfNode(f.key), ref{path: "plugins", label: "plugins"}, "%s", err)
+		}
+	}
+
 	return workflow
 }
 
+// pluginKeys are the keys of the mapping form of a `plugins:` entry.
+var pluginKeys = []string{"version", "credentials"}
+
+// pluginRequirements compiles the `plugins:` block. An entry is a plugin name
+// and either the version it requires, written as a scalar, or a mapping with the
+// `version:` and the `credentials:` the file binds once for the plugin's steps.
 func (c *compiler) pluginRequirements(n ast.Node, path string, r ref) []*v1.PluginRequirement {
 	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
 	entries, ok := c.entries(n, path, r)
 	if !ok {
 		return nil
 	}
-	if len(entries) > 64 {
-		c.report(spanOfNode(n), r, "plugins has %d entries; at most 64 are allowed", len(entries))
+	if len(entries) > v1.MaxPluginRequirements {
+		c.report(spanOfNode(n), r, "plugins has %d entries; at most %d are allowed", len(entries), v1.MaxPluginRequirements)
 	}
 	out := make([]*v1.PluginRequirement, 0, len(entries))
 	for _, e := range entries {
 		p := fieldPath(path, e.name)
-		version, ok := c.text(e.value, "plugin version", ref{path: p, label: e.name})
+		er := ref{path: p, label: e.name}
+
+		versionNode, credentialsNode := e.value, ast.Node(nil)
+		switch c.resolveQuiet(e.value).(type) {
+		case *ast.MappingNode, *ast.MappingValueNode:
+			c.pos.record(p, spanOfNode(c.resolveQuiet(e.value)))
+			fs, ok := c.fields(e.value, p, er, pluginKeys)
+			if !ok {
+				continue
+			}
+			f, found := fs.get("version")
+			if !found {
+				c.report(spanOfNode(e.key), er, "plugin %q needs a version: write `version: vMAJOR.MINOR.PATCH` beside its credentials", e.name)
+				continue
+			}
+			versionNode = f.value
+			if f, found := fs.get("credentials"); found {
+				credentialsNode = f.value
+			}
+			er = ref{path: fieldPath(p, "version"), label: e.name}
+		}
+
+		version, ok := c.text(versionNode, "plugin version", er)
 		if !ok {
 			continue
 		}
 		if !v1.ValidPluginVersion(version) {
-			c.report(spanOfNode(e.value), ref{path: p, label: e.name},
+			c.report(spanOfNode(versionNode), er,
 				"plugin %q requires a semantic version written as vMAJOR.MINOR.PATCH, but %q was written here", e.name, version)
 			continue
 		}
-		out = append(out, &v1.PluginRequirement{Name: e.name, MinimumVersion: version})
+		requirement := &v1.PluginRequirement{Name: e.name, MinimumVersion: version}
+		if credentialsNode != nil {
+			requirement.Credentials = c.pluginCredentials(credentialsNode, e.name, fieldPath(fieldPath(path, e.name), "credentials"))
+		}
+		out = append(out, requirement)
+	}
+	return out
+}
+
+// pluginCredentials compiles one plugin's `credentials:` mapping: credential
+// name to the whole secret reference bound to it. A binding is a reference and
+// nothing else, so an expression, a literal or a `${credential()}` is refused
+// where it is written, naming the credential and never echoing what was written.
+func (c *compiler) pluginCredentials(n ast.Node, plugin, path string) map[string]*v1.Value {
+	r := ref{path: path, label: plugin + " credentials"}
+	c.pos.record(path, spanOfNode(c.resolveQuiet(n)))
+	entries, ok := c.entries(n, path, r)
+	if !ok {
+		return nil
+	}
+	if len(entries) > v1.MaxPluginCredentials {
+		c.report(spanOfNode(n), r, "plugin %q binds %d credentials; at most %d are allowed", plugin, len(entries), v1.MaxPluginCredentials)
+		return nil
+	}
+
+	var out map[string]*v1.Value
+	for _, e := range entries {
+		p := fieldPath(path, e.name)
+		er := ref{path: p, label: e.name}
+		if !v1.ValidCredentialName(e.name) {
+			c.report(spanOfNode(e.key), er, "%q is not a credential name: write lowercase letters, digits and underscores, starting with a letter, at most 32", e.name)
+			continue
+		}
+		value := c.inputValue(e.value, p, er)
+		if value == nil {
+			continue
+		}
+		if value.GetSecretRef() == nil {
+			c.report(spanOfNode(e.value), er,
+				"plugin %q credential %q must be bound to a whole secret reference such as ${secret('env:NAME')}, never a literal, an expression or a credential reference", plugin, e.name)
+			continue
+		}
+		if out == nil {
+			out = make(map[string]*v1.Value, len(entries))
+		}
+		out[e.name] = value
 	}
 	return out
 }

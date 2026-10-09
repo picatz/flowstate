@@ -193,7 +193,7 @@ func LiteralFieldViolations(md protoreflect.MessageDescriptor, inputs map[string
 }
 
 // checkNodeLiteralFields applies the literal claims to one task position, for
-// the single admission walk [CheckRequiredSecretInputs] performs. position is
+// the single admission walk [CheckInputClaims] performs. position is
 // the step key the task sits under, empty for the step's own task.
 //
 // Once an expression has been evaluated its result cannot be told from text the

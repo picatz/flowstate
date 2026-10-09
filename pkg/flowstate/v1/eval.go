@@ -1269,11 +1269,18 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		if !ok {
 			registry = DefaultRegistry()
 		}
-		if err := CheckRequiredSecretInputs(w, registry); err != nil {
+		// Expanded on a copy, as the server's admission expands the specification
+		// it owns: this driver is handed a workflow the caller keeps, and one that
+		// binds no credential is not copied.
+		spec := copyIfBindsCredentials(w)
+		if err := BindPluginCredentials(spec, registry); err != nil {
+			return nil, err
+		}
+		if err := CheckInputClaims(spec, registry); err != nil {
 			return nil, err
 		}
 
-		return eval(ctx, w, bound)
+		return eval(ctx, spec, bound)
 	})
 }
 

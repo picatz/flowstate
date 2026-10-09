@@ -19,7 +19,7 @@ import (
 //     visit is the one thing walkEmbeddedWorkflows ends on — at the price of
 //     spending the error channel on a non-error, so "found one" travelled as a
 //     failure through a signature that also reports real failures.
-//   - [CheckRequiredSecretInputs] captured a `refusal` variable and opened its
+//   - [CheckInputClaims] captured a `refusal` variable and opened its
 //     callback with `if refusal != nil { return }`. That one really did keep
 //     running: the guard skips the remaining work but still visits every
 //     remaining step and enters every remaining callee, because the visit it

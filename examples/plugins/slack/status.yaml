@@ -2,7 +2,13 @@ edition: v2026.4
 name: slack-deploy-status
 description: Posts one status card when a rollout starts and updates that same message in place as each stage finishes, ending in a pass or fail state with a link to the run.
 plugins:
-  slack: v0.2.0
+  slack:
+    version: v0.2.0
+    credentials:
+      # Bound once for every slack step. The host resolves it under the run's
+      # namespace; a literal is refused before durable history, and a step that
+      # writes its own `token:` overrides this one.
+      bot_token: ${secret('env:SLACK_BOT_TOKEN')}
 inputs:
   channel:
     type: string
@@ -43,7 +49,6 @@ steps:
             total: 3
       channel: ${inputs.channel}
       idempotency_key: ${inputs.status_idempotency_key}
-      token: ${secret('env:SLACK_BOT_TOKEN')}
   # The rollout itself is out of scope here: each `value` step stands in for the
   # work that finishes a stage. The updates below are the point. They replace the
   # message in place, and because slack.update names its target it is safe for a
@@ -63,7 +68,6 @@ steps:
             current: 1
             total: 3
       channel: ${steps.started.channel}
-      token: ${secret('env:SLACK_BOT_TOKEN')}
       ts: ${steps.started.ts}
   - id: half
     value: ${"half of traffic healthy"}
@@ -80,7 +84,6 @@ steps:
             current: 2
             total: 3
       channel: ${steps.started.channel}
-      token: ${secret('env:SLACK_BOT_TOKEN')}
       ts: ${steps.started.ts}
   - id: full
     value: ${"all traffic healthy"}
@@ -109,7 +112,6 @@ steps:
             total: 3
           link: ${"https://deploys.example.com/" + inputs.service + "/" + inputs.version}
       channel: ${steps.started.channel}
-      token: ${secret('env:SLACK_BOT_TOKEN')}
       ts: ${steps.started.ts}
 outputs:
   message_ts:
