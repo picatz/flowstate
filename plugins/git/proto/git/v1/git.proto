@@ -145,8 +145,11 @@ message CommitPushInputs {
 
   // Token is a secret reference for HTTPS authentication, resolved inside
   // this task and never logged, and never carried in url itself. A literal
-  // string here is refused.
-  flowstate.v1.Value token = 10 [(flowstate.v1.input).secret = SECRET_REQUIRED];
+  // string here is refused. It is the plugin's token credential, so a Flowfile
+  // may bind it once under plugins:. Only this task claims the credential: a
+  // write always needs a token, while the read tasks' token is optional (a
+  // public repository needs none), and a credential claim would require it.
+  flowstate.v1.Value token = 10 [(flowstate.v1.input).credential = "token"];
 
   // Username is the HTTP Basic-auth username paired with token - see
   // LsRemoteInputs.username for the full doc comment; the same default

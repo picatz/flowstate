@@ -81,16 +81,24 @@ description: Reads bounded, typed rows from PostgreSQL using the "sql" plugin's 
 # Requires configuration - a real database and a resolvable dsn secret - so
 # it never runs by accident. See plugins/sql/README.md, "Trying this
 # example."
+plugins:
+  sql:
+    version: v0.1.0
+    credentials:
+      # Bound once for every sql step that takes it. The host resolves it on the
+      # worker that makes the call, so it is never in the Flowfile's history or an
+      # error; a literal is refused, and a step that writes its own `dsn:`
+      # overrides this one.
+      dsn: ${secret('env:SQL_DSN')}
 vars:
   min_balance_cents: 0
 steps:
   - id: accounts
     sql.query:
-      # A secret reference, resolved inside the task, never a literal
-      # connection string - see plugins/sql/README.md, "Secrets," for what
-      # SQL_SECRET_DSN (or whatever this deployment's provider names it)
-      # resolves to. Literal DSNs are refused by the plugin host.
-      dsn: ${secret('env:SQL_DSN')}
+      # dsn is the plugin's credential, bound once under plugins: above as a
+      # secret reference, never a literal connection string - see
+      # plugins/sql/README.md, "Secrets," for what SQL_DSN (or whatever this
+      # deployment's provider names it) resolves to.
       engine: ENGINE_POSTGRES
       # Required: there is no default. A result with more rows than this
       # is refused outright, naming the bound, rather than returned as a
@@ -172,8 +180,9 @@ splicing).
 
 ## Secrets
 
-Both tasks declare `dsn` in `secret_inputs` and `required_secret_inputs`: a Flowfile writes
-`dsn: ${secret('provider:name')}`, and the host resolves that reference
+Both tasks declare `dsn` in `secret_inputs` and `required_secret_inputs`, and it is the
+plugin's `dsn` credential: a Flowfile binds `dsn: ${secret('provider:name')}` once under
+`plugins:` (or writes it on a step to override the binding), and the host resolves that reference
 under the caller's identity before this task's `Fn` ever runs. This plugin
 process never holds a provider credential, a vault token, or a reference of
 its own - only the one resolved value, for the duration of one call.
@@ -303,6 +312,15 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 #
 # Written for ENGINE_POSTGRES, with $1, $2, ... placeholders - pgx does not
 # rewrite `?`; PostgreSQL statements use numbered placeholders.
+plugins:
+  sql:
+    version: v0.1.0
+    credentials:
+      # Bound once for every sql step that takes it. The host resolves it on the
+      # worker that makes the call, so it is never in the Flowfile's history or an
+      # error; a literal is refused, and a step that writes its own `dsn:`
+      # overrides this one.
+      dsn: ${secret('env:SQL_DSN')}
 inputs:
   from_account_id:
     type: int
@@ -323,7 +341,6 @@ inputs:
 steps:
   - id: transfer
     sql.exec:
-      dsn: ${secret('env:SQL_DSN')}
       engine: ENGINE_POSTGRES
       statements:
         - sql: INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING

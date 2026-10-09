@@ -772,7 +772,7 @@ func TestBoundedNeverSplitsARune(t *testing.T) {
 // checked by the plugin.
 func parseQuestionSet(v *flowstatev1.Value) (*decisionv1.QuestionSet, error) {
 	var in openaiv1.DecideInputs
-	if err := sdk.DecodeInputs(map[string]*flowstatev1.Value{"question_set": v}, &in); err != nil {
+	if err := sdk.DecodeInputs(map[string]*flowstatev1.Value{"api_key": flowstatev1.NewValue("test-key"), "question_set": v}, &in); err != nil {
 		return nil, err
 	}
 	return checkQuestionSet(in.GetQuestionSet())

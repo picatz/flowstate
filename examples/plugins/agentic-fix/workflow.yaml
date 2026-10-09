@@ -74,7 +74,12 @@ description: Gives an agent one bounded, durable attempt at making a failing tes
 # satisfy either of these.
 plugins:
   codex: v0.1.0
-  git: v0.1.0
+  git:
+    version: v0.1.0
+    credentials:
+      # Bound once for git.commit_push, the one task whose token is not optional.
+      # git.ls_remote's token is optional, so it still writes its own reference.
+      token: ${secret('git:token')}
 inputs:
   repo:
     type: string
@@ -284,7 +289,6 @@ steps:
             # plain scalar cannot contain a colon followed by a space.
             message: '${"agentic-fix: attempt %d".format([prior.n + 1])}'
             patch: ${steps.propose.patch}
-            token: ${secret('git:token')}
             url: ${inputs.repo}
         - id: verify
           description: Run the suite at the sha this attempt actually wrote.

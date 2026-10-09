@@ -2,7 +2,14 @@ edition: v2026.4
 name: anthropic-ticket-triage
 description: Asks a Claude model two typed questions about a support ticket, then pages on-call only when the model said the ticket is urgent and reported enough confidence, and sends everything else to a person.
 plugins:
-  anthropic: v0.1.0
+  anthropic:
+    version: v0.1.0
+    credentials:
+      # Bound once for every anthropic step that takes it. The host resolves it on the
+      # worker that makes the call, so it is never in the Flowfile's history or an
+      # error; a literal is refused, and a step that writes its own `api_key:`
+      # overrides this one.
+      api_key: ${secret('env:ANTHROPIC_API_KEY')}
 inputs:
   ticket:
     type: string
@@ -31,9 +38,6 @@ steps:
       attempts: 3
       backoff: 2.0
     anthropic.decide:
-      # A whole secret reference, resolved on the worker that makes the call. It
-      # is never in the Flowfile, the run's history, or an error.
-      api_key: ${secret('env:ANTHROPIC_API_KEY')}
       evidence: ${inputs.ticket}
       model: ${inputs.model}
       question_set:

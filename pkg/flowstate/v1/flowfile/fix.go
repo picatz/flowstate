@@ -368,6 +368,9 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		f.workflow(doc.Body)
 	}
 	f.rewriteMovedReferences()
+	for _, r := range slices.Backward(f.credentialRanges) {
+		f.verifyCredentialConsolidation(r[0], r[1])
+	}
 
 	if len(f.changes) > 0 {
 		f.noteCommentsMentioningExpressions()
@@ -445,6 +448,16 @@ type fixer struct {
 
 	// movedVars are the retired steps whose values are on their way into `vars:`.
 	movedVars []movedVar
+
+	// credentialSites are the step inputs that claim a plugin credential and hold a
+	// whole reference, collected by the step walk and consolidated into a
+	// `plugins:` binding once the document has been seen. See fixcredential.go.
+	credentialSites []credentialSite
+
+	// credentialRanges are the ranges of f.changes each document's consolidation
+	// recorded, so each can be proved and, if it cannot be, withdrawn without
+	// touching other edits.
+	credentialRanges [][2]int
 
 	// blockEndBytesScanned sums the length of every line [fixer.blockEnd]
 	// inspects (plus its terminator), across every call a fix makes to it
@@ -896,6 +909,8 @@ func (f *fixer) workflow(n ast.Node) {
 		}
 	}
 
+	f.consolidateCredentials(mapping)
+
 	if !declared {
 		f.stampEdition(mapping)
 	}
@@ -1198,6 +1213,8 @@ func (f *fixer) step(n ast.Node, scope stepScope) {
 			// grammar does. The case literals themselves are never expressions,
 			// so nothing in them is a rewrite candidate.
 			f.switchBodies(v.Value, inner)
+		default:
+			f.collectCredentialSites(name, v)
 		}
 	}
 }

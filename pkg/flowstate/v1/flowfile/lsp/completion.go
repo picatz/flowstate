@@ -386,6 +386,9 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 	}
 
 	// The cursor is where a key goes.
+	if items, ok := pluginsCandidates(path, word, replace, doc.tasks); ok {
+		return list(items)
+	}
 	switch {
 	case endsWith(path, "steps", "with"):
 		// A call's arguments, which are the callee's declared inputs and live in

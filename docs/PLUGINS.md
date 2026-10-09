@@ -593,6 +593,26 @@ the string the host resolved it to: `sdk.DecodeInputs` refuses a claimed field
 that holds anything else, or that is missing. A caller's binding does not
 cross a `call:`; a callee binds its own.
 
+`flow fix --plugin-dir ./plugins` (or `--plugin-catalog catalog.json`) moves a file
+from the repeated spelling to the bound one: when the same whole reference is
+written on the credential input of two or more steps of a plugin, it becomes the
+plugin's binding and the repetitions are removed; a step that writes a different
+reference keeps it as an override, and a tie, a single use, an input it cannot
+remove without losing a comment, or a plugin the file does not list under
+`plugins:` is left as written. It needs the plugin's definition to know which
+input claims which credential, so without a plugin source it changes nothing.
+`flow tasks <task>` says which credential a task's input receives, and the
+language server completes the keys of a `credentials:` block from the loaded
+plugins, shows what each reaches on hover, and reports an unbound or wrong-kind
+credential with the compiler's own message.
+
+The first-party plugins declare theirs: `slack` (`bot_token`), `anthropic` and
+`openai` (`api_key`), `sql` (`dsn`), and `git` (`token`, for `git.commit_push` only).
+A credential input is required, so an input a task can run without does not claim
+one: the `git` read tasks take an optional `token` (a public repository needs
+none), and `codex`'s `api_key` is optional too (the CLI's own login is a supported
+mode), so both keep a plain secret claim and are written per step.
+
 The deployment's policies see the use. A secret access rule and an assumption rule
 read `task` (`"slack.post"`) and `credential.plugin` / `credential.name`, and the
 audit record of the read carries them, so

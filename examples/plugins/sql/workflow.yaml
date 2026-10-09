@@ -15,16 +15,24 @@ description: Reads bounded, typed rows from PostgreSQL using the "sql" plugin's 
 # Requires configuration - a real database and a resolvable dsn secret - so
 # it never runs by accident. See plugins/sql/README.md, "Trying this
 # example."
+plugins:
+  sql:
+    version: v0.1.0
+    credentials:
+      # Bound once for every sql step that takes it. The host resolves it on the
+      # worker that makes the call, so it is never in the Flowfile's history or an
+      # error; a literal is refused, and a step that writes its own `dsn:`
+      # overrides this one.
+      dsn: ${secret('env:SQL_DSN')}
 vars:
   min_balance_cents: 0
 steps:
   - id: accounts
     sql.query:
-      # A secret reference, resolved inside the task, never a literal
-      # connection string - see plugins/sql/README.md, "Secrets," for what
-      # SQL_SECRET_DSN (or whatever this deployment's provider names it)
-      # resolves to. Literal DSNs are refused by the plugin host.
-      dsn: ${secret('env:SQL_DSN')}
+      # dsn is the plugin's credential, bound once under plugins: above as a
+      # secret reference, never a literal connection string - see
+      # plugins/sql/README.md, "Secrets," for what SQL_DSN (or whatever this
+      # deployment's provider names it) resolves to.
       engine: ENGINE_POSTGRES
       # Required: there is no default. A result with more rows than this
       # is refused outright, naming the bound, rather than returned as a

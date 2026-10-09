@@ -26,8 +26,9 @@ Running it for real needs a built plugin, a worker, and a key:
 - `OPENAI_API_KEY` must be admitted by the configured `env:` secret backend
   (`--secret-env OPENAI_API_KEY` on the worker, which reads
   `FLOWSTATE_SECRET_OPENAI_API_KEY`), with an `--auth-policy` whose
-  `secrets:` section allows it. `api_key:` is a whole secret reference and a
-  literal is rejected.
+  `secrets:` section allows it. `api_key` is the plugin's credential, bound once under
+  `plugins:` as a whole secret reference (a step may write its own to override
+  it), and a literal is rejected.
 - `model` must name a model the Decisions API accepts; the plugin has no
   default.
 - [`egress-policy.yaml`](egress-policy.yaml) authorizes only `api.openai.com`

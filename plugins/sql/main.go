@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	sqlv1 "github.com/picatz/flowstate/plugins/sql/gen/sql/v1"
@@ -16,6 +17,11 @@ func main() {
 		Version: "0.1.0",
 		Description: "Policy-governed PostgreSQL: bounded, typed reads (sql.query) and one " +
 			"transaction per activity (sql.exec); DSNs must be host-resolved secrets. See doc.go.",
+
+		Credentials: []*flowstatev1.CredentialDeclaration{{
+			Name:        "dsn",
+			Description: "PostgreSQL connection string, held as a secret reference and resolved by the host; never in the workflow.",
+		}},
 
 		// No Secrets field: like plugins/codex, this plugin declares dsn in
 		// each task's SecretInputs below and lets the host resolve it

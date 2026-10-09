@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	openaiv1 "github.com/picatz/flowstate/plugins/openai/gen/openai/v1"
@@ -15,6 +16,10 @@ func main() {
 		Name:        "openai",
 		Version:     "0.1.0",
 		Description: "Puts typed questions to an OpenAI model through the Decisions API and returns validated, provider-neutral answers with model-derived probabilities; outbound only.",
+		Credentials: []*flowstatev1.CredentialDeclaration{{
+			Name:        "api_key",
+			Description: "OpenAI API key, held as a secret reference and resolved by the host; sent only as the Authorization bearer token.",
+		}},
 		Tasks: []sdk.Task{{
 			Name:                 "decide",
 			Summary:              "Answer a set of predicate, choice and score questions about evidence, each with the probabilities the Decisions API returns.",

@@ -23,8 +23,9 @@ Running it for real needs a built plugin, a worker, and a key:
 - `ANTHROPIC_API_KEY` must be admitted by the configured `env:` secret backend
   (`--secret-env ANTHROPIC_API_KEY` on the worker, which reads
   `FLOWSTATE_SECRET_ANTHROPIC_API_KEY`), with an `--auth-policy` whose
-  `secrets:` section allows it. `api_key:` is a whole secret reference and a
-  literal is rejected.
+  `secrets:` section allows it. `api_key` is the plugin's credential, bound once under
+  `plugins:` as a whole secret reference (a step may write its own to override
+  it), and a literal is rejected.
 - [`egress-policy.yaml`](egress-policy.yaml) authorizes only
   `api.anthropic.com` over HTTPS. A plugin declaration is not destination
   authority.

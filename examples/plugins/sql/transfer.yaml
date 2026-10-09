@@ -57,6 +57,15 @@ description: Moves money between two accounts using the "sql" plugin's sql.exec 
 #
 # Written for ENGINE_POSTGRES, with $1, $2, ... placeholders - pgx does not
 # rewrite `?`; PostgreSQL statements use numbered placeholders.
+plugins:
+  sql:
+    version: v0.1.0
+    credentials:
+      # Bound once for every sql step that takes it. The host resolves it on the
+      # worker that makes the call, so it is never in the Flowfile's history or an
+      # error; a literal is refused, and a step that writes its own `dsn:`
+      # overrides this one.
+      dsn: ${secret('env:SQL_DSN')}
 inputs:
   from_account_id:
     type: int
@@ -77,7 +86,6 @@ inputs:
 steps:
   - id: transfer
     sql.exec:
-      dsn: ${secret('env:SQL_DSN')}
       engine: ENGINE_POSTGRES
       statements:
         - sql: INSERT INTO accounts_ledger (idempotency_key) VALUES ($1) ON CONFLICT (idempotency_key) DO NOTHING

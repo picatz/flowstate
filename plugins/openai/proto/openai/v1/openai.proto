@@ -47,7 +47,7 @@ message DecideInputs {
   // literal is refused before it can enter durable history. The resolved value
   // is capped at 4 KiB, sent only as the Authorization bearer token, and never
   // appears in an error.
-  flowstate.v1.Value api_key = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
+  flowstate.v1.Value api_key = 1 [(flowstate.v1.input).credential = "api_key"];
 
   // Model is the OpenAI model identifier the request names, required and
   // never defaulted here. It is passed through unchanged; the API refuses one

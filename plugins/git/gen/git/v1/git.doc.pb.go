@@ -160,7 +160,10 @@ func init() {
 			Name: "git.v1.CommitPushInputs.token",
 			Leading: " Token is a secret reference for HTTPS authentication, resolved inside\n" +
 				" this task and never logged, and never carried in url itself. A literal\n" +
-				" string here is refused.\n",
+				" string here is refused. It is the plugin's token credential, so a Flowfile\n" +
+				" may bind it once under plugins:. Only this task claims the credential: a\n" +
+				" write always needs a token, while the read tasks' token is optional (a\n" +
+				" public repository needs none), and a credential claim would require it.\n",
 		},
 		{
 			Name: "git.v1.CommitPushInputs.username",

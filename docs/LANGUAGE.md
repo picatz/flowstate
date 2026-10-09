@@ -1661,7 +1661,9 @@ federated, a whole `${credential(...)}` reference; the other kind is refused), f
 every step of that plugin: a step that
 leaves the credential's input out (here `token:`) receives the binding, and one
 that writes the input overrides it. A step with neither is refused. A caller's
-binding does not cross a `call:`; a callee binds its own.
+binding does not cross a `call:`; a callee binds its own. `flow fix` writes a
+credential repeated on several steps as one binding when it is told the plugin
+(`--plugin-dir` or `--plugin-catalog`), and keeps a differing step as an override.
 
 A submission is refused when the deployment's plugin is older than, or a
 different major version from, what the file declares, and the exact versions are
