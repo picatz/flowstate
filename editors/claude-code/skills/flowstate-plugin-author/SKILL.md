@@ -14,7 +14,8 @@ writing code.
 ## Decide first
 
 - Run `flow tasks`. The built-ins are `exec`, `http`, and `log`; `flow tasks
-  http` shows what `http` already bounds. An API reachable with `http` is a
+  http` shows the inputs `http` takes (its response cap and egress come from
+  operator policy). An API reachable with `http` is a
   Flowfile, not a plugin.
 - Reuse a Flowfile with `call:` when the logic is a composition of steps.
 - Write a plugin only for behavior a Flowfile cannot express: a protocol that is
@@ -24,13 +25,14 @@ writing code.
 
 - Name the binary `flowstate-plugin-<name>`; discovery ignores anything else,
   and the suffix is the qualifier a Flowfile writes.
-- Use `sdk.Main(sdk.Plugin{...})` from `pkg/flowstate/v1/plugin/sdk`. Set a
-  `Version`, a `Description`, and a one-line `Summary` on every task.
+- Use `sdk.Main(sdk.Plugin{...})` from `pkg/flowstate/v1/plugin/sdk`. Set
+  `Version` and `Description` on `sdk.Plugin`, and a one-line `Summary` on every
+  `Task`.
 - Define the schema once, in Protobuf. Set `Input:` and `Output:` to the
   generated messages, decode with `sdk.DecodeInputs`, return `sdk.EncodeOutputs`.
   Never hand-write a second struct for the same shape. A task with no
   descriptors validates nothing: a misspelled input passes `flow validate`.
-- Generate with `buf`, using `protoc-gen-go` and `protoc-gen-flowstate-doc` (see
+- Generate with `go tool buf generate proto`, using `protoc-gen-go` and `protoc-gen-flowstate-doc` (see
   the `buf.gen.yaml` in PLUGINS.md; the second carries field comments to
   editors). Regenerate, never hand-edit `*.pb.go`.
 - Put bounds in the schema with standard protovalidate rules (`string.max_len`,
