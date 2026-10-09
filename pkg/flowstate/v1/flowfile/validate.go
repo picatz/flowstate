@@ -35,6 +35,13 @@ var celReservedIdentifiers = []string{
 	"return", "true", "var", "void", "while",
 }
 
+// IsCELReservedIdentifier reports whether CEL refuses name as an identifier, so a
+// tool that proposes a binding name (an editor's rename) can refuse it before the
+// validator has to.
+func IsCELReservedIdentifier(name string) bool {
+	return slices.Contains(celReservedIdentifiers, name)
+}
+
 // stepProperties are the fields belonging to a step itself rather than to the task
 // it runs, so a diagnostic can name them the way the file writes them.
 var stepProperties = map[string]bool{

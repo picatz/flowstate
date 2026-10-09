@@ -17,9 +17,9 @@ import (
 // same step. Go to definition asks the same resolver from the other end, which
 // is what keeps the four features from disagreeing about what a name refers to.
 //
-// Only step ids have this today. A loop's iterator is bound by `as:` and read as
-// a bare name, a different lookup that none of these three answer yet; the
-// request on one answers nothing rather than guessing.
+// A loop's iterator and a workflow `vars:` name answer the same three requests
+// through [nameSites]; a step's own `vars:` do not, because other bindings can
+// shadow a bare name.
 
 // stepSite is one place a step id is spelled: the id itself, as the characters
 // an edit would replace, or a reference to it.
@@ -114,7 +114,7 @@ func resolveStepFrom(doc *document, from *parsedStep, ls loopScope, id string) *
 
 // forEachExpression visits every value that may hold a fence, with the step it
 // is evaluated in and the scope within that step. The workflow's own `outputs:`
-// is visited with a nil step.
+// and the workflow's `vars:` are visited with a nil step.
 func forEachExpression(doc *document, fn func(from *parsedStep, ls loopScope, v *value)) {
 	for _, s := range doc.parsed.steps {
 		for _, e := range s.expressionEntries() {
@@ -126,6 +126,9 @@ func forEachExpression(doc *document, fn func(from *parsedStep, ls loopScope, v 
 		if e.key == "outputs" {
 			walkValues(e.value, func(v *value) { fn(nil, loopScopeNone, v) })
 		}
+	}
+	for _, e := range doc.parsed.expressionEntries() {
+		walkValues(e.value, func(v *value) { fn(nil, loopScopeNone, v) })
 	}
 }
 
@@ -258,7 +261,11 @@ func skipStringLiteral(src string, i int) int {
 func referencesAt(doc *document, pos lsp.Position, includeDeclaration bool) []lsp.Location {
 	ss, ok := stepSitesAt(doc, pos)
 	if !ok {
-		return nil
+		ns, ok := nameSitesAt(doc, pos)
+		if !ok {
+			return nil
+		}
+		ss.sites = ns.sites
 	}
 	var out []lsp.Location
 	for _, s := range ss.sites {
@@ -275,7 +282,11 @@ func referencesAt(doc *document, pos lsp.Position, includeDeclaration bool) []ls
 func highlightsAt(doc *document, pos lsp.Position) []lsp.DocumentHighlight {
 	ss, ok := stepSitesAt(doc, pos)
 	if !ok {
-		return nil
+		ns, ok := nameSitesAt(doc, pos)
+		if !ok {
+			return nil
+		}
+		ss.sites = ns.sites
 	}
 	out := make([]lsp.DocumentHighlight, 0, len(ss.sites))
 	for _, s := range ss.sites {
@@ -294,7 +305,15 @@ func highlightsAt(doc *document, pos lsp.Position) []lsp.DocumentHighlight {
 func prepareRenameAt(doc *document, pos lsp.Position) (lsp.Range, string, bool) {
 	ss, ok := stepSitesAt(doc, pos)
 	if !ok {
-		return lsp.Range{}, "", false
+		ns, ok := nameSitesAt(doc, pos)
+		if !ok {
+			return lsp.Range{}, "", false
+		}
+		site, ok := ns.siteContaining(clampPosition(pos))
+		if !ok || !ns.hasDeclaration() {
+			return lsp.Range{}, "", false
+		}
+		return site.rng, ns.name, true
 	}
 	site, ok := ss.siteContaining(clampPosition(pos))
 	if !ok {
@@ -319,7 +338,20 @@ func (e renameError) Error() string { return string(e) }
 func renameAt(doc *document, pos lsp.Position, newName string) (*lsp.WorkspaceEdit, error) {
 	ss, ok := stepSitesAt(doc, pos)
 	if !ok {
-		return nil, renameError("there is no step id to rename here")
+		ns, ok := nameSitesAt(doc, pos)
+		if !ok {
+			return nil, renameError("there is no step id, loop variable or var to rename here")
+		}
+		if _, ok := ns.siteContaining(clampPosition(pos)); !ok {
+			return nil, renameError("put the cursor on the name to rename it")
+		}
+		if newName == ns.name {
+			return &lsp.WorkspaceEdit{Changes: map[string][]lsp.TextEdit{}}, nil
+		}
+		if err := ns.checkRename(doc, newName); err != nil {
+			return nil, err
+		}
+		return ns.renameEdit(doc, newName), nil
 	}
 	if _, ok := ss.siteContaining(clampPosition(pos)); !ok {
 		return nil, renameError("put the cursor on the step id to rename it")
