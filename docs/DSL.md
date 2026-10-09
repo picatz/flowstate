@@ -1607,7 +1607,7 @@ steps:
   block back and not the carried declarations, and is a fixed point.
 - **Not yet.** Pinning a module's digest (`digest:` on an entry) and repinning it, and the
   cross-module parts of `flow breaking`, `flow test` function cases and the language server
-  (which today offers hover, completion and go-to-definition for qualified names).
+  (which today offers hover and completion for qualified names, and go-to-definition from a `use:` entry's `path:` to the module file; navigating from a qualified name into the module's declaration lands with the cross-module language-server slice).
 
 See `examples/use-modules/`.
 

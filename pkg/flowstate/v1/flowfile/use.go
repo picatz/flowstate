@@ -80,10 +80,21 @@ type moduleSession struct {
 	// bytes. Shared by every file of the workflow's compile; its size bounds the
 	// files a workflow's author can make the compiler read.
 	loaded map[string]*loadedModule
+
+	// failed holds, by the same key, the reason each module that was read and did
+	// not compile gave, so a module that fails is read and parsed once however many
+	// times it is named, and a tree of uses cannot multiply the work of failing.
+	// It counts against the same bound as loaded. A module refused only for where
+	// it was reached from (a cycle, the depth) is checked before this and never
+	// recorded.
+	failed map[string]string
+
+	// reads counts the files read for modules, shared like loaded.
+	reads *int
 }
 
 func newModuleSession() *moduleSession {
-	return &moduleSession{loaded: map[string]*loadedModule{}}
+	return &moduleSession{loaded: map[string]*loadedModule{}, failed: map[string]string{}, reads: new(int)}
 }
 
 // A loadedModule is a module that compiled and validated.
@@ -277,51 +288,51 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string) (*loadedM
 	if loaded, ok := c.session.loaded[resolved]; ok {
 		return loaded, true
 	}
-	if len(c.session.loaded) >= v1.MaxModules {
+	if message, ok := c.session.failed[resolved]; ok {
+		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r, "%s", message)
+
+		return nil, false
+	}
+	if attempted := len(c.session.loaded) + len(c.session.failed); attempted >= v1.MaxModules {
 		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r,
 			"uses a module that would make %d, which is more than the %d a workflow reads; "+
-				"a workflow's modules are bounded together however they nest", len(c.session.loaded)+1, v1.MaxModules)
+				"a workflow's modules are bounded together however they nest", attempted+1, v1.MaxModules)
 
 		return nil, false
 	}
 
-	data, err := readBoundedSource(resolved)
-	if err != nil {
-		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r, "uses %q, which could not be read: %s", target, err.Error())
+	// refuse records why this module cannot be used, once, for every later use of it.
+	refuse := func(format string, args ...any) (*loadedModule, bool) {
+		message := fmt.Sprintf(format, args...)
+		c.session.failed[resolved] = message
+		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r, "%s", message)
 
 		return nil, false
+	}
+
+	*c.session.reads++
+	data, err := readBoundedSource(resolved)
+	if err != nil {
+		return refuse("uses %q, which could not be read: %s", target, err.Error())
 	}
 	digest := formatSourceDigest(data)
 
 	module, positions, err := parse(data, resolved, ancestors, c.callBudget,
-		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded})
+		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads})
 	if err != nil {
-		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r, "uses %q, which failed to compile:\n%s", target, indentLines(err.Error()))
-
-		return nil, false
+		return refuse("uses %q, which failed to compile:\n%s", target, indentLines(err.Error()))
 	}
 
 	switch {
 	case len(module.GetSteps()) > 0:
-		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r,
-			"uses %q, which has steps and so is a workflow and not a module; a module declares only types, functions and errors. "+
-				"To run it as a step, write `call: %s` on a step", target, target)
-
-		return nil, false
+		return refuse("uses %q, which has steps and so is a workflow and not a module; a module declares only types, functions and errors. "+"To run it as a step, write `call: %s` on a step", target, target)
 	case !v1.IsModule(module):
-		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r,
-			"uses %q, which is not a module; a module declares types, functions or errors and nothing else "+
-				"(no inputs, outputs, vars, triggers or steps)", target)
-
-		return nil, false
+		return refuse("uses %q, which is not a module; a module declares types, functions or errors and nothing else "+"(no inputs, outputs, vars, triggers or steps)", target)
 	}
 
 	if ds := ValidateModule(module); len(ds) > 0 {
 		positionDiagnostics(ds, positions)
-		c.reportCode(v1.DiagnosticCodeModuleRefused, span, r,
-			"uses %q, which has %d problem%s:\n%s", target, len(ds), plural(len(ds)), indentLines(ds.Error()))
-
-		return nil, false
+		return refuse("uses %q, which has %d problem%s:\n%s", target, len(ds), plural(len(ds)), indentLines(ds.Error()))
 	}
 
 	loaded := &loadedModule{workflow: module, digest: digest}
