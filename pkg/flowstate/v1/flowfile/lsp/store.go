@@ -52,11 +52,11 @@ const (
 // than the honest empty answer.
 //
 // This does not mean a test document gets nothing. #1110 item 8 gave the
-// test language its own answers — completion, an outline of its cases, and
-// hover on a stub's task name — each behind its own dispatch on doc.kind
-// rather than behind this gate; see completeAt, testDocumentSymbols and
-// hoverAt. speaksFlowfile stays the question "may the *workflow* grammar
-// answer here", not "may anything answer here".
+// test language its own answers — completion, an outline of its cases, hover
+// on a stub's task name, and go-to-definition on a `workflow:` — each behind
+// its own dispatch on doc.kind rather than behind this gate; see completeAt,
+// testDocumentSymbols, hoverAt and definitionAt. speaksFlowfile stays the
+// question "may the *workflow* grammar answer here", not "may anything answer here".
 func (doc *document) speaksFlowfile() bool { return doc.kind == docWorkflow }
 
 // isTestDocument reports whether doc is one of flowtest's own file kinds —

@@ -91,13 +91,10 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 // the diagnostics already report, and jumping to it would suggest it works.
 func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	if !doc.speaksFlowfile() {
-		// Deliberately still nil for a test document (#1110 item 8), and not
-		// yet an accidental fallthrough left uncommented: a case's
-		// `workflow:` naming a sibling Flowfile is the one position this
-		// language has that reads like [callDefinition]'s target, and giving
-		// it a jump belongs with the rest of go-to-definition rather than
-		// riding in on the outline change beside it.
-		return nil // see [document.speaksFlowfile]
+		// A test document's one definition is a `workflow:` naming a sibling
+		// Flowfile, answered by [testDefinition] through the same resolver
+		// [callDefinition] uses; nothing else in that language has a target.
+		return testDefinition(doc, pos)
 	}
 	pos = clampPosition(pos) // see [clampPosition]
 
@@ -280,6 +277,16 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 		return nil
 	}
 
+	return siblingFlowfile(doc, target)
+}
+
+// siblingFlowfile is the part of go-to-definition that is the same for every
+// key naming a Flowfile next to the open document — a step's `call:` and a test
+// case's `workflow:` — so the two cannot come to disagree about which file a
+// path means: the caller's location, [flowfile.ResolveCallTarget], the
+// regular-file stat, and the `name:` landing. It returns nil, never a wrong
+// location, when any of them says no.
+func siblingFlowfile(doc *document, target string) []lsp.Location {
 	callerPath, ok := doc.filesystemPath()
 	if !ok {
 		return nil
@@ -299,6 +306,32 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 	}
 
 	return []lsp.Location{{URI: fileURI(located.Path), Range: calleeRange(located.Path)}}
+}
+
+// testDefinition resolves the `workflow:` value of a test case, or of a
+// `defaults:` stanza (in a suite or a testdefaults.yaml), to the Flowfile it
+// names, when the cursor is on the value. The cursor on the key, on any other
+// key, or on a `workflow:` that is not a literal path yields nil.
+func testDefinition(doc *document, pos lsp.Position) []lsp.Location {
+	if doc.tooLarge {
+		return nil
+	}
+	pos = clampPosition(pos)
+
+	key, target, rng, ok := keyValueOnLine(doc.index.line(pos.Line), pos.Line)
+	if !ok || key != "workflow" || !contains(rng, pos) {
+		return nil
+	}
+	level, structural := testDocLevelAt(doc.kind, keyPath(doc.index, pos.Line))
+	if !structural || (level != testLevelCase && level != testLevelDefaults) {
+		return nil
+	}
+	literal, err := flowfile.LiteralText(target)
+	if literal == "" || err != nil {
+		// Same reading of the path callDefinition gives a `call:` target.
+		return nil
+	}
+	return siblingFlowfile(doc, literal)
 }
 
 // calleeRange is where in the called file to put the cursor: its `name:`, or the
