@@ -1,8 +1,0 @@
-{
-  "name": "flowstate-claude-cli-ci",
-  "private": true,
-  "description": "Pins the claude CLI that .github/workflows/editors.yml uses to validate and test editors/claude-code. Not a dependency of anything shipped.",
-  "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.295"
-  }
-}

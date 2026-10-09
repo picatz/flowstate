@@ -84,7 +84,6 @@ on:
       - 'editors/tree-sitter-cel/**'
       - 'editors/nvim/**'
       - 'editors/claude-code/**'
-      - '.github/claude-cli/**'
       - '.github/workflows/editors.yml'
 
 permissions:
@@ -111,6 +110,15 @@ env:
   # git checks the object hash, so the content is the content of this revision
   # (tree-sitter-grammars/tree-sitter-yaml, tag v0.7.2).
   YAML_PARSER_REV: 7708026449bed86239b1cd5bce6e3c34dbca6415
+  # The claude CLI that validates and tests editors/claude-code: the linux-x64
+  # platform package, which is the native binary and nothing else, fetched from
+  # the npm registry and verified against the SHA-512 the registry publishes as
+  # its integrity for this exact version. Not `npm install`: the wrapper
+  # package's postinstall links the binary, and the dependency graph would put
+  # a proprietary-licensed package in front of dependency-review for a tool
+  # that is only ever executed here.
+  CLAUDE_CODE_VERSION: 2.1.295
+  CLAUDE_CODE_SHA512: 9c2f5167a640ac46afc80885744b462bafd73e18df13bf6d3f6b4287e3e399153148effa5b722e5effeb9a8f1ceaed94cc7caf80aa1d463d73e947011a56e7c8
 
 jobs:
   neovim:
@@ -305,27 +313,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          # No `cache: npm`, for the reason given on the vscode job.
-
-      # The claude CLI is the only tool that can say whether the plugin loads
-      # and whether the mod's tests pass, so it is installed, but from a
-      # lockfile: `npm ci` refuses a tree that disagrees with
-      # .github/claude-cli/package-lock.json, which records the integrity hash
-      # of the CLI and of its native binary. .npmrc there sets ignore-scripts,
-      # so no install script runs; the platform package ships the binary itself
-      # and it is run from there. Bumping the CLI is a commit that changes
-      # package.json and the lockfile together.
+      # The CLI is the only tool that can say whether the plugin loads and
+      # whether the mod's tests pass. The digest is checked before the binary is
+      # extracted or run; bumping the CLI is a commit that changes both values.
       - name: Install the claude CLI
-        working-directory: .github/claude-cli
         run: |
           set -euo pipefail
-          npm ci
-          bin="$PWD/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
-          "$bin" --version
-          echo "CLAUDE_BIN=$bin" >> "$GITHUB_ENV"
+          url="https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-${CLAUDE_CODE_VERSION}.tgz"
+          curl --fail --silent --show-error --location --output "${RUNNER_TEMP}/claude.tgz" "$url"
+          echo "${CLAUDE_CODE_SHA512}  ${RUNNER_TEMP}/claude.tgz" | sha512sum --check --strict
+          tar -xzf "${RUNNER_TEMP}/claude.tgz" -C "${RUNNER_TEMP}" --strip-components=1 package/claude
+          chmod +x "${RUNNER_TEMP}/claude"
+          "${RUNNER_TEMP}/claude" --version
+          echo "CLAUDE_BIN=${RUNNER_TEMP}/claude" >> "$GITHUB_ENV"
 
       # Both commands run with an empty home and a minimal environment: no
       # credentials, no account, no network call the check depends on.
