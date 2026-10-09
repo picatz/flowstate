@@ -213,10 +213,15 @@ func (GraphEdgeKind) EnumDescriptor() ([]byte, []int) {
 type Graph struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Nodes are the things in the graph, ordered by id so two builds of the same
-	// input are the same bytes.
+	// input are the same bytes. The one exception is the view of a workflow's own
+	// steps, where the order of the steps is part of what the graph says: the
+	// workflow comes first and its steps follow in document order, which is the
+	// same bytes for the same workflow all the same.
 	Nodes []*GraphNode `protobuf:"bytes,1,rep,name=nodes,proto3" json:"nodes,omitempty"`
-	// Edges connect nodes by id, ordered by (from, to, kind). Two relations of the
-	// same kind between the same nodes are one edge with a count.
+	// Edges connect nodes by id, ordered by (from, to, kind); in a view of a
+	// workflow's own steps they follow the document order of the steps they reach.
+	// Two relations of the same kind between the same nodes are one edge with a
+	// count.
 	Edges []*GraphEdge `protobuf:"bytes,2,rep,name=edges,proto3" json:"edges,omitempty"`
 	// Partial is true when the graph is missing something it was asked for: an
 	// input that did not compile, or a bound that was reached. Never silent.

@@ -17,7 +17,8 @@ import (
 // A step's address is the one the debugger writes for it ([v1.FormatDebugAddress]),
 // so a step shown here opens at the same place there. Its detail is what the
 // debugger calls the step's kind (`task "http"`, `loop`). A `call:` step is a
-// leaf: the callee's own steps are the callee's graph, and the workflow level
+// leaf, and a callee's steps do not spend the bound this workflow's own steps
+// need: the callee's own steps are the callee's graph, and the workflow level
 // already has the CALL edge to it.
 //
 // Nodes are in document order, the workflow first, because the order of steps is
@@ -41,7 +42,7 @@ func Steps(wf *v1.Workflow) *v1.Graph {
 	}
 	g.Nodes = append(g.Nodes, &v1.GraphNode{Id: root, Kind: v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW, Label: wf.GetName()})
 
-	sites, truncated := v1.DebugStaticSites(wf)
+	sites, truncated := v1.DebugOwnSites(wf)
 	if truncated {
 		note("the workflow has more than %d steps; the rest were left out", v1.MaxDebugStaticSites)
 	}
@@ -50,9 +51,6 @@ func Steps(wf *v1.Workflow) *v1.Graph {
 	// share an id in different containers stay two nodes.
 	ids := map[string]string{"": root}
 	for _, site := range sites {
-		if inCallee(site.Chain) {
-			continue
-		}
 		path := site.Site.GetPath()
 		if len(path) == 0 {
 			continue
@@ -101,18 +99,6 @@ const (
 	maxAddressBytes = 4096
 	maxDetailBytes  = 256
 )
-
-// inCallee reports that a site is in the body of a `call:`, which belongs to the
-// callee's graph.
-func inCallee(chain []*v1.DebugSegment) bool {
-	for _, segment := range chain {
-		if segment.GetKind() == v1.DebugSegmentKind_DEBUG_SEGMENT_KIND_CALL {
-			return true
-		}
-	}
-
-	return false
-}
 
 func finishSteps(g *v1.Graph, notes map[string]struct{}) *v1.Graph {
 	g.Partial = len(notes) > 0

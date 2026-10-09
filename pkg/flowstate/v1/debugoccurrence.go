@@ -453,6 +453,17 @@ const MaxDebugStaticSites = 1 << 16
 // workflows. The second result reports that the enumeration stopped at
 // [MaxDebugStaticSites].
 func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
+	return debugStaticSites(wf, true)
+}
+
+// DebugOwnSites is [DebugStaticSites] for the steps wf declares itself: a
+// `call:` step is a site and its callee's steps are not, so a large callee
+// cannot spend the bound that wf's later steps need.
+func DebugOwnSites(wf *Workflow) ([]DebugStaticSite, bool) {
+	return debugStaticSites(wf, false)
+}
+
+func debugStaticSites(wf *Workflow, calls bool) ([]DebugStaticSite, bool) {
 	var (
 		sites     []DebugStaticSite
 		truncated bool
@@ -507,7 +518,7 @@ func DebugStaticSites(wf *Workflow) ([]DebugStaticSite, bool) {
 				// The default arm is numbered after the cases, as [SwitchArmIndex] does.
 				walk(workflow, into(DebugSegmentKind_DEBUG_SEGMENT_KIND_CASE, len(kind.Switch.GetCases())), inner, kind.Switch.GetDefault().GetSteps(), depth, serial)
 			case *Node_Call:
-				if depth >= MaxCallDepth {
+				if !calls || depth >= MaxCallDepth {
 					continue
 				}
 				callee := kind.Call.GetWorkflow()

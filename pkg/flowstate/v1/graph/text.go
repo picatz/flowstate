@@ -73,7 +73,7 @@ func Text(w io.Writer, g *v1.Graph) error {
 		}
 		if len(held) > 0 {
 			sb.WriteString("  steps\n")
-			writeSteps(&sb, held, out, nodes, 2, 0)
+			writeSteps(&sb, held, out, nodes, map[string]bool{n.GetId(): true}, 2, 0)
 		}
 	}
 	if workflows == 0 {
@@ -91,22 +91,24 @@ func Text(w io.Writer, g *v1.Graph) error {
 	return err
 }
 
-// maxStepDepth bounds how deep the step tree is written, so a hand-built graph
-// whose containment is a cycle ends rather than recurses without end.
+// maxStepDepth bounds how deep the step tree is written. A node is written once,
+// wherever it is reached first, so a hand-built graph whose containment is a
+// cycle or reaches one node by many paths costs the graph's nodes and no more.
 const maxStepDepth = 130
 
 // writeSteps writes the steps a node holds, in the order the edges give, each
 // indented under its container: its label, what it does, and where it is when
 // that is not just its label.
-func writeSteps(sb *strings.Builder, held []*v1.GraphEdge, out map[string][]*v1.GraphEdge, nodes map[string]*v1.GraphNode, indent, depth int) {
+func writeSteps(sb *strings.Builder, held []*v1.GraphEdge, out map[string][]*v1.GraphEdge, nodes map[string]*v1.GraphNode, written map[string]bool, indent, depth int) {
 	if depth >= maxStepDepth {
 		return
 	}
 	for _, e := range held {
 		n := nodes[e.GetTo()]
-		if n == nil {
+		if n == nil || written[n.GetId()] {
 			continue
 		}
+		written[n.GetId()] = true
 		fmt.Fprintf(sb, "%s%s", strings.Repeat("  ", indent), clean(n.GetLabel()))
 		if n.GetDetail() != "" {
 			fmt.Fprintf(sb, "  %s", clean(n.GetDetail()))
@@ -122,7 +124,7 @@ func writeSteps(sb *strings.Builder, held []*v1.GraphEdge, out map[string][]*v1.
 				inner = append(inner, c)
 			}
 		}
-		writeSteps(sb, inner, out, nodes, indent+1, depth+1)
+		writeSteps(sb, inner, out, nodes, written, indent+1, depth+1)
 	}
 }
 

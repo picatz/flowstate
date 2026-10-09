@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"google.golang.org/protobuf/proto"
 	"slices"
 	"strings"
 
@@ -199,25 +200,28 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 // glance from its fix; files that did not compile are named in the graph, since
 // the workflow wanted may be one of them.
 func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph, error) {
-	i := slices.IndexFunc(workflows, func(wf *v1.Workflow) bool { return wf.GetName() == name })
-	if i < 0 {
-		names := make([]string, 0, len(workflows))
-		for _, wf := range workflows {
-			names = append(names, wf.GetName())
+	var found []*v1.Workflow
+	for _, wf := range workflows {
+		if wf.GetName() != name {
+			continue
 		}
-		slices.Sort(names)
-		names = slices.Compact(names)
-		if len(names) > 10 {
-			names = append(names[:10], "...")
+		// Files that differ only in where they were read from declare one workflow.
+		wf = proto.CloneOf(wf)
+		wf.SourceDigest = ""
+		if !slices.ContainsFunc(found, func(other *v1.Workflow) bool { return proto.Equal(other, wf) }) {
+			found = append(found, wf)
 		}
-		if len(names) == 0 {
-			return nil, fmt.Errorf("no workflow named %q: no Flowfile compiled", name)
-		}
-
-		return nil, fmt.Errorf("no workflow named %q; the files declare: %s", name, strings.Join(names, ", "))
+	}
+	switch {
+	case len(found) > 1:
+		// The fleet graph merges two definitions and says so; one workflow's steps
+		// cannot be merged, so the ambiguity is the answer.
+		return nil, fmt.Errorf("%d files declare a workflow named %q with different definitions; name the one you mean", len(found), name)
+	case len(found) == 0:
+		return nil, noWorkflowNamed(workflows, skipped, name)
 	}
 
-	g := graph.Steps(workflows[i])
+	g := graph.Steps(found[0])
 	if len(skipped) > 0 {
 		g.Partial = true
 		g.Notes = append(skipped[:min(len(skipped), 100)], g.Notes...)
@@ -225,6 +229,34 @@ func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph
 	}
 
 	return g, nil
+}
+
+// noWorkflowNamed says what the files do declare, and which did not compile,
+// since a workflow in one of those looks the same as a misspelling.
+func noWorkflowNamed(workflows []*v1.Workflow, skipped []string, name string) error {
+	names := make([]string, 0, len(workflows))
+	for _, wf := range workflows {
+		names = append(names, wf.GetName())
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	if len(names) > 10 {
+		names = append(names[:10], "...")
+	}
+
+	message := fmt.Sprintf("no workflow named %q", name)
+	if len(names) > 0 {
+		message += "; the files declare: " + strings.Join(names, ", ")
+	}
+	if len(skipped) > 0 {
+		shown := skipped[:min(len(skipped), 3)]
+		message += "; " + strings.Join(shown, "; ")
+		if len(skipped) > len(shown) {
+			message += fmt.Sprintf("; and %d more that did not compile", len(skipped)-len(shown))
+		}
+	}
+
+	return errors.New(message)
 }
 
 // withLiveRuns lays the runs on the server over g.

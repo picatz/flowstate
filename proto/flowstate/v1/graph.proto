@@ -26,11 +26,16 @@ option go_package = "flowstatev1";
 // returning a silently smaller graph.
 message Graph {
   // Nodes are the things in the graph, ordered by id so two builds of the same
-  // input are the same bytes.
+  // input are the same bytes. The one exception is the view of a workflow's own
+  // steps, where the order of the steps is part of what the graph says: the
+  // workflow comes first and its steps follow in document order, which is the
+  // same bytes for the same workflow all the same.
   repeated GraphNode nodes = 1 [(buf.validate.field).repeated = {max_items: 1000}];
 
-  // Edges connect nodes by id, ordered by (from, to, kind). Two relations of the
-  // same kind between the same nodes are one edge with a count.
+  // Edges connect nodes by id, ordered by (from, to, kind); in a view of a
+  // workflow's own steps they follow the document order of the steps they reach.
+  // Two relations of the same kind between the same nodes are one edge with a
+  // count.
   repeated GraphEdge edges = 2 [(buf.validate.field).repeated = {max_items: 4000}];
 
   // Partial is true when the graph is missing something it was asked for: an

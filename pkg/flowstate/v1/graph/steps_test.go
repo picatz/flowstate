@@ -162,3 +162,40 @@ func TestTextEscapesWhatAStepSays(t *testing.T) {
 	require.NotContains(t, sb.String(), "\x1b")
 	require.NotContains(t, sb.String(), "\x07")
 }
+
+func TestACalleeThatFillsTheEnumerationDoesNotHideTheWorkflowsLaterSteps(t *testing.T) {
+	callee := &v1.Workflow{Name: "huge"}
+	for i := range v1.MaxDebugStaticSites + 1 {
+		callee.Steps = append(callee.Steps, task(fmt.Sprintf("s%d", i), "x"))
+	}
+	wf := &v1.Workflow{Name: "w", Steps: []*v1.Node{call("first", callee), task("after", "x")}}
+
+	g := graph.Steps(wf)
+	require.False(t, g.GetPartial(), "the callee's steps are not this workflow's to count")
+	require.Equal(t, []string{`first|call "huge"`, `after|task "x"`}, stepRows(g))
+}
+
+func TestTextWritesACyclicContainmentOnceNotOncePerPath(t *testing.T) {
+	// A holds B and C, and both hold A again: two paths into every level.
+	node := func(id string) *v1.GraphNode {
+		return &v1.GraphNode{Id: "step:" + id, Kind: v1.GraphNodeKind_GRAPH_NODE_KIND_STEP, Label: id}
+	}
+	holds := func(from, to string) *v1.GraphEdge {
+		return &v1.GraphEdge{From: from, To: "step:" + to, Kind: v1.GraphEdgeKind_GRAPH_EDGE_KIND_CONTAINS, Count: 1}
+	}
+	g := &v1.Graph{
+		Nodes: []*v1.GraphNode{
+			{Id: "workflow:w", Kind: v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW, Label: "w"},
+			node("a"), node("b"), node("c"),
+		},
+		Edges: []*v1.GraphEdge{
+			holds("workflow:w", "a"),
+			holds("step:a", "b"), holds("step:a", "c"),
+			holds("step:b", "a"), holds("step:c", "a"),
+		},
+	}
+
+	var sb strings.Builder
+	require.NoError(t, graph.Text(&sb, g))
+	require.Equal(t, "w\n  steps\n    a\n      b\n      c\n", sb.String())
+}

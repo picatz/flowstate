@@ -33,12 +33,17 @@ func init() {
 		{
 			Name: "flowstate.v1.Graph.nodes",
 			Leading: " Nodes are the things in the graph, ordered by id so two builds of the same\n" +
-				" input are the same bytes.\n",
+				" input are the same bytes. The one exception is the view of a workflow's own\n" +
+				" steps, where the order of the steps is part of what the graph says: the\n" +
+				" workflow comes first and its steps follow in document order, which is the\n" +
+				" same bytes for the same workflow all the same.\n",
 		},
 		{
 			Name: "flowstate.v1.Graph.edges",
-			Leading: " Edges connect nodes by id, ordered by (from, to, kind). Two relations of the\n" +
-				" same kind between the same nodes are one edge with a count.\n",
+			Leading: " Edges connect nodes by id, ordered by (from, to, kind); in a view of a\n" +
+				" workflow's own steps they follow the document order of the steps they reach.\n" +
+				" Two relations of the same kind between the same nodes are one edge with a\n" +
+				" count.\n",
 		},
 		{
 			Name: "flowstate.v1.Graph.partial",

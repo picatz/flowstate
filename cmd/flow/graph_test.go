@@ -235,3 +235,28 @@ func TestGraphWorkflowIsRefusedWithLiveBeforeAnyRequest(t *testing.T) {
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Err.Error(), "--workflow shows the steps a file declares")
 }
+
+func TestGraphWorkflowRefusesANameTwoFilesDeclareDifferently(t *testing.T) {
+	dir := t.TempDir()
+	for name, message := range map[string]string{"a.flow.yaml": "hi", "b.flow.yaml": "there"} {
+		body := "edition: v2026.4\nname: dup\nsteps:\n  - id: a\n    log:\n      message: " + message + "\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600))
+	}
+
+	res := runFlow(t, "graph", dir, "--workflow", "dup")
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), `2 files declare a workflow named "dup" with different definitions`)
+}
+
+func TestGraphWorkflowSaysWhichFilesDidNotCompileWhenTheNameIsNotFound(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "good.flow.yaml"), []byte("edition: v2026.4\nname: good\nsteps:\n  - id: a\n    log:\n      message: hi\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bad.flow.yaml"), []byte("name: wanted\nsteps: [\n"), 0o600))
+
+	res := runFlow(t, "graph", dir, "--workflow", "wanted")
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Err.Error(), "the files declare: good")
+	assert.Contains(t, res.Err.Error(), "does not compile and was left out", "a broken file is not mistaken for a misspelling")
+}
