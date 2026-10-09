@@ -88,7 +88,9 @@ retried automatically:
 
 ## Security boundary
 
-`api_key` is both `secret_inputs` and `required_secret_inputs`. The host must
+`api_key` is the plugin's `api_key` credential, so a Flowfile binds it once under
+`plugins:` (a step may override it), and it is both `secret_inputs` and
+`required_secret_inputs`. The host must
 receive `${secret('provider:name')}`, resolve it under the run namespace on the
 worker, and scrub it from plugin errors and outputs; a literal is refused before
 plugin invocation. The plugin sends it only in the `x-api-key` header, caps it

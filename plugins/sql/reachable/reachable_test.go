@@ -125,11 +125,28 @@ func TestAFlowfileCanNameTheSQLPluginsTasks(t *testing.T) {
 	})
 
 	t.Run("both SQL tasks refuse a literal DSN before compilation", func(t *testing.T) {
+		const literal = "literal-dsn-must-not-enter-history"
 		for name, source := range map[string][]byte{"sql.query": querySource, "sql.exec": execSource} {
 			t.Run(name, func(t *testing.T) {
-				literal := "literal-dsn-must-not-enter-history"
+				// The binding is a reference and nothing else: a literal there is
+				// refused where it is written, without echoing it.
 				changed := strings.Replace(string(source), "${secret('env:SQL_DSN')}", literal, 1)
 				diags, err := flowfile.ValidateSource([]byte(changed))
+				if err == nil {
+					t.Fatalf("a literal binding was accepted: %s", diagnosticText(diags))
+				}
+				if got := err.Error(); !strings.Contains(got, "plugins.sql.credentials.dsn") ||
+					!strings.Contains(got, "must be bound to a whole reference") || strings.Contains(got, literal) {
+					t.Fatalf("literal binding diagnostics = %q, want redacted whole-reference refusal at the binding", got)
+				}
+
+				// A step's own input overrides the binding and is held to the same
+				// claim: a literal there is refused too.
+				override := strings.Replace(string(source), "    "+name+":\n", "    "+name+":\n      dsn: "+literal+"\n", 1)
+				if override == string(source) {
+					t.Fatal("the override mutation did not apply to the example")
+				}
+				diags, err = flowfile.ValidateSource([]byte(override))
 				if err != nil {
 					t.Fatalf("ValidateSource: unexpected error: %v", err)
 				}

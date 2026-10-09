@@ -199,9 +199,9 @@ var File_openai_v1_openai_proto protoreflect.FileDescriptor
 
 const file_openai_v1_openai_proto_rawDesc = "" +
 	"\n" +
-	"\x16openai/v1/openai.proto\x12\topenai.v1\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xbd\x01\n" +
-	"\fDecideInputs\x124\n" +
-	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x06apiKey\x12\x14\n" +
+	"\x16openai/v1/openai.proto\x12\topenai.v1\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xc4\x01\n" +
+	"\fDecideInputs\x12;\n" +
+	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\r\x8a\xb5\x18\t\x1a\aapi_keyR\x06apiKey\x12\x14\n" +
 	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1a\n" +
 	"\bevidence\x18\x03 \x01(\tR\bevidence\x12E\n" +
 	"\fquestion_set\x18\x04 \x01(\v2\".flowstate.decision.v1.QuestionSetR\vquestionSet\"H\n" +

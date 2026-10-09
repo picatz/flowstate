@@ -291,7 +291,10 @@ type CommitPushInputs struct {
 	Timestamp string `protobuf:"bytes,9,opt,name=timestamp,proto3" json:"timestamp,omitempty"`
 	// Token is a secret reference for HTTPS authentication, resolved inside
 	// this task and never logged, and never carried in url itself. A literal
-	// string here is refused.
+	// string here is refused. It is the plugin's token credential, so a Flowfile
+	// may bind it once under plugins:. Only this task claims the credential: a
+	// write always needs a token, while the read tasks' token is optional (a
+	// public repository needs none), and a credential claim would require it.
 	Token *v1.Value `protobuf:"bytes,10,opt,name=token,proto3" json:"token,omitempty"`
 	// Username is the HTTP Basic-auth username paired with token - see
 	// LsRemoteInputs.username for the full doc comment; the same default
@@ -1136,7 +1139,7 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\x03sha\x18\x02 \x01(\tR\x03sha\"V\n" +
 	"\x0fLsRemoteOutputs\x12%\n" +
 	"\x04refs\x18\x01 \x03(\v2\x11.git.v1.RemoteRefR\x04refs\x12\x1c\n" +
-	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\xad\x03\n" +
+	"\ttruncated\x18\x02 \x01(\bR\ttruncated\"\xb2\x03\n" +
 	"\x10CommitPushInputs\x12\x10\n" +
 	"\x03url\x18\x01 \x01(\tR\x03url\x12\x16\n" +
 	"\x06branch\x18\x02 \x01(\tR\x06branch\x12\x19\n" +
@@ -1147,9 +1150,9 @@ const file_git_v1_git_proto_rawDesc = "" +
 	"\vauthor_name\x18\a \x01(\tR\n" +
 	"authorName\x12!\n" +
 	"\fauthor_email\x18\b \x01(\tR\vauthorEmail\x12\x1c\n" +
-	"\ttimestamp\x18\t \x01(\tR\ttimestamp\x121\n" +
+	"\ttimestamp\x18\t \x01(\tR\ttimestamp\x126\n" +
 	"\x05token\x18\n" +
-	" \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x12\x1a\n" +
+	" \x01(\v2\x13.flowstate.v1.ValueB\v\x8a\xb5\x18\a\x1a\x05tokenR\x05token\x12\x1a\n" +
 	"\busername\x18\v \x01(\tR\busername\x1a8\n" +
 	"\n" +
 	"FilesEntry\x12\x10\n" +

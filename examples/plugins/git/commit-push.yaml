@@ -35,6 +35,15 @@ description: Commits one file to a branch and pushes it using the "git" plugin's
 # plugins/git/README.md, "Authentication," and "Which git server?" for why
 # that one shape (an HTTPS Basic-auth password) is what every provider this
 # plugin has been asked to work with actually wants.
+plugins:
+  git:
+    version: v0.1.0
+    credentials:
+      # Bound once for every git step that takes it. The host resolves it on the
+      # worker that makes the call, so it is never in the Flowfile's history or an
+      # error; a literal is refused, and a step that writes its own `token:`
+      # overrides this one.
+      token: ${secret('git:token')}
 inputs:
   url:
     type: string
@@ -67,10 +76,10 @@ steps:
       files:
         FLOWSTATE_EXAMPLE.md: ${inputs.content}
       message: ${inputs.message}
-      # Not optional: a write always needs a credential. A secret reference,
-      # resolved by the host before the task, never a literal - see plugins/git/README.md,
+      # Not optional: a write always needs a credential. token is bound once
+      # under plugins: above as a secret reference, resolved by the host before
+      # the task, never a literal - see plugins/git/README.md,
       # "Authentication."
-      token: ${secret('git:token')}
       url: ${inputs.url}
 outputs:
   sha:

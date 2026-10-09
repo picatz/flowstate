@@ -32,7 +32,8 @@ than only the one that happens to need no credential:
   resume.
 - [`commit-push.yaml`](commit-push.yaml) pushes a real commit with
   `git.commit_push:` - `token:` here is never optional, because no forge
-  accepts an anonymous push. It cannot run by accident either: there is no
+  accepts an anonymous push, so it is the plugin's `token` credential, bound once under
+  `plugins:` (the read tasks' `token` stays optional and per step). It cannot run by accident either: there is no
   default url, branch, or base ref to write to.
 
 All four are tasks the `git` plugin provides - see

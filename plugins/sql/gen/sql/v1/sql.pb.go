@@ -446,21 +446,21 @@ var File_sql_v1_sql_proto protoreflect.FileDescriptor
 
 const file_sql_v1_sql_proto_rawDesc = "" +
 	"\n" +
-	"\x10sql/v1/sql.proto\x12\x06sql.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xc2\x01\n" +
+	"\x10sql/v1/sql.proto\x12\x06sql.v1\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\xc5\x01\n" +
 	"\vQueryInputs\x12&\n" +
-	"\x06engine\x18\x01 \x01(\x0e2\x0e.sql.v1.EngineR\x06engine\x12-\n" +
-	"\x03dsn\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x03dsn\x12\x14\n" +
+	"\x06engine\x18\x01 \x01(\x0e2\x0e.sql.v1.EngineR\x06engine\x120\n" +
+	"\x03dsn\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\t\x8a\xb5\x18\x05\x1a\x03dsnR\x03dsn\x12\x14\n" +
 	"\x05query\x18\x03 \x01(\tR\x05query\x12+\n" +
 	"\x06params\x18\x04 \x03(\v2\x13.flowstate.v1.ValueR\x06params\x12\x19\n" +
 	"\bmax_rows\x18\x05 \x01(\x05R\amaxRows\"n\n" +
 	"\fQueryOutputs\x12'\n" +
 	"\x04rows\x18\x01 \x01(\v2\x13.flowstate.v1.ValueR\x04rows\x12\x1b\n" +
 	"\trow_count\x18\x02 \x01(\x05R\browCount\x12\x18\n" +
-	"\acolumns\x18\x03 \x03(\tR\acolumns\"\x98\x01\n" +
+	"\acolumns\x18\x03 \x03(\tR\acolumns\"\x9b\x01\n" +
 	"\n" +
 	"ExecInputs\x12&\n" +
-	"\x06engine\x18\x01 \x01(\x0e2\x0e.sql.v1.EngineR\x06engine\x12-\n" +
-	"\x03dsn\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x03dsn\x123\n" +
+	"\x06engine\x18\x01 \x01(\x0e2\x0e.sql.v1.EngineR\x06engine\x120\n" +
+	"\x03dsn\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\t\x8a\xb5\x18\x05\x1a\x03dsnR\x03dsn\x123\n" +
 	"\n" +
 	"statements\x18\x03 \x01(\v2\x13.flowstate.v1.ValueR\n" +
 	"statements\"\x8c\x01\n" +

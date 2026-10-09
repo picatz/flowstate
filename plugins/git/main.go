@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	gitv1 "github.com/picatz/flowstate/plugins/git/gen/git/v1"
@@ -15,6 +16,11 @@ func main() {
 		Name:        "git",
 		Version:     "0.1.0",
 		Description: "Reads a remote's refs, history, and file content, and writes a commit to a branch, over git (go-git). One activity, one write - see doc.go.",
+
+		Credentials: []*flowstatev1.CredentialDeclaration{{
+			Name:        "token",
+			Description: "HTTPS token for a push (a forge access token with write access), held as a secret reference and resolved inside the task; git.commit_push requires it.",
+		}},
 
 		Secrets: &sdk.Secrets{
 			Schemes: []string{secretScheme},
