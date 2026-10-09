@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -682,4 +684,80 @@ func TestWatchEndingReportsTheRunUnlessTheWatcherStopped(t *testing.T) {
 		require.ErrorContains(t, err, "never returned")
 		require.Empty(t, out.String())
 	})
+}
+
+// TestWatchDOpensAttach: `d` hands the terminal to `flow debug attach` for the
+// run being watched, named by the workflow id and pinned to the run id the
+// server last answered, and the footer says the key exists. Without the option
+// the key is nothing and the footer is the one it always was, and a view with no
+// workflow id refuses in words instead of attaching to nothing.
+func TestWatchDOpensAttach(t *testing.T) {
+	surface, _, _ := terminalSurface(100, 24, colorprofile.NoTTY)
+	d := tea.KeyPressMsg{Code: 'd', Text: "d"}
+
+	t.Run("offered", func(t *testing.T) {
+		var built [][2]string
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "flowstate-workflow-3f7c", nil,
+			watch.Debuggable(func(workflowID, runID string) *exec.Cmd {
+				built = append(built, [2]string{workflowID, runID})
+
+				return exec.Command("true")
+			}))
+		model = fold(t, model, watch.StateMsg{Response: response(v1.RunResponse_STATUS_RUNNING)})
+		require.Contains(t, viewOf(model), "d attaches the debugger")
+
+		updated, cmd := model.Key(d)
+		require.NotNil(t, cmd, "d started nothing")
+		require.Equal(t, [][2]string{{"flowstate-workflow-3f7c", "0198f1e2-0000-7000-8000-000000000000"}}, built)
+
+		folded, ok := updated.(watch.Model)
+		require.True(t, ok)
+		require.False(t, folded.Quit(), "attaching the debugger stopped the watch")
+
+		// A debugger that ends badly says so, and the next key clears it.
+		failed := fold(t, folded, watch.AttachedMsg{Err: errors.New("exit status 1")})
+		require.Contains(t, viewOf(failed), "the debugger ended with an error: exit status 1")
+		cleared, _ := failed.Key(tea.KeyPressMsg{Code: 'x', Text: "x"})
+		require.NotContains(t, viewOf(cleared.(watch.Model)), "the debugger ended")
+	})
+
+	t.Run("not offered", func(t *testing.T) {
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "w", nil)
+		require.NotContains(t, viewOf(model), "debugger")
+
+		_, cmd := model.Key(d)
+		require.Nil(t, cmd, "d did something where no debugger was offered")
+	})
+
+	t.Run("no workflow id", func(t *testing.T) {
+		model := newWatchModel(t.Context(), surface, &scriptedPoller{}, time.Second, "", nil,
+			watch.Debuggable(func(string, string) *exec.Cmd {
+				t.Fatal("the debugger was built for a run with no workflow id")
+
+				return nil
+			}))
+
+		updated, cmd := model.Key(d)
+		require.Nil(t, cmd)
+		require.Contains(t, viewOf(updated.(watch.Model)), "no workflow id to attach the debugger to")
+	})
+}
+
+// TestWatchAttachCommandCarriesTheServerTheWatchUses: the command `d` runs is
+// this executable's `debug attach`, pinned to the run, reaching the same server.
+func TestWatchAttachCommandCarriesTheServerTheWatchUses(t *testing.T) {
+	t.Parallel()
+
+	watchCmd := flowCommand(t, "watch")
+	require.NoError(t, watchCmd.Flags().Set("address", "https://flow.example.com"))
+	require.NoError(t, watchCmd.Flags().Set("token-file", "/run/token"))
+
+	command := debugAttachCommand(watchCmd)("order-1", "run-7")
+	require.Equal(t,
+		[]string{"debug", "attach", "order-1", "--run-id", "run-7", "--address=https://flow.example.com", "--token-file=/run/token"},
+		command.Args[1:])
+
+	// An unset flag is not forwarded: the environment already carries it.
+	bare := debugAttachCommand(flowCommand(t, "watch"))("order-1", "")
+	require.Equal(t, []string{"debug", "attach", "order-1"}, bare.Args[1:])
 }

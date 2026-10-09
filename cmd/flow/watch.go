@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -406,7 +408,41 @@ func runWatch(cmd *cobra.Command, args []string) error {
 			workflowID: workflowID, runID: runID, server: server, client: client, reveal: reveal,
 			withheld: noteWithheldOnce(surface),
 		},
-		clampWatchInterval(interval), plain, workflowID, nil)
+		clampWatchInterval(interval), plain, workflowID, nil,
+		watch.Debuggable(debugAttachCommand(cmd)))
+}
+
+// serverFlagNames are the flags that say which server a command talks to and as
+// whom, forwarded to a command this one starts so it reaches the same one.
+var serverFlagNames = []string{
+	"address", "token-file", "credential-source", "audience",
+	"tls-client-cert-file", "tls-client-key-file", "tls-ca-file",
+}
+
+// debugAttachCommand builds the `flow debug attach` that the live view's `d`
+// key runs for the run being watched. It is this same executable, pinned to the
+// run's id, and carries every server flag the user spelled so the debugger
+// reaches the server the watch does; the environment is inherited, so the
+// FLOWSTATE_* variables follow it too.
+func debugAttachCommand(cmd *cobra.Command) func(workflowID, runID string) *exec.Cmd {
+	return func(workflowID, runID string) *exec.Cmd {
+		args := []string{"debug", "attach", workflowID}
+		if runID != "" {
+			args = append(args, "--run-id", runID)
+		}
+		for _, name := range serverFlagNames {
+			if flag := cmd.Flags().Lookup(name); flag != nil && flag.Changed {
+				args = append(args, "--"+name+"="+flag.Value.String())
+			}
+		}
+
+		program, err := os.Executable()
+		if err != nil {
+			program = "flow"
+		}
+
+		return exec.Command(program, args...)
+	}
 }
 
 // clampWatchInterval enforces the floor.
