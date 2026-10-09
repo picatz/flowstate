@@ -15,6 +15,10 @@ It needs `flow` on `PATH` (`go install github.com/picatz/flowstate/cmd/flow@late
 | `.mcp.json` | Runs `flow mcp`: validate, compile, task catalog, local run, test, and debug tools, plus the language guide and examples as resources. |
 | `skills/` | `flowfile-author`, `flowfile-test`, and `flowfile-debug` teach the loop: read the guide, validate, test, step through. |
 | `hooks/` | A mod. After Claude edits a Flowfile it runs `flow validate`, tells the model what is wrong, shows a status-line count, and `/flowstate` opens a pane listing the Flowfiles touched this session. |
+| `agents/` | `flowfile-engineer` takes an intent to a validated, tested, locally run Flowfile and reports each leg as passed, failed, or not run. |
+| `commands/` | `/flowstate:new <description>` hands a description to that agent, scaffolding with `flow init` when the directory has no Flowfile. |
+
+The plugin does not register `flow lsp`: Claude Code picks a language server by the file's last extension only, so a `*.flow.yaml` entry never matches and `.yaml` would attach it to every YAML file. Wire the language server into your editor with [docs/EDITORS.md](../../docs/EDITORS.md); the validation hook and MCP tools cover Flowfiles in the plugin.
 
 Check the plugin with `claude plugin validate editors/claude-code` and run the
 mod's tests with `claude plugin test editors/claude-code`. Try it without
