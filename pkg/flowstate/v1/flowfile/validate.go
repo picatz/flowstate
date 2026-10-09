@@ -236,6 +236,52 @@ func suggestedName(name string) string {
 	}, name)
 }
 
+// moduleNotRunnable is [v1.ErrModule]'s text, what a module is told when something tries to run it.
+var moduleNotRunnable = v1.ErrModule.Error()
+
+// validateName reports what is wrong with a workflow's or module's name.
+func validateName(wf *v1.Workflow) Diagnostics {
+	var ds Diagnostics
+	if wf.GetName() == "" {
+		ds = append(ds, Diagnostic{Field: "name", Message: "workflow has no name"})
+	} else if bad := firstIllegalNameRune(wf.GetName()); bad != "" {
+		// The schema constrains a workflow's name and nothing checked it here, so
+		// a file with a space in its name compiled cleanly, said "ok", and was
+		// refused by the server the first time anyone ran it. Eight of the shipped
+		// examples were in that state.
+		//
+		// It is checked here because this is where a position exists. The same rule
+		// enforced only at submit names a field path in a protobuf message, which
+		// is true and useless to somebody looking at a line of YAML.
+		ds = append(ds, Diagnostic{
+			Field: "name",
+			Message: fmt.Sprintf("name may not contain %s; a workflow name is used as an "+
+				"identifier, so it takes letters, digits, - and _ (try %q)",
+				bad, suggestedName(wf.GetName())),
+		})
+	}
+	return ds
+}
+
+// ValidateModule checks a module: a compiled file that declares types,
+// functions and errors and no steps ([v1.IsModule]).
+//
+// It holds the declarations to the rules a workflow's are held to, and nothing
+// else, because a module has no steps, inputs, vars or outputs for the rest of
+// [Validate] to read. A workflow that is not a module is not ValidateModule's to
+// judge; it is passed to [Validate], which says what is missing.
+func ValidateModule(wf *v1.Workflow) Diagnostics {
+	if !v1.IsModule(wf) {
+		return Validate(wf)
+	}
+	ds := validateName(wf)
+	ds = append(ds, validateDeclaredTypes(wf)...)
+	ds = append(ds, validateDeclaredErrors(wf)...)
+	ds = append(ds, checkExpressionTypes(wf, newTypeTable(wf))...)
+	ds = append(ds, checkFunctionBodies(wf)...)
+	return ds
+}
+
 // Validate checks a compiled workflow and reports every problem it can find.
 //
 // A specification reaching this function did not necessarily pass through
@@ -289,25 +335,18 @@ func Validate(wf *v1.Workflow) Diagnostics {
 func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
-	if wf.GetName() == "" {
-		ds = append(ds, Diagnostic{Field: "name", Message: "workflow has no name"})
-	} else if bad := firstIllegalNameRune(wf.GetName()); bad != "" {
-		// The schema constrains a workflow's name and nothing checked it here, so
-		// a file with a space in its name compiled cleanly, said "ok", and was
-		// refused by the server the first time anyone ran it. Eight of the shipped
-		// examples were in that state.
-		//
-		// It is checked here because this is where a position exists. The same rule
-		// enforced only at submit names a field path in a protobuf message, which
-		// is true and useless to somebody looking at a line of YAML.
-		ds = append(ds, Diagnostic{
-			Field: "name",
-			Message: fmt.Sprintf("name may not contain %s; a workflow name is used as an "+
-				"identifier, so it takes letters, digits, - and _ (try %q)",
-				bad, suggestedName(wf.GetName())),
-		})
-	}
+	ds = append(ds, validateName(wf)...)
 	if len(wf.GetSteps()) == 0 {
+		if v1.IsModule(wf) {
+			// Valid as a module ([ValidateModule]) and not runnable: this function
+			// answers whether the spec can run, so the caller that hands one to a
+			// driver learns why it will not.
+			return append(ds, Diagnostic{Message: moduleNotRunnable})
+		}
+		if len(wf.GetDeclaredTypes())+len(wf.GetDeclaredFunctions())+len(wf.GetDeclaredErrors()) > 0 {
+			return append(ds, Diagnostic{Field: "steps", Message: "workflow has no steps; a file with no steps is a module, " +
+				"which declares only types, functions and errors"})
+		}
 		return append(ds, Diagnostic{Field: "steps", Message: "workflow has no steps"})
 	}
 
@@ -2214,6 +2253,15 @@ func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Position
 	if err != nil {
 		return nil, nil, nil, err
 	}
+
+	// This entry is the one a run, a compile and a debugger load a file through,
+	// so it is where a module is turned away: valid, and not something to run.
+	// Declaration errors come first, because they are the ones the author can act
+	// on before importing it.
+	if len(ds) == 0 && v1.IsModule(wf) {
+		ds = Diagnostics{{Message: moduleNotRunnable}}
+		positionDiagnostics(ds, positions)
+	}
 	return wf, positions, ds, nil
 }
 
@@ -2379,7 +2427,14 @@ func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnosti
 		return nil, err
 	}
 
-	ds := Validate(wf)
+	// A module is judged as one: its declarations are the whole of it, and the
+	// refusal to run it belongs to the caller that is about to, not to the file.
+	var ds Diagnostics
+	if v1.IsModule(wf) {
+		ds = ValidateModule(wf)
+	} else {
+		ds = Validate(wf)
+	}
 	positionDiagnostics(ds, positions)
 
 	// What the schema refuses, in the schema's own words, so that nothing this

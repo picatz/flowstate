@@ -564,8 +564,11 @@ const RunFailureMarker = "flowstate.run-failure/v1"
 // runWorkflow is [Run]'s whole implementation, wrapped by it rather than
 // registered directly — see [Run]'s comment for why.
 func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunState) (*v1.Workflow_StepOutputs, error) {
-	if st == nil || st.Workflow == nil || len(st.Workflow.Steps) == 0 {
+	if st == nil {
 		return nil, fmt.Errorf("workflow cannot be nil or empty")
+	}
+	if err := v1.RefuseEmpty(st.Workflow); err != nil {
+		return nil, err
 	}
 
 	// The slot a scheduled firing was meant for, read off the execution once and

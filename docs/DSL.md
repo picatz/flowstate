@@ -40,6 +40,7 @@ headings below, not this list.*
   - [Edition v2026.3: optional traversal, and the guarded-read rewrite *(landed)*](#edition-v20263-optional-traversal-and-the-guarded-read-rewrite-landed)
   - [Edition v2026.4: a type is a CEL type expression *(landed)*](#edition-v20264-a-type-is-a-cel-type-expression-landed)
   - [`functions:`: a computation named once *(landed)*](#functions-a-computation-named-once-landed)
+  - [A file with no steps is a module *(landed)*](#a-file-with-no-steps-is-a-module-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -1507,6 +1508,54 @@ an argument is never captured: a later argument spelled like an earlier paramete
 loop variable named `denominator`) still reads the caller's own name, because such a
 call binds each argument to a name no expression can write before it binds the
 parameters.
+
+### A file with no steps is a module *(landed)*
+
+A Flowfile that declares only `types:`, `functions:` and `errors:` (beside `edition:`,
+`name:` and `description:`) and no `steps:` is a **module**: the vocabulary several
+workflows would share, kept in one file. This is the first step of multi-file reuse. The
+file kind lands before the `use:` that imports it, so a module can be written, checked
+and edited as a first-class file now and cannot be imported yet.
+
+```yaml
+edition: v2026.4
+name: ids
+types:
+  Uuid:
+    type: string
+    must: isUuid(this)
+errors:
+  NotFound:
+    description: The record does not exist.
+functions:
+  isUuid:
+    params:
+      s: string
+    returns: bool
+    body: ${s.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")}
+```
+
+- **Derived, not declared.** There is no `kind:` key and no new proto field. A module is a
+  `Workflow` with no steps that declares at least one type, function or error and sets
+  nothing else (`v1.IsModule`). Any inputs, vars, outputs, triggers, signals or labels content,
+  and any step, makes a steps-less file a workflow with no steps, which is still refused with
+  `workflow has no steps` (an empty block such as `inputs: {}` has no content and is
+  ignored); a file that declares nothing is not promoted to a module, so
+  an empty file is still a mistake the author hears about.
+- **Accepted wherever a file is read or edited.** `flow validate`, `flow fmt` (a byte for
+  byte round trip), `flow lint`, `flow fix` and the language server accept a module. The
+  declarations are held to the rules a workflow's are (names, `must:` rules, function
+  bodies, signatures), and the outline lists the declarations of any file, a module's
+  being all it has.
+- **Refused wherever a run would start.** `flow run`, `flow run local`, `flow compile`,
+  `flow schedule`, the MCP run tool and the debugger's loader say `<file> is a module (no
+  steps); import it with use:, don't run it`. A spec that reaches a driver or the server
+  without going through a loader is refused too, by the schema (`steps` requires an
+  item), and both drivers say it is a module. A `*.test.yaml` case naming a module as its
+  `workflow:` fails with the same sentence; function cases against a module come with the
+  rest of the module design.
+- **What this is not yet.** No `use:`, no qualified names and no cross-file reference: a
+  module is complete as a file and unreachable from any other.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 
