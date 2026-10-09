@@ -293,11 +293,27 @@ signals:
 | Field | Claim |
 | --- | --- |
 | `outputs` | The run's declared `outputs:`, exactly: every declared output must be named. Ignored when `failed: true`. |
-| `failed` | Whether the run failed. `failed: false` is how a case claims "it finishes" and nothing more. |
+| `failed` | Whether the run failed. `failed: false` is how a case claims "it finishes" and nothing more. `failed: {step: id, error: Name}` claims it failed in that step with that declared error name or built-in kind (either key alone is a claim), so a different failure cannot satisfy it. |
 | `error_contains` | Text the run's error must contain. |
 | `ran` | Steps that must have run. Checked on failed runs too. |
 | `skipped` | Steps that must not have run. |
 | `others: skipped` | Closes `ran:`: every step not listed there must have been skipped, so a step added later fails the case until the case mentions it. |
+
+A bare `failed: true` is satisfied by any failure. To pin the failure down, name
+where it happened and what it was, in the vocabulary `errors:` declares:
+
+```yaml
+expect:
+  failed: {step: reject_overdraft, error: InsufficientFunds}
+```
+
+`error:` is the failure's kind: a name the workflow declares under `errors:`,
+or a built-in kind such as `timeout`. `step:` is the innermost step the failure
+passes through before the task that raised it; for a failure that comes back
+through a `call:`, it is the `call:` step. A name that is neither declared nor
+built in fails the case with the names it could have been.
+[`examples/declared-errors`](../examples/declared-errors/workflow.test.yaml)
+uses it.
 | `compensated` | The steps whose `undo:` ran. |
 | `denied_signals` | Signals the case sends that the workflow's `signals:` policy must refuse. Each needs at least one scripted delivery denied by the same check the server's Signal door runs; a signal another sender got through still counts. A name the workflow has no policy for, or the case never sends, is refused when the case loads. |
 | `invocations` | How often tasks ran, and in what order. See below. |
@@ -810,6 +826,10 @@ A case's `secrets:` binds a value to a secret reference for that case only:
 secrets:
   env:API_TOKEN: test-token
 ```
+
+A reference the block does not bind is a mistake in the case, not behavior of
+the workflow: the case ends with an error naming the reference and passes
+nothing, even with `failed: true`.
 
 A var that feeds a secret is treated as secret material. The taint follows the
 dependency graph both ways, to every var computed from it and every var it was

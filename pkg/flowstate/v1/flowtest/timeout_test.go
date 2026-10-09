@@ -94,7 +94,7 @@ steps:
 
 		result, _, _, _, _, _ := runCase(caseCtx, &Test{
 			Name:   "caller deadline",
-			Expect: Expectation{Failed: &failed},
+			Expect: Expectation{Failed: &FailedClaim{Want: failed}},
 		}, "", load, false, fileVars{})
 
 		require.True(t, result.GetPassed(),

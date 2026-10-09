@@ -87,17 +87,8 @@ tests:
 
 	c := report.GetCases()[0]
 	require.False(t, c.GetPassed(), "a case with no `secrets:` entry for env:TOKEN must not pass")
-	require.NotEmpty(t, c.GetFailures())
-
-	found := false
-	for _, f := range c.GetFailures() {
-		if f.GetField() == "expect.failed" {
-			require.Contains(t, f.GetMessage(), "env:TOKEN")
-			require.Contains(t, f.GetMessage(), "secrets:")
-			found = true
-		}
-	}
-	require.True(t, found, "expected an expect.failed diagnostic naming env:TOKEN and `secrets:`; got %v", c.GetFailures())
+	require.Contains(t, c.GetError(), "env:TOKEN")
+	require.Contains(t, c.GetError(), "secrets:")
 }
 
 // TestRunFileSecretSchemeNeedNotExist proves the scheme need not exist: a
@@ -182,19 +173,10 @@ tests:
 
 	c := report.GetCases()[0]
 	require.False(t, c.GetPassed(), "a case with no `secrets:` entry for a nested env:TOKEN must not pass")
-	require.NotEmpty(t, c.GetFailures())
-
-	found := false
-	for _, f := range c.GetFailures() {
-		if f.GetField() == "expect.failed" {
-			require.Contains(t, f.GetMessage(), "headers.Authorization",
-				"the refusal must name the path of the entry holding the reference")
-			require.Contains(t, f.GetMessage(), "env:TOKEN")
-			require.Contains(t, f.GetMessage(), "secrets:")
-			found = true
-		}
-	}
-	require.True(t, found, "expected an expect.failed diagnostic naming headers.Authorization and env:TOKEN; got %v", c.GetFailures())
+	require.Contains(t, c.GetError(), "headers.Authorization",
+		"the refusal must name the path of the entry holding the reference")
+	require.Contains(t, c.GetError(), "env:TOKEN")
+	require.Contains(t, c.GetError(), "secrets:")
 }
 
 // TestRunFileNestedSecretResolvesFromTestFile is the control for the case
@@ -285,15 +267,8 @@ tests:
 		c := report.GetCases()[0]
 		require.False(t, c.GetPassed(), "a reference two levels deep must be refused, not skipped")
 
-		found := false
-		for _, f := range c.GetFailures() {
-			if f.GetField() == "expect.failed" {
-				require.Contains(t, f.GetMessage(), "json.auth.token")
-				require.Contains(t, f.GetMessage(), "env:TOKEN")
-				found = true
-			}
-		}
-		require.True(t, found, "expected a diagnostic naming json.auth.token; got %v", c.GetFailures())
+		require.Contains(t, c.GetError(), "json.auth.token")
+		require.Contains(t, c.GetError(), "env:TOKEN")
 	})
 
 	t.Run("declared resolves at the path", func(t *testing.T) {

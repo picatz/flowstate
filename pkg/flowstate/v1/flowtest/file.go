@@ -1216,7 +1216,7 @@ type Expectation struct {
 	// step's failure being tolerated by `continue_on_error:` — an ordinary
 	// case, asserted through Outputs like any other. Nil means "no assertion
 	// either way": the case is not about whether the run failed.
-	Failed *bool `yaml:"failed"`
+	Failed *FailedClaim `yaml:"failed"`
 
 	// ErrorContains, when set, must appear in the run's failure text. Only
 	// meaningful alongside Failed: true.
@@ -1289,6 +1289,56 @@ type Expectation struct {
 	// claims all hold — where the named fields above merge by override.
 	// Predicates union naturally; values cannot.
 	Check []CheckClaim `yaml:"check"`
+}
+
+// FailedClaim is what `expect.failed` says about the run: `true` or `false`,
+// or a mapping that says *how* it failed — `{step: id, error: Name}`.
+//
+// The mapping exists so a case cannot pass for the wrong reason. A bare
+// `failed: true` is satisfied by any failure at all, including one that has
+// nothing to do with what the case is about; `step:` and `error:` pin the
+// failure to the step that raised it and to the declared error name (or
+// built-in kind) it carries, the same vocabulary `errors:` and
+// `continue_on_error:` use. Either key alone is a claim; a mapping implies
+// `failed: true`.
+type FailedClaim struct {
+	// Want is whether the run must fail.
+	Want bool
+
+	// Step, when set, is the id of the step the failure must happen in. For a
+	// failure that comes back through a `call:`, that is the `call:` step.
+	Step string
+
+	// Error, when set, is the declared error name or built-in kind the
+	// failure must carry.
+	Error string
+}
+
+// UnmarshalYAML accepts a bool or a `{step:, error:}` mapping. Keys are
+// checked by hand, as [CheckClaim] does, so a misspelled `erorr:` is refused
+// with the keys named rather than silently dropped.
+func (c *FailedClaim) UnmarshalYAML(unmarshal func(any) error) error {
+	var want bool
+	if err := unmarshal(&want); err == nil {
+		c.Want = want
+		return nil
+	}
+
+	var entry map[string]string
+	if err := unmarshal(&entry); err != nil {
+		return errors.New("`failed:` is true, false, or a mapping with `step:` and/or `error:`")
+	}
+	for key := range entry {
+		if key != "step" && key != "error" {
+			return fmt.Errorf("`failed:` takes `step:` and `error:`, and %q is neither", key)
+		}
+	}
+	c.Want, c.Step, c.Error = true, entry["step"], entry["error"]
+	if c.Step == "" && c.Error == "" {
+		return errors.New("`failed:` as a mapping names the `step:` the run fails in, the `error:` it fails with, or both")
+	}
+
+	return nil
 }
 
 // claimsNothing reports whether no field of the expectation was written: not
