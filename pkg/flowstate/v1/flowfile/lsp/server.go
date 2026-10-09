@@ -291,7 +291,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		list := completeAt(doc, params.Position)
 		if s.snippets.Load() {
-			snippetizeTasks(list, s.tasks())
+			snippetizeTasks(doc, list, s.tasks())
 		}
 		return list, nil
 

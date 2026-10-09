@@ -16,7 +16,7 @@ func TestSnippetizeTasksAddsRequiredInputsAsTabstops(t *testing.T) {
 	tasks := v1.DefaultRegistry()
 	replace := lsp.Range{}
 	list := &lsp.CompletionList{Items: taskCandidates("", replace, tasks)}
-	snippetizeTasks(list, tasks)
+	snippetizeTasks(refsDoc(t, "edition: v2026.4\nname: s\nsteps:\n  - id: a\n    log:\n      message: x\n"), list, tasks)
 
 	var http *lsp.CompletionItem
 	for i := range list.Items {
@@ -50,7 +50,7 @@ func TestSnippetizeLeavesNonTaskFunctionsAlone(t *testing.T) {
 		{Label: "http", Kind: lsp.CIKFunction, TextEdit: &lsp.TextEdit{NewText: "http("}},
 		{Label: "id", Kind: lsp.CIKProperty, TextEdit: &lsp.TextEdit{NewText: "id: "}},
 	}}
-	snippetizeTasks(list, v1.DefaultRegistry())
+	snippetizeTasks(refsDoc(t, "edition: v2026.4\nname: s\nsteps:\n  - id: a\n    log:\n      message: x\n"), list, v1.DefaultRegistry())
 	assert.Equal(t, "http(", list.Items[0].TextEdit.NewText)
 	assert.Equal(t, "id: ", list.Items[1].TextEdit.NewText)
 	assert.Zero(t, list.Items[0].InsertTextFormat)
@@ -87,4 +87,62 @@ func TestCompletionOffersSnippetsOnlyToAClientThatSupportsThem(t *testing.T) {
 			assert.Zero(t, http.InsertTextFormat)
 		}
 	}
+}
+
+// A task written as a step's first key sits after the list marker, so its inputs
+// must be indented past the dash, not under it. Expanded the way a client does
+// (continuation lines get the line's leading whitespace), the result must parse
+// as the step the author meant.
+func TestSnippetAfterAListMarkerNestsUnderTheTaskKey(t *testing.T) {
+	t.Parallel()
+
+	const head = "edition: v2026.4\nname: s\nsteps:\n"
+	for name, tc := range map[string]struct{ line, lead string }{
+		"first key after the dash": {"  - ht", "  "},
+		"after a sibling key":      {"    ht", "    "},
+	} {
+		src := head + "  - id: a\n    log:\n      message: x\n" + tc.line + "\n"
+		if tc.line == "    ht" {
+			src = head + "  - id: a\n" + tc.line + "\n"
+		}
+		doc := refsDoc2(t, src)
+		pos := lsp.Position{Line: strings.Count(src, "\n") - 1, Character: len(tc.line)}
+		got := completeAt(doc, pos)
+		snippetizeTasks(doc, got, v1.DefaultRegistry())
+
+		var http *lsp.CompletionItem
+		for i := range got.Items {
+			if got.Items[i].Label == "http" {
+				http = &got.Items[i]
+			}
+		}
+		require.NotNil(t, http, name)
+
+		// Expand: replace `ht` with the snippet, tabstops emptied, continuation
+		// lines prefixed with the line's leading whitespace.
+		text := strings.ReplaceAll(http.TextEdit.NewText, "\n", "\n"+tc.lead)
+		text = strings.NewReplacer("$1", "https://example.com", "$2", "GET", "$3", "x").Replace(text)
+		expanded := src[:len(src)-len("ht\n")] + text + "\n"
+
+		d2 := newDocument("file:///x.yaml", 1, expanded, nil)
+		require.NotNil(t, d2.parsed, "%s: %s\n%v", name, expanded, d2.parseErr)
+		var step *parsedStep
+		for _, s := range d2.parsed.steps {
+			if s.taskName == "http" {
+				step = s
+			}
+		}
+		require.NotNil(t, step, "%s: http must be the step's task, not a sibling key:\n%s", name, expanded)
+		var keys []string
+		for _, e := range step.inputs {
+			keys = append(keys, e.key)
+		}
+		assert.Contains(t, keys, "url", name)
+	}
+}
+
+func refsDoc2(t *testing.T, src string) *document {
+	t.Helper()
+	// Not required to parse: the buffer being completed is mid-edit.
+	return newDocument("file:///snip.yaml", 1, src, nil)
 }

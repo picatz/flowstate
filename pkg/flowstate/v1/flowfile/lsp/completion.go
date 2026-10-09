@@ -1466,9 +1466,13 @@ func taskCandidates(prefix string, replace lsp.Range, tasks *v1.Registry) []lsp.
 // same item. A task with no required inputs is left alone, because a snippet that
 // adds nothing is only a way for a client to treat the item differently.
 //
-// The indentation inside the snippet is relative (two spaces). The protocol has
-// the client adjust it to the line the snippet is inserted on.
-func snippetizeTasks(list *lsp.CompletionList, tasks *v1.Registry) {
+// The protocol has the client re-indent a snippet's continuation lines by the
+// leading whitespace of the line it is inserted on, so the snippet carries only
+// what is relative to that: two spaces, plus however far the task key sits past
+// the line's own indentation. That second part is nonzero in the commonest place
+// a task is written, `- http`, where the key starts after the list marker and its
+// inputs must line up under it, not under the dash.
+func snippetizeTasks(doc *document, list *lsp.CompletionList, tasks *v1.Registry) {
 	for i, item := range list.Items {
 		if item.Kind != lsp.CIKFunction || item.TextEdit == nil || item.TextEdit.NewText != item.Label+": " {
 			continue
@@ -1478,6 +1482,7 @@ func snippetizeTasks(list *lsp.CompletionList, tasks *v1.Registry) {
 			continue
 		}
 
+		indent := strings.Repeat(" ", keyOffset(doc, item.TextEdit.Range.Start)+2)
 		var b strings.Builder
 		fields := def.Inputs.Fields()
 		n := 0
@@ -1490,7 +1495,7 @@ func snippetizeTasks(list *lsp.CompletionList, tasks *v1.Registry) {
 			if n == 1 {
 				b.WriteString(def.Name + ":")
 			}
-			fmt.Fprintf(&b, "\n  %s: $%d", fd.Name(), n)
+			fmt.Fprintf(&b, "\n%s%s: $%d", indent, fd.Name(), n)
 		}
 		if n == 0 {
 			continue
@@ -1499,6 +1504,23 @@ func snippetizeTasks(list *lsp.CompletionList, tasks *v1.Registry) {
 		list.Items[i].TextEdit = &lsp.TextEdit{Range: item.TextEdit.Range, NewText: b.String()}
 		list.Items[i].InsertTextFormat = lsp.ITFSnippet
 	}
+}
+
+// keyOffset is how many columns the key starting at pos sits past the
+// indentation of its line, which is the list marker's width when the key follows
+// one. Zero when the line cannot be read.
+func keyOffset(doc *document, pos lsp.Position) int {
+	if pos.Line < 0 || pos.Line >= doc.index.lineCount() {
+		return 0
+	}
+	line := doc.index.line(pos.Line)
+	if pos.Character < 0 || pos.Character > len(line) {
+		return 0
+	}
+	before := line[:pos.Character]
+	trimmed := strings.TrimLeft(before, " \t")
+
+	return len(trimmed)
 }
 
 // inputCandidates offers the inputs the enclosing step's task declares, required
