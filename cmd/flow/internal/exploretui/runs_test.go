@@ -68,7 +68,7 @@ func TestARunsRowListsAWorkflowsRecentRunsAndDescribesEach(t *testing.T) {
 
 	m = press(m, "j")
 	out := view(m)
-	for _, want := range []string{"run", "orders-2", "r2", "FAILED", "2026-10-08 14:03Z", "https://idp.example#kent", "env=prod, team=payments", "flow get orders-2"} {
+	for _, want := range []string{"run", "orders-2", "r2", "FAILED", "2026-10-08 14:03Z", "https://idp.example#kent", "env=prod, team=payments", "flow get orders-2 --run-id r2"} {
 		assert.Contains(t, out, want)
 	}
 }
@@ -172,4 +172,59 @@ func TestOnlyAWorkflowHasARunsRow(t *testing.T) {
 	}
 	_, _, err = x.Loader()(pane.Request{Parent: children[0].ID})
 	require.Error(t, err, "the children of a runs row are not the index's to give")
+}
+
+func TestARefreshKeepsTheSelectedRunOnceItsRowIsReadAgain(t *testing.T) {
+	r := &runner{runs: []*v1.RunSummary{
+		runSummary("a", "1", v1.RunResponse_STATUS_RUNNING), runSummary("b", "2", v1.RunResponse_STATUS_RUNNING),
+	}}
+	m, l := started(t, fleet(), withRuns(r))
+	m = press(openRuns(t, m), "j", "j")
+	require.Equal(t, "b", selectedLabel(m))
+
+	l.set(fleet(), nil)
+	m = press(m, "r")
+
+	assert.Equal(t, "b", selectedLabel(m), "the run that was selected is selected again")
+	assert.Contains(t, view(m), "run_id")
+}
+
+func TestAnAnswerToAnOlderReadOfARunsRowChangesNothing(t *testing.T) {
+	r := &runner{runs: []*v1.RunSummary{runSummary("new", "1", v1.RunResponse_STATUS_RUNNING)}}
+	m, _ := started(t, fleet(), withRuns(r))
+	m = openRuns(t, m)
+	parent := ""
+	for _, row := range m.Screen().Tree.Rows() {
+		if row.Label == "runs" {
+			parent = row.ID
+		}
+	}
+	require.NotEmpty(t, parent)
+
+	// A read of the same row, older than the one applied, arrives late: neither
+	// its rows, its details nor its error may land.
+	stale := runsMsg{parent: parent, gen: m.gens[parent] - 1, runs: []*v1.RunSummary{runSummary("old", "9", v1.RunResponse_STATUS_FAILED)}}
+	next, _ := m.Update(stale)
+	m = next.(Model)
+	stale.err = errRefused
+	next, _ = m.Update(stale)
+	m = next.(Model)
+
+	assert.Len(t, m.Screen().Runs, 1)
+	assert.Contains(t, rowsOf(m), "new|RUNNING  started 2026-10-08 14:03Z")
+	assert.NotContains(t, view(m), "cannot read the runs")
+	assert.True(t, m.Screen().Tree.Open(parent))
+}
+
+func TestARefreshDropsTheSummariesOfRowsItDiscarded(t *testing.T) {
+	r := &runner{runs: []*v1.RunSummary{runSummary("a", "1", v1.RunResponse_STATUS_RUNNING)}}
+	m, l := started(t, fleet(), withRuns(r))
+	m = openRuns(t, m)
+	require.Len(t, m.Screen().Runs, 1)
+
+	// The workflow is gone from the next read, and so are its rows.
+	l.set(&v1.Graph{Nodes: []*v1.GraphNode{node(wf, "other")}}, nil)
+	m = press(m, "r")
+
+	assert.Empty(t, m.Screen().Runs, "a summary no row can reach is not kept")
 }

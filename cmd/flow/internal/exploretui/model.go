@@ -49,9 +49,11 @@ type graphMsg struct {
 // runsMsg is a finished read of a workflow's runs, for the "runs" row Parent.
 type runsMsg struct {
 	parent string
-	runs   []*v1.RunSummary
-	more   bool
-	err    error
+	// gen numbers the reads of this parent; only the latest is applied.
+	gen  uint64
+	runs []*v1.RunSummary
+	more bool
+	err  error
 }
 
 // Model is the explorer screen.
@@ -65,6 +67,13 @@ type Model struct {
 	// seq numbers reads; only the latest is applied, so a slow read cannot
 	// overwrite a newer one.
 	seq uint64
+
+	// gens numbers the reads of each "runs" row, so an answer that is not to the
+	// latest question asked of that row (a refresh, or the row opened again)
+	// changes nothing. pending is a selection a refresh could not restore yet
+	// because its row is read afresh; the read that fills the row restores it.
+	gens    map[string]uint64
+	pending string
 
 	quitting bool
 }
@@ -80,7 +89,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 	}
 
 	return Model{
-		cfg: cfg, ctx: ctx, keys: keys, seq: 1,
+		cfg: cfg, ctx: ctx, keys: keys, seq: 1, gens: map[string]uint64{},
 		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true, Runs: map[string]*v1.RunSummary{}},
 	}, nil
 }
@@ -181,6 +190,9 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Summaries belong to rows the new tree is about to rebuild; the reads below
+	// fill the ones that are open again.
+	m.screen.Runs = map[string]*v1.RunSummary{}
 	m.screen.Index = NewIndex(msg.graph)
 	if m.cfg.Runs != nil {
 		m.screen.Index = m.screen.Index.WithRunRows()
@@ -194,7 +206,10 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	tree.Select(selected)
+	m.pending = ""
+	if !tree.Select(selected) {
+		m.pending = selected
+	}
 	m.reveal()
 
 	return m, tea.Batch(cmds...)
@@ -210,11 +225,13 @@ func (m *Model) fill(request pane.Request) tea.Cmd {
 	}
 	if workflow, ok := x.RunsOf(request.Parent); ok {
 		ctx, runs := m.ctx, m.cfg.Runs
+		m.gens[request.Parent]++
+		gen := m.gens[request.Parent]
 
 		return func() tea.Msg {
 			rows, more, err := runs(ctx, workflow)
 
-			return runsMsg{parent: request.Parent, runs: rows, more: more, err: err}
+			return runsMsg{parent: request.Parent, gen: gen, runs: rows, more: more, err: err}
 		}
 	}
 	if err := m.screen.Tree.Load(x.Loader(), request); err != nil {
@@ -226,6 +243,9 @@ func (m *Model) fill(request pane.Request) tea.Cmd {
 
 // ran folds a finished read of runs into the row it was asked for.
 func (m Model) ran(msg runsMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.gens[msg.parent] {
+		return m, nil
+	}
 	if msg.err != nil {
 		if m.ctx.Err() != nil {
 			return m, nil
@@ -238,8 +258,13 @@ func (m Model) ran(msg runsMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	rows, byRow := RunRows(msg.parent, msg.runs, msg.more)
-	m.screen.Tree.Fill(msg.parent, 0, rows, len(rows))
+	if !m.screen.Tree.Fill(msg.parent, 0, rows, len(rows)) {
+		return m, nil
+	}
 	maps.Copy(m.screen.Runs, byRow)
+	if m.pending != "" && m.screen.Tree.Select(m.pending) {
+		m.pending = ""
+	}
 	m.reveal()
 
 	return m, nil
@@ -283,6 +308,7 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// A toast lasts until the next key, so what is on screen is a function of
 	// the messages and not of how long ago one arrived.
 	m.screen.Toast = m.screen.Toast.Clear()
+	m.pending = ""
 	name := tui.KeyName(msg)
 
 	if _, err := m.screen.geometry(); err != nil && name != "ctrl+c" && name != "ctrl+d" && name != "q" {
@@ -401,6 +427,7 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	if mouse.Button != tea.MouseLeft {
 		return m, nil
 	}
+	m.pending = ""
 	_, hits := m.screen.Draw(m.cfg.Style)
 	hit, ok := hits.At(mouse.X, mouse.Y)
 	if !ok {

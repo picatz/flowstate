@@ -117,6 +117,6 @@ func RunDetails(r *v1.RunSummary) pane.Inspector {
 
 	return pane.Inspector{
 		Fields: fields,
-		Note:   "flow get " + r.GetWorkflowId(),
+		Note:   "flow get " + r.GetWorkflowId() + " --run-id " + r.GetRunId(),
 	}
 }
