@@ -502,6 +502,14 @@ Commands are read from the terminal, or from --script. Leaving with `detach`, or
 at the end of input, releases the run; `disconnect` leaves the session attached
 for a later `flow debug attach --session <id>`.
 
+With --history --run-id the run is not held at all: the debugger opens its record, every
+point of it reachable both ways with next, back, goto and the timeline, whether the run
+is still going or closed. Nothing runs and no session is taken; what it shows is
+reconstructed from the history, a name of the scope is marked rec, an expression typed or
+watched is marked hyp (computed now, never held by the run), and a value that cannot be
+known is marked n/a. until, break, pause and the other verbs that need a run executing are
+refused by name.
+
 Examples:
 
 ```sh
@@ -513,6 +521,9 @@ flow debug attach order-1234 --script debug.txt -o jsonl
 
 # Rejoin a session another process left attached:
 flow debug attach order-1234 --session 5d3f…
+
+# Walk a closed run's record, both ways, in the full-screen debugger:
+flow debug attach order-1234 --history --run-id 5d3f… --tui
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -520,6 +531,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env, login. An unknown or unusable source is an error, never anonymous |
+| `--history` | `bool` | `false` | — | walk the recorded run named by --run-id instead of holding it: every point is reachable both ways, nothing runs, and what it shows is reconstructed from its history |
 | `--lease <duration>` | `duration` | `2m0s` | — | how long each renewal holds the session; the engine bounds it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, the deployment's plugin and task pins aside |

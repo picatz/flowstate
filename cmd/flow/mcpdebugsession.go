@@ -132,6 +132,9 @@ type debugSessionEntry struct {
 	// run is the durable run a session attached to, so a rejoin under its
 	// id is checked to name the same run. Empty for a stubbed case.
 	workflowID, runID string
+	// history marks a recorded run read point by point, which holds no session
+	// on the server: only the run's record is read.
+	history bool
 	// inputs is a stubbed case's [startInputs], so a start retried under
 	// its request id is checked to submit the same case. Empty for a
 	// durable session.
@@ -354,7 +357,7 @@ func (r *debugSessions) register(entry *debugSessionEntry, request string) (*deb
 		if existing, ok := r.sessions[r.starts[request]]; ok {
 			// An attach racing another under its key: answered with the
 			// first only when both asked for the same run.
-			if !entry.stubbed && !existing.onRun(entry.workflowID, entry.runID) {
+			if !entry.stubbed && (!existing.onRun(entry.workflowID, entry.runID) || existing.history != entry.history) {
 				return nil, errReusedAttachKey
 			}
 			// And a start only when both submitted the same case.
@@ -667,12 +670,24 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 			Name: debugSessionAttachTool,
 			Description: "Attach a retained debug session to a durable run on the configured server, holding it at its next " +
 				"step boundary. Needs the run's `debug:` policy to name you and workload.debug (workload.debug_inspect to " +
-				"evaluate). A hold never freezes work already dispatched. Pass session_id to rejoin a session.",
+				"evaluate). A hold never freezes work already dispatched. Pass session_id to rejoin a session. " +
+				"Pass history with run_id to walk a run's record instead — a closed run included: the session holds " +
+				"nothing and runs nothing, every point is reachable both ways with next, back and goto <point> (the " +
+				"snapshot's timeline lists them), and everything it shows is reconstructed from the history " +
+				"(timeline fidelity says so). until, break, pause and the other commands that need a run executing are " +
+				"refused by name.",
 			InputSchema: object(map[string]any{
 				"workflow_id": str("The durable run's workflow id."),
-				"run_id":      str("Optional: the chain's first run id."),
-				"session_id":  rejoin,
-				"request_id":  request,
+				"run_id": str("Optional: the chain's first run id. Required with history, where it names the one execution " +
+					"whose record is walked."),
+				"history": map[string]any{
+					"type": "boolean",
+					"description": "Walk the record of the run named by run_id instead of holding it: a read-only, " +
+						"point-by-point replay of its history that runs nothing, for a run that is closed or still going. " +
+						"session_id does not apply.",
+				},
+				"session_id": rejoin,
+				"request_id": request,
 			}, "workflow_id"),
 		}, Handler: r.attach},
 		{Tool: &mcp.Tool{
@@ -689,7 +704,9 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 			Name: debugSessionCommandTool,
 			Description: "Run one debugger command in a retained session and answer with its typed result. Commands: " +
 				flowdebug.DriverCommandList() + ". back, reverse-continue (rc) and goto <point> (a point of the snapshot's timeline, counted from 0) " +
-				"need a stubbed session that can step back; any other says so and does not move. Movements answer with the next stop. Set expected_revision to the " +
+				"need a stubbed session that can step back, or a recorded run opened with history; any other says so and does not move. " +
+				"A recorded run moves among its points in either direction and refuses until, break, pause and the other " +
+				"commands that need a run executing. Movements answer with the next stop. Set expected_revision to the " +
 				"snapshot you acted on, " +
 				"so a command meant for a stop the run has left is refused as stale: a movement or an inspection is " +
 				"judged by the run in the same step as the command; any other command is checked just before it is sent.",
@@ -1130,6 +1147,7 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	var args struct {
 		WorkflowID string `json:"workflow_id"`
 		RunID      string `json:"run_id"`
+		History    bool   `json:"history"`
 		SessionID  string `json:"session_id"`
 		RequestID  string `json:"request_id"`
 	}
@@ -1141,6 +1159,17 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 	}
 	if err := errors.Join(checkSessionID(args.SessionID), checkRequestID(args.RequestID)); err != nil {
 		return flowmcp.ToolError(err), nil
+	}
+	if args.History {
+		// A record is one execution's, and holds no session to rejoin: refused
+		// by name before anything is read.
+		switch {
+		case args.RunID == "":
+			return flowmcp.ToolError(errors.New("history needs run_id: a point of a recorded run is a point of one execution")), nil
+		case args.SessionID != "":
+			return flowmcp.ToolError(errors.New("history reads a recorded run and holds no session, so session_id does not apply; " +
+				"observe the session this call returned, or leave history out to rejoin a held session")), nil
+		}
 	}
 	r.sweep()
 
@@ -1157,7 +1186,7 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 			if err != nil {
 				return flowmcp.ToolError(err), nil
 			}
-			if !entry.onRun(args.WorkflowID, args.RunID) {
+			if !entry.onRun(args.WorkflowID, args.RunID) || entry.history != args.History {
 				return flowmcp.ToolError(errReusedAttachKey), nil
 			}
 			answer := entry.answerAfter(ctx)
@@ -1165,6 +1194,9 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 
 			return answer.result(), nil
 		}
+	}
+	if args.History {
+		return r.attachHistory(ctx, args.WorkflowID, args.RunID, key)
 	}
 	// A rejoin of a session this server is still ending waits for the end,
 	// so the answer says what the run did rather than racing its detach.
@@ -1233,6 +1265,47 @@ func (r *debugSessions) attach(ctx context.Context, req *mcp.CallToolRequest) (*
 
 	answer := entry.answerAfter(ctx)
 	answer.Receipt = schemaJSON(receipt)
+
+	return answer.result(), nil
+}
+
+// attachHistory opens a retained session over a run's record (#2248): a
+// [flowdebug.Historical], driven by the same commands as any other session and
+// leased like one, though it holds nothing on the server. A retry under the same
+// key is answered with the session the first call opened.
+func (r *debugSessions) attachHistory(ctx context.Context, workflowID, runID, key string) (*mcp.CallToolResult, error) {
+	historical, err := flowdebug.OpenHistorical(ctx, flowdebug.RemoteHistory(r.remote(), workflowID, runID))
+	if err != nil {
+		return flowmcp.ToolError(fmt.Errorf("reading the history of %s: %w", workflowID, err)), nil
+	}
+
+	entry := &debugSessionEntry{
+		id: "history-" + uuid.NewString(), target: historical, driver: flowdebug.NewDriver(historical),
+		started: time.Now(), expires: time.Now().Add(debugSessionIdle), receipts: map[string]json.RawMessage{},
+		workflowID: workflowID, runID: runID, history: true,
+	}
+	entry.driver.Wait = maxDebugSessionWait
+	existing, err := r.register(entry, key)
+	if err != nil || existing != nil {
+		// A session this call opened and no entry will hold is closed, which
+		// releases nothing but its own cache.
+		_ = historical.Close()
+		if err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		if _, err := r.lookup(existing.id); err != nil {
+			return flowmcp.ToolError(err), nil
+		}
+		answer := existing.answerAfter(ctx)
+		answer.Note = strings.TrimSpace("this request id already attached this session; it was not attached again. " + answer.Note)
+
+		return answer.result(), nil
+	}
+
+	answer := entry.answerAfter(ctx)
+	answer.Note = strings.TrimSpace(fmt.Sprintf("this is run %s's record, read point by point and reconstructed from its history: "+
+		"nothing runs and nothing is held. next, back and goto <point> move among the snapshot's timeline points in "+
+		"either direction; end it with %s. %s", runID, debugSessionEndTool, answer.Note))
 
 	return answer.result(), nil
 }

@@ -526,7 +526,7 @@ calls instead:
 | Tool | What it does |
 | --- | --- |
 | `flowstate_debug_session_start` | start a session over one test case — the same stubbed run `flowstate_debug` uses — held at its first step |
-| `flowstate_debug_session_attach` | attach to a durable run on the configured server; `session_id` rejoins one |
+| `flowstate_debug_session_attach` | attach to a durable run on the configured server; `session_id` rejoins one; `history` with `run_id` walks the run's record instead ([below](#a-recorded-run-over-mcp)) |
 | `flowstate_debug_session_command` | run one command line and answer with the typed result: the receipt, the next stop's snapshot, or an inspection |
 | `flowstate_debug_session_observe` | read the snapshot and the transcript since the last observe; `after_revision` and `wait_seconds` wait for the next stop |
 | `flowstate_debug_session_end` | end it: a durable run is detached and continues (`keep` leaves its session attached), a test case finishes and its report is returned |
@@ -534,7 +534,9 @@ calls instead:
 A stubbed session steps back as `flow dap` with `"reverse": true` does: `back`
 and `reverse-continue` (`rc`) run the case again beside the held one and replay
 the commands it was given, verifying each stop, and the replay's output is not
-said twice. A durable session answers them with "no resume action".
+said twice. A live durable session answers them with a sentence naming `flow debug attach --history --run-id …`,
+which is where a durable run's way back is; a recorded session walks them in both directions
+([below](#a-recorded-run-over-mcp)).
 
 ```json
 {"name": "flowstate_debug_session_command",
@@ -565,6 +567,27 @@ a start carrying one never starts a second run, and an attach carrying one
 answers with the session it attached, whose id the lost response carried,
 rather than attaching again beside it. The key names one call: reused for
 another workflow, it is refused.
+
+#### A recorded run over MCP
+
+`flowstate_debug_session_attach` with `"history": true` and a `run_id` opens a session over the
+run's record, not over the run: nothing is held on the server, nothing runs, and a closed run walks
+as freely as one still going. The answer is the same typed snapshot as any session's, with the
+`history` capability set and a `timeline` whose points are all `RECONSTRUCTED`; `next`, `back` and
+`goto <point>` (a point of that timeline, counted from 0) move among them in either direction through
+`flowstate_debug_session_command`, `inspect` and `expand` read the point shown, and
+`flowstate_debug_session_end` closes it. `until`, `break`, `pause` and the other commands that
+need a run executing are refused by name, with the record's reason, and move nothing.
+
+```json
+{"name": "flowstate_debug_session_attach",
+ "arguments": {"workflow_id": "order-1234", "run_id": "5d3f…", "history": true}}
+```
+
+`history` without a `run_id` is refused before anything is read, because a point belongs to one
+execution; `session_id` is refused with it, since a record holds no session to rejoin. The session
+is leased and counted among the eight like any other, and a `request_id` answers a retry with the
+session the first call opened.
 
 `start` takes the workflow and tests as text, like `flowstate_debug`, so a
 `call:` to a relative path has no directory to resolve against and the case
@@ -898,7 +921,7 @@ without the flag, so a script that gains the flag keeps its output.
 | Key | Does |
 | --- | --- |
 | `s` or `space`, `n`, `f`, `c` | `step`, `next`, `finish`, `continue` |
-| `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them |
+| `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them (a recorded run answers the first two both ways and has no `p`, `u` or `B`) |
 | `tab`, `shift+tab` | focus the next or previous pane: flow, source, steps, scope, console |
 | `:` or `/` | type a command; every verb in the table above works there, with tab completion |
 | `i` | open the console on `inspect <the selected scope row>` |
@@ -907,7 +930,7 @@ without the flag, so a script that gains the flag keeps its output.
 | `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); a row whose children are not held yet, and a `… N more` row, run `expand` for them; in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
 | `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there (in the source, `B` is the breakpoint on the selected line) |
 | `?` | the help overlay: these keys, then the verbs that have no key |
-| `q` | `detach` and let the run go on unattended |
+| `q` | `detach` and let the run go on unattended (on a [recorded run](#walking-a-recorded-run), leave it: nothing is held) |
 | `ctrl+c` | leave at once and release the run, as `quit` does |
 | `ctrl+d` | leave and release the run |
 
@@ -1368,6 +1391,40 @@ last of a run that ended, because a terminal state would end the editor's
 session; the recorded outcome is in the stop's message. The first and last
 points refuse a move past them, and an answer for a point that was not asked for
 is a server fault, not a position.
+
+At a terminal it is `flow debug attach <workflow-id> --history --run-id <run-id>`, with the line
+editor, with `--script`, or with `--tui` for the full-screen debugger of
+[the full-screen debugger](#the-full-screen-debugger---tui). It is the same front that a live attach
+is, over a `Historical` target: `next`, `back`, `goto <point>` and a click on the timeline strip
+move among the points both ways, the top bar reads `reconstructed`, and nothing runs or is held.
+`--run-id` is required, because a point is a point of one execution, and `--session`, `--lease`
+and `--wait` are refused with one sentence, because a record has no session to rejoin, renew or
+wait on. `--program` shows source lines as it does for a live run, only where the program's digest
+is the one the point reports. Leaving, by `q`, `detach` or `ctrl+c`, releases nothing.
+
+The verbs a record refuses (`until`, `break`, `log`, `catch`, `delete`, `clear` and `pause`) have no
+key in the screen, no hint and no help line, and the mouse gestures that stand for them (a double
+click or right click on a step, a click on a line's number) say that the front does not answer them.
+Typed at the console they are refused by name with the record's own reason, for example `a recorded
+run cannot run until a boundary`. `flowdebug.VerbsFor` derives which verbs those are from the
+target's capabilities, and a test holds the list to the ones the target refuses. On a live durable
+run `b` and `goto` keep answering, with the sentence `a live durable run cannot step back:
+`flow debug attach --history --run-id …` walks its record`.
+
+**How each value is known.** At a recorded point every row that shows a value carries a badge, the
+`fidelity` of `DebugHistoryInspected`, drawn as words so it reads without colour:
+
+| Badge | Fidelity | Rows |
+| --- | --- | --- |
+| `[rec]` | reconstructed or recorded | a name listed from the scope, and its children: what the replay held there |
+| `[hyp]` | hypothetical | an expression typed at the console (`inspect`, `expand`) or watched, and its children: computed now over the reconstructed scope, never held by the run |
+| `[n/a]` | unavailable | a value that could not be produced at the point, drawn muted |
+
+A group's row lists names and holds no value, so it has no badge; the detail pane says in words what
+the selected row's badge means. A live stop has no fidelity and no badge, and the line editor's scope
+pane draws the same `[rec]` and `[n/a]` marks before a value. A point where the run held no debug
+session (before its first workflow task installed one) has no scope: the scope pane says `no scope at
+this point` and why instead of drawing nothing, and a watch there is `[n/a]`.
 
 Values are read at the point shown: `evaluate` (a watch, a hover, a REPL line)
 and the variables view ask `DebugHistory` for that point, so a watch follows the
