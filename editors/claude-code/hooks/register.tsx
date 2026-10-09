@@ -2,7 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
+import type { RunSummary } from '../types/flowstate'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
+import { MAX_PAGES, MAX_RUNS, clean, parsePage, runLine, toListing } from './runs'
+import type { Listing } from './runs'
 
 const PANE = 'flowstate'
 /** The pane and the stored state keep the most recent Flowfiles only. */
@@ -23,6 +26,30 @@ const validate = async (
     return { file: path, diagnostics: [], failure: ran.stderr.trim().split('\n')[0] || 'no report' }
   } catch (err) {
     return { file: path, diagnostics: [], failure: String(err) }
+  }
+}
+
+/**
+ * Asks the server for its newest runs. A bounded scan can come back short with
+ * a continuation token, so it follows the token a few pages until it has enough.
+ * A failure to answer is a state of the pane, never an error.
+ */
+const listRuns = async ($: Engine, flow: string): Promise<Listing> => {
+  const runs: RunSummary[] = []
+  let token = ''
+  try {
+    for (let page = 0; page < MAX_PAGES && runs.length < MAX_RUNS; page++) {
+      const argv = [flow, 'list', '-o', 'json', ...(token ? ['--page-token', token] : [])]
+      const ran = await $.process.run(argv, { timeoutMs: 5000 })
+      if (ran.exitCode !== 0) return toListing(ran)
+      const got = parsePage(ran.stdout)
+      runs.push(...got.runs)
+      token = got.next
+      if (!token) break
+    }
+    return { runs: runs.slice(0, MAX_RUNS) }
+  } catch (err) {
+    return { offline: clean(String(err), 100) || 'no answer' }
   }
 }
 
@@ -64,9 +91,19 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const list = await read($, reports)
+    const runs = await listRuns($, flow)
 
     return (
       <Box flexDirection="column">
+        <Text bold>Runs</Text>
+        {'offline' in runs ? (
+          <Text dimColor>  Runs unavailable ({runs.offline}). Local runs need no server; set FLOWSTATE_ADDRESS to list a server's.</Text>
+        ) : runs.runs.length === 0 ? (
+          <Text dimColor>  No runs yet.</Text>
+        ) : (
+          runs.runs.map(r => <Text dimColor>  {runLine(r)}</Text>)
+        )}
+        <Text bold>Flowfiles</Text>
         {list.length === 0 && <Text dimColor>No Flowfile edited yet this session.</Text>}
         {list.map(r => (
           <Box flexDirection="column">
@@ -74,12 +111,12 @@ export const register: Register = (on, options) => {
               {r.failure ? 'could not check' : r.diagnostics.length === 0 ? 'valid' : 'invalid'}{' '}
               {r.file}
             </Text>
-            {r.failure && <Text dimColor>  {r.failure}</Text>}
+            {r.failure && <Text dimColor>  {clean(r.failure, 120)}</Text>}
             {r.diagnostics.slice(0, 8).map(d => (
               <Text dimColor>
                 {'  '}
                 {d.line > 0 ? `${d.line}:${d.column} ` : ''}
-                {d.message.slice(0, 120)}
+                {clean(d.message, 120)}
               </Text>
             ))}
           </Box>

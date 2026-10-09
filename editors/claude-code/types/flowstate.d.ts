@@ -6,6 +6,11 @@
 // .proto and run `buf generate`.
 
 /**
+ * Status is where a run is in its lifecycle.
+ */
+export type RunResponse_Status = "STATUS_UNSPECIFIED" | "STATUS_RUNNING" | "STATUS_COMPLETED" | "STATUS_FAILED" | "STATUS_CANCELED" | "STATUS_TERMINATED" | "STATUS_TIMED_OUT"
+
+/**
  * Diagnostic is one problem found in a Flowfile, positioned in its source.
  *
  * A schema type rather than a shape the CLI invents, because it already has three
@@ -120,6 +125,90 @@ export interface DiagnosticReport {
    * valid.
    */
   diagnostics: Diagnostic[]
+}
+
+/**
+ * RunSummary describes one run in a listing.
+ *
+ * Deliberately not a run's outputs. A listing is about which workloads exist and
+ * what they are doing; reading what one produced is Get, which is one run and one
+ * authorization decision. A list that returned outputs would make "show me my
+ * runs" the cheapest way to read every workload's data at once.
+ */
+export interface RunSummary {
+  /**
+   * WorkflowId is the workload's durable handle, which Get and the other run
+   * verbs take.
+   */
+  workflowId: string
+  /**
+   * RunId is the listed run: the workload's current segment.
+   */
+  runId: string
+  /**
+   * Status is the run's current status.
+   */
+  status: RunResponse_Status
+  /**
+   * StartTime is when the workload began.
+   * For a workload that continued as new, the workload's start rather than the
+   * listed segment's — see segment_start_time.
+   */
+  startTime?: string | null
+  /**
+   * CloseTime is when it finished, unset while it is still running.
+   */
+  closeTime?: string | null
+  /**
+   * Name is the workflow's own declared `name:`, recorded on the run when it
+   * started. Empty only for a run started before names were recorded; a
+   * filter comparing `name` does not match such a run.
+   */
+  name: string
+  /**
+   * Labels are the workflow's own declared `labels:`, recorded on the run when
+   * it started.
+   *
+   * Empty for a workflow that declared none and for a run started before
+   * labels were recorded; the two are not distinguished. A filter
+   * `labels["team"] == "payments"` does not match such a run, and
+   * `!("team" in labels)` does.
+   */
+  labels: { [key: string]: string }
+  /**
+   * Starter is who submitted this run, as the qualified `issuer#subject`
+   * string: the same value, with the same meaning, as `GetResponse.starter`.
+   * Empty when the starter is unknown.
+   */
+  starter: string
+  /**
+   * WorkerVersion is the Worker Deployment version this run is pinned to, as
+   * `deployment-name.build-id`: the pair `flow worker --temporal-deployment-name`
+   * and `--build-id` configure.
+   *
+   * Empty when the run is not pinned to a version, including every run on a
+   * deployment that does not use Worker Deployment Versioning. It can change
+   * at Continue-As-New, when a run moves to the deployment's current version.
+   */
+  workerVersion: string
+  /**
+   * SegmentStartTime is when the listed segment itself started. For a
+   * workload that continued as new, this is later than `start_time`, which is
+   * the workload's start. Equal to `start_time` wherever no chain was
+   * recorded (a run that never continued, or a chain whose first segment
+   * predates the record); `segments` is zero in both cases.
+   */
+  segmentStartTime?: string | null
+  /**
+   * Segments is how many Continue-As-New segments the workload has run as,
+   * this one included: two or more when the interpreter recorded the chain,
+   * and zero when it recorded none. A first segment writes no count, so a run
+   * that never continued as new reports zero, not one; so does a chain whose
+   * first segment predates the count, whose start_time is then the listed
+   * segment's rather than the workload's. A listing cannot tell those two
+   * apart; a Get can, by first_run_id.
+   */
+  segments: number
 }
 
 /**

@@ -58,3 +58,4 @@ plugins:
     opt:
       - file=flowstate.d.ts
       - message=flowstate.v1.DiagnosticReport
+      - message=flowstate.v1.RunSummary
