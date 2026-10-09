@@ -261,3 +261,25 @@ func TestAFilterThatMatchesNothingSaysSoAndNotThatThereAreNoWorkflows(t *testing
 	assert.Contains(t, out, "no workflow matches the filter")
 	assert.NotContains(t, out, "name a Flowfile")
 }
+
+func TestOpeningARunsRowDropsWhatWasReadBeforeItBeforeItsOwnReadReturns(t *testing.T) {
+	r := &runner{runs: []*v1.RunSummary{runSummary("orders-1", "r1", v1.RunResponse_STATUS_COMPLETED)}}
+	m, _ := started(t, fleet(), withRuns(r))
+	m = openRuns(t, m)
+	runsRow := ""
+	for _, row := range m.Screen().Tree.Rows() {
+		if row.Label == "runs" {
+			runsRow = row.ID
+		}
+	}
+	require.Contains(t, m.answers, runsRow)
+
+	// The workflow is hidden and comes back closed; the person opens its runs row
+	// and the read is on its way. Nothing read earlier may answer for it.
+	m = press(m, "f", "z", "esc", "j", "j", "enter")
+	m, cmd := pressNoRun(m, "j")
+	require.Nil(t, cmd)
+	m, cmd = pressNoRun(m, "enter")
+	require.NotNil(t, cmd, "the read is started")
+	assert.NotContains(t, m.answers, runsRow)
+}

@@ -256,6 +256,9 @@ func (m *Model) fill(request pane.Request) tea.Cmd {
 
 			return nil
 		}
+		// A person opening the row asks afresh, and what was read before must not
+		// fill it while that answer is on its way.
+		delete(m.answers, request.Parent)
 		ctx, runs := m.ctx, m.cfg.Runs
 		m.gens[request.Parent]++
 		gen := m.gens[request.Parent]
