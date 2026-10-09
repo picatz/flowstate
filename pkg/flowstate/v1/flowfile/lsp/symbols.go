@@ -91,13 +91,10 @@ func documentSymbols(doc *document) []lsp.SymbolInformation {
 // the diagnostics already report, and jumping to it would suggest it works.
 func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	if !doc.speaksFlowfile() {
-		// Deliberately still nil for a test document (#1110 item 8), and not
-		// yet an accidental fallthrough left uncommented: a case's
-		// `workflow:` naming a sibling Flowfile is the one position this
-		// language has that reads like [callDefinition]'s target, and giving
-		// it a jump belongs with the rest of go-to-definition rather than
-		// riding in on the outline change beside it.
-		return nil // see [document.speaksFlowfile]
+		// A test document's one definition is a `workflow:` naming a sibling
+		// Flowfile, answered by [testDefinition] through the same resolver
+		// [callDefinition] uses; nothing else in that language has a target.
+		return testDefinition(doc, pos)
 	}
 	pos = clampPosition(pos) // see [clampPosition]
 
@@ -280,6 +277,14 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 		return nil
 	}
 
+	return siblingFlowfile(doc, target)
+}
+
+// siblingFlowfile resolves a `call:` target the way the compiler does — the
+// caller's location, [flowfile.ResolveCallTarget] — and hands the path to
+// [flowfileLocation]. It returns nil, never a wrong location, when any step says
+// no.
+func siblingFlowfile(doc *document, target string) []lsp.Location {
 	callerPath, ok := doc.filesystemPath()
 	if !ok {
 		return nil
@@ -292,13 +297,108 @@ func callDefinition(doc *document, from *parsedStep, pos lsp.Position) []lsp.Loc
 		// there anyway would say the call works.
 		return nil
 	}
+	return flowfileLocation(located.Path)
+}
 
-	info, err := os.Stat(located.Path)
+// flowfileLocation is where go-to-definition arrives for a Flowfile at path: its
+// `name:`, provided the path is a regular file. Anything else is nil, because a
+// [lsp.Location] naming a path that is not there opens an editor on nothing.
+func flowfileLocation(path string) []lsp.Location {
+	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil
 	}
+	return []lsp.Location{{URI: fileURI(path), Range: calleeRange(path)}}
+}
 
-	return []lsp.Location{{URI: fileURI(located.Path), Range: calleeRange(located.Path)}}
+// testDefinition resolves the `workflow:` value of a test case, or of a
+// `defaults:` stanza (in a suite or a testdefaults.yaml), to the Flowfile it
+// names, when the cursor is on the value. The cursor on the key, on a comment,
+// on any other key, or on a `workflow:` that is not a literal path yields nil.
+//
+// The path means what it means to `flow test`: absolute as written, otherwise
+// joined onto the test file's directory, with no containment rule — the runner
+// accepts an absolute or parent-relative workflow, so refusing one here would
+// leave a suite that runs without a jump to the file it runs. That is the one
+// way this differs from `call:`, whose containment is the compiler's.
+func testDefinition(doc *document, pos lsp.Position) []lsp.Location {
+	if doc.tooLarge {
+		return nil
+	}
+	pos = clampPosition(pos)
+
+	line := doc.index.line(pos.Line)
+	key, _, rng, ok := keyValueOnLine(line, pos.Line)
+	if !ok || key != "workflow" {
+		return nil
+	}
+	// keyValueOnLine's range runs to the end of the line, comment and all; the
+	// value is only what the YAML scalar decoder accepts, up to its own end.
+	start := doc.index.byteOfUTF16(pos.Line, rng.Start.Character)
+	span := scalarSpan(line[start:])
+	if span == 0 {
+		return nil
+	}
+	end := lsp.Position{Line: pos.Line, Character: utf16Len(line[:start+span])}
+	if !contains(lsp.Range{Start: rng.Start, End: end}, pos) {
+		return nil
+	}
+	literal, err := flowfile.LiteralText(scalarText(line[start : start+span]))
+	if literal == "" || err != nil {
+		// Same reading of the path callDefinition gives a `call:` target.
+		return nil
+	}
+
+	level, structural := testDocLevelAt(doc.kind, keyPath(doc.index, pos.Line))
+	if !structural || (level != testLevelCase && level != testLevelDefaults) {
+		return nil
+	}
+	testPath, ok := doc.filesystemPath()
+	if !ok {
+		return nil
+	}
+	if !filepath.IsAbs(literal) {
+		literal = filepath.Join(filepath.Dir(testPath), literal)
+	}
+	return flowfileLocation(literal)
+}
+
+// scalarSpan is how many bytes of rest are the YAML scalar it begins with: a
+// quoted scalar through its closing quote, a plain one up to a trailing comment.
+// Zero when rest is not a scalar the decoder accepts, which includes an unclosed
+// quote — go-to-definition answers on a valid value or not at all.
+func scalarSpan(rest string) int {
+	if scalarText(rest) == "" {
+		return 0
+	}
+	switch rest[0] {
+	case '"':
+		for i := 1; i < len(rest); i++ {
+			switch rest[i] {
+			case '\\':
+				i++
+			case '"':
+				return i + 1
+			}
+		}
+		return 0
+	case '\'':
+		for i := 1; i < len(rest); i++ {
+			if rest[i] != '\'' {
+				continue
+			}
+			if i+1 < len(rest) && rest[i+1] == '\'' {
+				i++
+				continue
+			}
+			return i + 1
+		}
+		return 0
+	}
+	if i := strings.Index(rest, " #"); i >= 0 {
+		rest = rest[:i]
+	}
+	return len(strings.TrimRight(rest, " \t"))
 }
 
 // calleeRange is where in the called file to put the cursor: its `name:`, or the
