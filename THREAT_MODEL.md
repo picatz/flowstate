@@ -758,11 +758,14 @@ accepted, not open, so a later scan can be compared against them (#2043):
 
 **Why no mechanism.** An agent host that can run plugins and hooks at all can already
 read and write the checkout, so neither finding grants an attacker anything this
-boundary does not already grant. The available fixes move the trust decision rather than
-removing it: a plugin pin trusts whoever wrote the pin and freezes the plugin's own
-security fixes, and a hook digest is written by the same build, into the same tree, as
-the binary it vouches for. Either would read to a maintainer as an assurance it does not
-provide, which is worse than trust that is undisguised.
+boundary does not already grant. That holds for the host and its users; it does not hold
+for the plugin publisher. If the marketplace or a publisher were compromised, an unpinned
+update would put newly published code in front of a checkout with no repository change,
+and a revision pin would block that path until a maintainer chose to move it. The pin is
+declined because of what it costs, not because it adds nothing: it freezes the plugin's
+own security fixes behind a manual bump, and trusts whoever wrote the pin. A hook digest
+is written by the same build, into the same tree, as the binary it vouches for, so it
+authenticates nothing and would read to a maintainer as an assurance it does not provide.
 
 **Limits.** This is the position for the agent host's checkout, not for the engine: a
 Flowfile or a plugin a *workflow* names is governed by the boundaries above. If a pin or
