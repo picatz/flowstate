@@ -46,12 +46,8 @@ func signatureHelpAt(doc *document, pos lsp.Position) *lsp.SignatureHelp {
 
 	forEachExpression(doc, visit)
 
-	// The positions forEachExpression does not model, because nothing there
-	// resolves a step reference: the workflow's `vars:` and a declared
-	// function's `body:`. A call is a call wherever it is written.
-	for _, e := range doc.parsed.expressionEntries() {
-		walkValues(e.value, func(v *value) { visit(nil, loopScopeNone, v) })
-	}
+	// A declared function's `body:` is the one position forEachExpression does
+	// not model, because nothing there resolves a step reference.
 	for _, e := range doc.parsed.entries {
 		if e.key == "functions" {
 			walkValues(e.value, func(v *value) { visit(nil, loopScopeNone, v) })

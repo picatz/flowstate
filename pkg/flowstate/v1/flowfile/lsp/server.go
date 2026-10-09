@@ -73,7 +73,12 @@ type FlowfileServer struct {
 	// initialized and shuttingDown track the protocol lifecycle. The spec
 	// requires rejecting requests before initialize and after shutdown, and an
 	// editor that reuses a connection depends on that being enforced.
-	initialized  atomic.Bool
+	initialized atomic.Bool
+
+	// snippets records that the client said at initialize it can expand snippet
+	// completions. A server serves one client over one stream, so this is a
+	// property of the session, and a client that does not say so gets plain text.
+	snippets     atomic.Bool
 	shuttingDown atomic.Bool
 }
 
@@ -154,6 +159,11 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 
 	switch req.Method {
 	case "initialize":
+		var params lsp.InitializeParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		s.snippets.Store(params.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport)
 		s.initialized.Store(true)
 		return &initializeResult{Capabilities: capabilities()}, nil
 
@@ -280,7 +290,12 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if !ok {
 			return &lsp.CompletionList{Items: []lsp.CompletionItem{}}, nil
 		}
-		return completeAt(doc, params.Position), nil
+		list := completeAt(doc, params.Position)
+		if s.snippets.Load() {
+			snippetizeTasks(doc, list, s.tasks())
+			return withAdjustedIndentation(list), nil
+		}
+		return list, nil
 
 	case "textDocument/definition":
 		var params lsp.TextDocumentPositionParams
@@ -630,13 +645,15 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		return
 	}
-	diagnostics := diagnose(doc)
+	diagnostics := publishable(doc, diagnoseCarried(doc))
 	s.logger().Debug("published diagnostics",
 		"uri", doc.uri, "version", doc.version, "count", len(diagnostics))
-	s.notify(ctx, conn, lsp.PublishDiagnosticsParams{
+	if err := conn.Notify(ctx, "textDocument/publishDiagnostics", publishDiagnosticsParams{
 		URI:         doc.uri,
 		Diagnostics: diagnostics,
-	})
+	}); err != nil {
+		s.logger().Warn("publishing diagnostics failed", "uri", doc.uri, "error", err)
+	}
 }
 
 // siblingDocumentURI retains the client's spelling of a local file URI while

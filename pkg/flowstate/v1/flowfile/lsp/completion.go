@@ -1457,6 +1457,104 @@ func taskCandidates(prefix string, replace lsp.Range, tasks *v1.Registry) []lsp.
 	return items
 }
 
+// snippetizeTasks turns each task-name candidate into a snippet that also writes
+// the task's required inputs as tabstops, so choosing `http` leaves the cursor on
+// `url:` instead of on a line the author then has to look up.
+//
+// A separate pass over the list rather than a second set of candidates: the
+// plain candidate is what a client without snippet support gets, and both are the
+// same item. A task with no required inputs is left alone, because a snippet that
+// adds nothing is only a way for a client to treat the item differently.
+//
+// The protocol has the client re-indent a snippet's continuation lines by the
+// leading whitespace of the line it is inserted on, so the snippet carries only
+// what is relative to that: two spaces, plus however far the task key sits past
+// the line's own indentation. That second part is nonzero in the commonest place
+// a task is written, `- http`, where the key starts after the list marker and its
+// inputs must line up under it, not under the dash.
+func snippetizeTasks(doc *document, list *lsp.CompletionList, tasks *v1.Registry) {
+	for i, item := range list.Items {
+		if item.Kind != lsp.CIKFunction || item.TextEdit == nil || item.TextEdit.NewText != item.Label+": " {
+			continue
+		}
+		def, ok := tasks.Lookup(item.Label)
+		if !ok || def.Inputs == nil {
+			continue
+		}
+
+		indent := strings.Repeat(" ", keyOffset(doc, item.TextEdit.Range.Start)+2)
+		var b strings.Builder
+		fields := def.Inputs.Fields()
+		n := 0
+		for j := range fields.Len() {
+			fd := fields.Get(j)
+			if !required(fd) {
+				continue
+			}
+			n++
+			if n == 1 {
+				b.WriteString(def.Name + ":")
+			}
+			fmt.Fprintf(&b, "\n%s%s: $%d", indent, fd.Name(), n)
+		}
+		if n == 0 {
+			continue
+		}
+
+		list.Items[i].TextEdit = &lsp.TextEdit{Range: item.TextEdit.Range, NewText: b.String()}
+		list.Items[i].InsertTextFormat = lsp.ITFSnippet
+	}
+}
+
+// insertTextModeAdjustIndentation is InsertTextMode.adjustIndentation (LSP 3.16):
+// the client re-indents a multi-line insertion by the indentation of the line it
+// lands on, which is what the relative indentation of a snippet assumes.
+const insertTextModeAdjustIndentation = 2
+
+// wireCompletionItem is a completion item with the field go-lsp lacks.
+type wireCompletionItem struct {
+	lsp.CompletionItem
+
+	InsertTextMode int `json:"insertTextMode,omitempty"`
+}
+
+// wireCompletionList is [lsp.CompletionList] over [wireCompletionItem].
+type wireCompletionList struct {
+	IsIncomplete bool                 `json:"isIncomplete"`
+	Items        []wireCompletionItem `json:"items"`
+}
+
+// withAdjustedIndentation states the indentation mode on every snippet item
+// rather than leaving it to the client's default: snippetSupport says a client
+// expands snippets, not that it re-indents them.
+func withAdjustedIndentation(list *lsp.CompletionList) *wireCompletionList {
+	out := &wireCompletionList{IsIncomplete: list.IsIncomplete, Items: make([]wireCompletionItem, len(list.Items))}
+	for i, it := range list.Items {
+		out.Items[i].CompletionItem = it
+		if it.InsertTextFormat == lsp.ITFSnippet {
+			out.Items[i].InsertTextMode = insertTextModeAdjustIndentation
+		}
+	}
+	return out
+}
+
+// keyOffset is how many columns the key starting at pos sits past the
+// indentation of its line, which is the list marker's width when the key follows
+// one. Zero when the line cannot be read.
+func keyOffset(doc *document, pos lsp.Position) int {
+	if pos.Line < 0 || pos.Line >= doc.index.lineCount() {
+		return 0
+	}
+	line := doc.index.line(pos.Line)
+	if pos.Character < 0 || pos.Character > len(line) {
+		return 0
+	}
+	before := line[:pos.Character]
+	trimmed := strings.TrimLeft(before, " \t")
+
+	return len(trimmed)
+}
+
 // inputCandidates offers the inputs the enclosing step's task declares, required
 // ones first, omitting those already written.
 func inputCandidates(prefix string, replace lsp.Range, step *outlineStep, tasks *v1.Registry) []lsp.CompletionItem {

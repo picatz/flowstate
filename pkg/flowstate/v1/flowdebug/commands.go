@@ -498,7 +498,7 @@ func (s *Session) dispatch(ctx context.Context, line string, node *v1.Node, scop
 			return false, nil
 		}
 		s.record("expand " + expression)
-		expression, offset := expandPage(expression)
+		expression, offset := ExpandPage(expression)
 		s.expand(ctx, expression, offset)
 
 		return false, nil
@@ -1020,6 +1020,9 @@ func (s *Session) addBreakpoint(ctx context.Context, rest string, scope *v1.Scop
 // this, so one breakpoint reads the same on each.
 func breakpointLabel(definition *v1.DebugBreakpoint) string {
 	label := definition.GetStep()
+	if line := definition.GetLine(); label == "" && line != nil {
+		label = fmt.Sprintf("%s:%d", SourceName(line.GetUri()), line.GetLine())
+	}
 	if hit := strings.TrimSpace(definition.GetHitCondition()); hit != "" {
 		label += " hit " + hit
 	}
@@ -1515,7 +1518,7 @@ func (s *Session) expand(ctx context.Context, expression string, offset int) {
 	case answer.GetError() != "":
 		s.emitTone(ToneWarning, answer.GetError()+"\n")
 	default:
-		s.printf("%s", formatChildren(expression, offset, answer))
+		s.printf("%s", formatChildren(expression, offset, answer, Frame{}))
 	}
 }
 

@@ -6,15 +6,18 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Local execution and durable execution are two drivers over one execution model,
@@ -151,7 +154,11 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	workflow, err := loadWorkflow(args[0])
+	// A debugged run reads the file once for both the program and the lines its
+	// steps are written on, so the full-screen debugger can show the Flowfile
+	// beside the run it holds.
+	debugging, _ := cmd.Flags().GetBool("debug")
+	workflow, source, err := loadRunWorkflow(args[0], debugging)
 	if err != nil {
 		return err
 	}
@@ -239,7 +246,6 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 	// prompt is drawn is a staircase down the screen with the half-typed
 	// command lost somewhere in it. Attached before the logger for exactly that
 	// reason; `narrate` is stderr itself everywhere else.
-	debugging, _ := cmd.Flags().GetBool("debug")
 	record, err := recordPath(cmd)
 	if err != nil {
 		return err
@@ -250,7 +256,17 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		narrate io.Writer = surface.Err
 		restore           = func() {}
 	)
-	var front *reversibleFront
+	var (
+		front *reversibleFront
+		// screenSession is the session the full-screen debugger drives, for a
+		// run that does not step back; the reversible front owns its own.
+		screenSession *flowdebug.Session
+		screen        bool
+		over          = screenOver{Local: true, Recording: &attachRecording{}}
+		// sourceMap is the lines of the program as run, for the screen and for
+		// the session that resolves a line breakpoint through it.
+		sourceMap *v1.DebugSourceMap
+	)
 	reverse, err := reverseRequested(cmd, workflow, debugging, localSignals)
 	if err != nil {
 		return err
@@ -271,9 +287,29 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			return err
 		}
 
-		console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		// At a terminal the full-screen debugger owns the screen, so there is
+		// no line editor and nothing may be written to the terminal around it:
+		// what the run says is kept and printed when the screen has closed.
+		// Everywhere else the line editor and the script front are what they
+		// always were.
+		var note string
+		screen, note = debugScreen(cmd, cmd.InOrStdin(), surface.Out, "", format, os.Getenv)
+		fmt.Fprint(surface.Err, note)
+		if screen {
+			// The program is the one this process runs, so it can name the
+			// steps the run will reach.
+			over.Frames = flowdebug.FrameOptions{Program: workflow, Inventory: stepList(workflow)}
+			// And the lines they are written on: the map is of the program this
+			// process runs, so it is verified by construction.
+			sourceMap, over.Documents = source.screenSource(workflow)
+			over.Frames.SourceMap = sourceMap
+			account := &screenNarration{}
+			narrate, restore = account, func() { account.flushTo(surface.Err) }
+		} else {
+			console, narrate, restore = debugConsoleFor(cmd.InOrStdin(), surface.Err, surface.ErrTheme)
+		}
 		defer restore()
-		if console == nil {
+		if console == nil && !screen {
 			// The run's goroutines and the front's prompt loop share stderr.
 			narrate = &lockedWriter{w: narrate}
 		}
@@ -305,20 +341,23 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 
 		if reverse != "" {
 			front = &reversibleFront{
-				Steps:   stepList(workflow),
-				Out:     narrate,
-				Emit:    emit,
-				Prompt:  flowdebug.Prompt,
-				Console: console,
-				Panes:   panes,
-				Theme:   surface.ErrTheme,
+				Steps: stepList(workflow),
+				// Offered to every pass's session, so a line breakpoint the screen
+				// sets resolves in a replay as it did in the pass that set it.
+				SourceMap: sourceMap,
+				Out:       narrate,
+				Emit:      emit,
+				Prompt:    flowdebug.Prompt,
+				Console:   console,
+				Panes:     panes,
+				Theme:     surface.ErrTheme,
 				// The explicit opt-in, held by every pass's session.
 				RevealSensitive: reveal,
 				// A script that steps back is replayed by this same front, so
 				// the recording keeps what a terminal session typed.
 				RecordRewinds: true,
 			}
-			if console == nil {
+			if console == nil && !screen {
 				// No terminal: the commands come off a stream, a script being
 				// replayed or a pipe, one to a line.
 				front.Next = scriptLines(cmd.InOrStdin())
@@ -327,14 +366,29 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 				front.Record = &attachRecording{}
 				defer func() { writeRecording(record, front.Record.lines, front.Record.truncated, surface.Err) }()
 			}
-			fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
-				fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			if screen {
+				// The front replays a recording that steps back, so the screen
+				// keeps what was typed, and a line breakpoint ends it as it
+				// does everywhere else.
+				if front.Record != nil {
+					over.Recording = front.Record
+				}
+				over.KeepRewinds = true
+				front.Screen = func(ctx context.Context, shown screenOver) (debugtui.Outcome, error) {
+					over.Target, over.Driver, over.Capabilities = shown.Target, shown.Driver, shown.Capabilities
+
+					return showScreen(ctx, cmd.InOrStdin(), surface, over)
+				}
+			} else {
+				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+					fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			}
 			if reverse == reverseUnsafe {
 				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Warning.Render(
 					"--reverse=unsafe: stepping back runs every task again, effects included"))
 			}
 		} else {
-			session, err := flowdebug.New(flowdebug.Options{
+			options := flowdebug.Options{
 				In:      cmd.InOrStdin(),
 				Console: consoleOrNil(console),
 				Out:     narrate,
@@ -346,10 +400,20 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 				// And the program itself, so a target or a condition is judged
 				// against where it can fire, as every other front judges it.
 				Workflow: workflow,
+				// The lines of that program, which `break` on a line resolves
+				// through. Only the screen sets one: the line editor has no line to
+				// name.
+				SourceMap: sourceMap,
 				// Authorized by --reveal-sensitive, without which a program
 				// declaring sensitive values is refused above.
 				RevealSensitive: reveal,
-			})
+			}
+			if screen {
+				// Driven through the typed contract by the screen, never read
+				// from a stream.
+				options.In, options.Controlled = nil, true
+			}
+			session, err := flowdebug.New(options)
 			if err != nil {
 				return err
 			}
@@ -364,10 +428,16 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 			defer func() { _ = session.Close() }()
 			// Registered last, so it runs first: the file is written while the
 			// session still holds what it accepted, on every way out.
-			defer recordSession(record, session, surface.Err)()
-
-			fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
-				fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			if screen {
+				screenSession = session
+				if record != "" {
+					defer func() { writeRecording(record, over.Recording.lines, over.Recording.truncated, surface.Err) }()
+				}
+			} else {
+				defer recordSession(record, session, surface.Err)()
+				fmt.Fprintf(narrate, "%s\n", surface.ErrTheme.Accent.Render(
+					fmt.Sprintf("debugging %s — `help` lists the commands", workflow.GetName())))
+			}
 			ctx = v1.NewContextWithDebugger(ctx, session)
 			ctx = v1.NewContextWithRunObserver(ctx, session)
 		}
@@ -382,9 +452,15 @@ func runLocalWorkflow(cmd *cobra.Command, args []string) error {
 		outputs *v1.Workflow_StepOutputs
 		runErr  error
 	)
-	if front != nil {
+	switch {
+	case front != nil:
 		outputs, runErr = runReversibly(ctx, front, workflow, inputs, narrate, surface.ErrTheme)
-	} else {
+	case screenSession != nil:
+		outputs, runErr = runUnderScreen(ctx, cmd.InOrStdin(), surface, screenSession, over,
+			func(runCtx context.Context) (*v1.Workflow_StepOutputs, error) {
+				return v1.RunWithInputs(runCtx, workflow, inputs)
+			})
+	default:
 		outputs, runErr = v1.RunWithInputs(ctx, workflow, inputs)
 	}
 	// A debugger is told the run has returned, so it can say what the run
@@ -622,4 +698,25 @@ func failureExcerpt(failure *v1.ExpressionFailure) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// loadRunWorkflow is [loadWorkflow] for `flow run local`, which reads the file
+// through [loadDebuggedWorkflow] instead when the run is debugged: the program
+// and the lines of the bytes it was compiled from come from one read. The source
+// is nil for a run that is not debugged.
+func loadRunWorkflow(path string, debugging bool) (*v1.Workflow, *debugSource, error) {
+	if !debugging {
+		workflow, err := loadWorkflow(path)
+
+		return workflow, nil, err
+	}
+	workflow, source, err := loadDebuggedWorkflow(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Where each step is written travels with the specification, as it does
+	// from [loadWorkflow], so a failure points back at the file.
+	flowfile.AttachSources(workflow, source.positions, path)
+
+	return workflow, source, nil
 }

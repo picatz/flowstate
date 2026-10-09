@@ -649,3 +649,180 @@ func TestBreakingContainerOutputWeakened(t *testing.T) {
 
 	require.Empty(t, diffFixtures(t, out("list(dyn)"), out("list(string)")))
 }
+
+// recordFile is a workflow whose input and output are both the record Order, so
+// one edit to Order is read in both directions.
+func recordFile(fields string) string {
+	return fixtureHeader() + "types:\n  Order:\n    fields:\n" + fields +
+		"inputs:\n  order:\n    type: Order\n    required: true\n" +
+		"steps:\n  - id: noop\n    log:\n      message: done\n" +
+		"outputs:\n  receipt:\n    type: Order\n    value: ${inputs.order}\n"
+}
+
+const orderFields = "      id: {type: string, required: true}\n      note: {type: string}\n"
+
+// TestBreakingThroughRecordFields: two files that both say `Order` have not
+// agreed on what `Order` is. Each edit below changes what the record accepts or
+// promises, and the rows say which direction reports it.
+func TestBreakingThroughRecordFields(t *testing.T) {
+	base := recordFile(orderFields)
+
+	for name, tc := range map[string]struct {
+		fields string
+		input  string // substring of the input's break, "" for silent
+		output string // substring of the output's break, "" for silent
+	}{
+		"a new required field": {
+			fields: orderFields + "      total: {type: int, required: true}\n",
+			input:  `field "total" is new and must be supplied`,
+		},
+		"a new optional field": {
+			fields: orderFields + "      total: {type: int}\n",
+		},
+		"an optional field made required": {
+			fields: "      id: {type: string, required: true}\n      note: {type: string, required: true}\n",
+			input:  "now must be supplied",
+		},
+		"a required field made optional": {
+			fields: "      id: {type: string}\n      note: {type: string}\n",
+			output: "is no longer always present",
+		},
+		"a field removed": {
+			fields: "      id: {type: string, required: true}\n",
+			input:  `field "note" was removed, so a caller still sending it is refused`,
+			output: `field "note" was removed`,
+		},
+		"a field's type narrowed": {
+			fields: "      id: {type: string, required: true}\n      note: {type: enum, values: [a]}\n",
+			input:  "narrowed its type",
+		},
+		"a required field given a default": {
+			fields: "      id: {type: string, required: true, default: x}\n      note: {type: string}\n",
+		},
+		"a default dropped from an optional field": {
+			fields: "      id: {type: string, required: true}\n      note: {type: string}\n",
+		},
+		"a bound added": {
+			fields: "      id: {type: string, required: true}\n      note: {type: string, max_len: 9}\n",
+			input:  "narrowed its constraint (max_len lowered)",
+		},
+		"an unchanged record": {
+			fields: orderFields,
+		},
+		"a field's bound tightened": {
+			fields: "      id: {type: string, required: true, min_len: 3}\n      note: {type: string}\n",
+			input:  "narrowed its constraint (min_len raised)",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ds := diffFixtures(t, base, recordFile(tc.fields))
+
+			var in, out string
+			for _, d := range ds {
+				switch d.Field {
+				case "inputs.order":
+					in = d.Message
+				case "outputs.receipt":
+					out = d.Message
+				}
+			}
+
+			if tc.input == "" {
+				require.Empty(t, in)
+			} else {
+				require.Contains(t, in, tc.input)
+				require.Contains(t, in, "record Order")
+			}
+			if tc.output == "" {
+				require.Empty(t, out)
+			} else {
+				require.Contains(t, out, tc.output)
+			}
+		})
+	}
+}
+
+// TestBreakingThroughRecordsFindsTheRecordInsideAList follows a field typed
+// `list(Line)` to the record it holds, and names the path to the field.
+func TestBreakingThroughRecordsFindsTheRecordInsideAList(t *testing.T) {
+	file := func(line string) string {
+		return fixtureHeader() + "types:\n  Line:\n    fields:\n" + line +
+			"  Order:\n    fields:\n      lines: {type: \"list(Line)\"}\n" +
+			"inputs:\n  order:\n    type: Order\n" + fixtureStep
+	}
+
+	ds := diffFixtures(t,
+		file("      sku: {type: string}\n"),
+		file("      sku: {type: string, required: true}\n"))
+	require.Len(t, ds, 1)
+	require.Contains(t, ds[0].Message, "record Line")
+	require.Contains(t, ds[0].Message, "now must be supplied")
+}
+
+// TestBreakingThroughRecordEnumMembers: a member added to an enum field widens
+// what an output can answer with, which a caller switching on it has not seen,
+// and only narrows an input when one is removed.
+func TestBreakingThroughRecordEnumMembers(t *testing.T) {
+	with := func(values string) string {
+		return recordFile("      id: {type: string, required: true}\n      kind: {type: enum, values: [" + values + "]}\n")
+	}
+	messages := func(oldValues, newValues string) (in, out string) {
+		for _, d := range diffFixtures(t, with(oldValues), with(newValues)) {
+			switch d.Field {
+			case "inputs.order":
+				in = d.Message
+			case "outputs.receipt":
+				out = d.Message
+			}
+		}
+
+		return in, out
+	}
+
+	in, out := messages("a", "a, b")
+	require.Empty(t, in, "a member added to an input only admits more")
+	require.Contains(t, out, "weakened its guarantee (values added: b)")
+
+	in, out = messages("a, b", "a")
+	require.Contains(t, in, "values removed: b")
+	require.Empty(t, out, "a member removed from an output only promises less variety")
+}
+
+// TestBreakingThroughRecordFieldDirections pins the cases the table cannot: each
+// is judged against its own base.
+func TestBreakingThroughRecordFieldDirections(t *testing.T) {
+	file := func(note string) string {
+		return recordFile("      id: {type: string, required: true}\n      note: {" + note + "}\n")
+	}
+	messages := func(oldNote, newNote string) (in, out string) {
+		for _, d := range diffFixtures(t, file(oldNote), file(newNote)) {
+			switch d.Field {
+			case "inputs.order":
+				in = d.Message
+			case "outputs.receipt":
+				out = d.Message
+			}
+		}
+
+		return in, out
+	}
+
+	// Defaults are filled in before a caller receives the value, so a field with
+	// one is as present as a required field.
+	in, out := messages("type: string, required: true", "type: string, default: x")
+	require.Empty(t, out, "required to optional-with-default keeps the field always present")
+	require.Empty(t, in)
+	_, out = messages("type: string, default: x", "type: string")
+	require.Contains(t, out, "is no longer always present")
+
+	// A bound dropped or loosened weakens what an output promises, not an input.
+	in, out = messages("type: string, max_len: 5", "type: string, max_len: 9")
+	require.Empty(t, in)
+	require.Contains(t, out, "weakened its guarantee (max_len raised)")
+	_, out = messages("type: string, min_len: 2", "type: string")
+	require.Contains(t, out, "min_len lowered")
+
+	// An enum widened to a string accepts everything it did, so it is no input break.
+	in, _ = messages("type: enum, values: [a]", "type: string")
+	require.Empty(t, in, "a type widened from an enum is not a narrowed constraint")
+}

@@ -13,9 +13,9 @@ to the others:
 
 | You are | Reach for | What it drives |
 | --- | --- | --- |
-| a person, debugging a test case | `flow test --debug --run '<case>' <file>` | a prompt, over a stubbed run |
+| a person, debugging a test case | `flow test --debug --run '<case>' <file>` | [a screen](#the-default-is-a-full-screen-debugger) at a terminal, a prompt elsewhere, over a stubbed run |
 | a person, opening a failing simulation | `flow test --seed <N> --debug --run '<case>' <file>` | the seeded run itself, faults and order included |
-| a person, debugging a real local run | `flow run local --debug <workflow>` | the same prompt, over a real run |
+| a person, debugging a real local run | `flow run local --debug <workflow>` | the same screen, over a real run |
 | a person, debugging a durable run | `flow debug attach <workflow-id>` | the same commands, over a run on a worker |
 | an editor | [`flow dap`](EDITORS.md#stepping-a-run-flow-dap), launch or attach | a local run, or a durable one |
 | an agent | the `flowstate_debug` tool, or the `flowstate_debug_session_*` tools | a scripted session, or one retained across calls |
@@ -61,6 +61,63 @@ flowchart LR
   class Case,Local,Durable runtime
   class Past durable
 ```
+
+## The default is a full-screen debugger
+
+At a terminal, `flow debug attach`, `flow run local --debug` (with or without
+`--reverse`) and `flow test --debug` open a full-screen debugger: the flow, the
+source, the steps, the scope and a console, driven by keys and the mouse. It is
+the same session as the prompt described under [The prompt](#the-prompt) and the
+same commands: a key, a click and a line typed at the console are one call with
+one answer and one refusal, and the screen draws only what the run answers, so a
+value the run withholds is withheld there too. The keys are listed under
+[the full-screen debugger](#the-full-screen-debugger), and `?` on the screen
+shows them.
+
+It opens when stdin and stdout are both terminals of at least 60 columns by 12
+rows, `TERM` is not `dumb` and `CI` is not set. `--tui=false` opts out and keeps
+the line editor on a terminal:
+
+```console
+$ flow run local --debug workflow.yaml             # the screen, at a terminal
+$ flow run local --debug workflow.yaml --tui=false # the line editor
+```
+
+**Machine output is untouched.** Everywhere the screen cannot or should not be
+drawn, the debugger is exactly the front it was before the screen existed, byte
+for byte on stdout and stderr, and it says nothing about the screen: a
+`--script`, a piped stdin or stdout (`flow test --debug < script.txt`, `flow run
+local --debug | jq`), a machine `-o json` or `-o jsonl`, a CI environment, and
+`TERM=dumb`. That is what lets a recorded session replay, an agent drive it and a
+pipeline read its answer. `--tui` spelled out is the one request that is
+answered: where it cannot be honoured it is declined with one sentence on
+stderr (`flow: --tui is not used: stdin is not a terminal; using the line
+editor`) and the command carries on without it, so a script that gains the flag
+keeps its output. A `CI` environment declines the default, not a request someone
+typed.
+
+Over a run in this process the screen owns the terminal for as long as the run is
+held, so what the run says in that time (its `log:` steps and narration) is kept
+and printed on stderr when the screen closes, and the run's answer follows on
+stdout as it always does. How you leave decides what happens to the run, as at
+the prompt: `q` or `detach` lets it finish unattended, `ctrl+d` leaves and does
+the same, and `ctrl+c` ends it as `quit` does. A run that cannot step back has no
+key for `back` or `reverse-continue`; `--reverse` gives it one that works. `--record`
+writes the commands the screen sent, up to a line breakpoint (which has no line a
+script could replay) or, outside `--reverse`, a step back.
+
+In the live view of `flow watch`, `d` hands the terminal to `flow debug attach
+<workflow-id> --run-id <run-id>` for the run being watched, with the server flags
+the watch was given, and returns to the watch when the debugger ends; the footer
+shows the key.
+
+The screen shows the Flowfile's lines for a durable attach given `--program` and
+for `flow run local --debug` (with or without `--reverse`), which compiles the
+file it runs and so knows where each step is written. `flow test --debug` shows
+them for a case that runs the file's own program; a case whose stubs rewrite it
+(a `step:` stub that answers a `call:`), or whose file does not compile outside
+the case, names steps by address, and the pane says why. The line editor below is
+what you get with `--tui=false` and wherever the screen is not used.
 
 To try it, step through a loop yourself, or replay a recorded session over the
 same file:
@@ -336,7 +393,8 @@ test    a step that has run
 
 ## The prompt
 
-At a terminal, `debug>` is a real prompt rather than a reader: **tab completes**,
+With `--tui=false`, and wherever the [full-screen debugger](#the-default-is-a-full-screen-debugger)
+is not used, `debug>` at a terminal is a real prompt rather than a reader: **tab completes**,
 the editing keys work (ctrl-a, ctrl-e, ctrl-w, ctrl-u, ctrl-k, the arrows), and
 up and down walk the commands you have already typed in this session.
 
@@ -526,7 +584,7 @@ calls instead:
 | Tool | What it does |
 | --- | --- |
 | `flowstate_debug_session_start` | start a session over one test case — the same stubbed run `flowstate_debug` uses — held at its first step |
-| `flowstate_debug_session_attach` | attach to a durable run on the configured server; `session_id` rejoins one |
+| `flowstate_debug_session_attach` | attach to a durable run on the configured server; `session_id` rejoins one; `history` with `run_id` walks the run's record instead ([below](#a-recorded-run-over-mcp)) |
 | `flowstate_debug_session_command` | run one command line and answer with the typed result: the receipt, the next stop's snapshot, or an inspection |
 | `flowstate_debug_session_observe` | read the snapshot and the transcript since the last observe; `after_revision` and `wait_seconds` wait for the next stop |
 | `flowstate_debug_session_end` | end it: a durable run is detached and continues (`keep` leaves its session attached), a test case finishes and its report is returned |
@@ -534,7 +592,9 @@ calls instead:
 A stubbed session steps back as `flow dap` with `"reverse": true` does: `back`
 and `reverse-continue` (`rc`) run the case again beside the held one and replay
 the commands it was given, verifying each stop, and the replay's output is not
-said twice. A durable session answers them with "no resume action".
+said twice. A live durable session answers them with a sentence naming `flow debug attach --history --run-id …`,
+which is where a durable run's way back is; a recorded session walks them in both directions
+([below](#a-recorded-run-over-mcp)).
 
 ```json
 {"name": "flowstate_debug_session_command",
@@ -565,6 +625,27 @@ a start carrying one never starts a second run, and an attach carrying one
 answers with the session it attached, whose id the lost response carried,
 rather than attaching again beside it. The key names one call: reused for
 another workflow, it is refused.
+
+#### A recorded run over MCP
+
+`flowstate_debug_session_attach` with `"history": true` and a `run_id` opens a session over the
+run's record, not over the run: nothing is held on the server, nothing runs, and a closed run walks
+as freely as one still going. The answer is the same typed snapshot as any session's, with the
+`history` capability set and a `timeline` whose points are all `RECONSTRUCTED`; `next`, `back` and
+`goto <point>` (a point of that timeline, counted from 0) move among them in either direction through
+`flowstate_debug_session_command`, `inspect` and `expand` read the point shown, and
+`flowstate_debug_session_end` closes it. `until`, `break`, `pause` and the other commands that
+need a run executing are refused by name, with the record's reason, and move nothing.
+
+```json
+{"name": "flowstate_debug_session_attach",
+ "arguments": {"workflow_id": "order-1234", "run_id": "5d3f…", "history": true}}
+```
+
+`history` without a `run_id` is refused before anything is read, because a point belongs to one
+execution; `session_id` is refused with it, since a record holds no session to rejoin. The session
+is leased and counted among the eight like any other, and a `request_id` answers a retry with the
+session the first call opened.
 
 `start` takes the workflow and tests as text, like `flowstate_debug`, so a
 `call:` to a relative path has no directory to resolve against and the case
@@ -878,11 +959,11 @@ lines. Where a deployment runs its own copy of a workflow in place of the one
 submitted, the run executes that copy, so `--program` must name the deployed
 file.
 
-#### The full-screen debugger: `--tui`
+#### The full-screen debugger
 
-`flow debug attach <workflow-id> --tui` drives the same session from one screen
-instead of the line editor: the run, its steps and its scope, a console, and the
-keys below. It is opt-in, and every command still goes through the same driver,
+`flow debug attach <workflow-id>` drives the same session from one screen
+instead of the line editor, by [default at a terminal](#the-default-is-a-full-screen-debugger):
+the run, its steps and its scope, a console, and the keys below. Every command goes through the same driver,
 so a key, a click and a line typed at the console are one call with one answer
 and one refusal. The screen draws only what the run answers, so a value the run
 withholds is withheld here too. It follows the run by waiting on the run's own
@@ -890,23 +971,26 @@ revisions rather than a timer, so a stop that happens while you look at it
 appears without a key.
 
 It needs a terminal at least 60 columns by 12 rows on stdin and stdout, no
-`--script`, and no machine `-o` format. Where it cannot be drawn, `--tui` is
-declined with one sentence on stderr (`flow: --tui is not used: stdin is not a
-terminal; using the line editor`) and the attach runs exactly as it would have
-without the flag, so a script that gains the flag keeps its output.
+`--script`, no machine `-o` format, `TERM` not `dumb` and `CI` unset. Where it
+cannot be drawn the attach runs exactly as it did before the screen existed;
+`--tui=false` asks for that on a terminal, and `--tui` spelled out where it cannot
+be drawn is declined with one sentence on stderr (`flow: --tui is not used: stdin
+is not a terminal; using the line editor`), so a script that gains the flag keeps
+its output.
 
 | Key | Does |
 | --- | --- |
 | `s` or `space`, `n`, `f`, `c` | `step`, `next`, `finish`, `continue` |
-| `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them |
-| `tab`, `shift+tab` | focus the next or previous pane: flow, steps, scope, console |
+| `b`, `r`, `p` | `back`, `reverse-continue`, `pause`, where the run answers them (a recorded run answers the first two both ways and has no `p`, `u` or `B`) |
+| `tab`, `shift+tab` | focus the next or previous pane: flow, source, steps, scope, console |
 | `:` or `/` | type a command; every verb in the table above works there, with tab completion |
 | `i` | open the console on `inspect <the selected scope row>` |
-| `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane |
-| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
-| `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there |
+| `w` | watch the selected scope row (see below) |
+| `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane; in the source, the selected line |
+| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); a row whose children are not held yet, and a `… N more` row, run `expand` for them; in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
+| `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there (in the source, `B` is the breakpoint on the selected line) |
 | `?` | the help overlay: these keys, then the verbs that have no key |
-| `q` | `detach` and let the run go on unattended |
+| `q` | `detach` and let the run go on unattended (on a [recorded run](#walking-a-recorded-run), leave it: nothing is held) |
 | `ctrl+c` | leave at once and release the run, as `quit` does |
 | `ctrl+d` | leave and release the run |
 
@@ -919,8 +1003,42 @@ the next key, and changes nothing. Only one command runs at a time.
 
 With the mouse, a click on a scope row selects it and opens or closes it (a
 `… N more` row loads the next page), a click on a pane's heading or a tab
-focuses it, and the wheel scrolls the pane under the pointer. A click on
-anything the screen did not draw is ignored.
+focuses it, and the wheel scrolls the pane under the pointer. A click on a
+source line selects it, and a click on its number arms a breakpoint on that line
+or clears the one there. A click on anything the screen did not draw is ignored.
+
+**Values, the completion menu and watches.** An `inspect` typed at the console
+is also a row in the scope pane, under `result`, and a value with children
+(a map, a list) opens into a tree whose rows are coloured as the line editor
+colours the same value. Opening such a row, or a `… N more` row under it, is the
+console's own `expand`: the screen sends `expand steps.list`, then `expand
+steps.list from 100`, and so on through the driver, so the transcript, `--record`
+and the page size are the ones a typed `expand` has, and a page is added to the
+stop it was asked at or to nothing. An inspection is of its stop: the next stop
+replaces it. A typed `expand <expr> [from N]` pages the same row.
+
+`tab` in the console asks the same completer the line editor uses. One offer is
+put on the line; several are applied as far as they agree and listed in a menu
+above the line. `tab` and `down` move down the menu, `shift+tab` and `up` move
+up, `enter` puts the selected offer on the line (it does not run it), `esc`
+closes the menu, and a click on an offer takes it. Typing, or moving focus,
+closes it. At most 64 offers are held, and the heading says when more were
+offered than shown. Offers are names, never values, and a name with a control
+character or too long for a command is dropped.
+
+`watch <expr>` (or `w` on the selected scope row) keeps an expression under
+`watches` in the scope pane. It is read again, through the same inspection a
+typed `inspect` uses, every time the screen reads the run: at each stop, and
+after each `back`, `reverse-continue` and `goto`. `unwatch <n|expr>` removes the
+nth watch (counted from 1, as they are listed) or the one spelled so. The
+watches belong to the screen and are neither sent to the run nor recorded.
+There are at most 16, and the seventeenth is refused in one line, as is an
+expression longer than a command (`flowdebug.MaxCommandBytes`) or one with a
+control character. A watch that cannot be evaluated says why in the console
+once, when it starts failing, and its row shows the reason at every stop after;
+when it evaluates again the row has its value and the console says nothing.
+While the run is not held a watch shows `(not held)` and nothing is asked. A
+value the run withholds is withheld in a watch, as everywhere on the screen.
 
 **The flow.** When the attach was given the program (`--program`), the left
 column draws its structure as a ladder, one row per step in the order the file
@@ -952,13 +1070,51 @@ match), so a stale file gives the no-program line instead of steps the run does
 not have. It draws at most 2048 steps and calls at most eight deep; past that it says
 `N more not drawn`.
 
+**The source.** Beside the flow, the pane shows the Flowfile the run was
+started from (`--program`), with a line-number gutter. The lines of the step the
+run is held before are marked: the first with the run mark, the rest of its range
+with a rail, and a line that carries an armed breakpoint with a bullet. When the
+held step is in a file it `call:`s, the pane shows that file and its name is in
+the heading, and it goes back when the run does. A line comes from the source map
+the compiler made of the file, and the pane draws it only when both hold: the map
+is of the program the run executes (the digests match, as for the flow), and the
+file's bytes are the ones the map was made from (a file saved since, even only to
+move a line, is not). Otherwise the pane shows the held step's address and one
+sentence saying why it does not show lines, never a line that could mark the
+wrong step, and a click or `B` on the source says the same and sends nothing.
+
+A run in this process is given the same: `flow run local --debug` reads the file
+once for both the program and its source map, so the map is of the program it
+runs, and the Flowfile's text is the one it compiled. A file it `call:`s is read
+again when the screen opens, and is shown only if it is still the bytes the
+compiler recorded. `flow test --debug` cannot know the program a case runs until
+the case compiles it, so it offers the file's map to the case and the screen
+shows lines only when the case's own program is the one the map is bound to; a
+`step:` stub that answers a `call:` makes it another, and that case is debugged by
+address.
+
+Like the flow, the view centres on the held lines and the selection follows them
+until you scroll (the wheel, or `up` and `down` with the source focused), after
+which it stays where you put it until you ask the run to move. A click on a
+line's text selects it; a click on its number, or `B` on the selected line, arms a
+breakpoint on that line (the same breakpoint `flow dap`'s `setBreakpoints`
+sets, named `line:<file>.<id>:<n>` in `breakpoints`) or, where one is armed there,
+deletes it with `delete`. A line no step is written on, and a front that does
+not answer `break`, are refused with a toast. The console echoes `break
+<file>:<n>`; that spelling is not a command you can type, so it is not recorded
+by `--record`. The pane holds at most 32 files of 1 MiB and 20,000 lines each,
+cuts a line at 1,000 characters and clips it to the pane with an ellipsis, expands
+tabs to four columns, and writes any control character in the text as an escape
+(`\x1b`) instead of sending it to the terminal. Comment lines are muted and `${…}`
+expressions are accented; nothing else is highlighted.
+
 The panes fold as the terminal narrows:
 
 | Columns | Layout |
 | --- | --- |
-| 120 and up | flow, steps, scope and the selected row's detail, side by side |
-| 100 to 119 | flow, steps, then the scope with the detail under it |
-| 80 to 99 | the flow over the steps, beside the scope |
+| 120 and up | flow, source, steps, and scope with the selected row's detail under it, side by side |
+| 100 to 119 | flow, source, then the steps over the scope |
+| 80 to 99 | the flow over the steps, beside the source over the scope |
 | 60 to 79 | one pane at a time under tabs (`tab` or a click switches) |
 | under 60, or under 12 rows | the screen is not drawn |
 
@@ -1305,6 +1461,40 @@ last of a run that ended, because a terminal state would end the editor's
 session; the recorded outcome is in the stop's message. The first and last
 points refuse a move past them, and an answer for a point that was not asked for
 is a server fault, not a position.
+
+At a terminal it is `flow debug attach <workflow-id> --history --run-id <run-id>`, with the line
+editor, with `--script`, or, by default at a terminal, in
+[the full-screen debugger](#the-full-screen-debugger). It is the same front that a live attach
+is, over a `Historical` target: `next`, `back`, `goto <point>` and a click on the timeline strip
+move among the points both ways, the top bar reads `reconstructed`, and nothing runs or is held.
+`--run-id` is required, because a point is a point of one execution, and `--session`, `--lease`
+and `--wait` are refused with one sentence, because a record has no session to rejoin, renew or
+wait on. `--program` shows source lines as it does for a live run, only where the program's digest
+is the one the point reports. Leaving, by `q`, `detach` or `ctrl+c`, releases nothing.
+
+The verbs a record refuses (`until`, `break`, `log`, `catch`, `delete`, `clear` and `pause`) have no
+key in the screen, no hint and no help line, and the mouse gestures that stand for them (a double
+click or right click on a step, a click on a line's number) say that the front does not answer them.
+Typed at the console they are refused by name with the record's own reason, for example `a recorded
+run cannot run until a boundary`. `flowdebug.VerbsFor` derives which verbs those are from the
+target's capabilities, and a test holds the list to the ones the target refuses. On a live durable
+run `b` and `goto` keep answering, with the sentence `a live durable run cannot step back:
+`flow debug attach --history --run-id …` walks its record`.
+
+**How each value is known.** At a recorded point every row that shows a value carries a badge, the
+`fidelity` of `DebugHistoryInspected`, drawn as words so it reads without colour:
+
+| Badge | Fidelity | Rows |
+| --- | --- | --- |
+| `[rec]` | reconstructed or recorded | a name listed from the scope, and its children: what the replay held there |
+| `[hyp]` | hypothetical | an expression typed at the console (`inspect`, `expand`) or watched, and its children: computed now over the reconstructed scope, never held by the run |
+| `[n/a]` | unavailable | a value that could not be produced at the point, drawn muted |
+
+A group's row lists names and holds no value, so it has no badge; the detail pane says in words what
+the selected row's badge means. A live stop has no fidelity and no badge, and the line editor's scope
+pane draws the same `[rec]` and `[n/a]` marks before a value. A point where the run held no debug
+session (before its first workflow task installed one) has no scope: the scope pane says `no scope at
+this point` and why instead of drawing nothing, and a watch there is `[n/a]`.
 
 Values are read at the point shown: `evaluate` (a watch, a hover, a REPL line)
 and the variables view ask `DebugHistory` for that point, so a watch follows the

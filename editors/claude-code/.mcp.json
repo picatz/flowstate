@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "flowstate": {
+      "command": "flow",
+      "args": ["mcp"]
+    }
+  }
+}

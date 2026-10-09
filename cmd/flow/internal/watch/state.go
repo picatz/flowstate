@@ -26,6 +26,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"slices"
 	"strings"
 	"time"
@@ -253,6 +254,10 @@ type State struct {
 	// gaveUp records that lastError is why the walk ended rather than
 	// something it survived.
 	gaveUp bool
+
+	// attach builds the command that attaches the debugger to the run being
+	// watched; nil where the caller did not offer one. See [Debuggable].
+	attach func(workflowID, runID string) *exec.Cmd
 }
 
 // Option adjusts how a walk describes the run it is following.
@@ -262,6 +267,15 @@ type State struct {
 // adjacent strings whose meanings differ is a call site that can be wrong
 // while compiling. A named option cannot be passed in the wrong position.
 type Option func(*State)
+
+// Debuggable offers the live view's `d` key: attach the debugger to this run.
+// build returns the command that does it for a workflow id and the run id
+// being watched, and the view runs it with the terminal handed over, then
+// takes the terminal back. Without it the key does nothing and the footer does
+// not mention it.
+func Debuggable(build func(workflowID, runID string) *exec.Cmd) Option {
+	return func(state *State) { state.attach = build }
+}
 
 // Named says what to call the run in prose, for a caller that knows the
 // workflow's own name.

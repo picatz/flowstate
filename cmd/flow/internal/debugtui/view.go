@@ -2,6 +2,7 @@ package debugtui
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -27,6 +28,9 @@ const (
 	panePrefix = "pane:"
 )
 
+// contentPanes are the panes a folded layout can show one at a time.
+var contentPanes = []string{paneFlow, paneSource, paneSteps, paneScope}
+
 // Screen limits. The screen is not drawn in a terminal smaller than these, and
 // `flow debug attach --tui` refuses to start in one.
 const (
@@ -40,27 +44,30 @@ const (
 const minBody = 3
 
 // grid is how the screen folds as the terminal narrows. The flow is the leftmost
-// column wherever there is room for a ladder: three further columns with the
-// selected name's detail on the right, the detail folded under the scope, the
-// detail dropped and the flow stacked over the steps, and below 80 columns one
-// pane at a time under tabs.
+// column wherever there is room for a ladder, and the source sits beside it:
+// four columns with the selected name's detail under the scope, three with the
+// steps over the scope, two with the flow over the steps and the source over the
+// scope, and below 80 columns one pane at a time under tabs. Every layout but the
+// last draws every pane the focus ring visits.
 var grid = tui.Grid{
 	Min: tui.Size{W: MinWidth, H: minBody},
 	Rules: []tui.Rule{
-		{MinWidth: 120, Root: tui.Divide(pane.Split{Percent: 28, Gap: 1},
+		{MinWidth: 120, Root: tui.Divide(pane.Split{Percent: 24, Gap: 1},
 			tui.Leaf(paneFlow),
-			tui.Divide(pane.Split{Percent: 30, Gap: 1},
-				tui.Leaf(paneSteps),
-				tui.Divide(pane.Split{Percent: 55, Gap: 1}, tui.Leaf(paneScope), tui.Leaf(paneInspector))))},
-		{MinWidth: 100, Root: tui.Divide(pane.Split{Percent: 34, Gap: 1},
+			tui.Divide(pane.Split{Percent: 38, Gap: 1},
+				tui.Leaf(paneSource),
+				tui.Divide(pane.Split{Percent: 40, Gap: 1},
+					tui.Leaf(paneSteps),
+					tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneScope), tui.Leaf(paneInspector)))))},
+		{MinWidth: 100, Root: tui.Divide(pane.Split{Percent: 30, Gap: 1},
 			tui.Leaf(paneFlow),
-			tui.Divide(pane.Split{Percent: 40, Gap: 1},
-				tui.Leaf(paneSteps),
-				tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneScope), tui.Leaf(paneInspector))))},
-		{MinWidth: 80, Root: tui.Divide(pane.Split{Percent: 42, Gap: 1},
-			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneFlow), tui.Leaf(paneSteps)),
-			tui.Leaf(paneScope))},
-		{MinWidth: MinWidth, Tabs: []string{paneFlow, paneSteps, paneScope}},
+			tui.Divide(pane.Split{Percent: 45, Gap: 1},
+				tui.Leaf(paneSource),
+				tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 40}, tui.Leaf(paneSteps), tui.Leaf(paneScope))))},
+		{MinWidth: 80, Root: tui.Divide(pane.Split{Percent: 40, Gap: 1},
+			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 55}, tui.Leaf(paneFlow), tui.Leaf(paneSteps)),
+			tui.Divide(pane.Split{Orientation: pane.Rows, Percent: 60}, tui.Leaf(paneSource), tui.Leaf(paneScope)))},
+		{MinWidth: MinWidth, Tabs: []string{paneFlow, paneSource, paneSteps, paneScope}},
 	},
 }
 
@@ -89,13 +96,23 @@ type Screen struct {
 	// selected.
 	Flow *Flow
 
+	// Source is the source pane's documents and state; nil holds no document.
+	Source *Source
+
+	// Watches are the expressions read again at every stop, in the order they
+	// were added, and Result the group an `inspect` or `expand` typed at the
+	// console is listed under. Both are shown in the scope pane's tree.
+	Watches []Watch
+	Result  *pane.Node
+
 	Console Console
 	Toast   tui.Toast
 	Keys    tui.Keymap
 	Verbs   []flowdebug.Verb
 
 	// Focus is the focused member of the ring, and Pane the content pane a
-	// tabbed layout shows (the last of flow, steps and scope that was focused).
+	// tabbed layout shows (the last of flow, source, steps and scope that was
+	// focused).
 	Focus string
 	Pane  string
 	Help  bool
@@ -160,7 +177,7 @@ func (s Screen) geometry() (geometry, error) {
 	g.status = pane.Rect{X: 0, Y: h - 1, W: w, H: 1}
 
 	shown := s.Pane
-	if shown != paneFlow && shown != paneSteps && shown != paneScope {
+	if !slices.Contains(contentPanes, shown) {
 		shown = paneSteps
 	}
 	var err error
@@ -210,10 +227,14 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		switch cell.Pane {
 		case paneFlow:
 			text = FlowView(s.Flow, s.Frame, s.Loaded, o)
+		case paneSource:
+			text = SourceView(s.Source, s.Frame, s.Loaded, o)
 		case paneSteps:
 			text = StepsView(s.Frame, s.Loaded, s.StepScroll, o)
 		case paneScope:
 			o.Prefix = scopePrefix
+			o.PaintValue = func(value string) string { return PaintValue(value, st.Theme) }
+			o.PaintBadge = func(badge string) string { return paintBadge(badge, st.Theme) }
 			text = ScopeView(s.Tree, s.Frame, s.Loaded, s.Problem, o)
 		case paneInspector:
 			text = InspectorView(s.Tree, s.Frame, o)
@@ -232,9 +253,12 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		})
 	}
 
-	co := s.options(g.console.W, g.console.H, st, s.Focus == paneConsole)
-	parts = append(parts, pane.Placed{Rect: g.console, Text: ConsoleView(s.Console, s.Busy, co)})
+	// The console's body is registered before its entries, so a completion offer
+	// is the topmost hit where it is drawn.
 	hits.Add(g.console, paneConsole, pane.KindInput)
+	co := s.options(g.console.W, g.console.H, st, s.Focus == paneConsole)
+	co.Origin, co.Hits = g.console, hits
+	parts = append(parts, pane.Placed{Rect: g.console, Text: ConsoleView(s.Console, s.Busy, co)})
 
 	return pane.Stitch(s.Size.W, s.Size.H, parts...), hits
 }
@@ -288,6 +312,11 @@ func HeaderView(f flowdebug.Frame, loaded bool, width int, st Style) string {
 		}
 	}
 	parts = append(parts, state, fmt.Sprintf("rev %d", snapshot.GetRevision()))
+	if known := flowdebug.FidelityName(f.Fidelity); known != "" {
+		// A recorded point is a reconstruction, and the bar says so wherever the
+		// run is: nothing on this screen is the run happening.
+		parts = append(parts, known)
+	}
 	if f.Partial {
 		parts = append(parts, "earlier steps not shown")
 	}
@@ -413,6 +442,7 @@ func ScopeNodes(f flowdebug.Frame) []pane.Node {
 				ID:    binding.GetExpression(),
 				Label: binding.GetName(),
 				Value: cutValue(text),
+				Badge: badgeOf(f, value, false),
 				Total: int(value.GetChildren()),
 			})
 		}
@@ -438,7 +468,7 @@ func ScopeView(tree *pane.Tree, f flowdebug.Frame, loaded bool, problem string, 
 	heading := pane.Heading(paneScope, note, o.Width, o)
 
 	empty := cmpOr(problem, f.ScopeNote, "  no scope: the run is not held")
-	if f.Scope == nil || tree == nil {
+	if tree == nil || (f.Scope == nil && len(tree.Rows()) == 0) {
 		return heading + "\n" + o.Theme.Muted.Render(ui.EscapeControl("  "+strings.TrimSpace(empty)))
 	}
 
@@ -499,7 +529,7 @@ func inspector(tree *pane.Tree, f flowdebug.Frame) pane.Inspector {
 		return pane.Inspector{}
 	}
 	value := f.Values[id]
-	fields := []pane.Field{{Key: "expression", Value: id}}
+	fields := []pane.Field{{Key: "expression", Value: expressionOf(id)}}
 	if value != nil {
 		fields = append(fields, pane.Field{Key: "type", Value: value.GetType()})
 		if value.GetChildren() > 0 {
@@ -507,6 +537,9 @@ func inspector(tree *pane.Tree, f flowdebug.Frame) pane.Inspector {
 		}
 	}
 	fields = append(fields, pane.Field{Key: "value", Value: node.Value})
+	if known := knownAs(node.Badge); known != "" {
+		fields = append(fields, pane.Field{Key: "known as", Value: known})
+	}
 	note := ""
 	if value.GetTruncated() {
 		note = "the target cut this value"
@@ -515,14 +548,33 @@ func inspector(tree *pane.Tree, f flowdebug.Frame) pane.Inspector {
 	return pane.Inspector{Fields: fields, Note: note}
 }
 
+// knownAs says in words what a row's badge stands for, for the detail pane.
+func knownAs(badge string) string {
+	switch badge {
+	case "[rec]":
+		return "reconstructed: what the run held here, replayed from its history"
+	case "[hyp]":
+		return "hypothetical: computed now over the reconstructed scope, and never held by the run"
+	case "[n/a]":
+		return "unavailable: it cannot be known at this point"
+	default:
+		return ""
+	}
+}
+
 // SelectedExpression is the expression of the selected scope row, or "" when
 // the selection is a group or nothing.
 func SelectedExpression(tree *pane.Tree) string {
-	if tree == nil || tree.Selected() == "" || strings.HasPrefix(tree.Selected(), "g:") || strings.HasPrefix(tree.Selected(), "more:") {
+	if tree == nil || tree.Selected() == "" {
 		return ""
 	}
+	for _, prefix := range [...]string{"g:", "x:", "more:"} {
+		if strings.HasPrefix(tree.Selected(), prefix) {
+			return ""
+		}
+	}
 
-	return tree.Selected()
+	return expressionOf(tree.Selected())
 }
 
 // HelpView is the help overlay: the keys, then the verbs that have none.
@@ -567,6 +619,14 @@ func helpLines(keys tui.Keymap, verbs []flowdebug.Verb, o pane.Options) []string
 			spelling += " " + verb.Argument
 		}
 		typed = append(typed, "  "+o.Theme.Strong.Render(ui.EscapeControl(spelling))+"  "+ui.EscapeControl(verb.Help))
+	}
+	if slices.ContainsFunc(verbs, func(v flowdebug.Verb) bool { return v.Name == "inspect" }) {
+		for _, verb := range [...]struct{ spelling, help string }{
+			{"watch <expr>", "show an expression in the scope pane at every stop and after every travel (at most 16)"},
+			{"unwatch <n|expr>", "stop watching the nth watch, or the one spelled so"},
+		} {
+			typed = append(typed, "  "+o.Theme.Strong.Render(verb.spelling)+"  "+verb.help)
+		}
 	}
 	if len(typed) > 0 {
 		lines = append(lines, "", o.Theme.Header.Render("Type in the console"))

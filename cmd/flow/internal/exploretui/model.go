@@ -3,6 +3,7 @@ package exploretui
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,6 +24,12 @@ type Config struct {
 	// Source says what Load reads, for the header.
 	Source string
 
+	// Runs reads a workflow's recent runs by its declared name, for the rows
+	// under its "runs" row. Nil leaves those rows out, which is what a screen
+	// over files alone wants. It is called from a command, and is allowed to be
+	// slow. more says the workflow has runs the answer leaves out.
+	Runs func(ctx context.Context, workflow string) (runs []*v1.RunSummary, more bool, err error)
+
 	Style Style
 
 	// Size is the terminal's size until the first resize message says otherwise.
@@ -39,6 +46,22 @@ type graphMsg struct {
 	err   error
 }
 
+// runsMsg is a finished read of a workflow's runs, for the "runs" row Parent.
+type runsMsg struct {
+	parent string
+	// gen numbers the reads of this parent; only the latest is applied.
+	gen  uint64
+	runs []*v1.RunSummary
+	more bool
+	err  error
+}
+
+// runsAnswer is one finished read of a "runs" row.
+type runsAnswer struct {
+	rows []pane.Node
+	by   map[string]*v1.RunSummary
+}
+
 // Model is the explorer screen.
 type Model struct {
 	cfg  Config
@@ -50,6 +73,21 @@ type Model struct {
 	// seq numbers reads; only the latest is applied, so a slow read cannot
 	// overwrite a newer one.
 	seq uint64
+
+	// gens numbers the reads of each "runs" row, so an answer that is not to the
+	// latest question asked of that row (a refresh, or the row opened again)
+	// changes nothing. pending is a selection a refresh could not restore yet
+	// because its row is read afresh; the read that fills the row restores it.
+	gens    map[string]uint64
+	pending string
+
+	// answers holds what each "runs" row was last read as, so narrowing the
+	// workflows shows an open row again from what was read and sends nothing to
+	// the server; only a refresh reads again.
+	answers map[string]runsAnswer
+	// reuse says rows are being opened again by a rebuild, which uses answers; a
+	// person opening a row asks the server afresh.
+	reuse bool
 
 	quitting bool
 }
@@ -65,8 +103,8 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 	}
 
 	return Model{
-		cfg: cfg, ctx: ctx, keys: keys, seq: 1,
-		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true},
+		cfg: cfg, ctx: ctx, keys: keys, seq: 1, gens: map[string]uint64{}, answers: map[string]runsAnswer{},
+		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true, Runs: map[string]*v1.RunSummary{}},
 	}, nil
 }
 
@@ -108,6 +146,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.leave()
 	case graphMsg:
 		return m.loaded(msg)
+	case runsMsg:
+		return m.ran(msg)
 	}
 
 	return m, nil
@@ -154,6 +194,15 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	}
 	m.screen.Problem = ""
 
+	m.answers = map[string]runsAnswer{}
+
+	return m, m.rebuild(NewIndex(msg.graph))
+}
+
+// rebuild shows the workflows of x that pass the filter. The rows that were
+// open stay open where their workflows are still shown, and the selection stays
+// where its row does. It returns the commands the reopened rows start.
+func (m *Model) rebuild(x *Index) tea.Cmd {
 	tree := m.screen.Tree
 	rows, selected := tree.Rows(), tree.Selected()
 	// Rows come parents first, which is the order they must be opened again in.
@@ -164,15 +213,91 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	m.screen.Index = NewIndex(msg.graph)
-	tree.SetRoots(m.screen.Index.Roots())
-	load := m.screen.Index.Loader()
+	// Summaries belong to rows the new tree is about to rebuild; the rows that
+	// are open again are filled from what was read, or read afresh after a
+	// refresh emptied the answers.
+	m.screen.Runs = map[string]*v1.RunSummary{}
+	m.screen.Index = x
+	if m.cfg.Runs != nil {
+		m.screen.Index = m.screen.Index.WithRunRows()
+	}
+	tree.SetRoots(m.screen.Index.RootsNamed(m.screen.Filter))
+	var cmds []tea.Cmd
+	m.reuse = true
 	for _, id := range opened {
 		if request, ok := tree.Expand(id); ok {
-			_ = tree.Load(load, request)
+			if cmd := m.fill(request); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
-	tree.Select(selected)
+	m.reuse = false
+	m.pending = ""
+	if !tree.Select(selected) {
+		m.pending = selected
+	}
+	m.reveal()
+
+	return tea.Batch(cmds...)
+}
+
+// fill answers a request for the children of a row. The index holds a graph
+// node's, so those arrive at once; a "runs" row's are read from the server, so
+// that is a command and the answer comes back as a message.
+func (m *Model) fill(request pane.Request) tea.Cmd {
+	x := m.screen.Index
+	if x == nil {
+		return nil
+	}
+	if workflow, ok := x.RunsOf(request.Parent); ok {
+		if answer, ok := m.answers[request.Parent]; ok && m.reuse {
+			m.screen.Tree.Fill(request.Parent, 0, answer.rows, len(answer.rows))
+			maps.Copy(m.screen.Runs, answer.by)
+
+			return nil
+		}
+		ctx, runs := m.ctx, m.cfg.Runs
+		m.gens[request.Parent]++
+		gen := m.gens[request.Parent]
+
+		return func() tea.Msg {
+			rows, more, err := runs(ctx, workflow)
+
+			return runsMsg{parent: request.Parent, gen: gen, runs: rows, more: more, err: err}
+		}
+	}
+	if err := m.screen.Tree.Load(x.Loader(), request); err != nil {
+		m.toast(ui.ToneWarning, err.Error())
+	}
+
+	return nil
+}
+
+// ran folds a finished read of runs into the row it was asked for.
+func (m Model) ran(msg runsMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.gens[msg.parent] {
+		return m, nil
+	}
+	if msg.err != nil {
+		if m.ctx.Err() != nil {
+			return m, nil
+		}
+		// The row stays open and empty, so the person sees where it failed; closing
+		// and opening it asks again.
+		m.screen.Tree.Collapse(msg.parent)
+		m.toast(ui.ToneDanger, "cannot read the runs: "+msg.err.Error())
+
+		return m, nil
+	}
+	rows, byRow := RunRows(msg.parent, msg.runs, msg.more)
+	if !m.screen.Tree.Fill(msg.parent, 0, rows, len(rows)) {
+		return m, nil
+	}
+	maps.Copy(m.screen.Runs, byRow)
+	m.answers[msg.parent] = runsAnswer{rows: rows, by: byRow}
+	if m.pending != "" && m.screen.Tree.Select(m.pending) {
+		m.pending = ""
+	}
 	m.reveal()
 
 	return m, nil
@@ -216,6 +341,7 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// A toast lasts until the next key, so what is on screen is a function of
 	// the messages and not of how long ago one arrived.
 	m.screen.Toast = m.screen.Toast.Clear()
+	m.pending = ""
 	name := tui.KeyName(msg)
 
 	if _, err := m.screen.geometry(); err != nil && name != "ctrl+c" && name != "ctrl+d" && name != "q" {
@@ -247,11 +373,25 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
+	if m.screen.Filtering {
+		return m.typeFilter(msg, name)
+	}
+	if name == "esc" && m.screen.Filter != "" {
+		return m.setFilter("", false)
+	}
+
 	binding, ok := m.keys.Match(name)
 	if !ok {
 		return m, nil
 	}
 	switch binding.Name {
+	case bindFilter:
+		if m.screen.Index == nil {
+			m.toast(ui.ToneWarning, "nothing to filter yet")
+
+			break
+		}
+		m.screen.Filtering = true
 	case bindQuit, bindInterrupt:
 		return m.leave()
 	case bindHelp:
@@ -267,15 +407,60 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 		return m, m.read(m.seq)
 	default:
-		m.navigate(binding.Name)
+		return m, m.navigate(binding.Name)
 	}
 
 	return m, nil
 }
 
-// navigate moves within the tree.
-func (m *Model) navigate(name string) {
+// maxFilter bounds what can be typed, so a held key cannot grow the prompt
+// without end.
+const maxFilter = 80
+
+// typeFilter folds a key into the filter being typed. Every change narrows the
+// rows at once; enter keeps the filter and returns the keys to the tree, and
+// esc drops it.
+func (m Model) typeFilter(msg tea.KeyPressMsg, name string) (tea.Model, tea.Cmd) {
+	filter := m.screen.Filter
+	switch name {
+	case "ctrl+c", "ctrl+d":
+		return m.leave()
+	case "enter":
+		m.screen.Filtering = false
+
+		return m, nil
+	case "esc":
+		return m.setFilter("", false)
+	case "backspace":
+		runes := []rune(filter)
+		filter = string(runes[:max(0, len(runes)-1)])
+	case "ctrl+u":
+		filter = ""
+	default:
+		if msg.Text == "" || len([]rune(filter)) >= maxFilter {
+			return m, nil
+		}
+		filter += msg.Text
+	}
+
+	return m.setFilter(filter, true)
+}
+
+// setFilter shows the workflows that match filter.
+func (m Model) setFilter(filter string, filtering bool) (tea.Model, tea.Cmd) {
+	m.screen.Filter, m.screen.Filtering = filter, filtering
+	if m.screen.Index == nil {
+		return m, nil
+	}
+
+	return m, m.rebuild(m.screen.Index)
+}
+
+// navigate moves within the tree, and returns the command a row that needs a
+// read starts.
+func (m *Model) navigate(name string) tea.Cmd {
 	tree, rows := m.screen.Tree, max(1, m.treeRows())
+	var cmd tea.Cmd
 	switch name {
 	case bindUp:
 		tree.Move(-1)
@@ -290,9 +475,9 @@ func (m *Model) navigate(name string) {
 	case bindEnd:
 		tree.End()
 	case bindToggle:
-		m.open(tree.Activate(tree.Selected()))
+		cmd = m.open(tree.Activate(tree.Selected()))
 	case bindExpand:
-		m.open(tree.Expand(tree.Selected()))
+		cmd = m.open(tree.Expand(tree.Selected()))
 	case bindCollapse:
 		if tree.Open(tree.Selected()) {
 			tree.Collapse(tree.Selected())
@@ -301,17 +486,17 @@ func (m *Model) navigate(name string) {
 		}
 	}
 	tree.Reveal(rows)
+
+	return cmd
 }
 
-// open answers a request to load children. The index holds them all, so the
-// answer is immediate.
-func (m *Model) open(request pane.Request, load bool) {
-	if !load || m.screen.Index == nil {
-		return
+// open answers a request to load children, if there is one.
+func (m *Model) open(request pane.Request, load bool) tea.Cmd {
+	if !load {
+		return nil
 	}
-	if err := m.screen.Tree.Load(m.screen.Index.Loader(), request); err != nil {
-		m.toast(ui.ToneWarning, err.Error())
-	}
+
+	return m.fill(request)
 }
 
 // scrollHelp moves the help overlay by delta lines, within the lines it has.
@@ -332,6 +517,7 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	if mouse.Button != tea.MouseLeft {
 		return m, nil
 	}
+	m.pending = ""
 	_, hits := m.screen.Draw(m.cfg.Style)
 	hit, ok := hits.At(mouse.X, mouse.Y)
 	if !ok {
@@ -345,8 +531,10 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		}
 	case pane.KindRow, pane.KindMore:
 		if id, ok := strings.CutPrefix(hit.ID, rowPrefix); ok {
-			m.open(m.screen.Tree.Activate(id))
+			cmd := m.open(m.screen.Tree.Activate(id))
 			m.screen.Tree.Reveal(max(1, m.treeRows()))
+
+			return m, cmd
 		}
 	}
 

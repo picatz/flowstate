@@ -636,8 +636,16 @@ func cacheKeyFor(names []string, leaves map[string]*cel.Type) string {
 // the expressions of the step with the given id, spelled as CEL spells it, and false
 // where it gives none. It reads the same table [Validate] judges the body with, so
 // a hover cannot say something the diagnostics disagree with.
+//
+// An item that is a record is spelled as the record (`Line`), since CEL holds a
+// record as `dyn` and a reader asking what the item is wants the name the file gave it.
 func IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
-	bound := newTypeTable(wf).bindingsFor(step, []string{name})
+	table := newTypeTable(wf)
+	if record := table.recordIterators(step)[name]; record != nil {
+		return v1.TypeString(record), true
+	}
+
+	bound := table.bindingsFor(step, []string{name})
 	typed, ok := bound[name]
 	if !ok {
 		return "", false

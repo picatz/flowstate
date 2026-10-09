@@ -98,6 +98,12 @@ type DriveResult struct {
 	// program never declares. Nil when the line set none, the target armed
 	// it, or the set is pending and its verdict not yet known.
 	Unarmed *v1.DebugBreakpointState
+
+	// Fidelity is how an Inspect answer is known: unspecified at a live stop,
+	// so nothing about a live answer changes, and at a recorded point whatever
+	// [Frame.ValueFidelity] says of an expression somebody typed, the one rule
+	// every front shares (#2248).
+	Fidelity v1.DebugFidelity
 }
 
 // maxRememberedRequests bounds [Driver]'s memory of the request ids it has
@@ -272,7 +278,7 @@ func (d *Driver) DoWith(ctx context.Context, line string, opts DoOptions) (*Driv
 			return nil, errors.New("expand needs an expression: expand steps.build")
 		}
 
-		expression, offset := expandPage(rest)
+		expression, offset := ExpandPage(rest)
 
 		return d.inspect(ctx, expression, true, offset)
 	case "scope":
@@ -421,7 +427,14 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 		return result, nil
 	}
 
-	result.Snapshot, err = d.waitForStop(ctx, receipt.GetRevision())
+	if _, settled := d.target.(settledMover); settled {
+		// The target is already at the stop when it says the movement was applied,
+		// and its receipt names that stop's revision: waiting for one after it
+		// would wait for a move nobody is going to make.
+		result.Snapshot, err = d.target.Snapshot(ctx)
+	} else {
+		result.Snapshot, err = d.waitForStop(ctx, receipt.GetRevision())
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -430,10 +443,26 @@ func (d *Driver) move(ctx context.Context, action v1.DebugResumeAction, until st
 	return result, nil
 }
 
+// settledMover marks a [Target] whose movements are over when their receipt is
+// applied, because a movement is a read of another place and not a run: a
+// [Historical]. Its receipt carries the revision it moved to, so the driver
+// reads the stop rather than waiting past it.
+type settledMover interface{ settled() }
+
 // errCannotStepBack is what a session that was not built to be replayed from
 // its start says to `back` and `reverse-continue`, at its prompt and through a
 // [Driver] alike.
 var errCannotStepBack = errors.New("this session cannot step back: only a run replayed from its start can")
+
+// errLiveDurableCannotStepBack is the same refusal for a live durable run,
+// which holds its run where it is and has no earlier stop to return to: its
+// record is the way back, read by a debugger opened over the history.
+var errLiveDurableCannotStepBack = errors.New("a live durable run cannot step back: " +
+	"`flow debug attach --history --run-id …` walks its record")
+
+// errLiveDurableCannotTravel is [errLiveDurableCannotStepBack] for `goto`.
+var errLiveDurableCannotTravel = errors.New("a live durable run cannot go to a point on its timeline: " +
+	"`flow debug attach --history --run-id …` walks its record")
 
 // back returns to an earlier stop through a target that can step back. It is
 // a movement like any other: the expected revision, or the current one when
@@ -443,6 +472,10 @@ var errCannotStepBack = errors.New("this session cannot step back: only a run re
 func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, error) {
 	reverser, ok := d.target.(Reverser)
 	if !ok {
+		if _, live := d.target.(*Remote); live {
+			return nil, errLiveDurableCannotStepBack
+		}
+
 		return nil, errCannotStepBack
 	}
 	back := reverser.Back
@@ -459,6 +492,10 @@ func (d *Driver) back(ctx context.Context, toBreakpoint bool) (*DriveResult, err
 func (d *Driver) goTo(ctx context.Context, rest string) (*DriveResult, error) {
 	traveler, ok := d.target.(Traveler)
 	if !ok {
+		if _, live := d.target.(*Remote); live {
+			return nil, errLiveDurableCannotTravel
+		}
+
 		return nil, errCannotTravel
 	}
 	point, err := strconv.ParseInt(rest, 10, 32)
@@ -571,6 +608,46 @@ func (d *Driver) addBreakpoint(ctx context.Context, rest string) (*DriveResult, 
 	}), d.failureMode, target)
 }
 
+// BreakLine sets a stopping breakpoint on a source line, where the target
+// resolves it through the source map it holds: the `break` of a front that has
+// the lines of a Flowfile in front of it and no step to name. It is the same
+// replacement `break` makes, adopting the breakpoints other clients set before
+// it adds one, so it is not a verb of the command table; a line it set is
+// removed by `delete` under the id it is reported with ([LineBreakpointID]).
+func (d *Driver) BreakLine(ctx context.Context, uri string, line uint32) (*DriveResult, error) {
+	if d.detached {
+		return nil, errors.New("this session was detached; attach again to debug the run")
+	}
+	id := LineBreakpointID(uri, line)
+	if err := d.adopt(ctx, id); err != nil {
+		return nil, err
+	}
+
+	return d.replace(ctx, append(d.withoutID(id), &v1.DebugBreakpoint{
+		Id: id, Line: &v1.DebugSourceLine{Uri: uri, Line: line},
+	}), d.failureMode, id)
+}
+
+// LineBreakpointID is the id [Driver.BreakLine] gives a breakpoint on a line: a
+// word a command line can carry, naming the document by its file name, with a
+// digest of the whole name when two documents share one, so `delete` takes it
+// as it is printed.
+func LineBreakpointID(uri string, line uint32) string {
+	name := strings.Map(func(r rune) rune {
+		if r > ' ' && r < 0x7f && r != ':' {
+			return r
+		}
+
+		return '_'
+	}, SourceName(uri))
+	if len(name) > 48 {
+		name = name[len(name)-48:]
+	}
+	digest := strings.TrimPrefix(v1.ContentDigest([]byte(sourcePath(uri))), "sha256:")
+
+	return fmt.Sprintf("line:%s.%s:%d", name, digest[:6], line)
+}
+
 // withoutID is the current set less the breakpoint whose id is id. A line
 // replaces only the breakpoint it owns — `break build` the one under id
 // `build`, `log build` the one under `log build` — so a breakpoint another
@@ -655,7 +732,8 @@ func (d *Driver) replace(ctx context.Context, set []*v1.DebugBreakpoint, mode v1
 	for i, state := range response.GetBreakpoints() {
 		name, label := state.GetId(), state.GetId()
 		if i < len(set) {
-			name, label = set[i].GetStep(), breakpointLabel(set[i])
+			label = breakpointLabel(set[i])
+			name = cmp.Or(set[i].GetStep(), label)
 		}
 		if state.GetVerified() {
 			fmt.Fprintf(&b, "breakpoint at %s\n", label)
@@ -716,27 +794,46 @@ func (d *Driver) inspect(ctx context.Context, expression string, children bool, 
 	}
 
 	result := &DriveResult{Inspect: answer}
+	at := Frame{Fidelity: fidelityOf(snapshot)}
+	// A page of children has no value of its own; the expression listed is the
+	// typed thing, so it is as hypothetical as the value it would have been.
+	listed := answer.GetValue()
+	if children && answer.GetError() == "" {
+		listed = &v1.DebugValue{}
+	}
+	result.Fidelity = at.ValueFidelity(listed, true)
 	switch {
 	case answer.GetError() != "":
 		result.Text = answer.GetError() + "\n"
 	case children:
-		result.Text = formatChildren(expression, offset, answer)
+		result.Text = formatChildren(expression, offset, answer, at)
 	default:
-		result.Text = answer.GetValue().GetRendered() + "\n"
+		result.Text = badged(result.Fidelity) + answer.GetValue().GetRendered() + "\n"
 	}
 
 	return result, nil
+}
+
+// badged is a value's fidelity badge as a line prefix, "[hyp] ", or nothing for
+// a live value, so a live line stays byte for byte what it was.
+func badged(fidelity v1.DebugFidelity) string {
+	if badge := FidelityBadge(fidelity); badge != "" {
+		return "[" + badge + "] "
+	}
+
+	return ""
 }
 
 // maxQuotedExpression is how long an expression may be for the line that says
 // how to read the next page to quote it.
 const maxQuotedExpression = 60
 
-// expandPage splits the argument of `expand` into the expression and the child
+// ExpandPage splits the argument of `expand` into the expression and the child
 // it starts the page at: `steps.build from 50`. The suffix is read only when it
 // is a whole number after " from "; anything else is part of the expression,
-// which the evaluator then judges.
-func expandPage(rest string) (expression string, offset int) {
+// which the evaluator then judges. A front that shows what `expand` answered
+// reads the line with this, so it agrees with the driver on which page it was.
+func ExpandPage(rest string) (expression string, offset int) {
 	const from = " from "
 	i := strings.LastIndex(rest, from)
 	if i < 0 {
@@ -754,10 +851,10 @@ func expandPage(rest string) (expression string, offset int) {
 // the page left out and how to ask for them. The prompt's `expand` and the
 // driver's read the same answer the same way, so a value pages identically on
 // both. offset is the child the page began at.
-func formatChildren(expression string, offset int, answer *v1.DebugInspectResponse) string {
+func formatChildren(expression string, offset int, answer *v1.DebugInspectResponse, at Frame) string {
 	var b strings.Builder
 	for _, child := range answer.GetChildren() {
-		fmt.Fprintf(&b, "%s  %s  %s\n", child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
+		fmt.Fprintf(&b, "%s%s  %s  %s\n", badged(at.ValueFidelity(child.GetValue(), true)), child.GetName(), child.GetValue().GetType(), child.GetValue().GetRendered())
 	}
 	shown := offset + len(answer.GetChildren())
 	if more := int(answer.GetTotal()) - shown; more > 0 {

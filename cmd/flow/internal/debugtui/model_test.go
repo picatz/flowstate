@@ -142,11 +142,11 @@ func TestTabCyclesTheFocusRing(t *testing.T) {
 		order = append(order, m.screen.Focus)
 		m = send(m, tuitest.Key("tab"))
 	}
-	assert.Equal(t, []string{"steps", "scope", "console", "flow", "steps"}, order)
-	assert.Equal(t, "scope", m.screen.Focus)
+	assert.Equal(t, []string{"steps", "scope", "console", "flow", "source"}, order)
+	assert.Equal(t, "steps", m.screen.Focus)
 
 	m = send(m, tuitest.Key("shift+tab"))
-	assert.Equal(t, "steps", m.screen.Focus, "shift+tab did not go back")
+	assert.Equal(t, "source", m.screen.Focus, "shift+tab did not go back")
 }
 
 func TestAClickOnATreeRowTogglesIt(t *testing.T) {
@@ -430,14 +430,18 @@ func TestTabCompletesInTheConsole(t *testing.T) {
 	assert.Equal(t, "until ", m.screen.Console.Text, "the single offer was not applied")
 	assert.Empty(t, m.screen.Busy)
 
-	// Several offers are applied as far as they agree, and listed.
+	// Several offers are applied as far as they agree, and offered in the menu.
 	m.screen.Console.Clear()
 	m = send(m, tuitest.Keys("co")...)
 	m = send(m, tuitest.Key("tab"))
 	assert.Equal(t, "co", m.screen.Console.Text)
-	transcript := strings.Join(m.screen.Console.Lines(), "\n")
-	assert.Contains(t, transcript, "continue")
-	assert.Contains(t, transcript, "complete")
+	menu, open := m.screen.Console.Menu()
+	require.True(t, open)
+	offered := make([]string, len(menu.Candidates))
+	for i, c := range menu.Candidates {
+		offered[i] = c.Text
+	}
+	assert.Equal(t, []string{"continue", "complete "}, offered)
 }
 
 func TestApplyingACompletion(t *testing.T) {

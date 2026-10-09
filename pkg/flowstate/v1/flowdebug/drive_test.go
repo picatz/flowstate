@@ -65,7 +65,9 @@ func TestTheDriverSpeaksThePromptsVocabularyToATarget(t *testing.T) {
 	require.NotNil(t, stop.Snapshot)
 	assert.Equal(t, "each[1]/touch", stop.Snapshot.GetOccurrence().GetAddress())
 	assert.Contains(t, stop.Text, "breakpoint")
-	assert.Equal(t, "2\n", do("inspect item").Text)
+	live := do("inspect item")
+	assert.Equal(t, "2\n", live.Text)
+	assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED, live.Fidelity, "a live answer carried a fidelity")
 	assert.Contains(t, do("expand [1, [2, 3]]").Text, "list")
 	// And a page the first one cut off is the driver's to read too.
 	long := longList(flowdebug.DefaultInspectLimit + 3)

@@ -58,6 +58,7 @@ Screen
   shift+tab  focus the previous pane
   : /        type a command; every verb below works there
   i          inspect the selected scope row in the console
+  w          watch the selected scope row: it is read again at every stop and tr
   ?          show or hide this help
   q          detach and let the run go on unattended
   ctrl+c     leave at once and release the run, like quit
@@ -65,7 +66,7 @@ Screen
 
 Flow
   u          run until the selected flow step (double click too)
-  B          toggle a breakpoint on the selected flow step (right click too)
+  B          toggle a breakpoint on the selected flow step (right click too), or
 
 Type in the console
   until <step>  run to that step (an id or an address like pages[2]/page); a con
@@ -83,4 +84,6 @@ Type in the console
   backtrace  the step and every container around it
   detach  clear breakpoints and let the run go on unattended
   help  this list
+  watch <expr>  show an expression in the scope pane at every stop and after eve
+  unwatch <n|expr>  stop watching the nth watch, or the one spelled so
 

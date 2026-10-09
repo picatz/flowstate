@@ -19,6 +19,12 @@ type stubbedCase struct {
 	Program *v1.Workflow
 	Steps   []flowdebug.Step
 
+	// SourceMap relates the program to the lines it was written on, for a
+	// session to resolve a line breakpoint through. With no Program it is
+	// offered and each session keeps it only for a program it is given that the
+	// map describes ([flowdebug.Options.SourceMap]).
+	SourceMap *v1.DebugSourceMap
+
 	// RevealSensitive is the explicit opt-in every session of the case is
 	// built with, replays included.
 	RevealSensitive bool
@@ -56,6 +62,7 @@ func (c stubbedCase) launcher(runCtx context.Context) flowdebug.Launcher {
 		run := &stubbedRun{done: make(chan struct{}), initial: !launched.Swap(true), finish: c.Finish}
 		session, err := flowdebug.New(flowdebug.Options{
 			Controlled: true, Workflow: c.Program, Steps: c.Steps, RevealSensitive: c.RevealSensitive,
+			SourceMap: c.SourceMap,
 			Emit: func(text string, tone flowdebug.Tone) {
 				if run.speaks() {
 					c.Speak(text, tone)

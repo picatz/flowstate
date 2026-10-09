@@ -69,7 +69,7 @@ const toolsModfile = "tools/external/go.mod"
 //
 // staticcheck_test.go reads the whole run line back out of the workflow, so
 // this tier cannot drift into a second opinion about the tool.
-const staticcheckToolchain = "go1.27.0"
+const staticcheckToolchain = "go1.27.2"
 
 func main() {
 	// The first flag is the one thing to choose: who is asking. The local
@@ -437,7 +437,7 @@ func run(suppliedBase string) error {
 			buf("generate", "--config", examplePluginBufConfig, "--template", examplePluginTemplate, "--clean",
 				"--path", examplePluginProtoDir+"example", "-o", examplePluginDir),
 			generatedClean("generated code disagrees with the schema; stage and commit the regenerated files",
-				"*.pb.go"),
+				"*.pb.go", tsGeneratedFile),
 		)
 	} else {
 		g.skip("proto", "no changes under proto/, the example plugin's schema, the comment generator, or to buf config")

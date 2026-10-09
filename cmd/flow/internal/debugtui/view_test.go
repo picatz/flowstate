@@ -1,6 +1,7 @@
 package debugtui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/tui"
 	"github.com/picatz/flowstate/cmd/flow/internal/tui/tuitest"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 func opts(st Style, w, h int, focused bool) pane.Options {
@@ -168,6 +170,21 @@ func TestTheScreenFitsEverySizeInEveryState(t *testing.T) {
 		"scope tab":    func(s *Screen) { s.Pane = paneScope },
 		"unloaded":     func(s *Screen) { s.Loaded = false },
 		"problem":      func(s *Screen) { s.Frame.Scope, s.Problem = nil, long },
+		"watches": func(s *Screen) {
+			s.Watches = []Watch{{Expr: long}, {Expr: "a", Err: long}, {Expr: "b", NotHeld: true}}
+			s.Tree.SetRoots(append(ScopeNodes(s.Frame), watchNodes(s.Watches, s.Frame)...))
+			s.Tree.Toggle(groupWatches)
+		},
+		"menu": func(s *Screen) {
+			s.Focus = paneConsole
+			s.Console = consoleWith("co", long)
+			var offers []flowdebug.Candidate
+			for i := range 20 {
+				offers = append(offers, flowdebug.Candidate{Text: fmt.Sprintf("co%02d%s", i, long), Detail: long})
+			}
+			s.Console.OpenMenu("", offers, true)
+			s.Console.MoveMenu(11)
+		},
 	}
 
 	for name, mod := range states {

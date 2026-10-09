@@ -43,6 +43,7 @@ const (
 	bindFocusPrev  = "focus-prev"
 	bindConsole    = "console"
 	bindInspect    = "inspect-selected"
+	bindWatch      = "watch-selected"
 	bindUntil      = "flow-until"
 	bindBreak      = "flow-break"
 	bindHelp       = "help"
@@ -67,6 +68,13 @@ const (
 // screen keys are the screen's own and are always there, except that `i` needs
 // `inspect` and `q` needs `detach`, the verbs they end in.
 func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
+	return newKeymap(verbs, false)
+}
+
+// newKeymap is [NewKeymap], with the exit keys worded for a record when
+// recorded is set: there is no run to release or let go on, only a screen to
+// leave.
+func newKeymap(verbs []flowdebug.Verb, recorded bool) (tui.Keymap, error) {
 	offered := func(name string) bool {
 		return slices.ContainsFunc(verbs, func(v flowdebug.Verb) bool { return v.Name == name })
 	}
@@ -88,10 +96,16 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 		})
 	}
 
+	// Enter in the flow runs until the step, which only a front that answers
+	// `until` can do; the help says so only then.
+	toggle := "open or close the row (click too)"
+	if offered("until") {
+		toggle += "; in the flow, run until it"
+	}
 	bindings = append(bindings,
 		tui.Binding{Name: bindUp, Keys: []string{"up", "k"}, Help: "move up a row", Group: "Move"},
 		tui.Binding{Name: bindDown, Keys: []string{"down", "j"}, Help: "move down a row", Group: "Move"},
-		tui.Binding{Name: bindToggle, Keys: []string{"enter"}, Help: "open or close the row (click too); in the flow, run until it", Group: "Move"},
+		tui.Binding{Name: bindToggle, Keys: []string{"enter"}, Help: toggle, Group: "Move"},
 		tui.Binding{Name: bindExpand, Keys: []string{"right", "l"}, Help: "open the row; in the flow, unfold it", Group: "Move"},
 		tui.Binding{Name: bindCollapse, Keys: []string{"left", "h"}, Help: "close the row, or go to its parent; in the flow, fold it", Group: "Move"},
 		tui.Binding{Name: bindPageUp, Keys: []string{"pgup"}, Help: "up a page", Group: "Move"},
@@ -108,24 +122,34 @@ func NewKeymap(verbs []flowdebug.Verb) (tui.Keymap, error) {
 		bindings = append(bindings, tui.Binding{Name: bindInspect, Keys: []string{"i"},
 			Help: "inspect the selected scope row in the console", Group: "Screen"})
 	}
+	if offered("inspect") {
+		bindings = append(bindings, tui.Binding{Name: bindWatch, Keys: []string{"w"},
+			Help: "watch the selected scope row: it is read again at every stop and travel (at most 16; `unwatch` in the console removes one)", Group: "Screen"})
+	}
 	if offered("until") {
 		bindings = append(bindings, tui.Binding{Name: bindUntil, Keys: []string{"u"},
 			Help: "run until the selected flow step (double click too)", Group: "Flow"})
 	}
 	if offered("break") {
 		bindings = append(bindings, tui.Binding{Name: bindBreak, Keys: []string{"B"},
-			Help: "toggle a breakpoint on the selected flow step (right click too)", Group: "Flow"})
+			Help: "toggle a breakpoint on the selected flow step (right click too), or on the selected source line (click its number too)", Group: "Flow"})
 	}
 	bindings = append(bindings,
 		tui.Binding{Name: bindHelp, Keys: []string{"?"}, Help: "show or hide this help", Group: "Screen", Hint: true, Short: "help"},
 	)
+	quit, interrupt, leave := "detach and let the run go on unattended", "leave at once and release the run, like quit",
+		"leave and release the run (an empty console line)"
+	if recorded {
+		quit, interrupt, leave = "leave the record (nothing is held, and the run is untouched)", "leave at once, like quit",
+			"leave (an empty console line)"
+	}
 	if offered("detach") {
 		bindings = append(bindings, tui.Binding{Name: bindQuit, Keys: []string{"q"},
-			Help: "detach and let the run go on unattended", Group: "Screen", Hint: true, Short: "quit"})
+			Help: quit, Group: "Screen", Hint: true, Short: "quit"})
 	}
 	bindings = append(bindings,
-		tui.Binding{Name: bindInterrupt, Keys: []string{"ctrl+c"}, Help: "leave at once and release the run, like quit", Group: "Screen"},
-		tui.Binding{Name: bindLeave, Keys: []string{"ctrl+d"}, Help: "leave and release the run (an empty console line)", Group: "Screen"},
+		tui.Binding{Name: bindInterrupt, Keys: []string{"ctrl+c"}, Help: interrupt, Group: "Screen"},
+		tui.Binding{Name: bindLeave, Keys: []string{"ctrl+d"}, Help: leave, Group: "Screen"},
 	)
 
 	return tui.NewKeymap(bindings...)

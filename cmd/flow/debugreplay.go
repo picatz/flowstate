@@ -91,6 +91,13 @@ func newDebugCommand() *cobra.Command {
 	addRecordFlag(replayCmd)
 	addReverseFlag(replayCmd)
 
+	// Taken because the shared local-run path asks for it, and never honoured
+	// here: a replay reads its commands from the script, so there is no
+	// terminal to give the screen, and `--tui` spelled out is declined with the
+	// note that says so. Hidden for the reason --debug below is.
+	addTUIFlag(replayCmd)
+	replayCmd.Flags().Lookup("tui").Hidden = true
+
 	// How this command tells the shared local-run path that its run is
 	// debugged. It is not part of the verb's surface — a replay with no
 	// debugger is `flow run local` — so it is hidden, and [replayDebugScript]

@@ -2948,9 +2948,11 @@ flow run local examples/hello-world/workflow.yaml --debug`,
 	runLocalCmd.Flags().Bool("debug", false,
 		"hold the run before each step and read commands from the terminal — step, "+
 			"continue, until, break, inspect, scope, quit; the console shares stderr "+
-			"with the run's account, so stdout stays the answer under every `--output`")
+			"with the run's account, so stdout stays the answer under every `--output`; at a terminal "+
+			"of at least 60x12 it is the full-screen debugger unless --tui=false")
 	addRecordFlag(runLocalCmd)
 	addReverseFlag(runLocalCmd)
+	addTUIFlag(runLocalCmd)
 
 	// Supplying signals up front, and naming who they are from. Declared
 	// through a helper because `flow debug replay` is the same local run with

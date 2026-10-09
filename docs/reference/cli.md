@@ -156,7 +156,7 @@ Report workflows whose declared inputs or outputs broke a contract
 flow breaking <path>... [flags]
 ```
 
-Compile every Flowfile at the working tree and at a git ref, match each workflow to its previous self by path, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, or a constraint tightened. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
+Compile every Flowfile at the working tree and at a git ref, match each workflow to its previous self by path, and report interface breaks: a declared input that a caller must now supply, an input whose type narrowed, an input removed, a declared output removed or renamed, a declared output whose type or guarantee weakened, a constraint tightened, or a record (`types:`) whose fields changed in the direction that breaks that declaration. Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not shrink.
 
 The comparison is over the compiled protos, not the YAML text, so it is immune to formatting and comment churn. Each finding names the position in the working-tree file, what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as `validate`.
 
@@ -498,9 +498,23 @@ workflow code at a step boundary only: work already dispatched keeps running,
 and so does time. The session is leased: this command renews it while it runs,
 and a session nobody renews lapses and the run resumes on its own.
 
+At a terminal of at least 60x12 the debugger is a full-screen view with keyboard and
+mouse. --tui=false keeps the line editor. The view is never used under --script, with a
+piped stdin or stdout, with a machine --output, in CI (the CI environment variable) or
+with TERM=dumb: there the commands are read from the input and answered as text, exactly
+as before.
+
 Commands are read from the terminal, or from --script. Leaving with `detach`, or
 at the end of input, releases the run; `disconnect` leaves the session attached
 for a later `flow debug attach --session <id>`.
+
+With --history --run-id the run is not held at all: the debugger opens its record, every
+point of it reachable both ways with next, back, goto and the timeline, whether the run
+is still going or closed. Nothing runs and no session is taken; what it shows is
+reconstructed from the history, a name of the scope is marked rec, an expression typed or
+watched is marked hyp (computed now, never held by the run), and a value that cannot be
+known is marked n/a. until, break, pause and the other verbs that need a run executing are
+refused by name.
 
 Examples:
 
@@ -513,6 +527,12 @@ flow debug attach order-1234 --script debug.txt -o jsonl
 
 # Rejoin a session another process left attached:
 flow debug attach order-1234 --session 5d3f…
+
+# Walk a closed run's record, both ways, in the full-screen debugger:
+flow debug attach order-1234 --history --run-id 5d3f…
+
+# The line editor instead of the full-screen debugger:
+flow debug attach order-1234 --tui=false
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -520,6 +540,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--address <string>` | `string` | `localhost:9233` | `FLOWSTATE_ADDRESS` | address of the Flowstate server (overrides FLOWSTATE_ADDRESS); an explicit https:// scheme is honored |
 | `--audience <string>` | `string` | — | `FLOWSTATE_AUDIENCE` | the relying party a credential should be addressed to (overrides FLOWSTATE_AUDIENCE); required by `--credential-source=github-actions`, which mints a token for it. gitlab and terraform-cloud cannot mint on demand — their platform fixes the audience in the job or workspace configuration before the token exists — so for those it is checked against the token's own audience rather than requested, and a mismatch is refused with the setting to change |
 | `--credential-source <string>` | `string` | — | `FLOWSTATE_CREDENTIAL_SOURCE` | acquire a credential from a named source instead of `--token-file`/FLOWSTATE_TOKEN (overrides FLOWSTATE_CREDENTIAL_SOURCE); one of github-actions, gitlab, terraform-cloud, file, env, login. An unknown or unusable source is an error, never anonymous |
+| `--history` | `bool` | `false` | — | walk the recorded run named by --run-id instead of holding it: every point is reachable both ways, nothing runs, and what it shows is reconstructed from its history |
 | `--lease <duration>` | `duration` | `2m0s` | — | how long each renewal holds the session; the engine bounds it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--program <string>` | `string` | — | — | the Flowfile the run was started from, for source lines; used only if it compiles to the program the run executes, the deployment's plugin and task pins aside |
@@ -531,7 +552,7 @@ flow debug attach order-1234 --session 5d3f…
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
-| `--tui` | `bool` | `false` | — | drive the run from a full-screen debugger (keyboard and mouse) instead of the line editor; needs a terminal at least 60x12, and is declined with a note on stderr where there is none |
+| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr where there is no usable terminal, under --script or a machine --output, or with TERM=dumb |
 | `--wait <duration>` | `duration` | `1m0s` | — | how long a movement waits for the next stop before reporting the run still running |
 
 ## `flow debug do`
@@ -746,9 +767,9 @@ flow explore [path]... [flags]
 
 Open the graph `flow graph` writes as a screen you move around in: every workflow is a row, and opening one shows what it calls, the signals it waits for and the tasks it runs, to any depth. The pane beside it describes the selected row, including what calls it.
 
-It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
+It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status, and each workflow gains a runs row: open it for its fifty most recent runs, and select one for its run id, status, times, starter and labels. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
 
-Keys are the debugger's: j and k move, enter or l opens, h closes or goes to the parent, ? lists them all, q leaves. Rows can be clicked and the wheel scrolls.
+Keys are the debugger's: j and k move, enter or l opens, h closes or goes to the parent, f narrows the workflows to those whose name contains what you type, ? lists them all, q leaves. Rows can be clicked and the wheel scrolls.
 
 It needs a terminal at least 40 columns by 10 rows. For a script or an agent, `flow graph --output json` is the same graph as data.
 
@@ -1723,7 +1744,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--as-namespace <string>` | `string` | — | — | tenant namespace to rehearse policy as (local runs only) |
 | `--as-subject <string>` | `string` | `local-user` | — | authenticated subject to rehearse policy as (local runs only) |
 | `--auth-policy <string>` | `string` | — | `FLOWSTATE_AUTH_POLICY` | path to the auth policy (YAML) whose `secrets:` section decides which secrets a step may read and whose `federation:` section defines the credentials a run may assume |
-| `--debug` | `bool` | `false` | — | hold the run before each step and read commands from the terminal — step, continue, until, break, inspect, scope, quit; the console shares stderr with the run's account, so stdout stays the answer under every `--output` |
+| `--debug` | `bool` | `false` | — | hold the run before each step and read commands from the terminal — step, continue, until, break, inspect, scope, quit; the console shares stderr with the run's account, so stdout stays the answer under every `--output`; at a terminal of at least 60x12 it is the full-screen debugger unless --tui=false |
 | `--egress-policy <string>` | `string` | — | `FLOWSTATE_EGRESS_POLICY` | path to an egress policy (YAML) governing built-in HTTP and granted to every plugin the worker launches (default $FLOWSTATE_EGRESS_POLICY); the first-party anthropic, git, github, openai, slack, sql, ssh and vcs plugins enforce the grant on their own connections; Codex CLI control-plane traffic always bypasses the grant, while network from commands its agent starts follows Codex sandbox policy, and a third-party plugin can ignore the grant; with no file, plugins are granted the default policy built-in HTTP runs under, which sql refuses to reach a database under; a file replaces that default entirely and FLOWSTATE_ALLOW_LOOPBACK_EGRESS is then ignored, so a file that wants loopback says `allow_loopback: true` |
 | `--exec-policy <string>` | `string` | — | `FLOWSTATE_EXEC_POLICY` | path to an exec policy (YAML) enabling the built-in exec task (default $FLOWSTATE_EXEC_POLICY); unset, every exec step is denied. The file lists the programs a workflow may name, the directory roots they may run in, the environment they see, and the time and output bounds; it is an allowlist of what may be started, not a sandbox: a started program runs with this process's privileges and is not confined by the egress policy |
 | `--identity-key <string,...>` | `stringArray` | — | `FLOWSTATE_IDENTITY_KEY` | PKCS#8 PEM key used to mint short-lived workload assertions for federation targets (repeatable: the first signs, and every later one is published for verification only, so assertions signed before a restart keep verifying) |
@@ -1769,6 +1790,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver `--signal` as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
+| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr where there is no usable terminal, under --script or a machine --output, or with TERM=dumb |
 
 ## `flow schedule`
 
@@ -2599,7 +2621,7 @@ flow test -o jsonl examples/
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--coverage-required` | `bool` | `false` | — | fail when a workflow has a step, or a `switch:` arm, no test case reached and no coverage.allow_unreached entry records why |
-| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with `--seeds`. With `--seed N` it steps through that seed's own run — the faults it injects and the order it chose — which is how a reported violation is opened in the debugger |
+| `--debug` | `bool` | `false` | — | stop before each step of one case and read commands from the terminal — step, continue, until, break, inspect, scope, quit; requires exactly one test file and exactly one selected case (narrow with `--run` when the file has more), and is refused with `--output json` and with `--seeds`. With `--seed N` it steps through that seed's own run — the faults it injects and the order it chose — which is how a reported violation is opened in the debugger. At a terminal of at least 60x12 it is the full-screen debugger unless --tui=false |
 | `--driver <string>` | `string` | `local` | — | which driver proves each case: local (the default), or both, which also runs each passing case on the durable interpreter, in-process, with a Continue-As-New between every pair of steps, and fails where the two disagree; a case with faults, a trigger delivery, or a workflow reading run.local, run.identity or the run's address stays local and says so |
 | `--fail-fast` | `bool` | `false` | — | stop at the first failing case; the cases not run are reported as skipped, and --coverage-required is refused alongside it because a stopped suite's coverage is not the suite's |
 | `--fail-on-warning` | `bool` | `false` | — | fail when a case reports a warning — a stub declared and never answered through, a task invoked with no stub declared, or an invocation that no declared stub answered — instead of only printing it |
@@ -2617,6 +2639,7 @@ flow test -o jsonl examples/
 | `--seeds <int>` | `int` | `0` | — | also run every case under N seeded schedules of the local driver's own choices (`parallel:` branch order, where an `async:` step's work happens), and fail when a case's observables depend on which one ran; 0, the default, runs written order only |
 | `--swarm` | `bool` | `false` | — | with `--seeds` or `--seed`, run each seed with a random subset of the case's `faults:` on instead of all of them, so a failure that needs one kind of fault alone, or two without a third, can occur; a reported seed replays only with the same flag |
 | `--timeout <duration>` | `duration` | `0s` | — | real-time limit for one case (default 30s, at most 10m); the virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long |
+| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr where there is no usable terminal, under --script or a machine --output, or with TERM=dumb |
 | `--watch` | `bool` | `false` | — | run once, then again after every change to a YAML file under the paths given, until interrupted; clears a terminal between runs and writes one document per run to a pipe; refused with --debug |
 
 ## `flow timeline`

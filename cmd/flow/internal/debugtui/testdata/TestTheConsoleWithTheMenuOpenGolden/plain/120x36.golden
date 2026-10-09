@@ -1,0 +1,36 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
+flow ─────────────────────── source addresses only ──────────── steps ──────────────── scope 4 names ───────────────────
+no program; pass --program     No source: pass --program          ○ checkout pending   •▸ inputs  {2}                   
+                               <Flowfile> to see its lines;     → ▶ build running       ▸ steps   {1}                   
+                               showing the step's address.        ○ flaky pending       ▸ run     {1}                   
+                                                                  ○ gated pending                                       
+                               held at build                      ○ deploy pending                                      
+                                                                  ○ notify pending                                      
+                                                                  6 step(s)                                             
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                       inspector ───────────────────────
+                                                                                       group     inputs                 
+                                                                                       root                             
+                                                                                       names     2                      
+                                                                                       resolved  2                      
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+→ console 2/2  tab next  enter accept  esc close ───────────────────────────────────────────────────────────────────────
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+  continue   run to the next breakpoint, or the end                                                                     
+→ complete   list what could be written at the end of that text                                                         
+debug> co_                                                                                                              
+                                                                                                                        
+s step  n next  c continue  tab focus  : console  ? help  q quit                                                        

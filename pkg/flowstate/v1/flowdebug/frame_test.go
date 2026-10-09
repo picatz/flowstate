@@ -111,6 +111,9 @@ type seenAtAStop struct {
 	totals  map[string]int32
 	values  map[string]string
 	overlay flowdebug.Overlay
+	// fidelity is how the frame says its state is known: a live stop on any
+	// front is not a reconstruction, and carries no badge.
+	fidelity v1.DebugFidelity
 }
 
 func seen(t *testing.T, target flowdebug.Target, opts flowdebug.FrameOptions) seenAtAStop {
@@ -130,6 +133,7 @@ func seen(t *testing.T, target flowdebug.Target, opts flowdebug.FrameOptions) se
 		totals:     map[string]int32{},
 		values:     map[string]string{},
 		overlay:    frame.Overlay,
+		fidelity:   frame.Fidelity,
 	}
 	for _, group := range frame.Scope.GetGroups() {
 		at.totals[group.GetGroup()] = group.GetTotal()
@@ -181,6 +185,7 @@ func TestAFrameReadsTheSameOnEveryFront(t *testing.T) {
 			assert.Equal(t, want[i].totals, got[i].totals, "%s stop %d: scope totals", name, i)
 			assert.Equal(t, want[i].values, got[i].values, "%s stop %d: scope values", name, i)
 			assert.Equal(t, want[i].overlay, got[i].overlay, "%s stop %d: overlay", name, i)
+			assert.Equal(t, v1.DebugFidelity_DEBUG_FIDELITY_UNSPECIFIED, got[i].fidelity, "%s stop %d: a live stop claims a fidelity", name, i)
 		}
 	}
 

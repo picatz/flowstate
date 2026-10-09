@@ -229,6 +229,16 @@ two shapes compose rather than compete: the live view is drawn on stderr and the
 outputs go to stdout, so one invocation shows progress on the terminal and pipes its
 answer to `jq`.
 
+The debugger's full-screen view is the third. `flow debug attach`, `flow run local
+--debug` and `flow test --debug` open it by default where stdin and stdout are both
+terminals of at least 60 columns by 12 rows, because it is the same session with the
+same commands and answers drawn as panes. It is never used under `--script`, with a
+piped stdin or stdout, with a machine `--output`, in a CI environment (`CI` set) or
+with `TERM=dumb`; there the line editor and the script front print the bytes they
+always did, and say nothing about the screen. `--tui=false` asks for the line editor
+on a terminal, and `--tui` spelled out where there is no terminal is declined with one
+sentence on stderr instead of being ignored. See [Debugging](DEBUGGING.md#the-default-is-a-full-screen-debugger).
+
 Animation follows from the same reasoning. It exists to say "still working" during a
 wait whose length is not known, it stops the moment there is something to report,
 and it never appears where output is not a terminal. Nothing that is only decorative

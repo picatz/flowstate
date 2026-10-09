@@ -1,12 +1,12 @@
 flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
-flow ──────────────────────────── steps ─────────────────── → scope 4 names ──────────────── inspector ─────────────────
-no program; pass --program          ○ checkout pending       ▾ inputs      {2}               expressio  steps.checkout  
-                                  → ▶ build running              version   "2026.9.0"        type       map             
-                                    ○ flaky pending              region    "eu-west-1"       children   2               
-                                    ○ gated pending          ▾ steps       {1}               value      {artifact: check
-                                    ○ deploy pending        →  ▸ checkout  {artifact: checko            out.tar.gz, sha:
-                                    ○ notify pending         ▸ run         {1}                           9f2c}          
-                                    6 step(s)                                                                           
+flow ─────────────────────── source addresses only ──────────── steps ──────────────── → scope 4 names ─────────────────
+no program; pass --program     No source: pass --program          ○ checkout pending    ▾ inputs      {2}               
+                               <Flowfile> to see its lines;     → ▶ build running           version   "2026.9.0"        
+                               showing the step's address.        ○ flaky pending           region    "eu-west-1"       
+                                                                  ○ gated pending       ▾ steps       {1}               
+                               held at build                      ○ deploy pending     →  ▸ checkout  {artifact: checkou
+                                                                  ○ notify pending      ▸ run         {1}               
+                                                                  6 step(s)                                             
                                                                                                                         
                                                                                                                         
                                                                                                                         
@@ -14,12 +14,12 @@ no program; pass --program          ○ checkout pending       ▾ inputs      {
                                                                                                                         
                                                                                                                         
                                                                                                                         
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
-                                                                                                                        
+                                                                                       inspector ───────────────────────
+                                                                                       expression  steps.checkout       
+                                                                                       type        map                  
+                                                                                       children    2                    
+                                                                                       value       {artifact: checkout.t
+                                                                                                   ar.gz, sha: 9f2c}    
                                                                                                                         
                                                                                                                         
                                                                                                                         

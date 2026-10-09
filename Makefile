@@ -10,8 +10,8 @@
 # genguard hook — spells the invocation this way and never a version.
 TOOLS_MODFILE := $(CURDIR)/tools/external/go.mod
 BUF := go tool -modfile=$(TOOLS_MODFILE) buf
-GOVULNCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) govulncheck
-STATICCHECK := GOTOOLCHAIN=go1.27.0 go tool -modfile=$(TOOLS_MODFILE) staticcheck
+GOVULNCHECK := GOTOOLCHAIN=go1.27.2 go tool -modfile=$(TOOLS_MODFILE) govulncheck
+STATICCHECK := GOTOOLCHAIN=go1.27.2 go tool -modfile=$(TOOLS_MODFILE) staticcheck
 PKGSITE := go tool -modfile=$(TOOLS_MODFILE) pkgsite
 
 # The example plugin is its own buf module: `make check`, ci.yml and tools/gate

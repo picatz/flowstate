@@ -1,0 +1,49 @@
+=== held in the main file
+→ source main.yaml:8 ─────────────────────────
+    1 edition: v2026.4
+    2 name: main
+    3 # fetch, charge, then hand over to the …
+    4 steps:
+ •  5   - id: fetch
+    6     log:
+    7       message: fetching
+▶   8   - id: charge
+│   9     log:
+│  10       message: ${"charging " + string(1…
+   11   - id: nested
+   12     call: ./child.yaml
+
+=== held in a called file
+source child.yaml:4 ────────────────────
+    1 edition: v2026.4
+    2 name: child
+    3 steps:
+▶   4   - id: greet
+│   5     log:
+│   6       message: hi
+
+
+=== a narrow pane clips with a mark
+source child.yaml:4 ──
+    1 edition: v2026.4
+    2 name: child
+    3 steps:
+▶   4   - id: greet
+│   5     log:
+│   6       message: …
+
+=== unverified
+source addresses only ────────────────────────
+  Lines are not shown: main.yaml does not
+  match the program this run executes (digest
+  mismatch), so a line could mark the wrong
+  step; showing the step's address.
+
+  held at greet
+=== no source offered
+source addresses only ────────────────────────
+  No source: pass --program <Flowfile> to see
+  its lines; showing the step's address.
+
+  held at greet
+

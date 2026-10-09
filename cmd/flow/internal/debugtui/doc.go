@@ -26,6 +26,27 @@
 // console's own lines (`until`, `break`, `delete`), and a step whose name the
 // session withholds is never put on one.
 //
+// # The source
+//
+// Beside the flow, [SourceView] draws the Flowfile with the held step's lines
+// marked, following the held frame across a `call:`. The texts are the caller's
+// [Config.Documents], read once into bounded lines that are safe to draw; a line
+// is drawn only where the frame's source map is verified and records the digest
+// of the text, and otherwise the pane draws the step's address and says why. A
+// click on a line's gutter arms a breakpoint on it through
+// [flowdebug.Driver.BreakLine], and refuses with a toast, sending nothing, where
+// the lines cannot be trusted.
+//
+// # The console, its menu and watches
+//
+// An `inspect` typed at the console is a tree in the scope pane
+// ([Screen.Result]), painted with [flowdebug.ValueTokens] as the line editor
+// paints it, and opening a row of it is the driver's own `expand`. `tab` in the
+// console opens a [Menu] fed by the driver's completer. A [Watch] is an
+// expression kept by the screen (at most [MaxWatches]) and evaluated through
+// [flowdebug.Target.Inspect] by the same command that reads each frame, so a
+// frame and its watches are of one stop and a travel refreshes both.
+//
 // # What refreshes the screen
 //
 // The screen re-reads the frame when a command finishes and when the target's
