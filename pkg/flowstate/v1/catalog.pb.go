@@ -173,7 +173,9 @@ type TaskCatalog struct {
 	// needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
 	// expression_inputs; version 2 adds required_secret_inputs; version 3 adds the `literal`
 	// input claim, which TaskDescription carries only in the task's input schema,
-	// so a reader that predates it would ignore it.
+	// so a reader that predates it would ignore it; version 4 adds the
+	// `credential` input claim, with PluginDescription.credentials and
+	// TaskDescription.credential_inputs, for the same reason.
 	//
 	// Exists because proto3 cannot mark a bool or a repeated string field
 	// `optional`, so none of those fields can distinguish "populated as
@@ -532,8 +534,15 @@ type TaskDescription struct {
 	// it prevents sensitive material from entering a compiled specification and
 	// durable workflow history. Sorted and deduplicated like secret_inputs.
 	RequiredSecretInputs []string `protobuf:"bytes,14,rep,name=required_secret_inputs,json=requiredSecretInputs,proto3" json:"required_secret_inputs,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// CredentialInputs maps each input that claims a plugin credential, with the
+	// `(flowstate.v1.input).credential` option, to the name of that credential.
+	// Every name is in the plugin's credentials. Read from the input descriptor
+	// when the task is described, so it cannot disagree with it, and covered by
+	// the plugin's claims_digest. A credential input is also in secret_inputs and
+	// required_secret_inputs.
+	CredentialInputs map[string]string `protobuf:"bytes,15,rep,name=credential_inputs,json=credentialInputs,proto3" json:"credential_inputs,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *TaskDescription) Reset() {
@@ -660,6 +669,13 @@ func (x *TaskDescription) GetOutputMessage() string {
 func (x *TaskDescription) GetRequiredSecretInputs() []string {
 	if x != nil {
 		return x.RequiredSecretInputs
+	}
+	return nil
+}
+
+func (x *TaskDescription) GetCredentialInputs() map[string]string {
+	if x != nil {
+		return x.CredentialInputs
 	}
 	return nil
 }
@@ -926,6 +942,81 @@ type CapabilityBinding_Plugin struct {
 
 func (*CapabilityBinding_Plugin) isCapabilityBinding_Provider() {}
 
+// CredentialDeclaration is a credential a plugin needs, named once at plugin
+// level so a task input says which one it receives with the
+// `(flowstate.v1.input).credential` option rather than each input restating what
+// kind of secret it takes.
+//
+// It is the one definition: a plugin states it in its manifest and a catalog
+// reports it, both with this message. Declaring a credential grants nothing; the
+// host still resolves only a secret reference an author wrote, under the
+// deployment's secret access policy.
+type CredentialDeclaration struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Name is how an input claims the credential. Unique within a plugin.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Description says what the credential is for, shown wherever the plugin is
+	// listed.
+	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// Federated says a `${credential('target')}` reference may stand in for a
+	// stored secret here, resolved to a bearer token by the deployment's
+	// federation broker. False, the default, is a stored secret only.
+	Federated     bool `protobuf:"varint,3,opt,name=federated,proto3" json:"federated,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CredentialDeclaration) Reset() {
+	*x = CredentialDeclaration{}
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CredentialDeclaration) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CredentialDeclaration) ProtoMessage() {}
+
+func (x *CredentialDeclaration) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CredentialDeclaration.ProtoReflect.Descriptor instead.
+func (*CredentialDeclaration) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *CredentialDeclaration) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CredentialDeclaration) GetDescription() string {
+	if x != nil {
+		return x.Description
+	}
+	return ""
+}
+
+func (x *CredentialDeclaration) GetFederated() bool {
+	if x != nil {
+		return x.Federated
+	}
+	return false
+}
+
 // PluginDescription is one plugin's identity and what it advertises.
 type PluginDescription struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -978,14 +1069,18 @@ type PluginDescription struct {
 	// `flowstatev1.ResolvedPlugin.claims_digest` for how a worker treats an
 	// old pin that predates this field: it is not compared, not
 	// assumed safe, simply not asked.
-	ClaimsDigest  string `protobuf:"bytes,10,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	ClaimsDigest string `protobuf:"bytes,10,opt,name=claims_digest,json=claimsDigest,proto3" json:"claims_digest,omitempty"`
+	// Credentials are the credentials this plugin declares, in declaration order;
+	// at most 8. Covered by claims_digest, because adding or loosening one (a
+	// newly federated credential) changes what an author may write.
+	Credentials   []*CredentialDeclaration `protobuf:"bytes,11,rep,name=credentials,proto3" json:"credentials,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *PluginDescription) Reset() {
 	*x = PluginDescription{}
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -997,7 +1092,7 @@ func (x *PluginDescription) String() string {
 func (*PluginDescription) ProtoMessage() {}
 
 func (x *PluginDescription) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[5]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1010,7 +1105,7 @@ func (x *PluginDescription) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PluginDescription.ProtoReflect.Descriptor instead.
 func (*PluginDescription) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *PluginDescription) GetName() string {
@@ -1083,6 +1178,13 @@ func (x *PluginDescription) GetClaimsDigest() string {
 	return ""
 }
 
+func (x *PluginDescription) GetCredentials() []*CredentialDeclaration {
+	if x != nil {
+		return x.Credentials
+	}
+	return nil
+}
+
 // TaskField is one input or output, described in the DSL's vocabulary.
 type TaskField struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -1127,7 +1229,7 @@ type TaskField struct {
 
 func (x *TaskField) Reset() {
 	*x = TaskField{}
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[6]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1139,7 +1241,7 @@ func (x *TaskField) String() string {
 func (*TaskField) ProtoMessage() {}
 
 func (x *TaskField) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[6]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1152,7 +1254,7 @@ func (x *TaskField) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TaskField.ProtoReflect.Descriptor instead.
 func (*TaskField) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{6}
+	return file_flowstate_v1_catalog_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *TaskField) GetName() string {
@@ -1202,7 +1304,7 @@ type CapabilityBinding_PluginProvider struct {
 
 func (x *CapabilityBinding_PluginProvider) Reset() {
 	*x = CapabilityBinding_PluginProvider{}
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[7]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1214,7 +1316,7 @@ func (x *CapabilityBinding_PluginProvider) String() string {
 func (*CapabilityBinding_PluginProvider) ProtoMessage() {}
 
 func (x *CapabilityBinding_PluginProvider) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_catalog_proto_msgTypes[7]
+	mi := &file_flowstate_v1_catalog_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1257,7 +1359,7 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x05macro\x18\x03 \x01(\bR\x05macro\x12\x18\n" +
 	"\aexample\x18\x04 \x01(\tR\aexample\x12\x1c\n" +
 	"\tsignature\x18\x05 \x03(\tR\tsignature\x12 \n" +
-	"\vdescription\x18\x06 \x01(\tR\vdescription\"\xc0\x04\n" +
+	"\vdescription\x18\x06 \x01(\tR\vdescription\"\xe7\x05\n" +
 	"\x0fTaskDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\asummary\x18\x02 \x01(\tR\asummary\x12/\n" +
@@ -1274,7 +1376,11 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\rinput_message\x18\v \x01(\tR\finputMessage\x12+\n" +
 	"\x11output_descriptor\x18\f \x01(\fR\x10outputDescriptor\x12%\n" +
 	"\x0eoutput_message\x18\r \x01(\tR\routputMessage\x124\n" +
-	"\x16required_secret_inputs\x18\x0e \x03(\tR\x14requiredSecretInputs\"\xfc\x01\n" +
+	"\x16required_secret_inputs\x18\x0e \x03(\tR\x14requiredSecretInputs\x12`\n" +
+	"\x11credential_inputs\x18\x0f \x03(\v23.flowstate.v1.TaskDescription.CredentialInputsEntryR\x10credentialInputs\x1aC\n" +
+	"\x15CredentialInputsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xfc\x01\n" +
 	"\rPluginCatalog\x129\n" +
 	"\aplugins\x18\x01 \x03(\v2\x1f.flowstate.v1.PluginDescriptionR\aplugins\x12\x1f\n" +
 	"\vsearch_path\x18\x02 \x03(\tR\n" +
@@ -1310,7 +1416,11 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x16REHEARSAL_POSTURE_STUB\x10\x02\x12\x1c\n" +
 	"\x18REHEARSAL_POSTURE_REFUSE\x10\x03B\n" +
 	"\n" +
-	"\bprovider\"\x82\x03\n" +
+	"\bprovider\"\x98\x01\n" +
+	"\x15CredentialDeclaration\x125\n" +
+	"\x04name\x18\x01 \x01(\tB!\xbaH\x1er\x1c\x10\x01\x18 2\x16^[a-z][a-z0-9_]{0,31}$R\x04name\x12*\n" +
+	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\vdescription\x12\x1c\n" +
+	"\tfederated\x18\x03 \x01(\bR\tfederated\"\xd3\x03\n" +
 	"\x11PluginDescription\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x18\n" +
 	"\aversion\x18\x02 \x01(\tR\aversion\x12 \n" +
@@ -1322,7 +1432,8 @@ const file_flowstate_v1_catalog_proto_rawDesc = "" +
 	"\x12task_schema_digest\x18\b \x01(\tR\x10taskSchemaDigest\x12/\n" +
 	"\x13distribution_digest\x18\t \x01(\tR\x12distributionDigest\x12#\n" +
 	"\rclaims_digest\x18\n" +
-	" \x01(\tR\fclaimsDigest\"\x8d\x01\n" +
+	" \x01(\tR\fclaimsDigest\x12O\n" +
+	"\vcredentials\x18\v \x03(\v2#.flowstate.v1.CredentialDeclarationB\b\xbaH\x05\x92\x01\x02\x10\bR\vcredentials\"\x8d\x01\n" +
 	"\tTaskField\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1a\n" +
@@ -1344,7 +1455,7 @@ func file_flowstate_v1_catalog_proto_rawDescGZIP() []byte {
 }
 
 var file_flowstate_v1_catalog_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_flowstate_v1_catalog_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_flowstate_v1_catalog_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_flowstate_v1_catalog_proto_goTypes = []any{
 	(CapabilityBinding_Locality)(0),          // 0: flowstate.v1.CapabilityBinding.Locality
 	(CapabilityBinding_RehearsalPosture)(0),  // 1: flowstate.v1.CapabilityBinding.RehearsalPosture
@@ -1353,26 +1464,30 @@ var file_flowstate_v1_catalog_proto_goTypes = []any{
 	(*TaskDescription)(nil),                  // 4: flowstate.v1.TaskDescription
 	(*PluginCatalog)(nil),                    // 5: flowstate.v1.PluginCatalog
 	(*CapabilityBinding)(nil),                // 6: flowstate.v1.CapabilityBinding
-	(*PluginDescription)(nil),                // 7: flowstate.v1.PluginDescription
-	(*TaskField)(nil),                        // 8: flowstate.v1.TaskField
-	(*CapabilityBinding_PluginProvider)(nil), // 9: flowstate.v1.CapabilityBinding.PluginProvider
+	(*CredentialDeclaration)(nil),            // 7: flowstate.v1.CredentialDeclaration
+	(*PluginDescription)(nil),                // 8: flowstate.v1.PluginDescription
+	(*TaskField)(nil),                        // 9: flowstate.v1.TaskField
+	nil,                                      // 10: flowstate.v1.TaskDescription.CredentialInputsEntry
+	(*CapabilityBinding_PluginProvider)(nil), // 11: flowstate.v1.CapabilityBinding.PluginProvider
 }
 var file_flowstate_v1_catalog_proto_depIdxs = []int32{
 	4,  // 0: flowstate.v1.TaskCatalog.tasks:type_name -> flowstate.v1.TaskDescription
 	3,  // 1: flowstate.v1.TaskCatalog.cel_functions:type_name -> flowstate.v1.CELFunction
-	8,  // 2: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
-	8,  // 3: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
-	7,  // 4: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
-	6,  // 5: flowstate.v1.PluginCatalog.capability_bindings:type_name -> flowstate.v1.CapabilityBinding
-	9,  // 6: flowstate.v1.CapabilityBinding.plugin:type_name -> flowstate.v1.CapabilityBinding.PluginProvider
-	0,  // 7: flowstate.v1.CapabilityBinding.locality:type_name -> flowstate.v1.CapabilityBinding.Locality
-	1,  // 8: flowstate.v1.CapabilityBinding.rehearsal:type_name -> flowstate.v1.CapabilityBinding.RehearsalPosture
-	4,  // 9: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
-	10, // [10:10] is the sub-list for method output_type
-	10, // [10:10] is the sub-list for method input_type
-	10, // [10:10] is the sub-list for extension type_name
-	10, // [10:10] is the sub-list for extension extendee
-	0,  // [0:10] is the sub-list for field type_name
+	9,  // 2: flowstate.v1.TaskDescription.inputs:type_name -> flowstate.v1.TaskField
+	9,  // 3: flowstate.v1.TaskDescription.outputs:type_name -> flowstate.v1.TaskField
+	10, // 4: flowstate.v1.TaskDescription.credential_inputs:type_name -> flowstate.v1.TaskDescription.CredentialInputsEntry
+	8,  // 5: flowstate.v1.PluginCatalog.plugins:type_name -> flowstate.v1.PluginDescription
+	6,  // 6: flowstate.v1.PluginCatalog.capability_bindings:type_name -> flowstate.v1.CapabilityBinding
+	11, // 7: flowstate.v1.CapabilityBinding.plugin:type_name -> flowstate.v1.CapabilityBinding.PluginProvider
+	0,  // 8: flowstate.v1.CapabilityBinding.locality:type_name -> flowstate.v1.CapabilityBinding.Locality
+	1,  // 9: flowstate.v1.CapabilityBinding.rehearsal:type_name -> flowstate.v1.CapabilityBinding.RehearsalPosture
+	4,  // 10: flowstate.v1.PluginDescription.tasks:type_name -> flowstate.v1.TaskDescription
+	7,  // 11: flowstate.v1.PluginDescription.credentials:type_name -> flowstate.v1.CredentialDeclaration
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_catalog_proto_init() }
@@ -1389,7 +1504,7 @@ func file_flowstate_v1_catalog_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_catalog_proto_rawDesc), len(file_flowstate_v1_catalog_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   8,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -239,6 +239,20 @@ func (h *Host) bind(launched []*Plugin) []error {
 
 			h.taskDefs[name] = taskBinding{plugin: p, def: def}
 		}
+
+		// The credential lattice is a property of the plugin, not of one task:
+		// a declaration is used by some task or the plugin is refused. A refused
+		// plugin keeps none of its tasks, because a task whose claim names a
+		// credential nothing declared would otherwise run as the plain secret
+		// input it also is, without the check the claim promised.
+		if err := checkManifestCredentials(p, h.taskDefs); err != nil {
+			for name, binding := range h.taskDefs {
+				if binding.plugin == p {
+					delete(h.taskDefs, name)
+				}
+			}
+			problems = append(problems, err)
+		}
 	}
 
 	return problems
@@ -431,7 +445,14 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 		for i, t := range tasks {
 			claimsOnly[i] = flowstatev1.TaskDescriptionClaimsOnly(t)
 		}
-		claimsBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{Tasks: claimsOnly})
+		//
+		// The plugin's credential declarations are claims too: a credential
+		// turning federated changes what an author may write, so they are
+		// hashed here. A plugin that declares none marshals as before.
+		claimsBytes, _ := (proto.MarshalOptions{Deterministic: true}).Marshal(&flowstatev1.PluginDescription{
+			Tasks:       claimsOnly,
+			Credentials: manifest.GetCredentials(),
+		})
 
 		catalog.Plugins = append(catalog.Plugins, &flowstatev1.PluginDescription{
 			Name:        p.Name(),
@@ -445,6 +466,7 @@ func (h *Host) Catalog() *flowstatev1.PluginCatalog {
 			// to resolve.
 			SecretSchemes:    p.Schemes(),
 			Tasks:            tasks,
+			Credentials:      manifest.GetCredentials(),
 			ProtocolVersion:  uint32(p.ProtocolVersion()),
 			TaskSchemaDigest: flowstatev1.ContentDigest(schemaBytes),
 			ClaimsDigest:     flowstatev1.ContentDigest(claimsBytes),

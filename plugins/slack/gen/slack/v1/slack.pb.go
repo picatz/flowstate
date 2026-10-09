@@ -84,9 +84,9 @@ func (x *Metadata) GetEventPayload() map[string]string {
 // PostInputs describes one new message.
 type PostInputs struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// token is a Slack bot token (xoxb-) carrying chat:write. The task requires
-	// this entire input to be a secret reference, which the host resolves before
-	// execution. A literal token is refused before it can enter durable history;
+	// token is a Slack bot token (xoxb-) carrying chat:write, the plugin's
+	// bot_token credential. The task requires this entire input to be a secret
+	// reference, which the host resolves before execution. A literal token is refused before it can enter durable history;
 	// the resolved credential is capped at 4 KiB before becoming an HTTP header.
 	Token *v1.Value `protobuf:"bytes,1,opt,name=token,proto3" json:"token,omitempty"`
 	// channel is a Slack conversation ID such as C0123ABCD. Names are refused: IDs
@@ -596,10 +596,10 @@ const file_slack_v1_slack_proto_rawDesc = "" +
 	"\revent_payload\x18\x02 \x03(\v2$.slack.v1.Metadata.EventPayloadEntryB\b\xbaH\x05\x9a\x01\x02\x10\x10R\feventPayload\x1a?\n" +
 	"\x11EventPayloadEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xc3\x04\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xcc\x04\n" +
 	"\n" +
-	"PostInputs\x121\n" +
-	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x127\n" +
+	"PostInputs\x12:\n" +
+	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x0f\x8a\xb5\x18\v\x1a\tbot_tokenR\x05token\x127\n" +
 	"\achannel\x18\x02 \x01(\tB\x1d\xbaH\x1ar\x182\x16^[CDG][A-Z0-9]{1,254}$R\achannel\x12y\n" +
 	"\x0fidempotency_key\x18\x03 \x01(\tBP\xbaHMrK2I^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$R\x0eidempotencyKey\x12\x1c\n" +
 	"\x04text\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\xa0\x1fR\x04text\x12+\n" +
@@ -614,9 +614,9 @@ const file_slack_v1_slack_proto_rawDesc = "" +
 	"\achannel\x18\x01 \x01(\tR\achannel\x12\x0e\n" +
 	"\x02ts\x18\x02 \x01(\tR\x02ts\x12\x1d\n" +
 	"\n" +
-	"message_ts\x18\x03 \x01(\tR\tmessageTs\"\xd8\x02\n" +
-	"\fUpdateInputs\x121\n" +
-	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x06\x8a\xb5\x18\x02\b\x02R\x05token\x127\n" +
+	"message_ts\x18\x03 \x01(\tR\tmessageTs\"\xe1\x02\n" +
+	"\fUpdateInputs\x12:\n" +
+	"\x05token\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\x0f\x8a\xb5\x18\v\x1a\tbot_tokenR\x05token\x127\n" +
 	"\achannel\x18\x02 \x01(\tB\x1d\xbaH\x1ar\x182\x16^[CDG][A-Z0-9]{1,254}$R\achannel\x12.\n" +
 	"\x02ts\x18\x03 \x01(\tB\x1e\xbaH\x1br\x192\x17^[0-9]{1,16}\\.[0-9]{6}$R\x02ts\x12\x1c\n" +
 	"\x04text\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\xa0\x1fR\x04text\x12+\n" +

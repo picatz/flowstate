@@ -114,7 +114,19 @@ type InputOptions struct {
 	// strings, in the task's input message or in any message nested inside it
 	// through singular, repeated, or map fields. A claim on a field of any other
 	// shape is refused when the task is loaded.
-	Literal       bool `protobuf:"varint,2,opt,name=literal,proto3" json:"literal,omitempty"`
+	Literal bool `protobuf:"varint,2,opt,name=literal,proto3" json:"literal,omitempty"`
+	// Credential names the plugin credential this input receives: one of the
+	// [CredentialDeclaration]s the plugin that provides the task declares, by
+	// name (`^[a-z][a-z0-9_]{0,31}$`). Unset is no claim.
+	//
+	// It implies SECRET_REQUIRED, so the input is a whole secret reference the
+	// host resolves and never a literal, and it is an error beside SECRET_WHOLE_VALUE
+	// or SECRET_NESTED, which would say the same thing less strictly. It cannot
+	// be beside `literal`: a credential is never text the author typed. Valid on
+	// a flowstate.v1.Value or a string field; a claim on a field of any other
+	// shape, or naming a credential the plugin does not declare, is refused when
+	// the plugin is loaded, as is a declared credential no input names.
+	Credential    string `protobuf:"bytes,3,opt,name=credential,proto3" json:"credential,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -161,6 +173,13 @@ func (x *InputOptions) GetLiteral() bool {
 		return x.Literal
 	}
 	return false
+}
+
+func (x *InputOptions) GetCredential() string {
+	if x != nil {
+		return x.Credential
+	}
+	return ""
 }
 
 var file_flowstate_v1_schema_proto_extTypes = []protoimpl.ExtensionInfo{
@@ -220,10 +239,13 @@ var File_flowstate_v1_schema_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_schema_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/schema.proto\x12\fflowstate.v1\x1a google/protobuf/descriptor.proto\"V\n" +
+	"\x19flowstate/v1/schema.proto\x12\fflowstate.v1\x1a google/protobuf/descriptor.proto\"v\n" +
 	"\fInputOptions\x12,\n" +
 	"\x06secret\x18\x01 \x01(\x0e2\x14.flowstate.v1.SecretR\x06secret\x12\x18\n" +
-	"\aliteral\x18\x02 \x01(\bR\aliteral*`\n" +
+	"\aliteral\x18\x02 \x01(\bR\aliteral\x12\x1e\n" +
+	"\n" +
+	"credential\x18\x03 \x01(\tR\n" +
+	"credential*`\n" +
 	"\x06Secret\x12\x16\n" +
 	"\x12SECRET_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SECRET_WHOLE_VALUE\x10\x01\x12\x13\n" +

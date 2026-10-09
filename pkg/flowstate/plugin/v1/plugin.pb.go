@@ -253,7 +253,12 @@ type PluginManifest struct {
 	Schemes []string `protobuf:"bytes,5,rep,name=schemes,proto3" json:"schemes,omitempty"`
 	// Tasks are the task definitions this plugin provides, meaningful only with
 	// CAPABILITY_TASKS.
-	Tasks         []*TaskManifest `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
+	Tasks []*TaskManifest `protobuf:"bytes,6,rep,name=tasks,proto3" json:"tasks,omitempty"`
+	// Credentials are the credentials this plugin's tasks take, each named once
+	// so a task input claims one with `(flowstate.v1.input).credential`. Every
+	// input claim must name a declared credential and every declaration must be
+	// named by at least one input; the host refuses the plugin otherwise.
+	Credentials   []*v1.CredentialDeclaration `protobuf:"bytes,7,rep,name=credentials,proto3" json:"credentials,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -326,6 +331,13 @@ func (x *PluginManifest) GetSchemes() []string {
 func (x *PluginManifest) GetTasks() []*TaskManifest {
 	if x != nil {
 		return x.Tasks
+	}
+	return nil
+}
+
+func (x *PluginManifest) GetCredentials() []*v1.CredentialDeclaration {
+	if x != nil {
+		return x.Credentials
 	}
 	return nil
 }
@@ -1396,7 +1408,7 @@ var File_flowstate_plugin_v1_plugin_proto protoreflect.FileDescriptor
 
 const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\n" +
-	" flowstate/plugin/v1/plugin.proto\x12\x13flowstate.plugin.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x16flowstate/v1/run.proto\x1a\x17flowstate/v1/task.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xe9\x02\n" +
+	" flowstate/plugin/v1/plugin.proto\x12\x13flowstate.plugin.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1aflowstate/v1/catalog.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x16flowstate/v1/run.proto\x1a\x17flowstate/v1/task.proto\x1a\x18flowstate/v1/value.proto\x1a\x1bflowstate/v1/workflow.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1egoogle/protobuf/duration.proto\"\xba\x03\n" +
 	"\x0ePluginManifest\x12:\n" +
 	"\x04name\x18\x01 \x01(\tB&\xe2A\x01\x02\xbaH\x1f\xc8\x01\x01r\x1a\x10\x01\x18@2\x14^[a-z0-9][a-z0-9-]*$R\x04name\x12!\n" +
 	"\aversion\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\aversion\x12*\n" +
@@ -1404,7 +1416,8 @@ const file_flowstate_plugin_v1_plugin_proto_rawDesc = "" +
 	"\fcapabilities\x18\x04 \x03(\x0e2\x1f.flowstate.plugin.v1.CapabilityB\n" +
 	"\xbaH\a\x92\x01\x04\b\x01\x10\x10R\fcapabilities\x128\n" +
 	"\aschemes\x18\x05 \x03(\tB\x1e\xbaH\x1b\x92\x01\x18\x10 \"\x14r\x12\x10\x01\x18 2\f^[a-z0-9-]+$R\aschemes\x12A\n" +
-	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\"\xc4\x04\n" +
+	"\x05tasks\x18\x06 \x03(\v2!.flowstate.plugin.v1.TaskManifestB\b\xbaH\x05\x92\x01\x02\x10@R\x05tasks\x12O\n" +
+	"\vcredentials\x18\a \x03(\v2#.flowstate.v1.CredentialDeclarationB\b\xbaH\x05\x92\x01\x02\x10\bR\vcredentials\"\xc4\x04\n" +
 	"\fTaskManifest\x127\n" +
 	"\x04name\x18\x01 \x01(\tB#\xe2A\x01\x02\xbaH\x1c\xc8\x01\x01r\x17\x10\x01\x18@2\x11^[a-z][a-z0-9_]*$R\x04name\x12\"\n" +
 	"\asummary\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\asummary\x12)\n" +
@@ -1504,64 +1517,66 @@ func file_flowstate_plugin_v1_plugin_proto_rawDescGZIP() []byte {
 var file_flowstate_plugin_v1_plugin_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_flowstate_plugin_v1_plugin_proto_msgTypes = make([]protoimpl.MessageInfo, 14)
 var file_flowstate_plugin_v1_plugin_proto_goTypes = []any{
-	(Capability)(0),               // 0: flowstate.plugin.v1.Capability
-	(TaskPhase)(0),                // 1: flowstate.plugin.v1.TaskPhase
-	(HealthResponse_Status)(0),    // 2: flowstate.plugin.v1.HealthResponse.Status
-	(*PluginManifest)(nil),        // 3: flowstate.plugin.v1.PluginManifest
-	(*TaskManifest)(nil),          // 4: flowstate.plugin.v1.TaskManifest
-	(*DescribeRequest)(nil),       // 5: flowstate.plugin.v1.DescribeRequest
-	(*DescribeResponse)(nil),      // 6: flowstate.plugin.v1.DescribeResponse
-	(*HealthRequest)(nil),         // 7: flowstate.plugin.v1.HealthRequest
-	(*HealthResponse)(nil),        // 8: flowstate.plugin.v1.HealthResponse
-	(*ResolveRequest)(nil),        // 9: flowstate.plugin.v1.ResolveRequest
-	(*ResolveResponse)(nil),       // 10: flowstate.plugin.v1.ResolveResponse
-	(*ExecuteStreamRequest)(nil),  // 11: flowstate.plugin.v1.ExecuteStreamRequest
-	(*ExecuteStreamResponse)(nil), // 12: flowstate.plugin.v1.ExecuteStreamResponse
-	(*TaskProgress)(nil),          // 13: flowstate.plugin.v1.TaskProgress
-	(*ExecuteRequest)(nil),        // 14: flowstate.plugin.v1.ExecuteRequest
-	(*ExecuteResponse)(nil),       // 15: flowstate.plugin.v1.ExecuteResponse
-	(*TaskErrorProvenance)(nil),   // 16: flowstate.plugin.v1.TaskErrorProvenance
-	(*v1.SecretRef)(nil),          // 17: flowstate.v1.SecretRef
-	(*v1.WorkloadIdentity)(nil),   // 18: flowstate.v1.WorkloadIdentity
-	(*durationpb.Duration)(nil),   // 19: google.protobuf.Duration
-	(*v1.Task)(nil),               // 20: flowstate.v1.Task
-	(*v1.Scope)(nil),              // 21: flowstate.v1.Scope
-	(*v1.Node_Outputs)(nil),       // 22: flowstate.v1.Node.Outputs
+	(Capability)(0),                  // 0: flowstate.plugin.v1.Capability
+	(TaskPhase)(0),                   // 1: flowstate.plugin.v1.TaskPhase
+	(HealthResponse_Status)(0),       // 2: flowstate.plugin.v1.HealthResponse.Status
+	(*PluginManifest)(nil),           // 3: flowstate.plugin.v1.PluginManifest
+	(*TaskManifest)(nil),             // 4: flowstate.plugin.v1.TaskManifest
+	(*DescribeRequest)(nil),          // 5: flowstate.plugin.v1.DescribeRequest
+	(*DescribeResponse)(nil),         // 6: flowstate.plugin.v1.DescribeResponse
+	(*HealthRequest)(nil),            // 7: flowstate.plugin.v1.HealthRequest
+	(*HealthResponse)(nil),           // 8: flowstate.plugin.v1.HealthResponse
+	(*ResolveRequest)(nil),           // 9: flowstate.plugin.v1.ResolveRequest
+	(*ResolveResponse)(nil),          // 10: flowstate.plugin.v1.ResolveResponse
+	(*ExecuteStreamRequest)(nil),     // 11: flowstate.plugin.v1.ExecuteStreamRequest
+	(*ExecuteStreamResponse)(nil),    // 12: flowstate.plugin.v1.ExecuteStreamResponse
+	(*TaskProgress)(nil),             // 13: flowstate.plugin.v1.TaskProgress
+	(*ExecuteRequest)(nil),           // 14: flowstate.plugin.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),          // 15: flowstate.plugin.v1.ExecuteResponse
+	(*TaskErrorProvenance)(nil),      // 16: flowstate.plugin.v1.TaskErrorProvenance
+	(*v1.CredentialDeclaration)(nil), // 17: flowstate.v1.CredentialDeclaration
+	(*v1.SecretRef)(nil),             // 18: flowstate.v1.SecretRef
+	(*v1.WorkloadIdentity)(nil),      // 19: flowstate.v1.WorkloadIdentity
+	(*durationpb.Duration)(nil),      // 20: google.protobuf.Duration
+	(*v1.Task)(nil),                  // 21: flowstate.v1.Task
+	(*v1.Scope)(nil),                 // 22: flowstate.v1.Scope
+	(*v1.Node_Outputs)(nil),          // 23: flowstate.v1.Node.Outputs
 }
 var file_flowstate_plugin_v1_plugin_proto_depIdxs = []int32{
 	0,  // 0: flowstate.plugin.v1.PluginManifest.capabilities:type_name -> flowstate.plugin.v1.Capability
 	4,  // 1: flowstate.plugin.v1.PluginManifest.tasks:type_name -> flowstate.plugin.v1.TaskManifest
-	3,  // 2: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
-	2,  // 3: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
-	17, // 4: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
-	18, // 5: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	19, // 6: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
-	20, // 7: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
-	21, // 8: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
-	18, // 9: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	13, // 10: flowstate.plugin.v1.ExecuteStreamResponse.progress:type_name -> flowstate.plugin.v1.TaskProgress
-	15, // 11: flowstate.plugin.v1.ExecuteStreamResponse.response:type_name -> flowstate.plugin.v1.ExecuteResponse
-	1,  // 12: flowstate.plugin.v1.TaskProgress.phase:type_name -> flowstate.plugin.v1.TaskPhase
-	20, // 13: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
-	21, // 14: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
-	18, // 15: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
-	22, // 16: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
-	19, // 17: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
-	5,  // 18: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
-	7,  // 19: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
-	9,  // 20: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
-	14, // 21: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
-	11, // 22: flowstate.plugin.v1.TaskService.ExecuteStream:input_type -> flowstate.plugin.v1.ExecuteStreamRequest
-	6,  // 23: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
-	8,  // 24: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
-	10, // 25: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
-	15, // 26: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
-	12, // 27: flowstate.plugin.v1.TaskService.ExecuteStream:output_type -> flowstate.plugin.v1.ExecuteStreamResponse
-	23, // [23:28] is the sub-list for method output_type
-	18, // [18:23] is the sub-list for method input_type
-	18, // [18:18] is the sub-list for extension type_name
-	18, // [18:18] is the sub-list for extension extendee
-	0,  // [0:18] is the sub-list for field type_name
+	17, // 2: flowstate.plugin.v1.PluginManifest.credentials:type_name -> flowstate.v1.CredentialDeclaration
+	3,  // 3: flowstate.plugin.v1.DescribeResponse.manifest:type_name -> flowstate.plugin.v1.PluginManifest
+	2,  // 4: flowstate.plugin.v1.HealthResponse.status:type_name -> flowstate.plugin.v1.HealthResponse.Status
+	18, // 5: flowstate.plugin.v1.ResolveRequest.ref:type_name -> flowstate.v1.SecretRef
+	19, // 6: flowstate.plugin.v1.ResolveRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	20, // 7: flowstate.plugin.v1.ResolveResponse.expires_in:type_name -> google.protobuf.Duration
+	21, // 8: flowstate.plugin.v1.ExecuteStreamRequest.task:type_name -> flowstate.v1.Task
+	22, // 9: flowstate.plugin.v1.ExecuteStreamRequest.scope:type_name -> flowstate.v1.Scope
+	19, // 10: flowstate.plugin.v1.ExecuteStreamRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	13, // 11: flowstate.plugin.v1.ExecuteStreamResponse.progress:type_name -> flowstate.plugin.v1.TaskProgress
+	15, // 12: flowstate.plugin.v1.ExecuteStreamResponse.response:type_name -> flowstate.plugin.v1.ExecuteResponse
+	1,  // 13: flowstate.plugin.v1.TaskProgress.phase:type_name -> flowstate.plugin.v1.TaskPhase
+	21, // 14: flowstate.plugin.v1.ExecuteRequest.task:type_name -> flowstate.v1.Task
+	22, // 15: flowstate.plugin.v1.ExecuteRequest.scope:type_name -> flowstate.v1.Scope
+	19, // 16: flowstate.plugin.v1.ExecuteRequest.identity:type_name -> flowstate.v1.WorkloadIdentity
+	23, // 17: flowstate.plugin.v1.ExecuteResponse.outputs:type_name -> flowstate.v1.Node.Outputs
+	20, // 18: flowstate.plugin.v1.ExecuteResponse.retry_after:type_name -> google.protobuf.Duration
+	5,  // 19: flowstate.plugin.v1.PluginService.Describe:input_type -> flowstate.plugin.v1.DescribeRequest
+	7,  // 20: flowstate.plugin.v1.PluginService.Health:input_type -> flowstate.plugin.v1.HealthRequest
+	9,  // 21: flowstate.plugin.v1.SecretService.Resolve:input_type -> flowstate.plugin.v1.ResolveRequest
+	14, // 22: flowstate.plugin.v1.TaskService.Execute:input_type -> flowstate.plugin.v1.ExecuteRequest
+	11, // 23: flowstate.plugin.v1.TaskService.ExecuteStream:input_type -> flowstate.plugin.v1.ExecuteStreamRequest
+	6,  // 24: flowstate.plugin.v1.PluginService.Describe:output_type -> flowstate.plugin.v1.DescribeResponse
+	8,  // 25: flowstate.plugin.v1.PluginService.Health:output_type -> flowstate.plugin.v1.HealthResponse
+	10, // 26: flowstate.plugin.v1.SecretService.Resolve:output_type -> flowstate.plugin.v1.ResolveResponse
+	15, // 27: flowstate.plugin.v1.TaskService.Execute:output_type -> flowstate.plugin.v1.ExecuteResponse
+	12, // 28: flowstate.plugin.v1.TaskService.ExecuteStream:output_type -> flowstate.plugin.v1.ExecuteStreamResponse
+	24, // [24:29] is the sub-list for method output_type
+	19, // [19:24] is the sub-list for method input_type
+	19, // [19:19] is the sub-list for extension type_name
+	19, // [19:19] is the sub-list for extension extendee
+	0,  // [0:19] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_plugin_v1_plugin_proto_init() }

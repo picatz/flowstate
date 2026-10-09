@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 
+	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin/sdk"
 
 	slackv1 "github.com/picatz/flowstate/plugins/slack/gen/slack/v1"
@@ -17,6 +18,10 @@ func main() {
 		Name:        "slack",
 		Version:     "0.2.0",
 		Description: "Posts and updates Slack messages for approval and human-in-the-loop notifications: text, cards, and typed Block Kit; outbound only.",
+		Credentials: []*flowstatev1.CredentialDeclaration{{
+			Name:        "bot_token",
+			Description: "Slack bot token (xoxb-) carrying chat:write, held as a secret reference and resolved by the host.",
+		}},
 		Tasks: []sdk.Task{
 			{
 				Name:                 "post",

@@ -45,6 +45,13 @@ func init() {
 				" CAPABILITY_TASKS.\n",
 		},
 		{
+			Name: "flowstate.plugin.v1.PluginManifest.credentials",
+			Leading: " Credentials are the credentials this plugin's tasks take, each named once\n" +
+				" so a task input claims one with `(flowstate.v1.input).credential`. Every\n" +
+				" input claim must name a declared credential and every declaration must be\n" +
+				" named by at least one input; the host refuses the plugin otherwise.\n",
+		},
+		{
 			Name: "flowstate.plugin.v1.TaskManifest",
 			Leading: " TaskManifest describes a task a plugin provides, so the engine can validate a\n" +
 				" workflow that uses it before running anything.\n" +
