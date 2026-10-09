@@ -184,16 +184,16 @@ steps:
   - id: debit
     if: ${steps.cleared_to_move.value}
     http:
+      url: https://ledger.internal.example.com/debit
+      method: POST
       headers:
         Idempotency-Key: ${inputs.idempotency_key}
+      outputs:
+        reference: ${response.json.reference}
       json:
         account_id: ${inputs.from_account_id}
         amount_cents: ${inputs.amount_cents}
-      method: POST
-      outputs:
-        reference: ${response.json.reference}
       parse_json: true
-      url: https://ledger.internal.example.com/debit
     undo:
       # The reversal carries its own key, derived from the original, so a
       # compensation that itself gets retried is exactly as idempotent as the
@@ -201,35 +201,35 @@ steps:
       # debited account back - rather than a third "reverse" endpoint, the
       # same account-in-the-body shape as the ordinary steps above.
       http:
+        url: https://ledger.internal.example.com/credit
+        method: POST
         headers:
           Idempotency-Key: ${inputs.idempotency_key + "-undo-debit"}
         json:
           account_id: ${inputs.from_account_id}
           amount_cents: ${inputs.amount_cents}
-        method: POST
-        url: https://ledger.internal.example.com/credit
   - id: credit
     if: ${steps.cleared_to_move.value}
     http:
+      url: https://ledger.internal.example.com/credit
+      method: POST
       headers:
         Idempotency-Key: ${inputs.idempotency_key}
+      outputs:
+        reference: ${response.json.reference}
       json:
         account_id: ${inputs.to_account_id}
         amount_cents: ${inputs.amount_cents}
-      method: POST
-      outputs:
-        reference: ${response.json.reference}
       parse_json: true
-      url: https://ledger.internal.example.com/credit
     undo:
       http:
+        url: https://ledger.internal.example.com/debit
+        method: POST
         headers:
           Idempotency-Key: ${inputs.idempotency_key + "-undo-credit"}
         json:
           account_id: ${inputs.to_account_id}
           amount_cents: ${inputs.amount_cents}
-        method: POST
-        url: https://ledger.internal.example.com/debit
 
   # The step that can still fail after money has moved on both sides - the
   # settlement record a downstream reconciliation job reads. When it does,
@@ -240,26 +240,26 @@ steps:
   - id: notify_settlement
     if: ${steps.cleared_to_move.value}
     http:
+      url: https://settlements.internal.example.com/notify
+      method: POST
       json:
         idempotency_key: ${inputs.idempotency_key}
         debit_reference: ${steps.debit.reference}
         credit_reference: ${steps.credit.reference}
-      method: POST
-      url: https://settlements.internal.example.com/notify
   - id: rejected
     if: ${steps.over_threshold.value && steps.approval_outcome.value == "rejected"}
     log:
-      level: warn
       # Interpolation rather than `format()`: splicing an int into a sentence is
       # the plain case R3 gives interpolation, and it is also what keeps the
       # three warnings here from sharing one `[inputs.amount_cents]` argument
       # list three times over (docs/STYLE.md R5, `flow lint`).
-      message: ${"transfer of " + string(inputs.amount_cents) + " cents was rejected"}
+      message: transfer of ${inputs.amount_cents} cents was rejected
+      level: warn
   - id: expired
     if: ${steps.over_threshold.value && steps.approval_outcome.value == "expired"}
     log:
+      message: approval for ${inputs.amount_cents} cents lapsed; the transfer did not happen
       level: warn
-      message: ${"approval for " + string(inputs.amount_cents) + " cents lapsed; the transfer did not happen"}
 
   # The gate was answered - it did not time out - but the payload carried
   # neither an explicit `approved: true` nor an explicit `approved: false`:
@@ -275,8 +275,8 @@ steps:
   - id: refused_malformed_payload
     if: ${steps.over_threshold.value && steps.approval_outcome.value == "malformed"}
     log:
+      message: "refusing to move ${inputs.amount_cents} cents: the approval signal answered with no usable approved field"
       level: warn
-      message: '${"refusing to move " + string(inputs.amount_cents) + " cents: the approval signal answered with no usable approved field"}'
   # Why the money did not move, named once for the `decision` output below.
   # Three of `approval_outcome`'s four values pass straight through; only
   # `malformed` is renamed, because the output's vocabulary is a caller's

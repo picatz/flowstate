@@ -26,10 +26,10 @@ steps:
       steps:
         - id: probe
           http:
+            url: https://httpbin.org/status/200
             method: GET
             outputs:
               ready: ${response.status_code == 200}
-            url: https://httpbin.org/status/200
 outputs:
   # How many times the body ran, not just that it ran — `ran: [poll]` in
   # workflow.test.yaml proves the step executed, and nothing about "the poll

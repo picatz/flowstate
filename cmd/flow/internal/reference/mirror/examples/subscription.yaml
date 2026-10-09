@@ -15,9 +15,7 @@ inputs:
     must: this >= 1
 # The plans a signal may move a subscription to, the same two the input names.
 vars:
-  plans:
-    - basic
-    - pro
+  plans: [basic, pro]
 # Billing and the customer speak to the same run by signal. Who may send which
 # is a deployment's policy to write; a rehearsal needs none.
 steps:
@@ -75,8 +73,8 @@ steps:
         - id: dunning
           if: ${steps.next.value.status == "past_due"}
           log:
-            level: warn
             message: ${"payment failed (%d of %d); asking the customer to update their card".format([steps.next.value.failures, inputs.max_failures])}
+            level: warn
   # `state` is the state going into the last pass: `update:` never runs once
   # `until:` holds. The state the subscription ended in is the last pass's `next`.
   - id: ended_as

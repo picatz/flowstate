@@ -74,8 +74,8 @@ steps:
         steps:
           - id: escalate
             log:
-              level: warn
               message: no response arrived before the deadline, escalating
+              level: warn
 outputs:
   outcome:
     value: ${steps.outcome.value}

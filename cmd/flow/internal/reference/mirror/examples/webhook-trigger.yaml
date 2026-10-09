@@ -93,8 +93,8 @@ triggers:
 steps:
   - id: record
     log:
-      level: info
       message: ${"captured " + string(inputs.amount) + " for order " + inputs.order_id}
+      level: info
 outputs:
   order:
     value: ${inputs.order_id}

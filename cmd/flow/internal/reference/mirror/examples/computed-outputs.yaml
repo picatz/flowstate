@@ -33,10 +33,7 @@ inputs:
   # same way, which is what `--input-file` is for once the arguments stop being flat.
   targets:
     type: list(dyn)
-    default:
-      - alpha
-      - beta
-      - gamma
+    default: [alpha, beta, gamma]
 steps:
   - id: roll_out
     for_each:

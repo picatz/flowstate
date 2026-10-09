@@ -186,8 +186,8 @@ steps:
       note: a
   - id: overridden
     bound.use:
-      note: b
       token: ${secret('env:OVERRIDE_TOKEN')}
+      note: b
 `
 
 	wf, _, err := flowfile.Parse([]byte(src))

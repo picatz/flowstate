@@ -63,20 +63,18 @@ inputs:
     description: the order being refunded
   lines:
     type: list(int)
-    default:
-      - 1500
-      - 4200
+    default: [1500, 4200]
     description: the cents to give back on each line of the order
 steps:
   - id: total
     value: ${inputs.lines.sum()}
   - id: ask
     log:
-      message: ${"refund of " + string(steps.total.value) + " cents on " + string(inputs.order_id) + " is waiting for approval"}
+      message: refund of ${steps.total.value} cents on ${inputs.order_id} is waiting for approval
   - id: approval
     wait_for_signal:
       name: refund-approved
-      prompt: ${"Approve refunding " + string(steps.total.value) + " cents on " + string(inputs.order_id) + "?"}
+      prompt: Approve refunding ${steps.total.value} cents on ${inputs.order_id}?
       timeout: 1h
   - id: approved
     value: ${steps.approval.payload.?approved.orValue(false)}
@@ -88,7 +86,7 @@ steps:
       steps:
         - id: refund
           log:
-            message: ${"refunding " + string(line) + " cents"}
+            message: refunding ${line} cents
 outputs:
   approved:
     value: ${steps.approved.value}

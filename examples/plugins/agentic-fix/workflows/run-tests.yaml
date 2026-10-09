@@ -33,8 +33,7 @@ steps:
     # suite.
     continue_on_error: true
     http:
-      json:
-        ref: ${inputs.ref}
+      url: https://ci.internal.example.com/test-runs
       method: POST
       # Shaped with a type guard rather than an `expect:`, and fail-closed. An
       # `expect:` would replace the task's status judgement entirely and classify
@@ -74,8 +73,9 @@ steps:
         # suite failed" from "nobody could tell me" - a distinction that matters
         # exactly when the answer gates a mutation.
         verdict_read: ${type(response.json) == type({}) && has(response.json.passed) && type(response.json.passed) == type(true)}
+      json:
+        ref: ${inputs.ref}
       parse_json: true
-      url: https://ci.internal.example.com/test-runs
 outputs:
   passed:
     value: ${has(steps.suite.passed) && steps.suite.passed}

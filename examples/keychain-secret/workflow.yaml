@@ -7,6 +7,6 @@ steps:
   # never something a shell reinterprets.
   - id: health
     http:
+      url: https://api.example.com/status/200
       bearer: ${secret('keychain:github-token')}
       expect: ${response.status_code == 200}
-      url: https://api.example.com/status/200

@@ -6,8 +6,8 @@ steps:
   # nothing else in it to read, so the value the next step uses is unambiguous.
   - id: web
     http:
-      method: GET
       url: https://httpbin.org/status/200
+      method: GET
   - id: output
     log:
       # `message` is a string, and `status_code` is an int, so it is converted here

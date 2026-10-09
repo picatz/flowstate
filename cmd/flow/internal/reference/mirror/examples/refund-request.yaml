@@ -64,24 +64,24 @@ steps:
   - id: payout
     if: ${steps.cleared.value}
     http:
+      url: https://payments.example.com/refunds
+      method: POST
       headers:
         Idempotency-Key: ${inputs.refund.order_id + "-refund"}
+      outputs:
+        reference: ${response.json.reference}
       json:
         order_id: ${inputs.refund.order_id}
         cents: ${steps.total.value}
-      method: POST
-      outputs:
-        reference: ${response.json.reference}
       parse_json: true
-      url: https://payments.example.com/refunds
     undo:
       http:
+        url: https://payments.example.com/refunds/void
+        method: POST
         headers:
           Idempotency-Key: ${inputs.refund.order_id + "-void"}
         json:
           order_id: ${inputs.refund.order_id}
-        method: POST
-        url: https://payments.example.com/refunds/void
   - id: tell_customer
     if: ${steps.cleared.value}
     log:

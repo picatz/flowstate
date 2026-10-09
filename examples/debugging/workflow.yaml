@@ -4,10 +4,7 @@ description: A small order batch with a loop, a parallel block and a call, writt
 inputs:
   amounts:
     type: list(dyn)
-    default:
-      - 120
-      - 900
-      - 40
+    default: [120, 900, 40]
     description: the order amounts to charge, in cents
   threshold:
     type: int

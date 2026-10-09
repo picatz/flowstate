@@ -52,8 +52,8 @@ steps:
   - id: safeguard
     if: ${inputs.tier == "production"}
     log:
-      level: warn
       message: deploying to production
+      level: warn
 outputs:
   tier:
     value: ${inputs.tier}

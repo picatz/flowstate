@@ -126,8 +126,8 @@ steps:
               final: ${payload.?final.orValue(true)}
   - id: report
     log:
-      level: info
       message: '${"%s: %d of %d stages approved".format([inputs.release, steps.rollout.results.filter(r, r.stage.approved).size(), steps.rollout.results.size()])}'
+      level: info
 outputs:
   stages_approved:
     value: ${steps.rollout.results.filter(r, r.stage.approved).size()}

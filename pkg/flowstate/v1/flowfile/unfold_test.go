@@ -44,10 +44,10 @@ steps:
       message: hi
   - id: notify
     log:
+      message: hello
       fields:
         deployment: ${steps.submit.deployment}
         approved_by: ${steps.submit.who}
-      message: hello
 `,
 		},
 		{
@@ -60,11 +60,11 @@ steps:
       message: hi
   - id: notify
     log:
+      message: hello
       fields:
         deployment: ${steps.submit.deployment}
         # sender, not payload.
         approved_by: ${steps.submit.who}
-      message: hello
 `,
 		},
 		{
@@ -78,12 +78,12 @@ inputs:
 steps:
   - id: write
     log:
+      message: hi
       fields:
         statements:
           - sql: INSERT INTO ledger (key) VALUES ($1)
             params:
               - ${inputs.key}
-      message: hi
 `,
 		},
 		{
@@ -93,6 +93,7 @@ name: w
 steps:
   - id: call
     http:
+      url: https://example.com
       json:
         attempt: 1
         enabled: true
@@ -100,7 +101,6 @@ steps:
         missing: null
         name: prod
         who: ${inputs.who}
-      url: https://example.com
 `,
 		},
 		{
@@ -110,10 +110,10 @@ name: w
 steps:
   - id: call
     http:
+      url: https://example.com
       headers:
         B: ${inputs.b}
         A: "1"
-      url: https://example.com
 `,
 		},
 	}

@@ -33,6 +33,7 @@ vars:
 steps:
   - id: web
     http:
+      url: https://httpbin.org/json
       method: GET
       # One name per line, each value an ordinary expression position: ${...}
       # marks a CEL expression, as everywhere else in a Flowfile, and a bare
@@ -43,7 +44,6 @@ steps:
         source: ${vars.source}
         status: ${response.status_code}
         title: ${json_parse(response.body)["slideshow"]["title"]}
-      url: https://httpbin.org/json
   - id: report
     log:
       message: ${"got %d for %s from %s".format([steps.web.status, steps.web.title, steps.web.source])}

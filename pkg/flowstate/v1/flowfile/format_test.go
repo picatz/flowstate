@@ -201,7 +201,7 @@ steps:
 // survive a formatter that reorders anything.
 //
 // A comment is carried by the *path* of what it was written against rather than
-// by where it sat, so sorting a task's inputs takes each comment along with its
+// by where it sat, so ordering a task's inputs takes each comment along with its
 // key instead of leaving both notes over whichever key ends up first.
 func TestFormatMovesACommentWithTheKeyItSitsAbove(t *testing.T) {
 	t.Parallel()
@@ -211,10 +211,10 @@ name: sorted
 steps:
   - id: fetch
     http:
-      # last alphabetically, written first
-      url: https://example.com
-      # first alphabetically, written last
+      # last in the schema, written first
       method: GET
+      # first in the schema, written last
+      url: https://example.com
 `
 
 	const want = `edition: v2026.4
@@ -222,10 +222,10 @@ name: sorted
 steps:
   - id: fetch
     http:
-      # first alphabetically, written last
-      method: GET
-      # last alphabetically, written first
+      # first in the schema, written last
       url: https://example.com
+      # last in the schema, written first
+      method: GET
 `
 
 	assert.Equal(t, want, formatFile(t, src))
@@ -401,14 +401,14 @@ name: dotted
 steps:
   - id: send
     http:
+      url: https://example.com
+      method: POST
       headers:
         # about the first header
         x.a.b: one
         # about the second header
         x.a:
           b: two
-      method: POST
-      url: https://example.com
 `
 
 	assert.Equal(t, want, formatFile(t, src))

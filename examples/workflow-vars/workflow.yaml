@@ -26,10 +26,7 @@ vars:
   region: eu-west-1
 
   # A list, which is worth showing: static data needs no step to hold it.
-  targets:
-    - alpha
-    - beta
-    - gamma
+  targets: [alpha, beta, gamma]
 steps:
   - id: announce
     log:

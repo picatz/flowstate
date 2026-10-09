@@ -77,8 +77,8 @@ signals:
 steps:
   - id: page
     log:
-      level: warn
       message: '${"%s opened by %s: paging on-call for %s".format([inputs.incident_id, (run.identity.subject == "") ? "an unattested caller" : run.identity.subject, inputs.service])}'
+      level: warn
 
   # The page and the evidence gathering run in the SAME `parallel:` block, as
   # sibling branches, rather than one after the other - this was wrong in an
@@ -119,42 +119,42 @@ steps:
             timeout: 10s
             continue_on_error: true
             http:
+              url: https://observability.internal.example.com/logs
               method: GET
               outputs:
                 summary: ${response.json.summary}
-              parse_json: true
               query: ${steps.observability_query.value}
-              url: https://observability.internal.example.com/logs
+              parse_json: true
       - steps:
           - id: metrics
             timeout: 10s
             continue_on_error: true
             http:
+              url: https://observability.internal.example.com/metrics
               method: GET
               outputs:
                 error_rate: ${response.json.error_rate}
-              parse_json: true
               query: ${steps.observability_query.value}
-              url: https://observability.internal.example.com/metrics
+              parse_json: true
       - steps:
           - id: recent_deploys
             timeout: 10s
             continue_on_error: true
             http:
+              url: https://observability.internal.example.com/deploys
               method: GET
               outputs:
                 deployed_version: ${response.json.deployed_version}
-              parse_json: true
               query: ${steps.observability_query.value}
-              url: https://observability.internal.example.com/deploys
+              parse_json: true
 
   # Nobody claimed it in the first window - a real escalation, paged wider,
   # not a silent timeout somebody has to notice on a dashboard later.
   - id: escalate
     if: ${steps.responder_ack.timed_out}
     log:
-      level: error
       message: ${"%s unacknowledged after 15m; escalating %s".format([inputs.incident_id, inputs.service])}
+      level: error
 
   # The wider page. Only reached on the escalation path, so an incident that
   # was claimed promptly never opens a second gate it does not need.
@@ -260,8 +260,8 @@ steps:
   - id: refused
     if: ${steps.claimed_on_either_page.value && steps.remediation_outcome.value == "refused"}
     log:
-      level: warn
       message: ${"remediation for %s was not authorized by a real, separate signer".format([inputs.incident_id])}
+      level: warn
 outputs:
   outcome:
     value: '${steps.claimed_on_either_page.value ? steps.remediation_outcome.value : "unclaimed"}'

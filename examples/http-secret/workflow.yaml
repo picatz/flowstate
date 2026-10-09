@@ -5,9 +5,9 @@ steps:
   # inside the activity and sends `Authorization: Bearer <value>`.
   - id: health
     http:
+      url: https://api.example.com/status/200
       bearer: ${secret('env:API_TOKEN')}
       expect: ${response.status_code == 200}
-      url: https://api.example.com/status/200
 
   # A reference can also sit inside `headers:`, for a destination that wants the
   # credential under a name of its own. The entry stays a reference through
@@ -15,8 +15,8 @@ steps:
   # header resolves it.
   - id: health_with_header
     http:
-      expect: ${response.status_code == 200}
+      url: https://api.example.com/status/200
       headers:
         Accept: application/json
         X-Api-Key: ${secret('env:API_TOKEN')}
-      url: https://api.example.com/status/200
+      expect: ${response.status_code == 200}

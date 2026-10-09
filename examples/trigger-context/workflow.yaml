@@ -77,8 +77,8 @@ steps:
   - id: notify
     if: ${trigger.kind != "schedule"}
     log:
-      level: info
       message: ${"paging about order " + inputs.order_id + " (started by " + trigger.kind + ")"}
+      level: info
 
   # Provenance, written into the log where an operator reading an incident will
   # find it. `trigger.name` is the webhook or schedule that started the run — empty
@@ -91,8 +91,8 @@ steps:
   # written to durable history.
   - id: correlate
     log:
-      level: info
       message: ${"source=" + trigger.name + " delivery=" + trigger.delivery_id + " principal=" + trigger.principal}
+      level: info
 outputs:
   started_by:
     value: ${trigger.kind}

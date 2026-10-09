@@ -86,6 +86,7 @@ steps:
         - id: fetch
           description: One page of the catalogue, from wherever the last page said to carry on.
           http:
+            url: https://catalog.internal.example.com/records
             method: GET
             # Both halves of the page are named here: the records to work on,
             # and where to carry on from. `next_cursor` is what `until:` and
@@ -94,10 +95,9 @@ steps:
             outputs:
               next_cursor: ${response.json.next_cursor}
               records: ${response.json.records}
-            parse_json: true
             query:
               cursor: ${cursor}
-            url: https://catalog.internal.example.com/records
+            parse_json: true
         - id: index
           description: Fan out over this page's records, three at a time.
           for_each:
@@ -111,14 +111,14 @@ steps:
             steps:
               - id: send
                 http:
-                  json:
-                    id: ${record.id}
-                    title: ${record.title}
+                  url: https://search.internal.example.com/index
                   method: POST
                   outputs:
                     id: ${record.id}
+                  json:
+                    id: ${record.id}
+                    title: ${record.title}
                   parse_json: true
-                  url: https://search.internal.example.com/index
 outputs:
   pages_walked:
     value: ${steps.pages.results.size()}

@@ -107,8 +107,8 @@ steps:
   - id: lapsed
     if: ${steps.sign_off.outcome == "unsigned"}
     log:
-      level: warn
       message: sign-off did not arrive before the contract deadline
+      level: warn
 outputs:
   outcome:
     value: '${steps.sign_off.timed_out ? "lapsed" : "answered"}'

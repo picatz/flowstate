@@ -15,19 +15,19 @@ steps:
   # and the parent workflow's header for the composed shape this is part of.
   - id: provision_access
     http:
-      json:
-        tenant: ${inputs.tenant}
+      url: https://provisioning.internal.example.com/access-grants
       method: POST
       outputs:
         resource_id: ${response.json.resource_id}
+      json:
+        tenant: ${inputs.tenant}
       parse_json: true
-      url: https://provisioning.internal.example.com/access-grants
     undo:
       http:
+        url: https://provisioning.internal.example.com/access-grants
+        method: DELETE
         json:
           resource_id: ${steps.provision_access.resource_id}
-        method: DELETE
-        url: https://provisioning.internal.example.com/access-grants
 outputs:
   resource_id:
     value: ${steps.provision_access.resource_id}

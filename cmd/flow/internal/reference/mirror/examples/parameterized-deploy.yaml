@@ -72,25 +72,25 @@ steps:
     vars:
       target: ${inputs.service + " in " + inputs.region}
     log:
+      message: ${"planning " + target}
       # `fields:` are string-valued, so a number is rendered rather than passed.
       fields:
         replicas: ${string(inputs.replicas)}
-      message: ${"planning " + target}
 
   # An input deciding whether a step runs at all. A skipped step produces no outputs,
   # so nothing later may reference it.
   - id: announce
     if: ${!inputs.dry_run}
     http:
+      url: https://httpbin.org/anything
+      method: POST
       # A task input reading an argument, which is the ordinary case: the workflow
       # is the same either way, and what it does with the world is parameterized.
       json:
         service: ${inputs.service}
         region: ${inputs.region}
         replicas: ${inputs.replicas}
-      method: POST
       parse_json: true
-      url: https://httpbin.org/anything
 
   # The other side of the same condition, so a dry run still says what it did.
   - id: note_dry_run

@@ -49,7 +49,7 @@ descend from are in Part I.
 | A fact read more than once | a `value:` step, read as `${steps.<id>.value}` | the same subexpression written out at each site | the sites drift; one of them gets edited and the file still validates |
 | A constant used across steps | workflow `vars:` | repeating the literal | one place to change, and the name says what it is |
 | A computation repeated across expressions | a `functions:` entry, called as `${slug(inputs.title)}` | the same chain written out at each site, or a `call:` to a callee workflow for a one-line computation | the definition is type-checked once and the sites cannot drift; a `call:` is a whole durable run with a spec and a contract, which a pure expression does not need |
-| Splicing a value into a string | `${...}` interpolation | `format()` for the plain case | both spellings stay, split by job: interpolation for splicing values into text, `format()` when width, precision or positional reuse is the point. `flow fmt` currently writes an interpolated value back as the single `string()` concatenation it compiles to, so formatted files, including every example here, show that form |
+| Splicing a value into a string | `${...}` interpolation | `format()` for the plain case | both spellings stay, split by job: interpolation for splicing values into text, `format()` when width, precision or positional reuse is the point. `flow fmt` writes a concatenation of text and `string()` calls back as the interpolated string it compiles from |
 | A length bound on a string or list input | `min_len:`, `max_len:`, `min_items:`, `max_items:` | `must:` saying the same thing | `flow breaking` reads these structurally and can name a raised floor as a narrowing; a `must:` predicate is opaque text it must conservatively call a break |
 | Any other input constraint | `must:` | the retired `pattern:`, `min:`, `max:`, or `unique:` | a regex is as opaque to compatibility analysis as CEL is, and `min:`/`max:` compared integers through a double and misjudged values past 2⁵³, so each is refused with the `must:` that replaces it |
 | A plugin credential several steps use | one binding in the plugin's `plugins:` entry, `slack: {version: v0.2.0, credentials: {bot_token: ${secret('env:SLACK_BOT_TOKEN')}}}`, with a step writing the input only to override it | the same `${secret(...)}` repeated on every step of the plugin | the sites drift, and one edited alone is a step quietly using another credential; the binding expands into the per-step references before a run exists, so both spellings compile to one specification, and `flow fix --plugin-dir` (or `--plugin-catalog`) performs the rewrite (`pkg/flowstate/v1/flowfile/fixcredential.go:160`) |
@@ -276,8 +276,8 @@ steps:
         steps:
           - id: chase
             log:
-              level: warn
               message: nobody reviewed the refund before the deadline
+              level: warn
 ```
 
 Three things there are the rule rather than decoration. The wait's `outputs:` name
@@ -328,6 +328,15 @@ Enforcement: tier 1. This rule is already load-bearing in the tree, cited by nam
 Two files that mean the same thing are byte-identical after formatting, and a
 reviewer never spends a comment on layout. `gofmt`'s one transferable lesson is that
 the value is the absence of the argument, and a single option destroys it.
+
+The one form is chosen to be the one an author writes. A task's inputs come out in
+the order `flow tasks` lists them (required first, then the schema's; a task the
+registry does not know is sorted), a list of
+plain scalars that fits in 60 characters stays on one line (`argv: [make, build]`),
+and a string that splices values is written as the interpolation it compiles from
+(`SERVICE=${svc}`) whenever that compiles back to the identical value, rather than
+as the `string()` concatenation underneath. A list that
+holds a comment is written as a block, so the comment has a line to sit on.
 
 `--check`, `--stdout` and `-o json`/`-o jsonl` are I/O plumbing rather than style,
 and they stay. As of `c4ead7c` those are the only flags the command declares

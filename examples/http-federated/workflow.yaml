@@ -3,6 +3,6 @@ name: http-federated
 steps:
   - id: health
     http:
+      url: https://api.example.com/status/200
       credential: partner-api
       expect: ${response.status_code == 200}
-      url: https://api.example.com/status/200

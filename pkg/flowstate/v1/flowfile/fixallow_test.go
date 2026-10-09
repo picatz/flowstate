@@ -610,7 +610,17 @@ func TestEveryRewrittenExampleIsExactlyWhatFixWritesFromItsOldSpelling(t *testin
 			require.NoError(t, err)
 			require.Empty(t, result.Refusals)
 			require.True(t, result.Changed(), "the fixture holds nothing to rewrite, so it proves nothing")
-			assert.Equal(t, string(want), string(result.Source), "examples/%s is not what `flow fix` writes", name)
+			// Fix edits the old text and leaves its layout alone; the committed
+			// example is that result in canonical form, so the comparison is
+			// against the formatter's reading of it. The layout the fixture was
+			// written in then does not matter, and a later change to canon moves
+			// the example and not this fixture.
+			example := filepath.Join("..", "..", "..", "..", "examples", filepath.FromSlash(name))
+			fixed, _, err := flowfile.ParseAt(result.Source, example)
+			require.NoError(t, err)
+			formatted, err := flowfile.Format(result.Source, fixed)
+			require.NoError(t, err)
+			assert.Equal(t, string(want), string(formatted), "examples/%s is not what `flow fix` writes", name)
 
 			// And none of the retired spellings is left behind, outside the prose that
 			// still talks about them.

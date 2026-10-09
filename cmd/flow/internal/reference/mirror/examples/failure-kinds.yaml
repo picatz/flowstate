@@ -32,8 +32,8 @@ steps:
       - Upstream
       - RateLimited
     http:
-      method: POST
       url: http://localhost:1/hook
+      method: POST
 
   # The same list on a step that tolerates less: a rate limit is neither retried
   # nor tolerated here, so it ends the run.
@@ -48,13 +48,13 @@ steps:
       - PolicyDenied
       - Upstream
     http:
-      method: POST
       url: http://localhost:1/sync
+      method: POST
 
   # Reached only because the failures above were tolerated kinds. Any other kind
   # of failure from either step would have ended the run instead.
   - id: carry_on
     log:
+      message: notifications refused, continuing
       fields:
         kind: ${steps.notify.failure.kind}
-      message: notifications refused, continuing

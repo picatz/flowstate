@@ -100,6 +100,7 @@ steps:
           timeout: 10s
           continue_on_error: true
           http:
+            url: https://iam.internal.example.com/access-grants/last-used
             method: GET
             # The record shape both declared outputs below read, stated ONCE
             # here on the step that produced it, the way a wait's `outputs:`
@@ -111,11 +112,10 @@ steps:
               last_used_days_ago: ${response.json.?last_used_days_ago.orValue(-1)}
               resource: ${grant.resource}
               role: ${grant.role}
-            parse_json: true
             query:
               grantee: ${grant.grantee}
               resource: ${grant.resource}
-            url: https://iam.internal.example.com/access-grants/last-used
+            parse_json: true
 
   # The gate. A compliance review that auto-closes itself is not a review -
   # this is where a person has to have actually looked. Three days is a real
@@ -194,8 +194,8 @@ steps:
   - id: unattested
     if: ${!steps.attestation.attested}
     log:
-      level: warn
       message: access review closed without a valid attestation
+      level: warn
 outputs:
   outcome:
     value: ${steps.attestation_outcome.value}

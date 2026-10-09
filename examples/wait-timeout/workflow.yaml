@@ -47,8 +47,8 @@ steps:
   - id: postponed
     if: ${steps.approval.timed_out}
     log:
-      level: warn
       message: nobody approved in time, so the release stays queued
+      level: warn
 
   # The arm that would have run had anyone answered. `.?` reads a key the sender may
   # not have supplied, with the default beside it: a lapsed wait leaves the payload an

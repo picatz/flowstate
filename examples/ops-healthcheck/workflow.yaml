@@ -65,6 +65,7 @@ steps:
           timeout: 10s
           continue_on_error: true
           http:
+            url: ${service.url}
             method: GET
             # A probe that came back healthy carries its name forward so the
             # outputs below can say which one it was; a probe that failed
@@ -75,7 +76,6 @@ steps:
             # exactly what `outputs:` below tests for.
             outputs:
               name: ${service.name}
-            url: ${service.url}
 
   # How many services this run set out to probe. Stated once: the sentence
   # below names it twice and `page_required` a third time, and three copies of

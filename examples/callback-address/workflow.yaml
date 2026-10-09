@@ -61,14 +61,14 @@ steps:
   # before a wait that may outlive several segments.
   - id: register
     http:
+      url: https://reviews.example.com/reviews
+      method: POST
       json:
         document: ${inputs.document}
         callback:
           workflow_id: ${run.workflow_id}
           run_id: ${run.run_id}
           signal: review-decided
-      method: POST
-      url: https://reviews.example.com/reviews
 
   # The wait the address above was registered for. Seconds here so the example
   # finishes; the number a real review policy would write is days, and nothing
@@ -105,8 +105,8 @@ steps:
           steps:
             - id: rejected
               log:
-                level: warn
                 message: ${"%s was rejected".format([inputs.document])}
+                level: warn
       default:
         # Covers a lapsed gate and a payload that answered with no usable
         # `accepted` field alike — the reviewer had the address and this run
@@ -114,8 +114,8 @@ steps:
         steps:
           - id: abandoned
             log:
-              level: warn
               message: ${"nobody answered the review of %s in time".format([inputs.document])}
+              level: warn
 outputs:
   # That this run had an address to hand out at all — asserted rather than
   # reported, and the distinction is the point.

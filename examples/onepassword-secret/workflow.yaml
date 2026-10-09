@@ -6,6 +6,6 @@ steps:
   # activity that needs it, through the 1Password CLI.
   - id: health
     http:
+      url: https://api.example.com/status/200
       bearer: "${secret('op:github#token')}"
       expect: ${response.status_code == 200}
-      url: https://api.example.com/status/200
