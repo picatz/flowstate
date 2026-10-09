@@ -143,7 +143,7 @@ func Format(source []byte, wf *v1.Workflow) ([]byte, error) {
 	placed := make(map[commentAnchor]bool, len(comments))
 	collided := map[commentAnchor]bool{}
 	for _, doc := range rendered.Docs {
-		if err := placeComments(doc.Body, "", 0, comments, placed, collided); err != nil {
+		if err := placeComments(doc.Body, "", 0, comments, indexComments(comments), placed, collided); err != nil {
 			return nil, err
 		}
 	}
@@ -315,7 +315,7 @@ func collectComments(n ast.Node, path string, depth int, out map[commentAnchor]*
 // same walk would have found it: the two functions are one rule read in two
 // directions, and a shape one of them knows about and the other does not is a
 // comment that goes missing.
-func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast.CommentGroupNode, placed, collided map[commentAnchor]bool) error {
+func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast.CommentGroupNode, index *commentIndex, placed, collided map[commentAnchor]bool) error {
 	if n == nil {
 		return nil
 	}
@@ -350,7 +350,7 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 		// Same accounting as [collectComments]: a mapping and its entries are
 		// one level, not two (#691).
 		for _, value := range x.Values {
-			if err := placeComments(value, path, depth, in, placed, collided); err != nil {
+			if err := placeComments(value, path, depth, in, index, placed, collided); err != nil {
 				return err
 			}
 		}
@@ -406,9 +406,9 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 			x.FootComment = group
 		}
 		if token := x.Key.GetToken(); token != nil && token.Position != nil {
-			unflow(x.Value, child, token.Position.Column+2, in)
+			unflow(x.Value, child, token.Position.Column+2, index)
 		}
-		if err := placeComments(x.Value, child, depth+1, in, placed, collided); err != nil {
+		if err := placeComments(x.Value, child, depth+1, in, index, placed, collided); err != nil {
 			return err
 		}
 
@@ -436,9 +436,9 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 				placed[anchor] = true
 			}
 			if x.Start != nil && x.Start.Position != nil {
-				unflow(value, element, x.Start.Position.Column+2, in)
+				unflow(value, element, x.Start.Position.Column+2, index)
 			}
-			if err := placeComments(value, element, depth+1, in, placed, collided); err != nil {
+			if err := placeComments(value, element, depth+1, in, index, placed, collided); err != nil {
 				return err
 			}
 		}
@@ -461,9 +461,9 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 // is written as a block, and stays one on the next run, which sees the same
 // comment. column is where the block's dashes go: the printer takes the indent
 // from the sequence's first token, which for a flow sequence is its `[`.
-func unflow(value ast.Node, path string, column int, in map[commentAnchor]*ast.CommentGroupNode) {
+func unflow(value ast.Node, path string, column int, index *commentIndex) {
 	seq, ok := value.(*ast.SequenceNode)
-	if !ok || !seq.IsFlowStyle || len(seq.Values) == 0 || !commentsWithin(path, len(seq.Values), in) {
+	if !ok || !seq.IsFlowStyle || len(seq.Values) == 0 || !index.within(path, len(seq.Values)) {
 		return
 	}
 	seq.IsFlowStyle = false
@@ -476,23 +476,43 @@ func unflow(value ast.Node, path string, column int, in map[commentAnchor]*ast.C
 	}
 }
 
-// commentsWithin reports whether a source comment is anchored to a sequence's
-// own head or foot, or to anything under one of its n entries.
-func commentsWithin(path string, n int, in map[commentAnchor]*ast.CommentGroupNode) bool {
-	prefixes := make([]string, n)
-	for i := range prefixes {
-		prefixes[i] = childPath(path, indexStep(i))
-	}
+// A commentIndex answers "is a comment anchored under this sequence" without
+// scanning every comment per sequence: it is built once per document, so the
+// questions [unflow] asks cost the sequence's own size, not the file's.
+type commentIndex struct {
+	// paths holds every anchor's path, sorted, for prefix lookups.
+	paths []string
+	// containers holds the paths whose head or foot carries a comment.
+	containers map[string]bool
+}
+
+func indexComments(in map[commentAnchor]*ast.CommentGroupNode) *commentIndex {
+	index := &commentIndex{paths: make([]string, 0, len(in)), containers: map[string]bool{}}
 	for anchor := range in {
-		if anchor.path == path && (anchor.kind == commentContainerHead || anchor.kind == commentContainerFoot) {
+		index.paths = append(index.paths, anchor.path)
+		if anchor.kind == commentContainerHead || anchor.kind == commentContainerFoot {
+			index.containers[anchor.path] = true
+		}
+	}
+	slices.Sort(index.paths)
+
+	return index
+}
+
+// within reports whether a source comment is anchored to a sequence's own head
+// or foot, or to anything under one of its n entries.
+func (c *commentIndex) within(path string, n int) bool {
+	if c.containers[path] {
+		return true
+	}
+	for i := range n {
+		prefix := childPath(path, indexStep(i))
+		at, _ := slices.BinarySearch(c.paths, prefix)
+		if at < len(c.paths) && strings.HasPrefix(c.paths[at], prefix) {
 			return true
 		}
-		for _, prefix := range prefixes {
-			if strings.HasPrefix(anchor.path, prefix) {
-				return true
-			}
-		}
 	}
+
 	return false
 }
 

@@ -54,7 +54,7 @@ func flowSequence(elements []any) any {
 				return elements
 			}
 			parts = append(parts, text)
-		case int64, uint64, bool:
+		case int64, uint64, float64, bool:
 			encoded, err := yaml.Marshal(element)
 			if err != nil {
 				return elements

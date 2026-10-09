@@ -2,7 +2,10 @@ package flowfile_test
 
 import (
 	"cmp"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -304,4 +307,45 @@ func assertFormats(t *testing.T, src, want string) {
 	after, err := flowfile.Unmarshal([]byte(once))
 	require.NoError(t, err)
 	assert.True(t, proto.Equal(before, after), "formatting changed the workflow the file compiles to")
+}
+
+// A literal list of doubles is a plain-scalar list like any other.
+func TestFormatWritesShortFloatListsOnOneLine(t *testing.T) {
+	t.Parallel()
+
+	assertFormats(t, `edition: v2026.4
+name: w
+vars:
+  weights:
+    - 1.5
+    - 2.5
+steps:
+  - id: show
+    log:
+      message: ${string(vars.weights)}
+`, `edition: v2026.4
+name: w
+vars:
+  weights: [1.5, 2.5]
+steps:
+  - id: show
+    log:
+      message: ${string(vars.weights)}
+`)
+}
+
+// Deciding whether a comment needs a sequence's lines to be a block must not
+// cost the whole file's comments per sequence (invariant 5): many short lists
+// beside many comments format in time linear in the file.
+func TestFormatWithManyListsAndCommentsIsBounded(t *testing.T) {
+	t.Parallel()
+
+	var src strings.Builder
+	src.WriteString("edition: v2026.4\nname: w\nsteps:\n")
+	for i := range 3000 {
+		fmt.Fprintf(&src, "  # step %d\n  - id: s%d\n    exec:\n      argv: [echo, a%d]\n", i, i, i)
+	}
+	start := time.Now()
+	_ = formatFile(t, src.String())
+	assert.Less(t, time.Since(start), 20*time.Second)
 }
