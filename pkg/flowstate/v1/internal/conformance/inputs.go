@@ -175,6 +175,17 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedOutputs: held("show"),
 		},
 		{
+			// A `must:` that called a declared function is stored expanded, so what
+			// both drivers evaluate is the plain rule and a value it admits runs.
+			Name:     "a must that called a function admits a value the function accepts",
+			Workflow: functionMustWorkflow("inputs-function-must"),
+			Inputs: map[string]*v1.Value{
+				"id":  v1.NewLiteral("abc-12"),
+				"tag": v1.NewLiteralMap(map[string]any{"code": "xyz-99"}),
+			},
+			ExpectedOutputs: held("show"),
+		},
+		{
 			// A record field's default is filled where the value is bound, so a step
 			// reads the field whether or not the caller sent it, on both drivers.
 			Name: "a record field left out takes its default",
@@ -908,6 +919,25 @@ func InputRefusalCases() []Refusal {
 			},
 			Inputs:   map[string]*v1.Value{"region": v1.NewLiteral("eu-west-1")},
 			Contains: `unknown language profile "2099.9"`,
+		},
+		{
+			// The same specification as the case that admits, with a value the
+			// function refuses: an input, and a field of a record an input holds.
+			Name:     "a must that called a function refuses a value the function rejects",
+			Workflow: functionMustWorkflow("inputs-function-must-refused"),
+			Inputs: map[string]*v1.Value{
+				"id": v1.NewLiteral("ABC-12"),
+			},
+			Contains: `input "id" must satisfy`,
+		},
+		{
+			Name:     "a must that called a function refuses a record field the function rejects",
+			Workflow: functionMustWorkflow("inputs-function-must-field-refused"),
+			Inputs: map[string]*v1.Value{
+				"id":  v1.NewLiteral("abc-12"),
+				"tag": v1.NewLiteralMap(map[string]any{"code": "nope"}),
+			},
+			Contains: "the field at .code must satisfy",
 		},
 		{
 			Name:     "an undeclared input is refused",

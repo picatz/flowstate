@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/cel-go/cel"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // MaxFunctions is the most functions one workflow declares. It matches the
@@ -362,4 +363,88 @@ func walkParsed(root *exprpb.Expr, visit func(*exprpb.Expr)) {
 			stack = append(stack, c.GetIterRange(), c.GetAccuInit(), c.GetLoopCondition(), c.GetLoopStep(), c.GetResult())
 		}
 	}
+}
+
+// ExpandText is [FunctionSet.Expand] for CEL source rather than a [Value]: it
+// returns src with every call to a function in the set replaced by the body, written
+// back as plain CEL, and the node count of the result as [FunctionSet.Expand]
+// does. Source that calls none, or that does not parse, is returned unchanged and
+// costs nothing; the caller's own compile reports the second.
+//
+// What it is for: a `must:` is stored and evaluated as text, so an expansion has
+// to come back as text that a runtime without the set compiles. The binds the
+// expansion makes are written as `cel.bind`, the profile's own macro, and nothing
+// in the result names a declared function.
+func (s *FunctionSet) ExpandText(src string) (string, int, error) {
+	value := NewExpr(src)
+	if value.Error() != nil || !s.Calls(value.GetExpr()) {
+		return src, 0, nil
+	}
+	nodes, err := s.Expand(value)
+	if err != nil {
+		return src, 0, err
+	}
+	text, err := s.plainText(value.GetExpr())
+	if err != nil {
+		return src, 0, err
+	}
+
+	return text, nodes, nil
+}
+
+// plainText writes an expanded expression as the CEL it runs. An expansion records
+// each call it replaced as a macro call, so the unparser writes it back as the
+// author wrote it; this drops those records and registers the `cel.bind`s the
+// expansion built, which have none, so the unparser writes the bodies instead.
+func (s *FunctionSet) plainText(parsed *exprpb.ParsedExpr) (string, error) {
+	parsed = proto.Clone(parsed).(*exprpb.ParsedExpr)
+	macros := parsed.GetSourceInfo().GetMacroCalls()
+	for id, call := range macros {
+		if c := call.GetCallExpr(); c != nil && c.GetTarget() == nil {
+			if _, declared := s.checked[c.GetFunction()]; declared {
+				delete(macros, id)
+			}
+		}
+	}
+	if parsed.GetSourceInfo() == nil {
+		parsed.SourceInfo = &exprpb.SourceInfo{}
+	}
+	if parsed.GetSourceInfo().GetMacroCalls() == nil {
+		parsed.SourceInfo.MacroCalls = map[int64]*exprpb.Expr{}
+	}
+	macros = parsed.GetSourceInfo().GetMacroCalls()
+
+	// The recorded call is an expression of its own, so it takes an id no node of
+	// the tree has; the unparser looks a node up by id and one that found itself
+	// would never finish.
+	var next int64
+	walkParsed(parsed.GetExpr(), func(e *exprpb.Expr) { next = max(next, e.GetId()) })
+	for id, call := range macros {
+		next = max(next, id, call.GetId())
+	}
+
+	walkParsed(parsed.GetExpr(), func(e *exprpb.Expr) {
+		comp := e.GetComprehensionExpr()
+		if comp == nil || comp.GetIterVar() != "#unused" {
+			return
+		}
+		if _, recorded := macros[e.GetId()]; recorded {
+			return
+		}
+		next++
+		macros[e.GetId()] = &exprpb.Expr{
+			Id: next,
+			ExprKind: &exprpb.Expr_CallExpr{CallExpr: &exprpb.Expr_Call{
+				Target:   &exprpb.Expr{ExprKind: &exprpb.Expr_IdentExpr{IdentExpr: &exprpb.Expr_Ident{Name: "cel"}}},
+				Function: "bind",
+				Args: []*exprpb.Expr{
+					{ExprKind: &exprpb.Expr_IdentExpr{IdentExpr: &exprpb.Expr_Ident{Name: comp.GetAccuVar()}}},
+					comp.GetAccuInit(),
+					comp.GetResult(),
+				},
+			}},
+		}
+	})
+
+	return cel.AstToString(cel.ParsedExprToAst(parsed))
 }

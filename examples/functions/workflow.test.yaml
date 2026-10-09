@@ -34,3 +34,27 @@ tests:
       outputs:
         path: /posts/a-rather-long-title-for-a-headline
         long: true
+
+  # A `must:` that calls a function refuses and admits as the plain predicate does.
+  - name: a section the function refuses is not admitted
+    inputs:
+      title: Hello World
+      section: Not A Word
+    expect:
+      failed: true
+      error_contains: 'input "section" must satisfy'
+
+  - name: a record field is held to the same function
+    inputs:
+      title: Hello World
+      author: {handle: Not-A-Handle}
+    expect:
+      failed: true
+      error_contains: handle
+
+  - name: a handle the function admits is accepted
+    inputs:
+      title: Hello World
+      author: {handle: ada}
+    expect:
+      ran: [publish]

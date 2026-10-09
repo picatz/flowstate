@@ -1385,6 +1385,17 @@ steps:
   with the definitions and every call as the author wrote it, `slug(inputs.title)` and
   not its expansion, by recording each expansion as the macro call it came from, the
   way `cel.bind(...)` and `xs.map(x, ...)` already write back.
+- **Callable in every `must:`.** An input's, an output's, a record field's and a record
+  type's rule calls a declared function the way an expression does: `must: isUuid(this)`,
+  `this` an argument like any name, a body still seeing only its parameters. The compiler
+  expands the call and stores the plain rule in `must`, which is all a run evaluates, so
+  both drivers check what a spec compiled before `functions:` existed would check; the call
+  as written is kept in `must_source` (on `InputDeclaration`, `OutputDeclaration` and
+  `TypeDeclaration`) so `flow fmt` writes the file back as authored and is a fixed
+  point over it. Nothing evaluates `must_source`, and a spec carrying one with no expansion
+  behind it is read by `must` alone. A rule spends the same per-expression bounds and the
+  file's 100000-node budget a step expression does. A refusal at submit quotes the stored
+  rule, the expansion, not the call.
 - **Parameters only.** A body sees its parameters and the profile's vocabulary and
   nothing else: not `inputs`, `vars`, `steps` or `run`. A function that needs a value
   takes it as an argument, so a call shows every value the computation depends on and

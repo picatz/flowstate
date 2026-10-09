@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -1569,7 +1570,7 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 			entry = append(entry, yaml.MapItem{Key: "max_items", Value: declaration.GetMaxItems()})
 		}
 		if declaration.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(declaration.GetMust())})
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(cmp.Or(declaration.GetMustSource(), declaration.GetMust()))})
 		}
 
 		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
@@ -1610,7 +1611,7 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(declaration.GetDescription())})
 		}
 		if declaration.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(declaration.GetMust())})
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(cmp.Or(declaration.GetMustSource(), declaration.GetMust()))})
 		}
 		if declaration.GetSensitive() {
 			entry = append(entry, yaml.MapItem{Key: "sensitive", Value: true})

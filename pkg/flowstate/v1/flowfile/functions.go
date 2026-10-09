@@ -262,19 +262,30 @@ func (c *compiler) expandFunctions(val *v1.Value, span Span, r ref) *v1.Value {
 		return val
 	}
 
-	if c.expansionOverflowed {
-		// The budget is spent and said so once; expanding the rest would spend the
-		// work the budget exists to refuse.
+	if !c.expanding(span, r, func() (int, error) { return c.functions.Expand(val) }) {
 		return nil
 	}
 
-	nodes, err := c.functions.Expand(val)
+	return val
+}
+
+// expanding runs one expansion under the file's budget and reports why it did not
+// finish. It is the part of an expansion that does not depend on what is being
+// expanded, so an expression and a `must:` spend the same budget.
+func (c *compiler) expanding(span Span, r ref, expand func() (int, error)) bool {
+	if c.expansionOverflowed {
+		// The budget is spent and said so once; expanding the rest would spend the
+		// work the budget exists to refuse.
+		return false
+	}
+
+	nodes, err := expand()
 	if err != nil {
 		for _, message := range celCheckMessages(err.Error()) {
 			c.report(span, r, "%s", message)
 		}
 
-		return nil
+		return false
 	}
 
 	// One budget for the file: each expansion is bounded, and a few hundred uses of
@@ -287,10 +298,71 @@ func (c *compiler) expandFunctions(val *v1.Value, span Span, r ref) *v1.Value {
 				"call fewer functions, or make the large ones smaller", v1.MaxFunctionExpansionNodes)
 		}
 
-		return nil
+		return false
 	}
 
-	return val
+	return true
+}
+
+// deferredMust is a `must:` met before the functions it may call were known.
+type deferredMust struct {
+	text string
+	span Span
+	r    ref
+	set  func(must string, source *string)
+}
+
+// must hands set the text a `must:` is stored as and, when a call to a declared
+// function was expanded, the text as written.
+//
+// The runtime evaluates `must` and has no functions, so what is stored there is the
+// expansion, plain CEL of the profile; `must_source` keeps the call form so Marshal
+// writes the file back as authored, and nothing evaluates it. The expansion is the
+// one [v1.FunctionSet] makes of an expression, under the same budget, with `this`
+// an argument like any other name; a body still sees only its parameters.
+//
+// Before the `functions:` block is read the text is stored as written and the
+// expansion is made once it has been, by [compiler.settleMusts].
+func (c *compiler) must(text string, span Span, r ref, set func(must string, source *string)) {
+	set(text, nil)
+	if !c.functionsRead {
+		c.deferredMusts = append(c.deferredMusts, deferredMust{text: text, span: span, r: r, set: set})
+
+		return
+	}
+
+	c.expandMust(deferredMust{text: text, span: span, r: r, set: set})
+}
+
+// settleMusts expands the `must:` texts that waited for the functions.
+func (c *compiler) settleMusts() {
+	c.functionsRead = true
+	for _, m := range c.deferredMusts {
+		c.expandMust(m)
+	}
+	c.deferredMusts = nil
+}
+
+func (c *compiler) expandMust(m deferredMust) {
+	if c.functions == nil {
+		return
+	}
+
+	var expanded string
+	if !c.expanding(m.span, m.r, func() (int, error) {
+		var (
+			nodes int
+			err   error
+		)
+		expanded, nodes, err = c.functions.ExpandText(m.text)
+
+		return nodes, err
+	}) {
+		return
+	}
+	if expanded != m.text {
+		m.set(expanded, &m.text)
+	}
 }
 
 // declaredFunctionsToYAML is the inverse of [compiler.declaredFunctions]: the

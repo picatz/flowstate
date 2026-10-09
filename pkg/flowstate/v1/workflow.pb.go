@@ -1159,7 +1159,14 @@ type TypeDeclaration struct {
 	// `InputDeclaration.must` is under the same cost bound, and refused if they read
 	// `now` or call anything nondeterministic. A value is held to the rules of every
 	// record it holds, at most 4096 evaluations per value.
-	Must          *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	Must *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	// MustSource is `must` as the author wrote it, set only when it differs: a
+	// `must` that calls a declared function (`FunctionDeclaration`) is stored
+	// expanded in `must`, so the runtime evaluates plain CEL, and written here in
+	// the call form, so `flow fmt` and Marshal write the file back as it was
+	// authored. Never evaluated, compiled or checked; a specification that carries
+	// one without a matching expansion is read by `must` alone.
+	MustSource    *string `protobuf:"bytes,5,opt,name=must_source,json=mustSource,proto3,oneof" json:"must_source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1218,6 +1225,13 @@ func (x *TypeDeclaration) GetFields() []*InputDeclaration {
 func (x *TypeDeclaration) GetMust() string {
 	if x != nil && x.Must != nil {
 		return *x.Must
+	}
+	return ""
+}
+
+func (x *TypeDeclaration) GetMustSource() string {
+	if x != nil && x.MustSource != nil {
+		return *x.MustSource
 	}
 	return ""
 }
@@ -1915,6 +1929,13 @@ type InputDeclaration struct {
 	// the same way on every replay and at every one of this declaration's
 	// enforcement points, which an expression reading the clock cannot promise.
 	Must *string `protobuf:"bytes,16,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	// MustSource is `must` as the author wrote it, set only when it differs: a
+	// `must` that calls a declared function (`FunctionDeclaration`) is stored
+	// expanded in `must`, so the runtime evaluates plain CEL, and written here in
+	// the call form, so `flow fmt` and Marshal write the file back as it was
+	// authored. Never evaluated, compiled or checked; a specification that carries
+	// one without a matching expansion is read by `must` alone.
+	MustSource *string `protobuf:"bytes,19,opt,name=must_source,json=mustSource,proto3,oneof" json:"must_source,omitempty"`
 	// Values is the closed set of strings a `type: enum` value may be. Only the
 	// per-declaration shape lives here: that they are non-empty, bounded, and
 	// distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
@@ -2053,6 +2074,13 @@ func (x *InputDeclaration) GetMust() string {
 	return ""
 }
 
+func (x *InputDeclaration) GetMustSource() string {
+	if x != nil && x.MustSource != nil {
+		return *x.MustSource
+	}
+	return ""
+}
+
 func (x *InputDeclaration) GetValues() []string {
 	if x != nil {
 		return x.Values
@@ -2105,6 +2133,13 @@ type OutputDeclaration struct {
 	// loads, evaluated under the standard CEL cost bound, and refused if it
 	// references `now` or calls anything else nondeterministic.
 	Must *string `protobuf:"bytes,4,opt,name=must,proto3,oneof" json:"must,omitempty"`
+	// MustSource is `must` as the author wrote it, set only when it differs: a
+	// `must` that calls a declared function (`FunctionDeclaration`) is stored
+	// expanded in `must`, so the runtime evaluates plain CEL, and written here in
+	// the call form, so `flow fmt` and Marshal write the file back as it was
+	// authored. Never evaluated, compiled or checked; a specification that carries
+	// one without a matching expansion is read by `must` alone.
+	MustSource *string `protobuf:"bytes,9,opt,name=must_source,json=mustSource,proto3,oneof" json:"must_source,omitempty"`
 	// Sensitive marks this output's value the way `InputDeclaration.sensitive`
 	// marks an input's: display etiquette, never containment. See that field's
 	// doc comment for the honesty this comes with; nothing about the two differs
@@ -2216,6 +2251,13 @@ func (x *OutputDeclaration) GetDescription() string {
 func (x *OutputDeclaration) GetMust() string {
 	if x != nil && x.Must != nil {
 		return *x.Must
+	}
+	return ""
+}
+
+func (x *OutputDeclaration) GetMustSource() string {
+	if x != nil && x.MustSource != nil {
+		return *x.MustSource
 	}
 	return ""
 }
@@ -4337,14 +4379,17 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\x11FunctionParameter\x12>\n" +
 	"\x04name\x18\x01 \x01(\tB*\xe2A\x01\x02\xbaH#\xc8\x01\x01r\x1e\x10\x01\x18@2\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x122\n" +
 	"\x04type\x18\x02 \x01(\v2\x12.flowstate.v1.TypeB\n" +
-	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04type\"\xf3\x01\n" +
+	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x04type\"\xa9\x02\n" +
 	"\x0fTypeDeclaration\x12;\n" +
 	"\x04name\x18\x01 \x01(\tB'\xe2A\x01\x02\xbaH \xc8\x01\x01r\x1b\x10\x01\x18\x80\x012\x14^[A-Z][A-Za-z0-9_]*$R\x04name\x12/\n" +
 	"\vdescription\x18\x02 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12@\n" +
 	"\x06fields\x18\x03 \x03(\v2\x1e.flowstate.v1.InputDeclarationB\b\xbaH\x05\x92\x01\x02\x10@R\x06fields\x12\x17\n" +
-	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01B\x0e\n" +
+	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12$\n" +
+	"\vmust_source\x18\x05 \x01(\tH\x02R\n" +
+	"mustSource\x88\x01\x01B\x0e\n" +
 	"\f_descriptionB\a\n" +
-	"\x05_must\"\x8f\x02\n" +
+	"\x05_mustB\x0e\n" +
+	"\f_must_source\"\x8f\x02\n" +
 	"\vConcurrency\x121\n" +
 	"\x03key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x03key\x12S\n" +
@@ -4383,7 +4428,7 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"\brevision\x18\x03 \x01(\tR\brevision\x12\x1c\n" +
 	"\tqualifier\x18\x04 \x01(\tR\tqualifier\x12\x1a\n" +
 	"\bcontract\x18\x05 \x01(\tR\bcontract\x12'\n" +
-	"\x0fcontract_digest\x18\x06 \x01(\tR\x0econtractDigest\"\xf9\r\n" +
+	"\x0fcontract_digest\x18\x06 \x01(\tR\x0econtractDigest\"\xaf\x0e\n" +
 	"\x10InputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x12A\n" +
 	"\x04type\x18\x02 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12\x1a\n" +
@@ -4397,7 +4442,9 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	" \x01(\x04H\x02R\x06maxLen\x88\x01\x01\x12 \n" +
 	"\tmin_items\x18\r \x01(\x04H\x03R\bminItems\x88\x01\x01\x12 \n" +
 	"\tmax_items\x18\x0e \x01(\x04H\x04R\bmaxItems\x88\x01\x01\x12\x17\n" +
-	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\x12+\n" +
+	"\x04must\x18\x10 \x01(\tH\x05R\x04must\x88\x01\x01\x12$\n" +
+	"\vmust_source\x18\x13 \x01(\tH\x06R\n" +
+	"mustSource\x88\x01\x01\x12+\n" +
 	"\x06values\x18\x11 \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
 	"\n" +
 	"value_type\x18\x12 \x01(\v2\x12.flowstate.v1.TypeR\tvalueType\"\xcc\x01\n" +
@@ -4427,14 +4474,17 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"_min_itemsB\f\n" +
 	"\n" +
 	"_max_itemsB\a\n" +
-	"\x05_mustJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xc5\n" +
+	"\x05_mustB\x0e\n" +
+	"\f_must_sourceJ\x04\b\b\x10\tJ\x04\b\v\x10\fJ\x04\b\f\x10\rJ\x04\b\x0f\x10\x10R\apatternR\x03minR\x03maxR\x06unique\"\xfb\n" +
 	"\n" +
 	"\x11OutputDeclaration\x12?\n" +
 	"\x04name\x18\x01 \x01(\tB+\xe2A\x01\x02\xbaH$\xc8\x01\x01r\x1f\x10\x01\x18\x80\x012\x18^[A-Za-z_][A-Za-z0-9_]*$R\x04name\x125\n" +
 	"\x05value\x18\x02 \x01(\v2\x13.flowstate.v1.ValueB\n" +
 	"\xe2A\x01\x02\xbaH\x03\xc8\x01\x01R\x05value\x12/\n" +
 	"\vdescription\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02H\x00R\vdescription\x88\x01\x01\x12\x17\n" +
-	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12\x1c\n" +
+	"\x04must\x18\x04 \x01(\tH\x01R\x04must\x88\x01\x01\x12$\n" +
+	"\vmust_source\x18\t \x01(\tH\x02R\n" +
+	"mustSource\x88\x01\x01\x12\x1c\n" +
 	"\tsensitive\x18\x05 \x01(\bR\tsensitive\x12A\n" +
 	"\x04type\x18\x06 \x01(\x0e2#.flowstate.v1.InputDeclaration.TypeB\b\xbaH\x05\x82\x01\x02\x10\x01R\x04type\x12+\n" +
 	"\x06values\x18\a \x03(\tB\x13\xbaH\x10\x92\x01\r\x10@\x18\x01\"\ar\x05\x10\x01\x18\x80\x01R\x06values\x121\n" +
@@ -4443,7 +4493,8 @@ const file_flowstate_v1_workflow_proto_rawDesc = "" +
 	"6output_declaration.legacy_type_present_with_value_type\x12pvalue_type requires a legacy type projection until structural-only declarations are safe across rolling upgrades\x1a'!has(this.value_type) || this.type != 0\x1a\xb6\x05\n" +
 	"\x1eoutput_declaration.type_agrees\x12Svalue_type and the legacy type must describe the same output type when both are set\x1a\xbe\x04!has(this.value_type) || this.type == 0 || (this.type == 1 && this.value_type.scalar == 1) || (this.type == 2 && this.value_type.scalar == 2) || (this.type == 3 && this.value_type.scalar == 3) || (this.type == 4 && this.value_type.scalar == 4) || (this.type == 5 && (has(this.value_type.map) || has(this.value_type.message))) || (this.type == 6 && has(this.value_type.list)) || (this.type == 9 && this.value_type.enum) || (this.type == 10 && this.value_type.scalar == 6) || (this.type == 11 && this.value_type.scalar == 7) || (this.type == 12 && this.value_type.scalar == 5)B\x0e\n" +
 	"\f_descriptionB\a\n" +
-	"\x05_must\"\xae\x01\n" +
+	"\x05_mustB\x0e\n" +
+	"\f_must_source\"\xae\x01\n" +
 	"\n" +
 	"RunOutputs\x12P\n" +
 	"\x06values\x18\x01 \x03(\v2$.flowstate.v1.RunOutputs.ValuesEntryB\x12\xe2A\x01\x01\xbaH\v\x9a\x01\b\x10@\"\x04r\x02\x10\x01R\x06values\x1aN\n" +
