@@ -40,8 +40,10 @@ read the row before arguing with it.
 
 Write `${secret('scheme:name')}` (for example `${secret('env:API_TOKEN')}`) on
 the task input that uses it, never a literal, and never in `vars:`: a secret
-there is refused because it would reach durable history. The plugin refuses
-an edit that puts a literal in a Flowfile.
+there is refused because it would reach durable history. The plugin's guard is
+a heuristic net, not proof: it catches known token shapes and credential-named
+keys only, so an edit that goes through does not show that no literal secret
+was written.
 
 ## CEL pitfalls
 
