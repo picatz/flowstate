@@ -436,7 +436,8 @@ export const register: Register = (on, options) => {
                           // The band may have been cleared, hidden or replaced while this ran: then this result is for nothing.
                           if (bandWrites.n !== started) return
                           const current = await read($, testBand)
-                          if (current === null) return
+                          // A write that landed during the read above makes `current` a newer band: leave it alone.
+                          if (current === null || bandWrites.n !== started) return
                           await setBand($, applyRerun(current, again!, ran, failure))
                         } finally {
                           rerunning = false
