@@ -64,7 +64,7 @@ steps:
   # not; the refusal below is entirely the output check's, not this step's.
   - id: announce
     log:
-      message: ${"utilization computed at " + string(steps.utilization.value) + "%"}
+      message: utilization computed at ${steps.utilization.value}%
 outputs:
   utilization_pct:
     value: ${steps.utilization.value}

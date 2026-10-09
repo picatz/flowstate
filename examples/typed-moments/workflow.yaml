@@ -42,8 +42,7 @@ inputs:
     description: a reservation inside the window
   reminders:
     type: list(timestamp)
-    default:
-      - 2026-03-01T08:00:00Z
+    default: [2026-03-01T08:00:00Z]
     description: moments to remind at
   opens:
     type: timestamp

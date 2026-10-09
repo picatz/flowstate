@@ -526,10 +526,7 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 	// it rewrites an older file.
 
 	inputs := yaml.MapSlice{}
-	// Input names come from a protobuf map, whose order is not defined, so they are
-	// sorted: the same workflow has to produce the same document every time for a
-	// formatter to be usable or a diff to be readable.
-	for _, name := range slices.Sorted(maps.Keys(task.GetInputs())) {
+	for _, name := range orderedInputNames(task) {
 		write := inputValueToYAML
 		if name == v1.ShapingInput && v1.TaskShapesOutputs(task.GetName()) {
 			// The one input read by a rule of its own, so the one input that
@@ -552,6 +549,43 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 	}
 
 	return inputs, nil
+}
+
+// orderedInputNames is the order a task's inputs are written in: the order
+// `flow tasks` and editor completion list them, required first and then the
+// schema's own, so `url` comes before `headers` and `argv` before `env` rather
+// than the other way round.
+//
+// Input names come from a protobuf map, whose order is not defined, so the
+// order has to come from somewhere: the same workflow has to produce the same
+// document every time for a formatter to be usable or a diff to be readable.
+// A task the registry does not know (a plugin that is not loaded where this
+// runs) and any name its schema does not list fall back to sorted, after the
+// ones that are listed.
+func orderedInputNames(task *v1.Task) []string {
+	names := slices.Sorted(maps.Keys(task.GetInputs()))
+	def, ok := v1.DefaultRegistry().Lookup(task.GetName())
+	if !ok || len(names) < 2 {
+		return names
+	}
+	position := map[string]int{}
+	for i, field := range v1.Inputs(def) {
+		position[field.Name] = i
+	}
+	slices.SortStableFunc(names, func(a, b string) int {
+		pa, okA := position[a]
+		pb, okB := position[b]
+		switch {
+		case okA && okB:
+			return cmp.Compare(pa, pb)
+		case okA:
+			return -1
+		case okB:
+			return 1
+		}
+		return 0
+	})
+	return names
 }
 
 // varsToYAML writes a `vars:` mapping.
@@ -838,7 +872,7 @@ func durationToYAML(d *durationpb.Duration) string {
 // `examples/`, so [unfoldedStructure] offers the mapping spelling back as a
 // candidate first (#850).
 func inputValueToYAML(value *v1.Value) (any, error) {
-	return writtenInputValue(value, true)
+	return writtenInputValue(value, true, true)
 }
 
 // fencedInputValueToYAML is [inputValueToYAML] for the one position whose read
@@ -846,17 +880,26 @@ func inputValueToYAML(value *v1.Value) (any, error) {
 // means a shaped set of names rather than an expression that builds a map. See
 // [taskInputsToYAML], which is the only caller and carries the reasoning.
 func fencedInputValueToYAML(value *v1.Value) (any, error) {
-	return writtenInputValue(value, false)
+	return writtenInputValue(value, false, false)
 }
 
 // writtenInputValue is the whole of both, with unfold saying whether the
-// structure spelling may be offered for an expression that builds one.
-func writtenInputValue(value *v1.Value, unfold bool) (any, error) {
+// structure spelling may be offered for an expression that builds one, and
+// interpolate whether a concatenation of text and `string()` calls may be
+// written back as the interpolated string it compiles from. Interpolation is
+// an input's reading of a string, so a field the schema types as an expression
+// (an `if:`, a loop's items) never gets it: there a string is source.
+func writtenInputValue(value *v1.Value, unfold, interpolate bool) (any, error) {
 	switch kind := value.GetKind().(type) {
 	case *v1.Value_Expr:
 		if unfold {
 			if unfolded, ok := unfoldedStructure(value); ok {
 				return unfolded, nil
+			}
+		}
+		if interpolate {
+			if interpolated, ok := interpolatedString(value); ok {
+				return interpolated, nil
 			}
 		}
 		text, err := exprToText(kind.Expr)
@@ -896,7 +939,7 @@ func structureToYAML(structure *v1.Value_Structure) (any, error) {
 			}
 			out = append(out, written)
 		}
-		return out, nil
+		return flowSequence(out), nil
 
 	case *v1.Value_Structure_Map_:
 		entries := kind.Map.GetEntries()
@@ -941,7 +984,7 @@ func exprValueToYAML(value *v1.Value) (any, error) {
 	if value.GetCredentialRef() != nil {
 		return nil, fmt.Errorf("is a credential reference, which cannot be written here: %s", credentialNotHereHelp)
 	}
-	return inputValueToYAML(value)
+	return writtenInputValue(value, true, false)
 }
 
 // fencedExprToYAML writes an expression back into a field where the fence is what
@@ -1298,7 +1341,7 @@ func literalToYAML(literal *expr.Value) (any, error) {
 			}
 			out = append(out, value)
 		}
-		return out, nil
+		return flowSequence(out), nil
 	case *expr.Value_MapValue:
 		out := make(yaml.MapSlice, 0, len(kind.MapValue.GetEntries()))
 		for _, entry := range kind.MapValue.GetEntries() {

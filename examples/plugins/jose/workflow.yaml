@@ -51,8 +51,8 @@ steps:
   - id: refused
     if: ${!steps.authorized.value}
     log:
-      level: warn
       message: '${"refusing a verified token from %s: it is for %s, not %s".format([steps.identity.subject, steps.identity.claims.ref, inputs.expected_ref])}'
+      level: warn
 outputs:
   subject:
     value: ${steps.identity.subject}

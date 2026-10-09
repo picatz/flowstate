@@ -132,8 +132,8 @@ steps:
       message: per-service breakdown included
   - id: publish
     log:
-      level: info
       message: ${"report ready for " + inputs.region}
+      level: info
 outputs:
   # What the run answers with. A scheduled run has nobody watching it, so what it
   # reports is what anybody will ever see of it — `flow get` on the run id, which

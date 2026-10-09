@@ -29,8 +29,8 @@ triggers:
 steps:
   - id: fulfil
     log:
-      level: info
       message: ${"fulfilling " + inputs.order_id + " for " + string(inputs.amount)}
+      level: info
 outputs:
   order:
     value: ${inputs.order_id}

@@ -61,8 +61,8 @@ steps:
         steps:
           - id: outage
             log:
-              level: warn
               message: every host failed its health check
+              level: warn
 outputs:
   status:
     value: ${steps.status.value}

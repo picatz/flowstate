@@ -79,15 +79,15 @@ concurrency:
 steps:
   - id: cordon
     log:
+      message: ${"cordoning " + inputs.cluster}
       fields:
         cluster: ${inputs.cluster}
-      message: ${"cordoning " + inputs.cluster}
   - id: drain
     log:
+      message: ${"draining " + inputs.cluster + " (" + inputs.reason + ")"}
       fields:
         cluster: ${inputs.cluster}
         reason: ${inputs.reason}
-      message: ${"draining " + inputs.cluster + " (" + inputs.reason + ")"}
 outputs:
   cluster:
     value: ${inputs.cluster}

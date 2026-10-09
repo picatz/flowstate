@@ -65,8 +65,8 @@ steps:
         steps:
           - id: unhandled
             log:
-              level: warn
               message: '${"unhandled action: %s".format([inputs.action])}'
+              level: warn
 
   # The record composes: a later step dispatches on what the switch observed,
   # because `value` and `case` are ordinary outputs under the step's id.

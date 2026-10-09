@@ -37,9 +37,7 @@ steps:
   # loop can name what it is iterating and what it is decorating in one place.
   - id: fan_out
     vars:
-      hosts:
-        - alpha
-        - beta
+      hosts: [alpha, beta]
       suffix: ${"." + vars.environment + ".internal"}
     for_each:
       items: ${hosts}

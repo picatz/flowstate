@@ -55,13 +55,13 @@ steps:
         GIT_AUTHOR_NAME: flowstate
   - id: verdict
     log:
+      message: '${(steps.probe.exit_code == 0) ? ("inside a repository: " + steps.probe.stdout.trim()) : ("not a repository (exit " + string(steps.probe.exit_code) + "): " + steps.probe.stderr.trim())}'
+      level: warn
       fields:
         # What the program printed is bounded by the policy, per stream, and says so
         # when it was cut short.
         git: ${steps.version.stdout.trim()}
         truncated: ${string(steps.probe.stdout_truncated || steps.probe.stderr_truncated)}
-      level: warn
-      message: '${(steps.probe.exit_code == 0) ? ("inside a repository: " + steps.probe.stdout.trim()) : ("not a repository (exit " + string(steps.probe.exit_code) + "): " + steps.probe.stderr.trim())}'
 outputs:
   is_repository:
     value: ${steps.probe.exit_code == 0}

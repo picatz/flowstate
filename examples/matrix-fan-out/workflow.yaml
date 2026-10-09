@@ -55,7 +55,7 @@ steps:
       steps:
         - id: compile
           log:
-            message: ${"building " + string(target.os) + "/" + string(target.arch)}
+            message: building ${target.os}/${target.arch}
 
   # `results` outlives the block, so the count is readable from here. Five, not
   # six: the excluded combination never became an item.
@@ -68,7 +68,7 @@ steps:
     value: ${size(steps.build.results)}
   - id: report
     log:
-      message: ${"built " + string(steps.built_count.value) + " target(s)"}
+      message: built ${steps.built_count.value} target(s)
 outputs:
   # Counting the loop's own `results` rather than re-deriving the product here:
   # this is how many targets were actually built, which is the number worth

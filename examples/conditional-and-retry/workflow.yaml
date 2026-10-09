@@ -53,8 +53,8 @@ steps:
   - id: notify
     continue_on_error: true
     http:
-      method: POST
       url: http://localhost:1/hook
+      method: POST
 
   # Reached only because the failure above was tolerated. The error text is a value
   # like any other, so it can be carried into whatever comes next, and
@@ -62,8 +62,8 @@ steps:
   # here) without matching the sentence.
   - id: carry_on
     log:
+      message: notification failed, continuing anyway
+      level: warn
       fields:
         why: ${steps.notify.error}
         kind: ${steps.notify.failure.kind}
-      level: warn
-      message: notification failed, continuing anyway

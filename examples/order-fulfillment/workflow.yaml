@@ -66,20 +66,20 @@ steps:
   - id: reserve_inventory
     description: hold the stock so this order cannot be oversold while payment and shipping are arranged
     http:
+      url: https://httpbin.org/get
       method: GET
       outputs:
         id: ${"res-" + response.json.args.order}
-      parse_json: true
       query:
         reserve: inventory
         order: ${inputs.order_id}
-      url: https://httpbin.org/get
+      parse_json: true
     undo:
       http:
+        url: https://httpbin.org/get
         method: GET
         query:
           release: ${steps.reserve_inventory.id}
-        url: https://httpbin.org/get
 
   # `${steps.reserve_inventory.id}` here is an ordinary backward reference —
   # this step reads an earlier one's output, ok anywhere in the file. The
@@ -89,24 +89,24 @@ steps:
   - id: charge_payment
     description: charge the card now that the stock is actually held, never before
     http:
+      url: https://httpbin.org/get
       method: GET
       outputs:
         id: ${"chg-" + response.json.args.reservation}
-      parse_json: true
       query:
         charge: payment
         reservation: ${steps.reserve_inventory.id}
-      url: https://httpbin.org/get
+      parse_json: true
     undo:
       # The compensation that matters most in this file. A shipment that
       # cannot be arranged must not mean a payment that stays taken — this is
       # what "undo runs in reverse" is actually for, not the general
       # principle so much as this one refund.
       http:
+        url: https://httpbin.org/get
         method: GET
         query:
           refund: ${steps.charge_payment.id}
-        url: https://httpbin.org/get
 
   # No `undo:` here — nothing after this step can fail on its behalf, because
   # this is the last step with a compensable effect. `confirm` below only
@@ -124,9 +124,9 @@ steps:
   - id: arrange_shipment
     description: hand the order to a carrier — the step this example fails on, when asked to
     http:
-      expect: ${!inputs.carrier_outage && response.status_code == 200}
-      method: GET
       url: https://httpbin.org/status/200
+      method: GET
+      expect: ${!inputs.carrier_outage && response.status_code == 200}
   - id: confirm
     log:
       message: ${"order %s confirmed and handed to a carrier".format([inputs.order_id])}

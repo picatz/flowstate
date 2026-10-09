@@ -16,12 +16,12 @@ steps:
   # the bearer token inside the activity. The body is a proto-JSON GetRequest.
   - id: check_on_peer
     http:
+      url: https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Get
+      method: POST
       credential: peer-flowstate
-      expect: ${response.status_code == 200}
       json:
         workflowId: flowstate-workflow-reindex-search
-      method: POST
-      url: https://flowstate.peer.example.com/flowstate.v1.WorkflowService/Get
+      expect: ${response.status_code == 200}
 
   # The peer answers with a GetResponse, in canonical proto-JSON — so the run's
   # status is read back under the field name the wire actually carries, `status`.
@@ -29,6 +29,6 @@ steps:
     vars:
       peer: ${json_parse(steps.check_on_peer.body)}
     log:
+      message: read a run's status from the peer deployment
       fields:
         peer_status: ${peer["status"]}
-      message: read a run's status from the peer deployment

@@ -46,11 +46,7 @@ inputs:
     type: list(dyn)
     required: true
     description: identifiers to enrich
-    example:
-      - alpha
-      - beta
-      - gamma
-      - flagged
+    example: [alpha, beta, gamma, flagged]
     min_items: 1
 steps:
   - id: enrich
@@ -73,6 +69,12 @@ steps:
             max_interval: 2s
           continue_on_error: true
           http:
+            url: https://httpbin.org/get
+            method: GET
+            outputs:
+              id: ${record}
+            query:
+              record: ${record}
             # `expect` decides success the same way the enrichment service
             # would: this request answers 200 regardless of which record was
             # asked for, so "flagged" is rejected here, by the workflow,
@@ -81,12 +83,6 @@ steps:
             # request was never wrong to make — so `retry` above never
             # rescues it, the same way a 4xx does not get retried by default.
             expect: ${record != "flagged" && response.status_code == 200}
-            method: GET
-            outputs:
-              id: ${record}
-            query:
-              record: ${record}
-            url: https://httpbin.org/get
 
   # A vendor lookup this run also depends on, hit once rather than per
   # record — which is what lets it point at an address of its own instead of
@@ -104,8 +100,8 @@ steps:
       max_interval: 2s
     continue_on_error: true
     http:
-      method: GET
       url: https://httpbin.org/status/503
+      method: GET
   - id: report
     log:
       message: '${"enrichment finished for %d of %d record(s), vendor status %s".format([size(steps.enrich.results.filter(r, has(r.lookup.id))), size(inputs.records), has(steps.vendor_status.error) ? "unavailable after retries" : string(steps.vendor_status.status_code)])}'

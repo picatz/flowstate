@@ -21,10 +21,10 @@ inputs:
 steps:
   - id: record
     log:
+      message: ${"granting " + inputs.role + " to " + inputs.user}
       fields:
         user: ${inputs.user}
         role: ${inputs.role}
-      message: ${"granting " + inputs.role + " to " + inputs.user}
 outputs:
   grant_id:
     value: ${inputs.user + ":" + inputs.role}

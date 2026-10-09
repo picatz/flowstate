@@ -115,7 +115,7 @@ steps:
     # it here would fail the run before the loop on exactly the repositories this
     # workflow is for. The same reference the commit-and-push step uses below.
     git.ls_remote:
-      prefix: ${"refs/heads/" + string(inputs.branch)}
+      prefix: refs/heads/${inputs.branch}
       token: ${secret('git:token')}
       url: ${inputs.repo}
   - id: base_sha
@@ -374,8 +374,8 @@ steps:
           payload.taken_over}
   - id: report
     log:
-      level: '${steps.unresolved.value ? "warn" : "info"}'
       message: '${steps.unresolved.value ? "%d attempts did not fix the build on %s".format([steps.spent.value, inputs.branch]) : "build fixed on %s after %d attempt(s)".format([inputs.branch, steps.spent.value])}'
+      level: '${steps.unresolved.value ? "warn" : "info"}'
 outputs:
   attempts:
     value: ${steps.spent.value}

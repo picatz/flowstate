@@ -122,8 +122,8 @@ steps:
   - id: escalate
     if: ${steps.manager_review.timed_out}
     log:
-      level: warn
       message: ${"manager did not respond in time; escalating %s's report to finance ops".format([inputs.employee])}
+      level: warn
 
   # The second gate only exists on the path where the first one lapsed — an
   # approved or explicitly rejected report has nothing left to escalate, and
@@ -212,8 +212,8 @@ steps:
         steps:
           - id: deny
             log:
-              level: warn
               message: ${"%s's expense report was not approved".format([inputs.employee])}
+              level: warn
 outputs:
   # Deliberately more detailed than "approved: bool" — a caller reading this
   # after the fact (a payroll job, an auditor) needs to know *which* gate

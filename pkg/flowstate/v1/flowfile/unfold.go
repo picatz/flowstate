@@ -125,7 +125,7 @@ func unfoldedExpr(e *expr.Expr, structureOnly bool) (any, bool) {
 			}
 			out = append(out, written)
 		}
-		return out, true
+		return flowSequence(out), true
 	}
 
 	if structureOnly {
@@ -134,6 +134,10 @@ func unfoldedExpr(e *expr.Expr, structureOnly bool) (any, bool) {
 
 	if constant := e.GetConstExpr(); constant != nil {
 		return unfoldedConst(constant)
+	}
+
+	if interpolated, ok := interpolatedExpr(e); ok {
+		return interpolated, true
 	}
 
 	text, err := exprToText(&expr.ParsedExpr{Expr: e})

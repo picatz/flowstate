@@ -43,10 +43,7 @@ steps:
           - name: category
             instructions: Which team should own this ticket?
             choice:
-              options:
-                - billing
-                - outage
-                - other
+              options: [billing, outage, other]
           - name: urgent
             instructions: Is a customer-facing service down or losing money right now?
             predicate: {}

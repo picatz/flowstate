@@ -405,6 +405,9 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 		if group := takeAt(commentFoot); group != nil {
 			x.FootComment = group
 		}
+		if token := x.Key.GetToken(); token != nil && token.Position != nil {
+			unflow(x.Value, child, token.Position.Column+2, in)
+		}
 		if err := placeComments(x.Value, child, depth+1, in, placed, collided); err != nil {
 			return err
 		}
@@ -432,6 +435,9 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 				setSequenceHead(x, i, group)
 				placed[anchor] = true
 			}
+			if x.Start != nil && x.Start.Position != nil {
+				unflow(value, element, x.Start.Position.Column+2, in)
+			}
 			if err := placeComments(value, element, depth+1, in, placed, collided); err != nil {
 				return err
 			}
@@ -444,6 +450,50 @@ func placeComments(n ast.Node, path string, depth int, in map[commentAnchor]*ast
 	}
 
 	return nil
+}
+
+// unflow turns a sequence [flowSequence] wrote on one line back into a block
+// when a source comment needs somewhere to go.
+//
+// A line has no room for the prose the author put in or around it:
+// `[make, build # why]` is a comment that swallows the bracket. The block form
+// is the same data with a place for the comment, so a sequence that carries one
+// is written as a block, and stays one on the next run, which sees the same
+// comment. column is where the block's dashes go: the printer takes the indent
+// from the sequence's first token, which for a flow sequence is its `[`.
+func unflow(value ast.Node, path string, column int, in map[commentAnchor]*ast.CommentGroupNode) {
+	seq, ok := value.(*ast.SequenceNode)
+	if !ok || !seq.IsFlowStyle || len(seq.Values) == 0 || !commentsWithin(path, len(seq.Values), in) {
+		return
+	}
+	seq.IsFlowStyle = false
+	if seq.Start != nil && seq.Start.Position != nil {
+		start := *seq.Start
+		position := *start.Position
+		position.Column = column
+		start.Position = &position
+		seq.Start = &start
+	}
+}
+
+// commentsWithin reports whether a source comment is anchored to a sequence's
+// own head or foot, or to anything under one of its n entries.
+func commentsWithin(path string, n int, in map[commentAnchor]*ast.CommentGroupNode) bool {
+	prefixes := make([]string, n)
+	for i := range prefixes {
+		prefixes[i] = childPath(path, indexStep(i))
+	}
+	for anchor := range in {
+		if anchor.path == path && (anchor.kind == commentContainerHead || anchor.kind == commentContainerFoot) {
+			return true
+		}
+		for _, prefix := range prefixes {
+			if strings.HasPrefix(anchor.path, prefix) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // carriesKeyLineComment reports whether a comment written after `key:` can be

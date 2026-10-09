@@ -162,18 +162,18 @@ steps:
   - id: activate
     if: ${steps.activation_confirmation.confirmed}
     http:
+      url: https://provisioning.internal.example.com/tenants/activate
+      method: POST
       json:
         tenant: ${inputs.tenant}
         database_id: ${steps.provision_database.resource_id}
         billing_id: ${steps.provision_billing.resource_id}
         access_id: ${steps.provision_access.resource_id}
-      method: POST
-      url: https://provisioning.internal.example.com/tenants/activate
   - id: activation_deferred
     if: ${!steps.activation_confirmation.confirmed}
     log:
-      level: warn
       message: '${"activation for %s deferred: %s".format([inputs.tenant, steps.activation_confirmation.timed_out ? "no confirmation within the window" : "confirmation was not given"])}'
+      level: warn
 outputs:
   activated:
     value: ${steps.activation_confirmation.confirmed}

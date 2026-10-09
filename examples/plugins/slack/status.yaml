@@ -41,9 +41,9 @@ steps:
         status:
           state: running
           title:
-            plain: ${"Canary for " + string(inputs.service)}
+            plain: Canary for ${inputs.service}
           detail:
-            plain: ${"Stage 1 of 3, canary, on " + string(inputs.version)}
+            plain: Stage 1 of 3, canary, on ${inputs.version}
           progress:
             current: 0
             total: 3
@@ -61,9 +61,9 @@ steps:
         status:
           state: running
           title:
-            plain: ${"Half of traffic for " + string(inputs.service)}
+            plain: Half of traffic for ${inputs.service}
           detail:
-            plain: ${"Stage 2 of 3, half of traffic, on " + string(inputs.version)}
+            plain: Stage 2 of 3, half of traffic, on ${inputs.version}
           progress:
             current: 1
             total: 3
@@ -77,9 +77,9 @@ steps:
         status:
           state: running
           title:
-            plain: ${"All traffic for " + string(inputs.service)}
+            plain: All traffic for ${inputs.service}
           detail:
-            plain: ${"Stage 3 of 3, all traffic, on " + string(inputs.version)}
+            plain: Stage 3 of 3, all traffic, on ${inputs.version}
           progress:
             current: 2
             total: 3

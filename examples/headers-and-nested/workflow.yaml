@@ -12,17 +12,17 @@ name: headers-and-nested
 steps:
   - id: web
     http:
+      url: https://httpbin.org/anything
+      method: GET
       # `headers:` is a map handed to the task as written. Header names are
       # case-insensitive on the wire and come back canonicalized, so the echo is
       # indexed below by `X-From` whatever casing is typed here.
       headers:
         X-From: Flowstate
         X-Env: dev
-      method: GET
       # Without `parse_json:` the body stays text, and there is no
       # `steps.web.json` to select into at all.
       parse_json: true
-      url: https://httpbin.org/anything
 
   # Two levels into the parsed result: the object the response is, then the
   # header map inside it.

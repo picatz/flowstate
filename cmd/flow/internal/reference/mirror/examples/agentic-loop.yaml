@@ -47,16 +47,16 @@ steps:
       backoff: 2.0
       max_interval: 10s
     http:
-      method: GET
-      outputs:
-        body: ${response.json.body}
-        title: ${response.json.title}
-      parse_json: true
       # A literal, not composed from a var: neither host below resolves, which
       # is what the test file beside this one is for — every effectful step here
       # is stubbed, so the branches, the ceiling and the gate are all checked
       # with no network and no gateway.
       url: https://tracker.internal.example.com/issues/241
+      method: GET
+      outputs:
+        body: ${response.json.body}
+        title: ${response.json.title}
+      parse_json: true
 
   # The turn, and therefore *not* retried. A retried agentic turn is a new turn:
   # new cost, new nondeterminism, and — for a turn permitted to write — possibly
@@ -83,9 +83,7 @@ steps:
       # refuses is a file `flow run` fails on.
       backoff: 1.0
     http:
-      json:
-        instructions: ${brief_prompt}
-        max_output_tokens: ${vars.token_budget * 2}
+      url: https://models.internal.example.com/v1/turns
       method: POST
       # Shaped rather than defaulted, so what travels on through this run is
       # three named values instead of a whole gateway response — and so
@@ -96,8 +94,10 @@ steps:
         patch: ${response.json.patch}
         summary: ${response.json.summary}
         tokens: ${response.json.usage.total_tokens}
+      json:
+        instructions: ${brief_prompt}
+        max_output_tokens: ${vars.token_budget * 2}
       parse_json: true
-      url: https://models.internal.example.com/v1/turns
 
   # The ceiling, written down exactly once. A turn inside its budget lands
   # unattended; one that went over is a person's decision, because the cost is
@@ -145,14 +145,14 @@ steps:
       # attempt to space out.
       backoff: 1.0
     http:
-      json:
-        summary: ${steps.turn.summary}
-        patch: ${steps.turn.patch}
+      url: https://tracker.internal.example.com/issues/241/patches
       method: POST
       outputs:
         url: ${response.json.url}
+      json:
+        summary: ${steps.turn.summary}
+        patch: ${steps.turn.patch}
       parse_json: true
-      url: https://tracker.internal.example.com/issues/241/patches
 
   # Whether the write happened, named once. Four later reads of
   # `has(steps.land)` would be four copies free to drift apart the day the
@@ -162,11 +162,11 @@ steps:
     value: ${has(steps.land)}
   - id: report
     log:
+      message: '${"turn spent %d of %d tokens; %s".format([steps.turn.tokens, vars.token_budget, steps.landed.value ? ("landed at " + steps.land.url) : "not landed"])}'
       # A tolerated absence, said out loud: this run either has a landing URL
       # or has a reason it does not, and the field says which.
       fields:
         outcome: '${steps.landed.value ? "landed" : "declined at the gate"}'
-      message: '${"turn spent %d of %d tokens; %s".format([steps.turn.tokens, vars.token_budget, steps.landed.value ? ("landed at " + steps.land.url) : "not landed"])}'
 outputs:
   tokens:
     value: ${steps.turn.tokens}

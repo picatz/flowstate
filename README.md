@@ -54,9 +54,7 @@ inputs:
     required: true
   lines:
     type: list(int)
-    default:
-      - 1500
-      - 4200
+    default: [1500, 4200]
 vars:
   auto_limit_cents: 5000
 steps:
@@ -66,7 +64,7 @@ steps:
     value: ${steps.total.value > vars.auto_limit_cents}
   - id: tell
     log:
-      message: ${"refund of " + string(steps.total.value) + " cents on " + string(inputs.order_id) + " (needs review " + string(steps.needs_review.value) + ")"}
+      message: refund of ${steps.total.value} cents on ${inputs.order_id} (needs review ${steps.needs_review.value})
 outputs:
   needs_review:
     value: ${steps.needs_review.value}

@@ -32,7 +32,7 @@ steps:
   # `${vars.requester} requests deploying ${inputs.version} to ${inputs.environment}`.
   - id: announce
     log:
-      message: ${string(vars.requester) + " requests deploying " + string(inputs.version) + " to " + string(inputs.environment)}
+      message: ${vars.requester} requests deploying ${inputs.version} to ${inputs.environment}
 
   # Every fence is rendered with CEL's own `string()`, so a number, a boolean
   # and a duration all read the way `string()` renders them: this logs
@@ -40,13 +40,13 @@ steps:
   # width and precision.
   - id: kinds
     log:
-      message: ${"attempt " + string(1 + 1) + ", forced " + string(false) + ", budget " + string(duration("90s"))}
+      message: attempt ${1 + 1}, forced ${false}, budget ${duration("90s")}
 
   # A quoted or block scalar interpolates identically: the fence rule belongs
   # to the value, not to the quoting style it was written in.
   - id: summary
     log:
-      message: ${"deploying " + string(inputs.version) + " to " + string(inputs.environment)}
+      message: deploying ${inputs.version} to ${inputs.environment}
   # `$${` is a literal `${`, for a file that wants to *show* the syntax.
   #
   # The escape works in a field read when the workflow is compiled as readily as
@@ -66,7 +66,7 @@ steps:
     value: ${7}
   - id: report
     log:
-      message: ${"budget " + string(steps.attempts.value) + " attempts"}
+      message: budget ${steps.attempts.value} attempts
 outputs:
   attempts:
     value: ${steps.attempts.value}
