@@ -368,7 +368,9 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 		f.workflow(doc.Body)
 	}
 	f.rewriteMovedReferences()
-	f.verifyCredentialConsolidation(f.credentialChanges[0], f.credentialChanges[1])
+	for _, r := range slices.Backward(f.credentialRanges) {
+		f.verifyCredentialConsolidation(r[0], r[1])
+	}
 
 	if len(f.changes) > 0 {
 		f.noteCommentsMentioningExpressions()
@@ -452,9 +454,10 @@ type fixer struct {
 	// `plugins:` binding once the document has been seen. See fixcredential.go.
 	credentialSites []credentialSite
 
-	// credentialChanges is the range of f.changes the consolidation recorded, so it
-	// can be proved and, if it cannot be, withdrawn without touching other edits.
-	credentialChanges [2]int
+	// credentialRanges are the ranges of f.changes each document's consolidation
+	// recorded, so each can be proved and, if it cannot be, withdrawn without
+	// touching other edits.
+	credentialRanges [][2]int
 
 	// blockEndBytesScanned sums the length of every line [fixer.blockEnd]
 	// inspects (plus its terminator), across every call a fix makes to it

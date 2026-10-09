@@ -1,7 +1,10 @@
 package flowfile_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -345,4 +348,50 @@ func TestFixCredentialGuardComparesCompiledSteps(t *testing.T) {
 	require.True(t, flowfile.SameCompiledStepsForTest(doc("one"), doc("one")))
 	require.False(t, flowfile.SameCompiledStepsForTest(doc("one"), doc("two")), "different steps were called the same")
 	require.False(t, flowfile.SameCompiledStepsForTest(doc("one"), []byte("not: [a flowfile")), "a document that does not compile proved equality")
+}
+
+// Sites are read per document: a reference repeated in the first document of a
+// file must never be bound in a later one that lists the same plugin.
+func TestFixDoesNotCarryCredentialSitesAcrossDocuments(t *testing.T) {
+	first := repeatedHeader + `plugins:
+  bound: v0.1.0
+steps:
+  - id: a
+    bound.use:
+      token: ${secret('env:FIRST_ONLY')}
+  - id: b
+    bound.use:
+      token: ${secret('env:FIRST_ONLY')}
+`
+	second := `edition: v2026.4
+name: second
+plugins:
+  bound: v0.1.0
+steps:
+  - id: c
+    bound.use:
+      token: ${secret('env:SECOND')}
+`
+	in := first + "---\n" + second
+	got := fixBound(t, in)
+	_, tail, _ := strings.Cut(string(got.Source), "---\n")
+	require.Equal(t, second, tail, "the second document was rewritten with the first's reference")
+	require.NotContains(t, tail, "FIRST_ONLY")
+}
+
+// The edit lookup is indexed: a file with thousands of credential sites and
+// thousands of other edits must not cost their product.
+func TestFixConsolidatesManySitesAmongManyOtherEdits(t *testing.T) {
+	const n = 3000
+	var b strings.Builder
+	b.WriteString(repeatedHeader + "plugins:\n  bound: v0.1.0\nsteps:\n")
+	for i := range n {
+		fmt.Fprintf(&b, "  - id: u%d\n    bound.use:\n      token: ${secret('env:BOUND_TOKEN')}\n", i)
+		fmt.Fprintf(&b, "  - id: t%d\n    task:\n      name: log\n      inputs:\n        message: hi\n", i)
+	}
+	started := time.Now()
+	got := fixBound(t, b.String())
+	require.Less(t, time.Since(started), 60*time.Second)
+	require.Contains(t, string(got.Source), "api_token: ${secret('env:BOUND_TOKEN')}")
+	require.Equal(t, 1, strings.Count(string(got.Source), "BOUND_TOKEN"), "every repetition was removed")
 }

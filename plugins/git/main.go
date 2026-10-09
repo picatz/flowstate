@@ -19,7 +19,7 @@ func main() {
 
 		Credentials: []*flowstatev1.CredentialDeclaration{{
 			Name:        "token",
-			Description: "HTTPS token for a push (a forge access token with write access), held as a secret reference and resolved inside the task; git.commit_push requires it.",
+			Description: "HTTPS token for a push (a forge access token with write access), supplied as a secret reference that the host resolves before the task runs; git.commit_push requires it.",
 		}},
 
 		Secrets: &sdk.Secrets{

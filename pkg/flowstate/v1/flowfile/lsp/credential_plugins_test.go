@@ -153,3 +153,27 @@ steps:
 	assert.NotContains(t, hoverText(c.hover(uri, pos.Line, pos.Character)), "credential",
 		"an input that claims no credential is described as one")
 }
+
+func TestInputHoverRecommendsTheReferenceKindTheCredentialTakes(t *testing.T) {
+	registerCredentialPlugins(t)
+
+	c := newClient(t)
+	c.initialize()
+
+	hoverFor := func(plugin, override string) string {
+		src := "edition: v2026.4\nname: x\nplugins:\n  " + plugin + ": v0.1.0\nsteps:\n  - id: a\n    " + plugin + ".use:\n      token: " + override + "\n"
+		uri := "file:///hover-kind-" + plugin + ".yaml"
+		c.open(uri, src)
+		pos := positionOf(t, src, "token:", 1)
+
+		return hoverText(c.hover(uri, pos.Line, pos.Character))
+	}
+
+	stored := hoverFor("bound", "${secret('env:T')}")
+	assert.Contains(t, stored, "${secret('...')}")
+	assert.NotContains(t, stored, "${credential('...')}")
+
+	federated := hoverFor("federated", "${credential('partner')}")
+	assert.Contains(t, federated, "${credential('...')}", "a federated credential is overridden by a credential reference")
+	assert.NotContains(t, federated, "${secret('...')}", "the hover recommends a reference the validator refuses")
+}

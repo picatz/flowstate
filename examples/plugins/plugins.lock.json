@@ -821,11 +821,11 @@
       ],
       "protocolVersion": 11,
       "taskSchemaDigest": "sha256:8f6137ec2ab24d7d71999c1b434d11625192c4cd5656364a14fd43dfa80b101f",
-      "claimsDigest": "sha256:93b24fb1aed2eb72d546e201efa94b75ca7bf9a590706edf9484c5f8d5762622",
+      "claimsDigest": "sha256:567f26bed2021d6a121381d24f814433d99e282f1d0db718564cab3a02313eac",
       "credentials": [
         {
           "name": "token",
-          "description": "HTTPS token for a push (a forge access token with write access), held as a secret reference and resolved inside the task; git.commit_push requires it.",
+          "description": "HTTPS token for a push (a forge access token with write access), supplied as a secret reference that the host resolves before the task runs; git.commit_push requires it.",
           "federated": false
         }
       ]

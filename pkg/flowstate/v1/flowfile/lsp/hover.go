@@ -331,8 +331,12 @@ func inputDoc(def v1.TaskDef, name string, fd protoreflect.FieldDescriptor) stri
 	fmt.Fprintf(&b, "\n\nInput of the `%s` task.", def.Name)
 	if credential, claimed := inputCredential(def, name); claimed {
 		plugin, _, _ := strings.Cut(def.Name, ".")
-		fmt.Fprintf(&b, " It receives the `%s` plugin's `%s` credential: bind that once under `plugins:`, or write a whole `${secret('...')}` here to override the binding for this step.",
-			plugin, credential)
+		reference := "${secret('...')}"
+		if v1.CredentialFederated(def, credential) {
+			reference = "${credential('...')}"
+		}
+		fmt.Fprintf(&b, " It receives the `%s` plugin's `%s` credential: bind that once under `plugins:`, or write a whole `%s` here to override the binding for this step.",
+			plugin, credential, reference)
 	}
 	if slices.Contains(def.DeferredInputs, name) {
 		// Worth saying: an input the task evaluates itself has a different scope

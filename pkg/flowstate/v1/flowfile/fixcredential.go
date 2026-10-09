@@ -158,17 +158,27 @@ func (f *fixer) collectCredentialSites(name string, entry *ast.MappingValueNode)
 // consolidateCredentials binds each credential that several steps of a plugin
 // repeat once, in the plugin's `plugins:` entry, and removes the repetitions.
 func (f *fixer) consolidateCredentials(workflow *ast.MappingNode) {
-	if len(f.credentialSites) == 0 {
+	// Sites belong to the document they were read from. A file may hold several
+	// (the compiler refuses that later, but this walk sees them all), and a
+	// reference read in one must never be written into another.
+	all := f.credentialSites
+	f.credentialSites = nil
+	if len(all) == 0 {
 		return
 	}
-	f.credentialChanges[0] = len(f.changes)
-	defer func() { f.credentialChanges[1] = len(f.changes) }()
+	from := len(f.changes)
+	defer func() {
+		if len(f.changes) > from {
+			f.credentialRanges = append(f.credentialRanges, [2]int{from, len(f.changes)})
+		}
+	}()
+	taken := newEditIndex(f.edits)
 
 	// Plugin, then credential, so the result is the same on every run.
 	type key struct{ plugin, credential string }
 	blocked := f.credentialUsersThatWouldInherit(workflow)
 	groups := make(map[key][]credentialSite)
-	for _, site := range f.credentialSites {
+	for _, site := range all {
 		k := key{site.plugin, site.credential}
 		groups[k] = append(groups[k], site)
 	}
@@ -216,7 +226,7 @@ func (f *fixer) consolidateCredentials(workflow *ast.MappingNode) {
 		var removed []credentialSite
 		raw := ""
 		for _, site := range sites {
-			if site.reference == chosen && site.removable && !f.covered(site.line) {
+			if site.reference == chosen && site.removable && !taken.covers(site.line) {
 				removed = append(removed, site)
 				raw = cmp.Or(raw, site.raw)
 			}
@@ -533,4 +543,35 @@ func sameCompiledSteps(a, b []byte) bool {
 	}
 
 	return true
+}
+
+// editIndex answers whether any recorded edit consumes a line in O(log n), for the
+// walk that asks once per credential site. Built once from the edits present
+// before the consolidation records its own, so a file with thousands of sites and
+// thousands of other edits is not a quadratic scan.
+type editIndex struct {
+	starts     []int
+	maxThrough []int // maxThrough[i] is the largest through among starts[:i+1]
+}
+
+func newEditIndex(edits map[int]lineEdit) editIndex {
+	starts := slices.Sorted(maps.Keys(edits))
+	through := make([]int, len(starts))
+	most := 0
+	for i, start := range starts {
+		most = max(most, edits[start].through)
+		through[i] = most
+	}
+
+	return editIndex{starts: starts, maxThrough: through}
+}
+
+// covers reports whether an edit starts at or before line and reaches it.
+func (ix editIndex) covers(line int) bool {
+	i, found := slices.BinarySearch(ix.starts, line)
+	if found {
+		return true
+	}
+
+	return i > 0 && ix.maxThrough[i-1] >= line
 }
