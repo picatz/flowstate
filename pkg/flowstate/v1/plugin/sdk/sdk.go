@@ -311,7 +311,7 @@ type Task struct {
 	// Becomes `TaskManifest.shapes_outputs` on the wire.
 	ShapesOutputs bool
 
-	// Fn executes the task.
+	// Fn executes the task. It must be safe for concurrent use; see [TaskFunc].
 	Fn TaskFunc
 }
 
@@ -321,6 +321,10 @@ type Task struct {
 // stack through the plugin logger, and returns a permanent unknown-outcome
 // failure: the function may have applied side effects before panicking, so the
 // host must not retry it automatically.
+//
+// A TaskFunc must be safe for concurrent use: the SDK serves each request on its
+// own goroutine, so steps that call one task run it at the same time. State
+// local to a call is fine; shared mutable state needs synchronization.
 type TaskFunc func(ctx context.Context, inputs map[string]*flowstatev1.Value, scope *flowstatev1.Scope) (*flowstatev1.Node_Outputs, error)
 
 // HealthFunc reports whether the plugin can serve. Returning an error is

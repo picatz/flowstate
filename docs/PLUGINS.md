@@ -638,7 +638,15 @@ process that quietly found no plugins look identical from a Flowfile, and that
 line tells them apart. The verbs that run nothing (`validate`, `compile`,
 `fix`) log it at debug level, shown under `--verbose`.
 
-### 4. Three traps the code knows about and no authoring surface teaches
+### 4. Four traps the code knows about and no authoring surface teaches
+
+**`Fn` runs concurrently, and the SDK will not serialize it.** The host opens
+up to eight connections to a plugin and the SDK serves each request on its own
+goroutine, so two steps calling the same task, in parallel branches or in
+concurrent runs on one worker, execute `Fn` at the same time. State created
+inside one call is safe. Package-level state (a lazily built client, a counter,
+a cache) needs the same synchronization an HTTP handler's would: a mutex,
+`sync.Once`, or an atomic.
 
 **A stray write to stdout before serving corrupts the handshake.** The SDK
 points `os.Stdout` at stderr, but only *after* announcing, because the
