@@ -1,4 +1,4 @@
-import { EMPTY, checkOf, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from '../hooks/verify'
+import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from '../hooks/verify'
 import type { Verify } from '../hooks/verify'
 import { expect, test } from 'claude-code/testing'
 
@@ -219,4 +219,13 @@ test('a block an earlier Stop hook returned survives, and the nudge is kept for 
   await $.tool.call({ tool: 'Write', file_path: 'a.flow.yaml', content: 'x' })
 
   expect((await stop($)).block).toBe('earlier hook says no')
+})
+
+test('the band credits a lone flow test only; verify credit for chains is unchanged', () => {
+  expect(isLoneTest('flow test -o json .')).toBe(true)
+  expect(isLoneTest('/opt/flow test .', '/opt/flow')).toBe(true)
+  for (const c of ['flow test . && false', 'cd missing && flow test .', 'flow validate . && flow test .', 'flow test --list', 'flow test . | head', 'flow validate .', undefined]) {
+    expect(isLoneTest(c)).toBe(false)
+  }
+  expect(checkOf('cd svc && flow test .')).toBe('test')
 })

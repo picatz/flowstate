@@ -219,8 +219,10 @@ expectation and its reason (`✗ failed wrong output (w.test.yaml:18): ...`, and
   5000 cases, a run that was interrupted, backgrounded or timed out, a suite where
   no case ran, or a case that says neither passed nor failed. A non-zero exit with
   every case green (`--coverage-required`) is failed.
-- Recognition is `verify.ts`'s: a plain `flow test`, optionally `&&`-chained, so
-  `--list`, `--help`, `--watch`, `--dry-run` and a pipe earn no band. Names and
+- Recognition is `verify.ts`'s, stricter: exactly one `flow test`, so `--list`, `--help`,
+  `--watch`, `--dry-run` and a pipe earn no band. A `&&` chain would pass its aggregate
+  exit status and output off as the tests', so it reads `? unknown · chained command;
+  run flow test on its own`. Names and
   reasons are cleaned and bounded like every CLI-derived text. The mod starts no
   process for the band.
 - Editing a Flowfile or a `*.test.yaml` through Edit, Write or MultiEdit clears

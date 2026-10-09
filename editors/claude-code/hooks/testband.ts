@@ -52,6 +52,9 @@ const blank = (outcome: Band['outcome'], note: string, detailed = false): Band =
   outcome, detailed, passed: 0, failed: 0, skipped: 0, uncovered: 0, failing: [], more: 0, cut: false, note,
 })
 
+/** A band that claims no verdict, with the reason. */
+export const unknownBand = (note: string): Band => blank('unknown', note)
+
 type Obj = Record<string, unknown>
 const obj = (v: unknown): Obj | undefined => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Obj) : undefined)
 const list = (v: unknown): unknown[] => (Array.isArray(v) ? v : [])

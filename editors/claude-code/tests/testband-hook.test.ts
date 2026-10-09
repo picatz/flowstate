@@ -6,7 +6,7 @@ const FAILING = JSON.stringify({
 })
 
 // Answer the Bash call with the given result; every process the band could start is recorded.
-const stub = (on: any, bash: { stdout: string; isError?: boolean; interrupted?: boolean }) => {
+const stub = (on: any, bash: { stdout: string; isError?: boolean; interrupted?: boolean; persistedOutputPath?: string; timedOutAfterMs?: number }) => {
   const argvs: string[][] = []
   on('process.run', (_$: unknown, e: { argv: string[] }) => {
     argvs.push(e.argv)
@@ -14,7 +14,7 @@ const stub = (on: any, bash: { stdout: string; isError?: boolean; interrupted?: 
   })
   on('tool.call', (_$: unknown, e: { tool: string }) =>
     e.tool === 'Bash'
-      ? { result: { stdout: bash.stdout, stderr: '', interrupted: bash.interrupted ?? false }, ...(bash.isError ? { isError: true } : {}) }
+      ? { result: { stdout: bash.stdout, stderr: '', interrupted: bash.interrupted ?? false, persistedOutputPath: bash.persistedOutputPath, timedOutAfterMs: bash.timedOutAfterMs }, ...(bash.isError ? { isError: true } : {}) }
       : { result: 'ok' },
   )
   on('turn.start', () => ({ turnId: 't' }))
@@ -86,5 +86,50 @@ test('the Hide button clears the band', async ($, on) => {
   const ui = await band($)
   await ui.press({ key: 'hide' })
   expect(await ui.find({ type: 'Text', text: /test/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a chained command is never read as the tests: its exit status and output are the chain\'s', async ($, on) => {
+  // Every case passed, but `false` made the chain exit non-zero: not a failed run, not a pass.
+  stub(on, { stdout: PASSING, isError: true })
+  await flowTest($, 'flow test -o json . && false')
+  let ui = await band($)
+  expect(await ui.find({ type: 'Text', text: /\? unknown · chained command; run flow test on its own/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✗ failed|✓ passed/ })).toBeUndefined()
+  await ui.unmount()
+  // The tests never ran: no test failure to show.
+  await flowTest($, 'cd missing && flow test .')
+  ui = await band($)
+  expect(await ui.find({ type: 'Text', text: /✗ failed/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /chained command/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a chained run replaces an earlier verdict rather than leaving it', async ($, on) => {
+  stub(on, { stdout: PASSING })
+  await flowTest($)
+  await flowTest($, 'flow validate . && flow test -o json .')
+  const ui = await band($)
+  expect(await ui.find({ type: 'Text', text: /✓ passed/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('partial output and a timed-out run are unknown, not a pass', async ($, on) => {
+  stub(on, { stdout: PASSING, persistedOutputPath: '/tmp/out.txt' })
+  await flowTest($)
+  let ui = await band($)
+  expect(await ui.find({ type: 'Text', text: /\? unknown · the result could not be read/ })).toBeDefined()
+  await ui.unmount()
+  await flowTest($, 'flow test -o json ./other')
+  ui = await band($)
+  expect(await ui.find({ type: 'Text', text: /✓ passed/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a timed-out run is unknown', async ($, on) => {
+  stub(on, { stdout: PASSING, timedOutAfterMs: 120000 })
+  await flowTest($)
+  const ui = await band($)
+  expect(await ui.find({ type: 'Text', text: /\? unknown · the run did not finish/ })).toBeDefined()
   await ui.unmount()
 })

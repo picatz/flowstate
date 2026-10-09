@@ -12,8 +12,8 @@ import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
-import { EMPTY, checkOf, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
-import { bandFor, bandText, headOf, summaryOf } from './testband'
+import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
+import { bandFor, bandText, headOf, summaryOf, unknownBand } from './testband'
 import type { Band } from './testband'
 import { NO_SEEN, seenFrom, statusText } from './statusline'
 import type { Seen } from './statusline'
@@ -319,7 +319,11 @@ export const register: Register = (on, options) => {
     // The band reads the output the tool already holds; nothing is started for it.
     if (check === 'test' && ran.deny === undefined) {
       const stdout = typeof result?.stdout === 'string' ? result.stdout : ''
-      await update($, testBand, () => bandFor({ stdout, ok: passed, unfinished, partial: result?.persistedOutputPath !== undefined })).catch(() => undefined)
+      // Only a lone `flow test` speaks for its own output and exit status; a chain's aggregate would misattribute.
+      const verdict = isLoneTest((e as { command?: unknown }).command, flow)
+        ? bandFor({ stdout, ok: passed, unfinished, partial: result?.persistedOutputPath !== undefined })
+        : unknownBand('chained command; run flow test on its own')
+      await update($, testBand, () => verdict).catch(() => undefined)
     }
     if (!nudges) return ran
     await update($, verify, s => recordCheck(s, check, passed)).catch(() => undefined)

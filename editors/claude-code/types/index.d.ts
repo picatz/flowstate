@@ -38,7 +38,6 @@ declare module 'claude-code' {
       runResult: { file: string; kind: '' | 'ok' | 'failed' | 'unknown' | 'notrun'; text: string; lines: string[]; cards: { cards: { title: string; type: string; help: string; status: { kind: string; symbol: string; tone: string; word: string }; fact: string; raw: string; cut: boolean }[]; more: number } | null }
       /** The output cards show the raw values (sensitive ones still hidden) instead of the labelled cards (hooks/outputs.ts). */
       outputsRaw: boolean
-      /** This turn's Flowfile edits and the checks since (hooks/verify.ts); reset when a turn starts. */
       /** The `flow test` band above the prompt (hooks/testband.ts); null for none. Cleared when a Flowfile or test file is edited. */
       testBand: {
         outcome: 'passed' | 'failed' | 'unknown'
@@ -52,6 +51,7 @@ declare module 'claude-code' {
         cut: boolean
         note: string
       } | null
+      /** This turn's Flowfile edits and the checks since (hooks/verify.ts); reset when a turn starts. */
       verify: { edited: string[]; validated: boolean; tested: boolean; nudged: boolean }
     }
   }
