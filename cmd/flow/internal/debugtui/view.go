@@ -99,6 +99,12 @@ type Screen struct {
 	// Source is the source pane's documents and state; nil holds no document.
 	Source *Source
 
+	// Watches are the expressions read again at every stop, in the order they
+	// were added, and Result the group an `inspect` or `expand` typed at the
+	// console is listed under. Both are shown in the scope pane's tree.
+	Watches []Watch
+	Result  *pane.Node
+
 	Console Console
 	Toast   tui.Toast
 	Keys    tui.Keymap
@@ -227,6 +233,7 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 			text = StepsView(s.Frame, s.Loaded, s.StepScroll, o)
 		case paneScope:
 			o.Prefix = scopePrefix
+			o.PaintValue = func(value string) string { return PaintValue(value, st.Theme) }
 			text = ScopeView(s.Tree, s.Frame, s.Loaded, s.Problem, o)
 		case paneInspector:
 			text = InspectorView(s.Tree, s.Frame, o)
@@ -245,9 +252,12 @@ func (s Screen) Draw(st Style) (string, *pane.Hits) {
 		})
 	}
 
-	co := s.options(g.console.W, g.console.H, st, s.Focus == paneConsole)
-	parts = append(parts, pane.Placed{Rect: g.console, Text: ConsoleView(s.Console, s.Busy, co)})
+	// The console's body is registered before its entries, so a completion offer
+	// is the topmost hit where it is drawn.
 	hits.Add(g.console, paneConsole, pane.KindInput)
+	co := s.options(g.console.W, g.console.H, st, s.Focus == paneConsole)
+	co.Origin, co.Hits = g.console, hits
+	parts = append(parts, pane.Placed{Rect: g.console, Text: ConsoleView(s.Console, s.Busy, co)})
 
 	return pane.Stitch(s.Size.W, s.Size.H, parts...), hits
 }
@@ -451,7 +461,7 @@ func ScopeView(tree *pane.Tree, f flowdebug.Frame, loaded bool, problem string, 
 	heading := pane.Heading(paneScope, note, o.Width, o)
 
 	empty := cmpOr(problem, f.ScopeNote, "  no scope: the run is not held")
-	if f.Scope == nil || tree == nil {
+	if tree == nil || (f.Scope == nil && len(tree.Rows()) == 0) {
 		return heading + "\n" + o.Theme.Muted.Render(ui.EscapeControl("  "+strings.TrimSpace(empty)))
 	}
 
@@ -512,7 +522,7 @@ func inspector(tree *pane.Tree, f flowdebug.Frame) pane.Inspector {
 		return pane.Inspector{}
 	}
 	value := f.Values[id]
-	fields := []pane.Field{{Key: "expression", Value: id}}
+	fields := []pane.Field{{Key: "expression", Value: expressionOf(id)}}
 	if value != nil {
 		fields = append(fields, pane.Field{Key: "type", Value: value.GetType()})
 		if value.GetChildren() > 0 {
@@ -531,11 +541,16 @@ func inspector(tree *pane.Tree, f flowdebug.Frame) pane.Inspector {
 // SelectedExpression is the expression of the selected scope row, or "" when
 // the selection is a group or nothing.
 func SelectedExpression(tree *pane.Tree) string {
-	if tree == nil || tree.Selected() == "" || strings.HasPrefix(tree.Selected(), "g:") || strings.HasPrefix(tree.Selected(), "more:") {
+	if tree == nil || tree.Selected() == "" {
 		return ""
 	}
+	for _, prefix := range [...]string{"g:", "x:", "more:"} {
+		if strings.HasPrefix(tree.Selected(), prefix) {
+			return ""
+		}
+	}
 
-	return tree.Selected()
+	return expressionOf(tree.Selected())
 }
 
 // HelpView is the help overlay: the keys, then the verbs that have none.
@@ -580,6 +595,14 @@ func helpLines(keys tui.Keymap, verbs []flowdebug.Verb, o pane.Options) []string
 			spelling += " " + verb.Argument
 		}
 		typed = append(typed, "  "+o.Theme.Strong.Render(ui.EscapeControl(spelling))+"  "+ui.EscapeControl(verb.Help))
+	}
+	if slices.ContainsFunc(verbs, func(v flowdebug.Verb) bool { return v.Name == "inspect" }) {
+		for _, verb := range [...]struct{ spelling, help string }{
+			{"watch <expr>", "show an expression in the scope pane at every stop and after every travel (at most 16)"},
+			{"unwatch <n|expr>", "stop watching the nth watch, or the one spelled so"},
+		} {
+			typed = append(typed, "  "+o.Theme.Strong.Render(verb.spelling)+"  "+verb.help)
+		}
 	}
 	if len(typed) > 0 {
 		lines = append(lines, "", o.Theme.Header.Render("Type in the console"))

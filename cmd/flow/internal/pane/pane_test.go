@@ -363,3 +363,18 @@ func TestThePanePackageReadsNoClock(t *testing.T) {
 		}
 	}
 }
+
+// TestATreePaintsItsValuesOnlyWhenAskedTo: the painter is given the value after
+// it was cut to the width, and a tree with none draws the bytes it always did.
+func TestATreePaintsItsValuesOnlyWhenAskedTo(t *testing.T) {
+	t.Parallel()
+
+	tree := pane.NewTree([]pane.Node{{ID: "a", Label: "a", Value: "true"}})
+	o := options(40, 3, colorprofile.NoTTY, true)
+	plain := tree.View(o, "")
+
+	o.PaintValue = func(value string) string { return "<" + value + ">" }
+	painted := tree.View(o, "")
+	assert.Contains(t, painted, "<true>")
+	assert.Equal(t, plain, strings.NewReplacer("<", "", ">", "").Replace(painted))
+}

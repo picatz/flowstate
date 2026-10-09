@@ -25,6 +25,11 @@ type Options struct {
 	Origin Rect
 	Hits   *Hits
 	Prefix string
+
+	// PaintValue, when set, styles the value column of a [Tree] row after the
+	// value has been cut to fit. It must return its argument's text unchanged
+	// apart from styling.
+	PaintValue func(string) string
 }
 
 // Fit returns text as exactly h lines of exactly w cells: longer lines are cut

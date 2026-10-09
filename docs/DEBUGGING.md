@@ -902,8 +902,9 @@ without the flag, so a script that gains the flag keeps its output.
 | `tab`, `shift+tab` | focus the next or previous pane: flow, source, steps, scope, console |
 | `:` or `/` | type a command; every verb in the table above works there, with tab completion |
 | `i` | open the console on `inspect <the selected scope row>` |
+| `w` | watch the selected scope row (see below) |
 | `up` `down` `j` `k`, `pgup` `pgdown`, `home` `end` | move in the focused pane; in the source, the selected line |
-| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
+| `enter`, `right` `l`, `left` `h` | open, open, or close the selected scope row (`left` on a leaf goes to its parent); a row whose children are not held yet, and a `… N more` row, run `expand` for them; in the flow, `enter` runs until the step and `right` and `left` unfold and fold a group |
 | `u`, `B` | `until` the selected flow step; set a breakpoint on it, or clear the one there (in the source, `B` is the breakpoint on the selected line) |
 | `?` | the help overlay: these keys, then the verbs that have no key |
 | `q` | `detach` and let the run go on unattended |
@@ -922,6 +923,39 @@ With the mouse, a click on a scope row selects it and opens or closes it (a
 focuses it, and the wheel scrolls the pane under the pointer. A click on a
 source line selects it, and a click on its number arms a breakpoint on that line
 or clears the one there. A click on anything the screen did not draw is ignored.
+
+**Values, the completion menu and watches.** An `inspect` typed at the console
+is also a row in the scope pane, under `result`, and a value with children
+(a map, a list) opens into a tree whose rows are coloured as the line editor
+colours the same value. Opening such a row, or a `… N more` row under it, is the
+console's own `expand`: the screen sends `expand steps.list`, then `expand
+steps.list from 100`, and so on through the driver, so the transcript, `--record`
+and the page size are the ones a typed `expand` has, and a page is added to the
+stop it was asked at or to nothing. An inspection is of its stop: the next stop
+replaces it. A typed `expand <expr> [from N]` pages the same row.
+
+`tab` in the console asks the same completer the line editor uses. One offer is
+put on the line; several are applied as far as they agree and listed in a menu
+above the line. `tab` and `down` move down the menu, `shift+tab` and `up` move
+up, `enter` puts the selected offer on the line (it does not run it), `esc`
+closes the menu, and a click on an offer takes it. Typing, or moving focus,
+closes it. At most 64 offers are held, and the heading says when more were
+offered than shown. Offers are names, never values, and a name with a control
+character or too long for a command is dropped.
+
+`watch <expr>` (or `w` on the selected scope row) keeps an expression under
+`watches` in the scope pane. It is read again, through the same inspection a
+typed `inspect` uses, every time the screen reads the run: at each stop, and
+after each `back`, `reverse-continue` and `goto`. `unwatch <n|expr>` removes the
+nth watch (counted from 1, as they are listed) or the one spelled so. The
+watches belong to the screen and are neither sent to the run nor recorded.
+There are at most 16, and the seventeenth is refused in one line, as is an
+expression longer than a command (`flowdebug.MaxCommandBytes`) or one with a
+control character. A watch that cannot be evaluated says why in the console
+once, when it starts failing, and its row shows the reason at every stop after;
+when it evaluates again the row has its value and the console says nothing.
+While the run is not held a watch shows `(not held)` and nothing is asked. A
+value the run withholds is withheld in a watch, as everywhere on the screen.
 
 **The flow.** When the attach was given the program (`--program`), the left
 column draws its structure as a ladder, one row per step in the order the file

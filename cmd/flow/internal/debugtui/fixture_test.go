@@ -69,6 +69,12 @@ type fakeTarget struct {
 	diverge  map[int32]bool
 	travels  []int32
 
+	// eval answers an expression no scope row names, at the stop the run is at:
+	// the rendered value, or the error text. It lets a test watch something that
+	// changes as the run moves, or that cannot be evaluated. ok is false for an
+	// expression it has no answer for.
+	eval func(expression string, at int) (rendered, failure string, ok bool)
+
 	// moved is closed and replaced each time the run changes, so a wait can
 	// block on it.
 	moved chan struct{}
@@ -93,6 +99,22 @@ func newFake() *fakeTarget {
 		},
 		moved: make(chan struct{}),
 	}
+}
+
+// withList adds a list of n names to the steps group: a value with more
+// children than one page of them.
+func (f *fakeTarget) withList(n int) *fakeTarget {
+	list := fakeName{name: "list", rendered: fmt.Sprintf("[%d items]", n), typ: "list"}
+	for i := range n {
+		list.kids = append(list.kids, fakeName{name: fmt.Sprintf("[%d]", i), rendered: fmt.Sprint(i), typ: "int"})
+	}
+	for i := range f.groups {
+		if f.groups[i].name == "steps" {
+			f.groups[i].names = append(f.groups[i].names, list)
+		}
+	}
+
+	return f
 }
 
 // withBig adds a group of n names, more than one read resolves.
@@ -289,6 +311,15 @@ func (f *fakeTarget) Inspect(_ context.Context, req *v1.DebugInspectRequest) (*v
 	}
 
 	expression := req.GetExpression()
+	if f.eval != nil && !req.GetChildren() && expression != "" {
+		if rendered, failure, ok := f.eval(expression, f.at); ok {
+			if failure != "" {
+				return &v1.DebugInspectResponse{Revision: f.revision(), Error: failure}, nil
+			}
+
+			return &v1.DebugInspectResponse{Revision: f.revision(), Value: &v1.DebugValue{Type: "int", Rendered: rendered, Expression: expression}}, nil
+		}
+	}
 	if expression == "" {
 		answer := &v1.DebugInspectResponse{Revision: f.revision(), Total: int32(len(f.groups))}
 		for _, g := range f.groups {

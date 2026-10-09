@@ -2,6 +2,7 @@ package debugtui
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -16,6 +17,9 @@ import (
 func (m *Model) setFocus(name string) {
 	m.ring = m.ring.Set(name)
 	m.screen.Focus = m.ring.Current()
+	if name != paneConsole {
+		m.screen.Console.CloseMenu()
+	}
 	if slices.Contains(contentPanes, name) {
 		m.screen.Pane = name
 	}
@@ -152,6 +156,16 @@ func (m Model) act(b tui.Binding) (tea.Model, tea.Cmd) {
 		}
 		m.screen.Console.Text = "inspect " + expression
 		m.setFocus(paneConsole)
+	case bindWatch:
+		expression := SelectedExpression(m.screen.Tree)
+		if expression == "" {
+			m.toast(ui.ToneWarning, "select a name in the scope first")
+
+			break
+		}
+		cmd := m.watch(expression)
+
+		return m, cmd
 	case bindUntil:
 		return m.flowUntil()
 	case bindBreak:
@@ -247,7 +261,7 @@ func (m Model) navigate(name string) (tea.Model, tea.Cmd) {
 		}
 		tree.Reveal(rows)
 		if load {
-			cmd := m.pageCmd(request)
+			cmd := m.load(request)
 			return m, cmd
 		}
 	}
@@ -272,6 +286,30 @@ func (m *Model) scrollSteps(delta int) {
 // for the few keys that leave.
 func (m Model) consoleKey(name string, msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	con := &m.screen.Console
+	if _, open := con.Menu(); open {
+		// While the menu is open the keys that move, accept and leave are the
+		// menu's; anything else is typing, which closes it.
+		switch name {
+		case "tab", "down", "ctrl+n":
+			con.MoveMenu(1)
+
+			return m, nil
+		case "shift+tab", "up", "ctrl+p":
+			con.MoveMenu(-1)
+
+			return m, nil
+		case "enter":
+			menu, _ := con.Menu()
+			con.AcceptMenu(menu.Selected)
+
+			return m, nil
+		case "esc":
+			con.CloseMenu()
+
+			return m, nil
+		}
+	}
+
 	switch name {
 	case "esc":
 		m.setFocus(m.screen.Pane)
@@ -333,6 +371,22 @@ func (m Model) submit(line string) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// The screen's own words are not the run's: a watch is kept here and read
+	// through inspect, so neither is sent to the driver or recorded.
+	verb, rest, _ := strings.Cut(line, " ")
+	switch verb {
+	case "watch":
+		m.screen.Console.Say(Prompt + line)
+		cmd := m.watch(rest)
+
+		return m, cmd
+	case "unwatch":
+		m.screen.Console.Say(Prompt + line)
+		m.unwatch(rest)
+
+		return m, nil
+	}
+
 	cmd := m.run(line)
 
 	return m, cmd
@@ -355,6 +409,15 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 	}
 	if mouse.Button != tea.MouseLeft {
 		// A right click means something only on a step.
+		return m, nil
+	}
+	if id, ok := strings.CutPrefix(hit.ID, menuPrefix); ok {
+		// A candidate is accepted where the menu is drawn: onto the line, which the
+		// person then reads and submits.
+		if i, err := strconv.Atoi(id); err == nil && m.screen.Console.AcceptMenu(i) {
+			m.setFocus(paneConsole)
+		}
+
 		return m, nil
 	}
 	if id, ok := strings.CutPrefix(hit.ID, gutterPrefix); ok {
@@ -399,7 +462,7 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		request, load := m.screen.Tree.Activate(id)
 		m.screen.Tree.Reveal(max(1, m.scopeRows()))
 		if load {
-			cmd := m.pageCmd(request)
+			cmd := m.load(request)
 			return m, cmd
 		}
 	}

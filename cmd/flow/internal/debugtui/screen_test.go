@@ -265,15 +265,31 @@ func everythingDrawn(t *testing.T, session *flowdebug.Session) string {
 		for _, binding := range group.GetBindings() {
 			m.screen.Tree.Select(binding.GetExpression())
 			capture()
+			if strings.HasPrefix(binding.GetExpression(), "vars.") {
+				// The key watches the selected row; the watch is read again at
+				// every frame read, and drawn in the scope pane.
+				m = send(m, tuitest.Key("w"))
+				capture()
+			}
 		}
 	}
 	m = send(m, tuitest.Key("?"))
 	capture()
 	m = send(m, tuitest.Key("esc"), tuitest.Key(":"))
-	for _, line := range []string{"inspect vars.credential", "inspect vars.header", "scope", "expand vars"} {
+	for _, line := range []string{
+		"watch vars.credential", "watch vars.header", `watch "bearer " + vars.credential`, `watch vars.credential + vars.header`,
+		"inspect vars.credential", "inspect vars.header", "scope", "expand vars",
+		"unwatch vars.region", "watch vars.region",
+	} {
 		m = send(m, append(tuitest.Keys(line), tuitest.Key("enter"))...)
 		capture()
 	}
+	m = send(m, tuitest.Key("esc"))
+	for _, w := range m.screen.Watches {
+		// A watch on a withheld value is held with the target's words for it.
+		drawn.WriteString(w.Expr + " " + w.Value.GetRendered() + " " + w.Err + "\n")
+	}
+	capture()
 	// The transcript itself, not only what fits on a screen.
 	drawn.WriteString(strings.Join(m.screen.Console.Lines(), "\n"))
 
@@ -293,4 +309,5 @@ func TestNoPaneRevealsAWithheldLeaf(t *testing.T) {
 	tuitest.NoSecret(t, redacted, theSecret)
 	assert.Contains(t, redacted, "[redacted]", "the row vanished instead of being withheld, hiding that there is a name there")
 	assert.Contains(t, redacted, "eu-west-1", "the screen drew nothing of the scope at all")
+	assert.Contains(t, redacted, "watches", "no watch was drawn, so the refusal above proved nothing about them")
 }

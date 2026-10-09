@@ -430,6 +430,9 @@ func (t *Tree) line(r Row, labelWidth int, o Options) string {
 	label := ui.Trim(cleaned(r.Label), max(1, labelWidth-r.Depth*2-2))
 	pad := max(0, labelWidth-r.Depth*2-2-lipgloss.Width(label))
 	value := ui.Trim(cleaned(r.Value), maxCellRunes)
+	if o.PaintValue != nil {
+		value = o.PaintValue(value)
+	}
 
 	name := o.Theme.Strong.Render(label)
 	if r.ID == t.selected {

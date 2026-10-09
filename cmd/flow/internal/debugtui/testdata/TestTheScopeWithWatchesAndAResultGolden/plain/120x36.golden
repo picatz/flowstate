@@ -1,0 +1,36 @@
+flow debug · release-1 · run 3f7c9a2e · held step · rev 2                                                         ? help
+flow ─────────────────────── source addresses only ──────────── steps ──────────────── → scope 5 names ─────────────────
+no program; pass --program     No source: pass --program          ○ checkout pending    ▸ inputs          {2}           
+                               <Flowfile> to see its lines;     → ▶ build running       ▸ steps           {2}           
+                               showing the step's address.        ○ flaky pending       ▸ run             {1}           
+                                                                  ○ gated pending       ▾ watches         {3}           
+                               held at build                      ○ deploy pending          stop          1             
+                                                                  ○ notify pending          inputs.regio  "eu-west-1"   
+                                                                  6 step(s)                 nosuch.name   (no such name:
+                                                                                        ▾ result          {1}           
+                                                                                       →  ▾ steps.list    [30 items]    
+                                                                                              [0]         0             
+                                                                                              [1]         1             
+                                                                                              [2]         2             
+                                                                                              [3]         3             
+                                                                                              [4]         4             
+                                                                                       inspector ───────────────────────
+                                                                                       expression  steps.list           
+                                                                                       value       [30 items]           
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+                                                                                                                        
+timeline 0 [1]                                                                                                          
+console ────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[25]  int  25                                                                                                           
+[26]  int  26                                                                                                           
+[27]  int  27                                                                                                           
+[28]  int  28                                                                                                           
+[29]  int  29                                                                                                           
+debug>                                                                                                                  
+                                                                                                                        
+s step  n next  c continue  tab focus  : console  ? help  q quit                                                        
