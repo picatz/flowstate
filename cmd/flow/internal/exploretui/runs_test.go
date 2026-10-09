@@ -250,6 +250,7 @@ func TestNarrowingTheWorkflowsReadsNothingAndKeepsTheOpenRuns(t *testing.T) {
 	m = press(m, "esc", "f", "z", "esc")
 	m = openRuns(t, m)
 	assert.Len(t, r.asked, 2)
+	assert.Contains(t, view(m), "orders-1", "the run is listed again")
 }
 
 func TestAFilterThatMatchesNothingSaysSoAndNotThatThereAreNoWorkflows(t *testing.T) {
