@@ -91,6 +91,65 @@ The pane's Send/Confirm replaces the Bash guard's question for this one action
 only. The `guardServerActions` guard still asks before Claude runs `flow signal`
 in a Bash command, and turning it off does not remove the pane's confirm step.
 
+## Run a Flowfile
+
+The pane's `Run a Flowfile` section runs a Flowfile on this machine from a form
+built from its declared inputs. It is local only: it never runs `flow run` against
+a server, which stays a deliberate action through the Bash guard.
+
+- **Pick a file.** A Select lists the Flowfiles of the working directory and its
+  `workflows/` directory (`$.fs.list`, cut to 500 entries per directory before anything is
+  searched, 12 offered, the rest counted). A file whose name is not plain (it starts with `-` or
+  `.`, or holds a space or any character beyond letters, digits, `.`, `_`, `-`) is
+  counted as "not offered", never rewritten.
+- **Read its inputs.** `flow compile -o json --schema=inputs -- <file>` (10 s) prints a
+  JSON Schema of the `inputs:` block. The answer, a failure included, is cached per file and modification
+  time, so typing and redraws do not recompile; saving the file or picking it again
+  reads it afresh. If the compile fails, prints something else, is
+  over 256 KiB, or declares more than 24 inputs, the pane says so and draws no
+  control and no Run button.
+- **One control per input.** A bool is a Select (`true`/`false`), an `enum` is a Select of
+  its values, a string, int or number is an Input, and anything else (a list, a record,
+  an untyped value) is one JSON Input. The declared default is prefilled, the
+  description (and a `must:` rule, shown as `(rule: ...)`) is the help text, and the
+  declared example is the placeholder. Clearing an optional input sends nothing for
+  it, so the engine applies its default.
+- **Client-side checks are only the declared type:** required, a whole number in 64
+  bits, a finite number, `true`/`false`, a member of the enum, `min_len`/`max_len`,
+  and JSON that parses as a list or object. A failing control shows its reason and
+  hides Run, which says `Run locally is unavailable: <input>: <reason>`. The mod does
+  not evaluate `must:` rules or CEL: the engine is the authority, and its message is
+  shown as it is (cleaned and bounded).
+- **Confirm before anything runs.** `Run locally` only asks: the question names the
+  verb (`flow run local`), the file and every input value that will be sent, and warns
+  that a run executes the workflow's tasks, which can have side effects. Only
+  `Confirm: run locally` runs it, exactly once, as one argv with no shell:
+  `flow run local --no-color [--input=<name>=<value> ...] -- <file>`. Each input is one
+  element in the `=` form, so a value starting with `-` or holding a comma, space or
+  `=` stays one value. Editing a control, choosing another file or pressing Cancel
+  drops the question. At Confirm the file is checked against a fresh listing, the
+  inputs are read again, and the values are checked against that declaration; if the
+  file left the listing or no longer accepts them, nothing runs and the card says
+  `not run:` with the reason. Input names come from the declared schema only (plain
+  identifiers; `__proto__` is refused), the file must be a listed Flowfile, and a value over 1000 characters
+  (8000 together) is refused, never cut.
+- **Nothing is altered silently.** Schema text (descriptions, defaults, examples, enum
+  values) is cleaned (control and invisible format characters dropped) and bounded
+  before it is drawn. A default, enum value or typed value that would have to be
+  altered to be shown or sent (a control, zero-width, bidi, word-joiner, tag or separator
+  character, a lone surrogate, or a default holding a number a double cannot hold exactly,
+  such as 9007199254740993), and an input name that is not a plain identifier, is
+  refused instead: Run is unavailable and the reason is shown. A `sensitive:` input is
+  never collected (its default is not in the schema either); a required one blocks
+  Run, an optional one is left out.
+- **The outcome.** Success shows `ran <file>` and the run's output; failure shows
+  `failed (exit N)` and the engine's own message (stderr, cleaned, at most 12 lines of
+  200 characters, marked `(output cut)` when more existed). A run is given `process.run`'s
+  default 30 seconds. One that times out, cannot start or throws is `outcome unknown`,
+  never `failed`: its tasks may have run, so check their effects before running again.
+  A workflow that waits on a signal needs `--signal`, which the form does not offer,
+  so it ends as outcome unknown at the limit; run it from a terminal.
+
 ## Verify before done
 
 If Claude edits a Flowfile (the guard's own `isFlowfile` decides what that is)

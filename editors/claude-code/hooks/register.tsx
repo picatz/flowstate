@@ -9,11 +9,13 @@ import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
-import type { Parsed } from './detail'
+import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from './verify'
-import { COLOR, duration, middleTruncate, progressBar, runRow, statusOf, story } from './vocab'
+import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from './vocab'
+import { MAX_SCAN, MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
+import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
 
 const PANE = 'flowstate'
 /** The pane and the stored state keep the most recent Flowfiles only. */
@@ -29,6 +31,15 @@ const confirm = atom({ plugin: 'flowstate', key: 'confirm' } as const, NO_CONFIR
 /** What the last Confirm did, kept for the card: the server's refusal verbatim (cleaned), or the delivery. */
 const NO_OUTCOME = { id: '', signal: '', ok: false, text: '' }
 const outcome = atom({ plugin: 'flowstate', key: 'outcome' } as const, NO_OUTCOME)
+/** The Run locally press that awaits its Confirm (hooks/form.ts): the file and the exact inputs the question named. Empty file for none. */
+const NO_RUN_CONFIRM: { file: string; inputs: Pair[] } = { file: '', inputs: [] }
+const runConfirm = atom({ plugin: 'flowstate', key: 'runConfirm' } as const, NO_RUN_CONFIRM)
+/** The Flowfile the run form is for, and what has been typed into its controls (only the inputs the file declares are ever written). */
+const runFile = atom({ plugin: 'flowstate', key: 'runFile' } as const, '')
+const runValues = atom({ plugin: 'flowstate', key: 'runValues' } as const, {} as Record<string, string>)
+/** What the last local run did, kept for the form: output, the engine's refusal, or "outcome unknown". */
+const NO_RUN_RESULT: { file: string; kind: '' | Result['kind']; text: string; lines: string[] } = { file: '', kind: '', text: '', lines: [] }
+const runResult = atom({ plugin: 'flowstate', key: 'runResult' } as const, NO_RUN_RESULT)
 const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
@@ -80,7 +91,7 @@ const listRuns = async ($: Engine, flow: string, expr: string): Promise<Listing>
  * One run's account, from `flow timeline`. Like the listing, a failure to answer
  * is a state of the card, never an error, and `--` keeps an id from being a flag.
  */
-const readTimeline = async ($: Engine, flow: string, id: string): Promise<Parsed> => {
+const readTimeline = async ($: Engine, flow: string, id: string): Promise<TimelineParsed> => {
   try {
     const argv = [flow, 'timeline', '-o', 'json', '--max-entries', String(MAX_ENTRIES), '--', id]
     const ran = await $.process.run(argv, { timeoutMs: 5000 })
@@ -137,6 +148,38 @@ const gather = async ($: Engine, flow: string, file: string): Promise<string | u
   return formatContext({ file, tasks: tasks.length > 0 ? tasks : undefined, report })
 }
 
+/** The Flowfiles the run form may offer: the working directory's, and its `workflows/` directory's. Nothing here throws. */
+const listFlowfiles = async ($: Engine): Promise<ReturnType<typeof candidates> & { stamp: Map<string, number> }> => {
+  const stamp = new Map<string, number>()
+  try {
+    // Bounded before any search: a huge directory costs one slice, not a scan.
+    const top = (await $.fs.list()).slice(0, MAX_SCAN)
+    const sub = top.some(e => e.kind === 'dir' && e.name === 'workflows') ? (await $.fs.list('workflows').catch(() => [])).slice(0, MAX_SCAN) : []
+    const found = candidates(top, sub)
+    // Stamps only for the files on offer.
+    const mtimes = new Map([...top.map(e => [e.name, e.mtimeMs] as const), ...sub.map(e => [`workflows/${e.name}`, e.mtimeMs] as const)])
+    for (const f of found.files) stamp.set(f, mtimes.get(f) ?? 0)
+    return { ...found, stamp }
+  } catch {
+    return { files: [], more: 0, stamp }
+  }
+}
+
+/**
+ * A Flowfile's declared inputs, from `flow compile --schema inputs`: read only,
+ * bounded, and `--` keeps the path from being a flag. A failure to answer is a
+ * state of the form (no controls, no Run), never an error.
+ */
+const readInputs = async ($: Engine, flow: string, file: string): Promise<InputsParsed> => {
+  try {
+    const ran = await $.process.run([flow, 'compile', '-o', 'json', '--schema=inputs', '--', file], { timeoutMs: 10000 })
+    if (ran.exitCode !== 0) return { error: cleanLines(ran.stderr, 3, 160).lines.join(' ') || 'flow compile failed' }
+    return ran.isStdoutTruncated ? { error: 'the schema is larger than the form reads' } : parseInputs(ran.stdout)
+  } catch (err) {
+    return { error: clean(String(err), 100) || 'no answer' }
+  }
+}
+
 /** The first Flowfile in the session's working directory, if it has one and can be listed. */
 const findInCwd = async ($: Engine): Promise<string | undefined> => {
   try {
@@ -153,6 +196,10 @@ export const register: Register = (on, options) => {
   const nudges = options.verifyBeforeDone !== false
   /** One Confirm at a time: a second press while a send is in flight sends nothing. */
   let sending = false
+  /** One local run at a time, the same way. */
+  let running = false
+  /** Schemas by file and modification time, so typing in a control does not recompile the file on every key. */
+  const schemas = new Map<string, InputsParsed>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -306,7 +353,7 @@ export const register: Register = (on, options) => {
   }
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Input } = $.ui.resolve(e)
+    const { Box, Text, Button, Input, Select } = $.ui.resolve(e)
     const list = await read($, reports)
     const expr = await read($, filter)
     const id = await read($, selected)
@@ -333,6 +380,35 @@ export const register: Register = (on, options) => {
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
+
+    // The run form: the Flowfiles on offer, and the selected one's declared inputs.
+    const offered = await listFlowfiles($)
+    const chosen = await read($, runFile)
+    const file = offered.files.includes(chosen) ? chosen : ''
+    let schema: InputsParsed | undefined
+    if (file !== '') {
+      const key = `${file}@${offered.stamp.get(file) ?? 0}`
+      schema = schemas.get(key)
+      if (schema === undefined) {
+        schema = await readInputs($, flow, file)
+        // A failed read is kept too (until the file changes or is picked again), so a broken file is not recompiled on every redraw.
+        if (schemas.size >= 16) schemas.clear()
+        schemas.set(key, schema)
+      }
+    }
+    const fields: Field[] = schema && 'fields' in schema ? schema.fields : []
+    const typed = await read($, runValues)
+    const checked = checkForm(fields, typed)
+    const sent = submission(fields, typed)
+    const asking = await read($, runConfirm)
+    const questioned = file !== '' && asking.file === file && JSON.stringify(asking.inputs) === JSON.stringify(sent)
+    const ranLast = await read($, runResult)
+    /** A change to the form takes any pending question away: Confirm only ever runs what the question named. */
+    const setValue = async (name: string, v: string) => {
+      await update($, runConfirm, () => NO_RUN_CONFIRM)
+      await update($, runValues, s => ({ ...s, [name]: v.slice(0, MAX_VALUE + 1) }))
+    }
+    const badge = (kind: string) => statusFor(kind === 'ok' ? 'succeeded' : kind === 'failed' ? 'failed' : kind === 'notrun' ? 'skipped' : 'unknown')
 
     return (
       <Box flexDirection="column">
@@ -505,6 +581,156 @@ export const register: Register = (on, options) => {
             }}>
               Close
             </Button>
+          </Box>
+        )}
+        <Text bold>Run a Flowfile</Text>
+        <Text dimColor>  Runs here with `flow run local`, no server. A run executes the workflow's tasks, so it asks first.</Text>
+        {offered.files.length === 0 && <Text dimColor>  No Flowfile in this directory.</Text>}
+        {offered.files.length > 0 && (
+          <Select
+            key="run-file"
+            label="Flowfile"
+            options={[{ value: '', label: '(choose a Flowfile)' }, ...offered.files.map(f => ({ value: f }))]}
+            value={file}
+            onSelect={async v => {
+              if (v !== '' && !offered.files.includes(v)) return
+              schemas.clear()
+              await update($, runConfirm, () => NO_RUN_CONFIRM)
+              await update($, runResult, () => NO_RUN_RESULT)
+              await update($, runValues, () => ({}))
+              await update($, runFile, () => v)
+            }}
+          />
+        )}
+        {offered.more > 0 && <Text dimColor>  and {offered.more} more Flowfiles not offered (past the list's bound, or a name the form does not send)</Text>}
+        {schema && 'error' in schema && <Text dimColor>  Inputs unavailable ({schema.error}). Fix the file, or run it from a terminal.</Text>}
+        {schema && 'fields' in schema && (
+          <Box flexDirection="column">
+            {fields.length === 0 && <Text dimColor>  {file} declares no inputs.</Text>}
+            {fields.map(f => {
+              const label = `${f.name}${f.required ? ' *' : ''} (${f.type})`
+              const why = checked.errors[f.name]
+              const raw = valueOf(f, typed)
+              return (
+                <Box flexDirection="column">
+                  {f.sensitive ? (
+                    <Text dimColor>  {label} is sensitive: the pane never collects it{f.required ? '' : ' and sends nothing for it'}.</Text>
+                  ) : f.refused ? (
+                    <Text dimColor>  {label} is not offered: {f.refused}.</Text>
+                  ) : f.kind === 'bool' || f.kind === 'enum' ? (
+                    <Select
+                      key={`in:${f.name}`}
+                      label={label}
+                      options={[
+                        ...(f.initial === '' ? [{ value: '', label: f.required ? '(choose)' : '(not set)' }] : []),
+                        ...(f.kind === 'bool' ? ['true', 'false'] : f.choices).map(value => ({ value })),
+                      ]}
+                      value={raw}
+                      onSelect={v => setValue(f.name, v)}
+                    />
+                  ) : (
+                    <Input
+                      key={`in:${f.name}`}
+                      label={label}
+                      placeholder={f.example ? `e.g. ${f.example}` : f.kind === 'json' ? 'JSON' : ''}
+                      value={clean(raw, MAX_VALUE + 1)}
+                      submitLabel="set"
+                      onInput={v => setValue(f.name, v)}
+                      onSubmit={v => setValue(f.name, v)}
+                    />
+                  )}
+                  {f.help !== '' && <Text dimColor>      {f.help}</Text>}
+                  {f.initial !== '' && !Object.hasOwn(typed, f.name) && <Text dimColor>      default {f.initial}</Text>}
+                  {why && !f.sensitive && <Text color={raw === '' ? COLOR.wait : COLOR.fail}>      {raw === '' ? '' : '✗ '}{why}</Text>}
+                </Box>
+              )
+            })}
+            {checked.blocked !== '' ? (
+              <Text dimColor>  Run locally is unavailable: {checked.blocked}</Text>
+            ) : (
+              !questioned && (
+                <Button
+                  key="run-local"
+                  label="Run locally"
+                  plain
+                  onPress={async () => {
+                    // The first press only asks: nothing runs until Confirm.
+                    const now = await read($, runValues)
+                    if (checkForm(fields, now).blocked !== '') return
+                    await update($, runResult, () => NO_RUN_RESULT)
+                    await update($, runConfirm, () => ({ file, inputs: submission(fields, now) }))
+                  }}
+                >
+                  Run locally
+                </Button>
+              )
+            )}
+            {questioned && (
+              <Box flexDirection="column">
+                {confirmLines(asking.file, asking.inputs).map((l, i) => (
+                  <Text color={i === 0 ? COLOR.wait : undefined} dimColor={i !== 0}>
+                    {'  '}
+                    {l}
+                  </Text>
+                ))}
+                <Box>
+                  <Button
+                    key="confirm-run"
+                    label="Confirm: run locally"
+                    plain
+                    onPress={async () => {
+                      if (running) return
+                      running = true
+                      try {
+                        const c = await read($, runConfirm)
+                        // This button was drawn for one question: if it has moved on, it acts on nothing.
+                        if (c.file === '' || c.file !== file) return
+                        await update($, runConfirm, () => NO_RUN_CONFIRM)
+                        const stop = (why: string) => update($, runResult, () => ({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [] }))
+                        // Everything is read again: the file must still be a listed Flowfile and its declaration must still accept exactly these values.
+                        if (!(await listFlowfiles($)).files.includes(c.file)) return stop('the file is no longer listed')
+                        const fresh = await readInputs($, flow, c.file)
+                        if (!('fields' in fresh)) return stop(`its inputs could not be read (${fresh.error})`)
+                        const values = Object.fromEntries(fresh.fields.map(f => [f.name, c.inputs.find(i => i.name === f.name)?.value ?? '']))
+                        const blocked = checkForm(fresh.fields, values).blocked
+                        if (blocked !== '') return stop(blocked)
+                        const same = JSON.stringify(submission(fresh.fields, values)) === JSON.stringify(c.inputs)
+                        const argv = same ? runArgv(flow, c.file, c.inputs, fresh.fields) : undefined
+                        if (argv === undefined) return stop('the form no longer matches the file, or a value is outside what the form sends')
+                        let result: Result
+                        try {
+                          result = resultOf(await $.process.run(argv, { timeoutMs: RUN_TIMEOUT_MS }), c.file)
+                        } catch (err) {
+                          result = unknownResult(err, c.file)
+                        }
+                        await update($, runResult, () => ({ file: c.file, ...result }))
+                      } finally {
+                        running = false
+                      }
+                    }}
+                  >
+                    Confirm: run locally
+                  </Button>
+                  <Button key="cancel-run" label="Cancel" plain onPress={() => update($, runConfirm, () => NO_RUN_CONFIRM)}>
+                    Cancel
+                  </Button>
+                </Box>
+              </Box>
+            )}
+          </Box>
+        )}
+        {ranLast.file === chosen && ranLast.text !== '' && (
+          <Box flexDirection="column">
+            <Text color={COLOR[badge(ranLast.kind).tone]}>
+              {'  '}
+              {badge(ranLast.kind).symbol} {ranLast.text}
+            </Text>
+            {ranLast.lines.map(l => (
+              <Text dimColor>
+                {'      '}
+                {l}
+              </Text>
+            ))}
           </Box>
         )}
         <Text bold>Flowfiles</Text>
