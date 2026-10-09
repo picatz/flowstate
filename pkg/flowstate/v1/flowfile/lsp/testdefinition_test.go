@@ -59,49 +59,58 @@ func TestDefinitionInATestDefaultsFile(t *testing.T) {
 	assert.Equal(t, 1, locs[0].Range.Start.Line)
 }
 
-// TestDefinitionOfATestWorkflowIsNilWhereCallDefinitionIsNil: a missing file,
-// an escaping or absolute path, a directory, an expression, the key rather
-// than the value, author data, and an untitled buffer all navigate nowhere.
-func TestDefinitionOfATestWorkflowIsNilWhereCallDefinitionIsNil(t *testing.T) {
+// TestDefinitionOfATestWorkflowFollowsFlowTestPathRules: `flow test` accepts an
+// absolute or parent-relative workflow and follows symlinks, so a suite that
+// runs gets a jump too — unlike `call:`, whose containment is the compiler's.
+func TestDefinitionOfATestWorkflowFollowsFlowTestPathRules(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	sub := filepath.Join(dir, "sub")
 	require.NoError(t, os.Mkdir(sub, 0o700))
-	require.NoError(t, os.Mkdir(filepath.Join(sub, "adir"), 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "wf.yaml"), []byte(definitionCallee), 0o600))
+	wf := filepath.Join(dir, "wf.yaml")
+	require.NoError(t, os.WriteFile(wf, []byte(definitionCallee), 0o600))
 
 	atValue := func(value string) []lsp.Location {
 		text := "tests:\n  - name: a\n    workflow: " + value + "\n"
 		return testDefinitionAt(t, sub, "s.test.yaml", text, value, 1)
 	}
+	for name, value := range map[string]string{"parent-relative": "../wf.yaml", "absolute": wf} {
+		locs := atValue(value)
+		require.Len(t, locs, 1, name)
+		assert.Equal(t, fileURI(wf), locs[0].URI, name)
+	}
 
-	assert.Empty(t, atValue("missing.yaml"), "missing file")
-	assert.Empty(t, atValue("../wf.yaml"), "escapes the test file's directory")
-	assert.Empty(t, atValue(filepath.Join(dir, "wf.yaml")), "absolute path")
-	assert.Empty(t, atValue("adir"), "not a regular file")
-	assert.Empty(t, atValue("${inputs.x}"), "expression")
-
-	require.NoError(t, os.WriteFile(filepath.Join(sub, "wf.yaml"), []byte(definitionCallee), 0o600))
-	text := "tests:\n  - name: a\n    workflow: wf.yaml\n"
-	assert.Empty(t, testDefinitionAt(t, sub, "s.test.yaml", text, "workflow", 2), "cursor on the key")
-	assert.NotEmpty(t, testDefinitionAt(t, sub, "s.test.yaml", text, "wf.yaml", 2), "control: the value resolves")
-
-	data := "tests:\n  - name: a\n    inputs:\n      workflow: wf.yaml\n"
-	assert.Empty(t, testDefinitionAt(t, sub, "s.test.yaml", data, "wf.yaml", 2), "author data")
-
-	doc := newDocument("untitled:Untitled-1", 1, text, nil)
-	assert.Empty(t, definitionAt(doc, positionOf(t, text, "wf.yaml", 2)), "untitled buffer")
+	if err := os.Symlink(wf, filepath.Join(sub, "link.yaml")); err == nil {
+		assert.Len(t, atValue("link.yaml"), 1, "a symlink is followed")
+	}
 }
 
-// TestDefinitionOfATestWorkflowRefusesASymlinkOut: a path that stays inside the
-// directory as written but resolves outside it is refused, as for `call:`.
-func TestDefinitionOfATestWorkflowRefusesASymlinkOut(t *testing.T) {
+// TestDefinitionOfATestWorkflowIsNilWhereThereIsNothingToOpen: a missing file, a
+// directory, an expression, the key rather than the value, a trailing comment,
+// an unclosed quote, author data, and an untitled buffer all navigate nowhere.
+func TestDefinitionOfATestWorkflowIsNilWhereThereIsNothingToOpen(t *testing.T) {
 	t.Parallel()
-	outside, dir := t.TempDir(), t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(outside, "wf.yaml"), []byte(definitionCallee), 0o600))
-	if err := os.Symlink(filepath.Join(outside, "wf.yaml"), filepath.Join(dir, "link.yaml")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
+	dir := t.TempDir()
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "adir"), 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "wf.yaml"), []byte(definitionCallee), 0o600))
+
+	at := func(value, needle string, offset int) []lsp.Location {
+		text := "tests:\n  - name: a\n    workflow: " + value + "\n"
+		return testDefinitionAt(t, dir, "s.test.yaml", text, needle, offset)
 	}
-	text := "tests:\n  - name: a\n    workflow: link.yaml\n"
-	assert.Empty(t, testDefinitionAt(t, dir, "s.test.yaml", text, "link.yaml", 2))
+
+	assert.Empty(t, at("missing.yaml", "missing.yaml", 1), "missing file")
+	assert.Empty(t, at("adir", "adir", 1), "not a regular file")
+	assert.Empty(t, at("${inputs.x}", "${inputs.x}", 1), "expression")
+	assert.Empty(t, at("wf.yaml", "workflow", 2), "cursor on the key")
+	assert.NotEmpty(t, at("wf.yaml # note", "wf.yaml", 2), "control: a trailing comment leaves the value resolving")
+	assert.Empty(t, at("wf.yaml # note", "note", 1), "cursor on the comment")
+	assert.Empty(t, at(`"wf.yaml`, "wf.yaml", 1), "unclosed quote")
+
+	data := "tests:\n  - name: a\n    inputs:\n      workflow: wf.yaml\n"
+	assert.Empty(t, testDefinitionAt(t, dir, "s.test.yaml", data, "wf.yaml", 2), "author data")
+
+	text := "tests:\n  - name: a\n    workflow: wf.yaml\n"
+	doc := newDocument("untitled:Untitled-1", 1, text, nil)
+	assert.Empty(t, definitionAt(doc, positionOf(t, text, "wf.yaml", 2)), "untitled buffer")
 }
