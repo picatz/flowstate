@@ -146,3 +146,40 @@ func TestAnOfferedSourceMapIsUsedOnlyForTheProgramItDescribes(t *testing.T) {
 		})
 	}
 }
+
+// TestALineBreakpointDoesNotOutliveTheMapThatResolvedIt: a session reused for
+// another program (`flow test --debug` runs each case under one) drops a line
+// breakpoint the previous program's map resolved, rather than stopping the new
+// program at a site key from a map it rejected.
+func TestALineBreakpointDoesNotOutliveTheMapThatResolvedIt(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "main.yaml")
+	require.NoError(t, os.WriteFile(root, []byte(journeyFlowfile), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "child.yaml"), []byte(childFlowfile), 0o600))
+	workflow, positions, err := flowfile.ParseFile(root)
+	require.NoError(t, err)
+	sourceMap := flowfile.SourceMap(root, []byte(journeyFlowfile), workflow, positions)
+	other, _, err := flowfile.ParseFile(root)
+	require.NoError(t, err)
+	other.Name += "-changed"
+
+	var printed strings.Builder
+	session, err := flowdebug.New(flowdebug.Options{Controlled: true, Out: &printed, SourceMap: sourceMap})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = session.Close() })
+
+	session.Program(workflow)
+	armed, err := flowdebug.NewDriver(session).BreakLine(t.Context(), root, 15)
+	require.NoError(t, err)
+	require.Len(t, armed.Breakpoints, 1)
+	require.True(t, armed.Breakpoints[0].GetVerified(), armed.Breakpoints[0].GetMessage())
+
+	session.Program(other)
+
+	snapshot, err := session.Snapshot(t.Context())
+	require.NoError(t, err)
+	assert.Empty(t, snapshot.GetBreakpoints(), "the line stayed armed through a map the program does not match")
+	assert.Contains(t, printed.String(), "no longer applies to this program")
+}

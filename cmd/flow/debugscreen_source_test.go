@@ -40,8 +40,8 @@ outputs: {}
 // heldIn compiles the caller the way `flow run local --debug` does, hands the
 // screen what the local front hands it, runs the program under a session the
 // screen drives and returns the screen once the run is held at a step of the
-// named workflow. between runs after the compile, before the texts are read for
-// the screen: the moment a file can be saved in.
+// named workflow. The between callback runs after the compile and before the
+// texts are read for the screen: the moment a file can be saved in.
 func heldIn(t *testing.T, workflowName string, between func(root, callee string)) debugtui.Model {
 	t.Helper()
 

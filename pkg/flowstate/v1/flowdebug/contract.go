@@ -269,7 +269,8 @@ func (c *contractState) setProgram(wf *v1.Workflow) {
 // one, as [Session.ReplaceBreakpoints] would judge it now, and one this
 // program refuses is removed with a notice saying why, rather than left armed
 // for a case it cannot answer in. A line breakpoint is judged by the source
-// map, which the program does not change once it is trusted, and is kept. A
+// map in force, so it is kept while that map is trusted and removed, with the
+// same notice, when this program is one the map does not describe. A
 // map offered to [New] without a program is trusted from the program given
 // here on only if its digest is this program's ([Options.SourceMap]). A pending
 // `until` is judged the same way, and one this program refuses is dropped for
@@ -302,7 +303,7 @@ func (s *Session) Program(wf *v1.Workflow) {
 	var refused []string
 	for _, key := range slices.Sorted(maps.Keys(installed)) {
 		at := installed[key]
-		if at.definition == nil || at.definition.GetLine() != nil {
+		if at.definition == nil {
 			continue
 		}
 		definition := proto.CloneOf(at.definition)
