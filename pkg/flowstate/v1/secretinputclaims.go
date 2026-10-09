@@ -44,6 +44,7 @@ func InputClaims(md protoreflect.MessageDescriptor) ([]InputClaim, error) {
 	}
 
 	var claims []InputClaim
+	visits := 0 // shared by every field: the budget is the message's
 	fields := md.Fields()
 	for i := range fields.Len() {
 		fd := fields.Get(i)
@@ -69,7 +70,7 @@ func InputClaims(md protoreflect.MessageDescriptor) ([]InputClaim, error) {
 		}
 
 		var literal []string
-		if err := collectFieldLiteralClaims(fd, "", map[protoreflect.FullName]bool{md.FullName(): true}, 0, &literal); err != nil {
+		if err := collectFieldLiteralClaims(fd, "", map[protoreflect.FullName]bool{md.FullName(): true}, 0, &visits, &literal); err != nil {
 			return nil, err
 		}
 		if len(literal) > 0 && secret != Secret_SECRET_UNSPECIFIED {

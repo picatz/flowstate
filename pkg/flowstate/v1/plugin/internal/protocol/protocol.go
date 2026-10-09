@@ -461,12 +461,27 @@ const Version7 = 7
 // than deleted, for the reason [Version1] is.
 const Version8 = 8
 
-// Version9 is the current version of the plugin protocol: the same services and
+// Version9 was the ninth version of the plugin protocol: the same services and
 // routes as [Version8], and the same launch environment, with
 // flowstate/chat/v1/chat.proto among the files the engine provides and a
-// plugin's descriptors therefore omit. Any later domain package the engine
-// provides is another descriptor-exchange change and moves the number again.
+// plugin's descriptors therefore omit.
+//
+// What ended version 9 is a change to that provided file's meaning: the
+// `literal` claim on flowstate.chat.v1.Markup.template. A plugin omits chat.proto
+// and links the host's copy, so a version 9 host's copy carries no claim and
+// would let an expression into a template the adapter renders unescaped, while
+// the new plugin believes the host holds it. A changed claim in a provided
+// descriptor is a descriptor-exchange change and moves the number, so the older
+// host is refused at the handshake rather than failing open. Retired rather than
+// deleted, for the reason [Version1] is.
 const Version9 = 9
+
+// Version10 is the current version of the plugin protocol: the same services and
+// routes as [Version9], and the same launch environment, with the engine-provided
+// descriptors carrying the `literal` input claim. Any later change to what a
+// provided descriptor claims, as well as any later domain package the engine
+// provides, is another descriptor-exchange change and moves the number again.
+const Version10 = 10
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -574,7 +589,7 @@ const NetworkUnix = "unix"
 // 4, at parsing the grant for version 5, at descriptor linking again for
 // version 6 — which is precisely the failure each bump exists to prevent. A
 // version that cannot work must not be offered.
-func HostVersions() []int { return []int{Version9} }
+func HostVersions() []int { return []int{Version10} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {

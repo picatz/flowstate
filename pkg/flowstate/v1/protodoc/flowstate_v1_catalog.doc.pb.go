@@ -72,7 +72,9 @@ func init() {
 			Leading: " ClaimsSchemaVersion is bumped whenever TaskDescription gains a field\n" +
 				" describing a task's security-relevant claims — started at 1 for\n" +
 				" needs_scope, secret_inputs, shapes_outputs, deferred_inputs and\n" +
-				" expression_inputs; version 2 adds required_secret_inputs.\n" +
+				" expression_inputs; version 2 adds required_secret_inputs; version 3 adds the `literal`\n" +
+				" input claim, which TaskDescription carries only in the task's input schema,\n" +
+				" so a reader that predates it would ignore it.\n" +
 				"\n" +
 				" Exists because proto3 cannot mark a bool or a repeated string field\n" +
 				" `optional`, so none of those fields can distinguish \"populated as\n" +

@@ -49,6 +49,29 @@ func TestRunRefusesInputsThatDoNotMatchTheDeclarations(t *testing.T) {
 	}
 }
 
+// TestRunRefusesLiteralClaimViolations runs the shared literal-claim corpus against
+// the RPC handler, the other submit boundary the local driver's RunWithInputs
+// must agree with.
+func TestRunRefusesLiteralClaimViolations(t *testing.T) {
+	conformance.RegisterLiteralClaimTask(t)
+
+	temporal, _ := newTemporalNamespace(t)
+	flowstate := mustNew(t, temporal)
+
+	for _, refusal := range conformance.LiteralClaimRefusalCases() {
+		t.Run(refusal.Name, func(t *testing.T) {
+			_, err := flowstate.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+				Workflow: refusal.Workflow,
+				Inputs:   refusal.Inputs,
+			}))
+
+			require.Error(t, err, "the submission was accepted")
+			require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "%v", err)
+			require.Contains(t, err.Error(), refusal.Contains)
+		})
+	}
+}
+
 // TestAFinishedRunReportsItsDeclaredOutputs is the whole feature, end to end,
 // through the surface a caller actually holds.
 //

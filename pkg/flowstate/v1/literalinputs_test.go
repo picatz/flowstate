@@ -2,7 +2,9 @@ package flowstatev1_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -164,6 +166,49 @@ func oneField(t *testing.T, typ descriptorpb.FieldDescriptorProto_Type, opts *v1
 	_, err = v1.InputClaims(file.Messages().ByName("Inputs"))
 
 	return file.Messages().ByName("Inputs"), err
+}
+
+// TestInputClaimsRefusesADescriptorThatFansOut proves the claim search is
+// bounded by work and not only by depth: message N has two fields of message N+1,
+// which no stack guard sees as a cycle, and 31 levels of that name 2^31 paths.
+func TestInputClaimsRefusesADescriptorThatFansOut(t *testing.T) {
+	t.Parallel()
+
+	const levels = 31
+	opt := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	claimed := &descriptorpb.FieldOptions{}
+	proto.SetExtension(claimed, v1.E_Input, &v1.InputOptions{Literal: true})
+
+	var messages []*descriptorpb.DescriptorProto
+	for i := range levels {
+		next := fmt.Sprintf(".fanout.v1.M%d", i+1)
+		messages = append(messages, &descriptorpb.DescriptorProto{
+			Name: proto.String(fmt.Sprintf("M%d", i)),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				{Name: proto.String("a"), Number: proto.Int32(1), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(next)},
+				{Name: proto.String("b"), Number: proto.Int32(2), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(), TypeName: proto.String(next)},
+			},
+		})
+	}
+	messages = append(messages, &descriptorpb.DescriptorProto{
+		Name: proto.String(fmt.Sprintf("M%d", levels)),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("leaf"), Number: proto.Int32(1), Label: opt, Type: descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(), Options: claimed},
+		},
+	})
+	file, err := protodesc.NewFile(&descriptorpb.FileDescriptorProto{
+		Name:        proto.String("fanout/v1/fanout.proto"),
+		Package:     proto.String("fanout.v1"),
+		Syntax:      proto.String("proto3"),
+		Dependency:  []string{"flowstate/v1/schema.proto"},
+		MessageType: messages,
+	}, protoregistry.GlobalFiles)
+	require.NoError(t, err)
+
+	start := time.Now()
+	_, err = v1.InputClaims(file.Messages().ByName("M0"))
+	require.ErrorContains(t, err, "while reading literal claims")
+	require.Less(t, time.Since(start), 5*time.Second)
 }
 
 func TestInputClaimsRefusesAClaimOnAShapeItCannotConstrain(t *testing.T) {

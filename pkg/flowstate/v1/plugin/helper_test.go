@@ -211,7 +211,7 @@ func runFakePlugin() int {
 		// retired one makes the host refuse on the version and never reach the
 		// address, which passes the test for the wrong reason.
 		fmt.Printf("%s|%d|%d|unix|/tmp/somewhere-else.sock\n",
-			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version9)
+			protocol.Sentinel, protocol.HandshakeVersion, protocol.Version10)
 		time.Sleep(10 * time.Second)
 		return 0
 
@@ -381,7 +381,7 @@ func fakeListen() (net.Listener, error) {
 // fakeAnnounce prints the handshake line.
 func fakeAnnounce() {
 	fmt.Printf("%s|%d|%d|%s|%s\n",
-		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version9,
+		protocol.Sentinel, protocol.HandshakeVersion, protocol.Version10,
 		protocol.NetworkUnix, os.Getenv(protocol.SocketEnv))
 }
 

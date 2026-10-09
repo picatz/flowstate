@@ -592,9 +592,9 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade. The current version is 9 (`Version9`,
+  which side to upgrade. The current version is 10 (`Version10`,
   `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`); [Reaching the
-  network](#reaching-the-network) says what versions 6 to 9 changed. Nothing
+  network](#reaching-the-network) says what versions 6 to 10 changed. Nothing
   equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -931,6 +931,11 @@ Protocol version 9 is the same kind of change again: `flowstate.chat.v1`, the
 vendor-neutral chat model, joined the engine-provided domain packages, so a
 plugin built after it ships no copy of `flowstate/chat/v1/chat.proto` and a
 version 8 host has no such file to link against.
+
+Protocol version 10 changes what a provided descriptor claims rather than which
+files are provided: `flowstate.chat.v1.Markup.template` declares the `literal`
+input claim, and a plugin links the host's copy of `chat.proto`, so a version 9
+host would enforce no such claim. It is refused at the handshake instead.
 
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,

@@ -491,10 +491,12 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 // CurrentClaimsSchemaVersion is [TaskCatalog.ClaimsSchemaVersion]'s current
 // value: every build carrying this constant populates NeedsScope,
 // SecretInputs, RequiredSecretInputs, ShapesOutputs, DeferredInputs and
-// ExpressionInputs on every TaskDescription it produces. Bump it only alongside
+// ExpressionInputs on every TaskDescription it produces and enforces the
+// `literal` input claim at admission (version 3), which a reader of version 2 would
+// ignore as an unknown option. Bump it only alongside
 // a change that adds or redefines one of those fields, the same event that would
 // justify a new entry in the doc comment on ClaimsSchemaVersion itself.
-const CurrentClaimsSchemaVersion uint32 = 2
+const CurrentClaimsSchemaVersion uint32 = 3
 
 // TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
 // be trusted to say when a task needs scope or accepts a secret, as opposed

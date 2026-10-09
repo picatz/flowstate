@@ -19,8 +19,9 @@ import (
 // values are strings, and the search descends through message fields (singular,
 // repeated, or a map's values) so a claim on a nested message counts at any
 // depth. A message that contains itself is entered once on the way down, and
-// nesting beyond [MaxStructureDepth] is an error, so a descriptor an outside
-// plugin chose cannot make this spend unbounded work.
+// nesting beyond [MaxStructureDepth] or more than [MaxLiteralClaimVisits] fields
+// visited is an error, so a descriptor an outside plugin chose cannot make this
+// spend unbounded work.
 //
 // It fails closed: a claim on any other shape is an error rather than a claim
 // read charitably, since a field the claim cannot constrain would look
@@ -39,9 +40,23 @@ func LiteralInputClaims(md protoreflect.MessageDescriptor) ([]string, error) {
 	return paths, nil
 }
 
+// MaxLiteralClaimVisits bounds the fields visited reading the literal claims of
+// one input, and with it the number of claimed paths. A descriptor is chosen by
+// whoever wrote the plugin, and one whose fields share message types can name
+// exponentially many paths in a few levels.
+const MaxLiteralClaimVisits = 4096
+
 // collectFieldLiteralClaims appends the literal claims at or under fd. prefix is
 // the dotted path of fd's parent, empty at the message's top level.
-func collectFieldLiteralClaims(fd protoreflect.FieldDescriptor, prefix string, entering map[protoreflect.FullName]bool, depth int, out *[]string) error {
+func collectFieldLiteralClaims(fd protoreflect.FieldDescriptor, prefix string, entering map[protoreflect.FullName]bool, depth int, visits *int, out *[]string) error {
+	// Guarding the stack alone leaves a shallow DAG, where two fields both name
+	// the next message type, to expand into 2^depth paths, so the work is
+	// counted too. Every path appended is a visit, so this bounds the output.
+	*visits++
+	if *visits > MaxLiteralClaimVisits {
+		return fmt.Errorf("input message nests more than %d fields while reading literal claims, which is more than they are read through", MaxLiteralClaimVisits)
+	}
+
 	path := prefix + string(fd.Name())
 	element := fd
 	if fd.IsMap() {
@@ -74,7 +89,7 @@ func collectFieldLiteralClaims(fd protoreflect.FieldDescriptor, prefix string, e
 
 	fields := md.Fields()
 	for i := range fields.Len() {
-		if err := collectFieldLiteralClaims(fields.Get(i), path+".", entering, depth+1, out); err != nil {
+		if err := collectFieldLiteralClaims(fields.Get(i), path+".", entering, depth+1, visits, out); err != nil {
 			return err
 		}
 	}
