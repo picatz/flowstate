@@ -60,6 +60,9 @@ type Screen struct {
 	// run row.
 	Runs map[string]*v1.RunSummary
 
+	// Steps is the graph node each step row stands for, by row id.
+	Steps map[string]*v1.GraphNode
+
 	// Problem is why the last read failed.
 	Problem string
 	Loading bool
@@ -211,6 +214,9 @@ func (s Screen) detailsView(o pane.Options) string {
 	selected := s.Tree.Selected()
 	if run, ok := s.Runs[selected]; ok {
 		return heading + "\n" + RunDetails(run).View(body, "nothing selected")
+	}
+	if step, ok := s.Steps[selected]; ok {
+		return heading + "\n" + StepDetails(step).View(body, "nothing selected")
 	}
 
 	return heading + "\n" + s.Index.Details(selected).View(body, "nothing selected")

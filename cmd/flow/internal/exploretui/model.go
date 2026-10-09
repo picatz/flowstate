@@ -30,6 +30,11 @@ type Config struct {
 	// slow. more says the workflow has runs the answer leaves out.
 	Runs func(ctx context.Context, workflow string) (runs []*v1.RunSummary, more bool, err error)
 
+	// Steps reads the steps graph of a workflow by its declared name, for the rows
+	// under its "steps" row. Nil leaves those rows out. It is called from a
+	// command, and is allowed to be slow.
+	Steps func(ctx context.Context, workflow string) (*v1.Graph, error)
+
 	Style Style
 
 	// Size is the terminal's size until the first resize message says otherwise.
@@ -56,10 +61,20 @@ type runsMsg struct {
 	err  error
 }
 
-// runsAnswer is one finished read of a "runs" row.
-type runsAnswer struct {
-	rows []pane.Node
-	by   map[string]*v1.RunSummary
+// answer is one finished read of a "runs" or a "steps" row: its rows, and what
+// each stands for.
+type answer struct {
+	rows  []pane.Node
+	runs  map[string]*v1.RunSummary
+	steps map[string]*v1.GraphNode
+}
+
+// stepsMsg is a finished read of a workflow's steps, for the "steps" row Parent.
+type stepsMsg struct {
+	parent string
+	gen    uint64
+	graph  *v1.Graph
+	err    error
 }
 
 // Model is the explorer screen.
@@ -84,7 +99,7 @@ type Model struct {
 	// answers holds what each "runs" row was last read as, so narrowing the
 	// workflows shows an open row again from what was read and sends nothing to
 	// the server; only a refresh reads again.
-	answers map[string]runsAnswer
+	answers map[string]answer
 	// reuse says rows are being opened again by a rebuild, which uses answers; a
 	// person opening a row asks the server afresh.
 	reuse bool
@@ -103,8 +118,8 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 	}
 
 	return Model{
-		cfg: cfg, ctx: ctx, keys: keys, seq: 1, gens: map[string]uint64{}, answers: map[string]runsAnswer{},
-		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true, Runs: map[string]*v1.RunSummary{}},
+		cfg: cfg, ctx: ctx, keys: keys, seq: 1, gens: map[string]uint64{}, answers: map[string]answer{},
+		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true, Runs: map[string]*v1.RunSummary{}, Steps: map[string]*v1.GraphNode{}},
 	}, nil
 }
 
@@ -148,6 +163,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.loaded(msg)
 	case runsMsg:
 		return m.ran(msg)
+	case stepsMsg:
+		return m.stepped(msg)
 	}
 
 	return m, nil
@@ -194,7 +211,7 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	}
 	m.screen.Problem = ""
 
-	m.answers = map[string]runsAnswer{}
+	m.answers = map[string]answer{}
 
 	return m, m.rebuild(NewIndex(msg.graph))
 }
@@ -217,9 +234,13 @@ func (m *Model) rebuild(x *Index) tea.Cmd {
 	// are open again are filled from what was read, or read afresh after a
 	// refresh emptied the answers.
 	m.screen.Runs = map[string]*v1.RunSummary{}
+	m.screen.Steps = map[string]*v1.GraphNode{}
 	m.screen.Index = x
 	if m.cfg.Runs != nil {
 		m.screen.Index = m.screen.Index.WithRunRows()
+	}
+	if m.cfg.Steps != nil {
+		m.screen.Index = m.screen.Index.WithStepRows()
 	}
 	tree.SetRoots(m.screen.Index.RootsNamed(m.screen.Filter))
 	var cmds []tea.Cmd
@@ -250,18 +271,11 @@ func (m *Model) fill(request pane.Request) tea.Cmd {
 		return nil
 	}
 	if workflow, ok := x.RunsOf(request.Parent); ok {
-		if answer, ok := m.answers[request.Parent]; ok && m.reuse {
-			m.screen.Tree.Fill(request.Parent, 0, answer.rows, len(answer.rows))
-			maps.Copy(m.screen.Runs, answer.by)
-
+		if m.reuseAnswer(request.Parent) {
 			return nil
 		}
-		// A person opening the row asks afresh, and what was read before must not
-		// fill it while that answer is on its way.
-		delete(m.answers, request.Parent)
 		ctx, runs := m.ctx, m.cfg.Runs
-		m.gens[request.Parent]++
-		gen := m.gens[request.Parent]
+		gen := m.nextGen(request.Parent)
 
 		return func() tea.Msg {
 			rows, more, err := runs(ctx, workflow)
@@ -269,11 +283,75 @@ func (m *Model) fill(request pane.Request) tea.Cmd {
 			return runsMsg{parent: request.Parent, gen: gen, runs: rows, more: more, err: err}
 		}
 	}
+	if workflow, ok := x.StepsOf(request.Parent); ok {
+		if m.reuseAnswer(request.Parent) {
+			return nil
+		}
+		ctx, steps := m.ctx, m.cfg.Steps
+		gen := m.nextGen(request.Parent)
+
+		return func() tea.Msg {
+			g, err := steps(ctx, workflow)
+
+			return stepsMsg{parent: request.Parent, gen: gen, graph: g, err: err}
+		}
+	}
 	if err := m.screen.Tree.Load(x.Loader(), request); err != nil {
 		m.toast(ui.ToneWarning, err.Error())
 	}
 
 	return nil
+}
+
+// nextGen numbers a new read of the row parent, which makes any earlier one stale.
+func (m *Model) nextGen(parent string) uint64 {
+	m.gens[parent]++
+
+	return m.gens[parent]
+}
+
+// reuseAnswer fills the row parent from what was last read of it, when a
+// rebuild is opening it again, and reports that it did. A person opening a row
+// asks afresh, and what was read before must not fill it while that answer is on
+// its way.
+func (m *Model) reuseAnswer(parent string) bool {
+	a, ok := m.answers[parent]
+	if !ok || !m.reuse {
+		delete(m.answers, parent)
+
+		return false
+	}
+	m.screen.Tree.Fill(parent, 0, a.rows, len(a.rows))
+	maps.Copy(m.screen.Runs, a.runs)
+	maps.Copy(m.screen.Steps, a.steps)
+
+	return true
+}
+
+// stepped folds a finished read of a workflow's steps into the row it was asked
+// for.
+func (m Model) stepped(msg stepsMsg) (tea.Model, tea.Cmd) {
+	if msg.gen != m.gens[msg.parent] {
+		return m, nil
+	}
+	if msg.err != nil {
+		if m.ctx.Err() != nil {
+			return m, nil
+		}
+		m.screen.Tree.Collapse(msg.parent)
+		m.toast(ui.ToneDanger, "cannot read the steps: "+msg.err.Error())
+
+		return m, nil
+	}
+	rows, byRow := StepRows(msg.parent, msg.graph)
+	if !m.screen.Tree.Fill(msg.parent, 0, rows, len(rows)) {
+		return m, nil
+	}
+	maps.Copy(m.screen.Steps, byRow)
+	m.answers[msg.parent] = answer{rows: rows, steps: byRow}
+	m.reveal()
+
+	return m, nil
 }
 
 // ran folds a finished read of runs into the row it was asked for.
@@ -297,7 +375,7 @@ func (m Model) ran(msg runsMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	maps.Copy(m.screen.Runs, byRow)
-	m.answers[msg.parent] = runsAnswer{rows: rows, by: byRow}
+	m.answers[msg.parent] = answer{rows: rows, runs: byRow}
 	if m.pending != "" && m.screen.Tree.Select(m.pending) {
 		m.pending = ""
 	}

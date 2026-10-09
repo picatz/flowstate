@@ -77,3 +77,23 @@ func TestExploreSaysWhatTheServerSaidWhenRunsCannotBeRead(t *testing.T) {
 		})
 	}
 }
+
+func TestExploreReadsAWorkflowsStepsFromTheFilesAndSaysWhenNoFileDeclaresIt(t *testing.T) {
+	cmd := newExploreCommand()
+	src := graphSources{paths: []string{filepath.Join("..", "..", "examples", "approval-gate")}}
+	read := src.stepsReader(cmd)
+
+	g, err := read(t.Context(), "approval-gate")
+	require.NoError(t, err)
+	var addresses []string
+	for _, n := range g.GetNodes() {
+		if n.GetKind() == v1.GraphNodeKind_GRAPH_NODE_KIND_STEP {
+			addresses = append(addresses, n.GetAddress())
+		}
+	}
+	assert.Contains(t, addresses, "decision?1/rejected", "the debugger's address for a nested step")
+
+	_, err = read(t.Context(), "only-on-the-server")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the files declare: approval-gate")
+}

@@ -24,8 +24,10 @@ func newExploreCommand() *cobra.Command {
 		Short: "Explore how workflows connect, and what is running, on a screen",
 		Long: "Open the graph `flow graph` writes as a screen you move around in: every " +
 			"workflow is a row, and opening one shows what it calls, the signals it " +
-			"waits for and the tasks it runs, to any depth. The pane beside it " +
-			"describes the selected row, including what calls it.\n\n" +
+			"waits for and the tasks it runs, to any depth. A steps row lists the steps " +
+			"the workflow declares, nested as they are, each with the address the " +
+			"debugger uses for it. The pane beside it describes the selected row, " +
+			"including what calls it.\n\n" +
 			"It reads the same sources as `flow graph`, with the same flags: Flowfiles " +
 			"under the paths, and with `--live` the runs on the server at `--address`, " +
 			"counted by workflow and status, and each workflow gains a runs row: open it " +
@@ -81,6 +83,9 @@ func runExplore(cmd *cobra.Command, args []string) error {
 	if src.live {
 		cfg.Runs = src.runsOf(cmd)
 	}
+	if len(src.paths) > 0 {
+		cfg.Steps = src.stepsReader(cmd)
+	}
 
 	return exploretui.Run(cmd.Context(), exploretui.Terminal{In: stdin, Out: sink, Profile: surface.Caps.Profile}, cfg)
 }
@@ -117,6 +122,16 @@ func (s graphSources) runsOf(cmd *cobra.Command) func(context.Context, string) (
 		}
 
 		return response.Msg.GetRuns(), response.Msg.GetNextPageToken() != "", nil
+	}
+}
+
+// stepsReader reads one workflow's steps from the Flowfiles under the paths, for
+// the rows under its "steps" row. It reads the files each time it is asked, so a
+// step the person has just edited is the step they see; a workflow no file
+// declares, which `--live` can show, is answered with what the files do declare.
+func (s graphSources) stepsReader(cmd *cobra.Command) func(context.Context, string) (*v1.Graph, error) {
+	return func(_ context.Context, workflow string) (*v1.Graph, error) {
+		return graphSources{paths: s.paths, workflow: workflow}.build(cmd)
 	}
 }
 

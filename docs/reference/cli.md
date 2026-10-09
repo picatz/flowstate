@@ -765,7 +765,7 @@ Explore how workflows connect, and what is running, on a screen
 flow explore [path]... [flags]
 ```
 
-Open the graph `flow graph` writes as a screen you move around in: every workflow is a row, and opening one shows what it calls, the signals it waits for and the tasks it runs, to any depth. The pane beside it describes the selected row, including what calls it.
+Open the graph `flow graph` writes as a screen you move around in: every workflow is a row, and opening one shows what it calls, the signals it waits for and the tasks it runs, to any depth. A steps row lists the steps the workflow declares, nested as they are, each with the address the debugger uses for it. The pane beside it describes the selected row, including what calls it.
 
 It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status, and each workflow gains a runs row: open it for its fifty most recent runs, and select one for its run id, status, times, starter and labels. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
 
