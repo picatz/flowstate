@@ -2588,6 +2588,8 @@ Discover and run *.test.yaml files, each declaring a workflow, arguments to run 
 
 A named file is taken as given. A directory is walked for *.test.yaml files.
 
+Plugin tasks are stubbed by name with no plugin installed. Given `--plugin-catalog`, a saved `flow plugins -o json` document, a stub naming a task that neither this build nor the catalog provides fails the case instead of passing over a task nothing provides.
+
 Per file, `flow test` reports branch coverage: the set of the workflow's steps at least one case ran, and the complement no case ever reached. Coverage is reported, not failed, unless `--coverage-required` is set, which makes an unreached step a failure for any file whose `coverage.allow_unreached` does not record a reason for it.
 
 A `switch:` is measured a second way, per arm rather than per step, because an arm's body may hold no steps at all: `steps: []` is how a switch writes down deliberately ignoring a value, and `case: [closed, merged]` is one body two literals share. Which arm a case took is read from the step's own `case` record, so an arm no case reached is reported by the position it was written at — the only name an arm has. Record one under `coverage.allow_unreached` by the key the diagnostic prints.
@@ -2632,6 +2634,7 @@ flow test -o jsonl examples/
 | `--mutant <string>` | `string` | — | — | replay the mutant a reported survivor's id names (in each workflow of the file that has one), instead of running them all |
 | `--mutate <int>` | `int` | `0` | — | also run each workflow's passing cases against mutants of it (a condition negated or removed, a compensation or retry dropped, a switch arm removed) and fail when one survives, because the file would not notice the program changing; write --mutate=N to bound the mutants per workflow, which is 100 when N is omitted; 0, the default, runs the authored cases only |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--record <string>` | `string` | — | — | write the commands the session accepted to this file when it ends (end of run, `quit`, error), so `flow debug replay` can reproduce it (a mistyped command, or a `break` the run refused, is not in it). Requires --debug where the command has one |
 | `--run <string>` | `string` | — | — | run only the cases whose name matches this regular expression; the output says how many cases were filtered out, and `--coverage-required` is refused alongside it, because a subset's coverage gaps are not the suite's |
 | `--seed <uint64>` | `uint64` | `0` | — | replay exactly one schedule, the seed a reported divergence names, instead of searching |
