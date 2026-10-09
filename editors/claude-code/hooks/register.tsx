@@ -3,6 +3,8 @@ import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
+import { runLine, toListing } from './runs'
+import type { Listing } from './runs'
 
 const PANE = 'flowstate'
 /** The pane and the stored state keep the most recent Flowfiles only. */
@@ -23,6 +25,15 @@ const validate = async (
     return { file: path, diagnostics: [], failure: ran.stderr.trim().split('\n')[0] || 'no report' }
   } catch (err) {
     return { file: path, diagnostics: [], failure: String(err) }
+  }
+}
+
+/** Asks the server for its runs. A failure to answer is a state of the pane, never an error. */
+const listRuns = async ($: Engine, flow: string): Promise<Listing> => {
+  try {
+    return toListing(await $.process.run([flow, 'list', '-o', 'jsonl'], { timeoutMs: 5000 }))
+  } catch (err) {
+    return { offline: String(err) }
   }
 }
 
@@ -64,9 +75,19 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text } = $.ui.resolve(e)
     const list = await read($, reports)
+    const runs = await listRuns($, flow)
 
     return (
       <Box flexDirection="column">
+        <Text bold>Runs</Text>
+        {'offline' in runs ? (
+          <Text dimColor>  No server answering ({runs.offline.slice(0, 100)}). Local runs need none; set FLOWSTATE_ADDRESS to see a server's.</Text>
+        ) : runs.runs.length === 0 ? (
+          <Text dimColor>  No runs yet.</Text>
+        ) : (
+          runs.runs.map(r => <Text dimColor>  {runLine(r)}</Text>)
+        )}
+        <Text bold>Flowfiles</Text>
         {list.length === 0 && <Text dimColor>No Flowfile edited yet this session.</Text>}
         {list.map(r => (
           <Box flexDirection="column">
