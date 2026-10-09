@@ -263,9 +263,11 @@ func Validate(wf *v1.Workflow) Diagnostics {
 	// expands them), and a step that relies on one would be reported as leaving
 	// its credential unwritten. Judged expanded, on a copy; a binding that cannot
 	// be expanded is the finding.
-	wf = v1.CopyIfBindsPluginCredentials(wf)
-	if err := v1.BindPluginCredentials(wf, v1.DefaultRegistry()); err != nil {
-		return Diagnostics{{Field: "plugins", Message: err.Error()}}
+	if expanded := v1.CopyIfBindsPluginCredentials(wf); expanded != wf {
+		wf = expanded
+		if err := v1.BindPluginCredentials(wf, v1.DefaultRegistry()); err != nil {
+			return Diagnostics{{Field: "plugins", Message: err.Error()}}
+		}
 	}
 
 	return validateAtDepth(wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)

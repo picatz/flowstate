@@ -1273,11 +1273,13 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		// it owns: this driver is handed a workflow the caller keeps, and one that
 		// binds no credential is not copied.
 		spec := CopyIfBindsPluginCredentials(w)
-		if err := BindPluginCredentials(spec, registry); err != nil {
-			return nil, err
-		}
-		// The expansion adds bytes, so the size is asked again as the server does.
+		// A copy is made only when something binds, so a workflow that binds
+		// nothing pays for no second walk.
 		if spec != w {
+			if err := BindPluginCredentials(spec, registry); err != nil {
+				return nil, err
+			}
+			// The expansion adds bytes, so the size is asked again as the server does.
 			if err := CheckSubmissionSize(spec, bound); err != nil {
 				return nil, err
 			}

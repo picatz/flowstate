@@ -140,13 +140,20 @@ func pluginBindings(wf *Workflow) (map[string]map[string]*Value, error) {
 // registry: the union of the credential claims of every task registered under
 // the plugin's prefix. Declaring a credential no task claims is refused when a
 // plugin loads ([CheckPluginCredentials]), so a claim is a declaration. A plugin
-// with no task in the registry is absent from the result; nothing can be said of
+// with no task in the registry, or none carrying an input descriptor, is absent from the result; nothing can be said of
 // it here and a deployment without it is refused at plugin resolution.
 func declaredCredentials(registry *Registry, bindings map[string]map[string]*Value) (map[string]map[string]bool, error) {
 	declared := make(map[string]map[string]bool, len(bindings))
 	for _, def := range registry.All() {
 		plugin, qualified := pluginOfTask(def.Name)
 		if !qualified || bindings[plugin] == nil {
+			continue
+		}
+		// A definition with no input descriptor claims nothing and says nothing
+		// about what its plugin declares: it is the stand-in `flow test` registers
+		// for a stubbed plugin task, or a plugin that declared no schema. Counting it
+		// would make "declares none" a finding about a registry that was never told.
+		if def.Inputs == nil {
 			continue
 		}
 		inputs, err := TaskCredentialInputs(def)

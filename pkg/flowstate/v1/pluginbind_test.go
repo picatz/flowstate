@@ -1,6 +1,7 @@
 package flowstatev1_test
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -128,4 +129,27 @@ func TestElideBoundCredentialsIsTheInverse(t *testing.T) {
 
 	require.NoError(t, v1.BindPluginCredentials(wf, v1.DefaultRegistry()))
 	require.True(t, proto.Equal(bound, wf), "expanding the elided form did not give back the expansion")
+}
+
+// TestBindPluginCredentialsDoesNotJudgeAStandInTask: `flow test` registers a bare
+// definition, with no input descriptor, for a stubbed plugin task. It declares
+// nothing because it was never told, so a binding for its plugin is not refused
+// as naming a credential the plugin lacks; a real task that claims none still is.
+func TestBindPluginCredentialsDoesNotJudgeAStandInTask(t *testing.T) {
+	registry := v1.NewRegistry()
+	fn := func(context.Context, map[string]*v1.Value, *v1.Scope) (*v1.Node_Outputs, error) { return nil, nil }
+	require.NoError(t, registry.Register(v1.TaskDef{Name: "bound.use", Fn: fn}))
+
+	wf := boundWorkflow(useStep("a", map[string]*v1.Value{"note": v1.NewLiteral("x")}))
+	require.NoError(t, v1.BindPluginCredentials(wf, registry), "a stand-in task was judged to declare no credential")
+
+	// The same registry holding a described task that claims no credential refuses.
+	described := conformance.BoundCredentialTaskDef()
+	described.Name = "bound.other"
+	described.Inputs = v1.DefaultRegistry().All()[0].Inputs
+	if described.Inputs == nil {
+		t.Skip("no described task to borrow a descriptor from")
+	}
+	require.NoError(t, registry.Register(described))
+	require.ErrorContains(t, v1.BindPluginCredentials(wf, registry), `has no credential "api_token" to bind`)
 }
