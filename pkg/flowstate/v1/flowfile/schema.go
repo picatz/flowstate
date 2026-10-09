@@ -168,13 +168,12 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		}
 		// A credential input takes the kind of reference its plugin's declaration
 		// says: a credential reference for a federated credential, a secret
-		// reference for any other. Only the wrong kind of reference is this
-		// check's; a literal or an expression there is the required-reference
-		// check's below.
+		// reference for any other; a literal, an expression or the other kind is
+		// refused in the words of the kind it takes.
 		if credential, claimed := credentialInputs[name]; claimed {
 			value := task.GetInputs()[name]
 			federated := v1.CredentialFederated(def, credential)
-			if (value.GetSecretRef() != nil || value.GetCredentialRef() != nil) && !v1.CredentialReferenceMatches(federated, value) {
+			if !v1.CredentialReferenceMatches(federated, value) {
 				ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: v1.CredentialReferenceMessage(def.Name, name, credential, federated)})
 
 				continue

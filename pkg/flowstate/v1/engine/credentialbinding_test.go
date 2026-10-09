@@ -31,7 +31,7 @@ func TestCredentialBindingDurable(t *testing.T) {
 	for _, test := range conformance.CredentialBindingCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
-			conformance.RequireNoExchange(t, test)
+			conformance.RequireNoUse(t, test)
 		})
 	}
 }

@@ -175,7 +175,10 @@ type TaskCatalog struct {
 	// input claim, which TaskDescription carries only in the task's input schema,
 	// so a reader that predates it would ignore it; version 4 adds the
 	// `credential` input claim, with PluginDescription.credentials and
-	// TaskDescription.credential_inputs, for the same reason.
+	// TaskDescription.credential_inputs, for the same reason; version 5 redefines
+	// CredentialDeclaration.federated from metadata into an enforced rule: a
+	// federated credential is bound by a credential reference only and any other
+	// by a secret reference only.
 	//
 	// Exists because proto3 cannot mark a bool or a repeated string field
 	// `optional`, so none of those fields can distinguish "populated as
@@ -949,8 +952,9 @@ func (*CapabilityBinding_Plugin) isCapabilityBinding_Provider() {}
 //
 // It is the one definition: a plugin states it in its manifest and a catalog
 // reports it, both with this message. Declaring a credential grants nothing; the
-// host still resolves only a secret reference an author wrote, under the
-// deployment's secret access policy.
+// host still resolves only a secret or credential reference an author wrote (the
+// kind its `federated` flag selects), under the deployment's secret access and
+// credential assumption policies.
 type CredentialDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is how an input claims the credential. Unique within a plugin.

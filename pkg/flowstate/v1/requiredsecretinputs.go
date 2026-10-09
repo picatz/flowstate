@@ -140,10 +140,20 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 		return nil
 	}
 
+	credentialInputs, err := claims.of(def.Name)
+	if err != nil {
+		return err
+	}
+
 	// Iterated over what the task declared rather than over what the caller
 	// supplied: the declaration is this deployment's own and short, the input
-	// map is the untrusted half.
+	// map is the untrusted half. A credential input is judged below, by the
+	// kind of reference its declaration takes, so its refusal does not suggest
+	// the kind it would then refuse.
 	for _, name := range def.RequiredSecretInputs {
+		if _, claimed := credentialInputs[name]; claimed {
+			continue
+		}
 		value, supplied := task.GetInputs()[name]
 		if !supplied {
 			continue
@@ -158,10 +168,6 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 		return fmt.Errorf("%s: %s", step, RequiredSecretInputMessage(def.Name, name))
 	}
 
-	credentialInputs, err := claims.of(def.Name)
-	if err != nil {
-		return err
-	}
 	for _, name := range slices.Sorted(maps.Keys(credentialInputs)) {
 		step := fmt.Sprintf("step %q", stepID)
 		if position != "" {
@@ -173,10 +179,9 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 			return fmt.Errorf("%s: %s", step, CredentialInputUnboundMessage(def.Name, name, credentialInputs[name], CredentialFederated(def, credentialInputs[name])))
 		}
 
-		// The required-input check above let a whole reference of either kind
-		// through; the credential's declaration decides which kind this input
-		// takes. A value that is neither was refused above, so only the wrong
-		// kind of reference reaches here.
+		// The credential's declaration decides which kind of reference this input
+		// takes; a literal, an expression and the other kind are all refused in
+		// the words of that kind.
 		federated := CredentialFederated(def, credentialInputs[name])
 		if !CredentialReferenceMatches(federated, value) {
 			return fmt.Errorf("%s: %s", step, CredentialReferenceMessage(def.Name, name, credentialInputs[name], federated))

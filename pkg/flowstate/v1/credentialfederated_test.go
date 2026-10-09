@@ -109,12 +109,12 @@ func TestAStepsOwnReferenceIsHeldToTheDeclaration(t *testing.T) {
 		{
 			name: "a federated credential's input given a literal",
 			wf:   federatedWorkflow(nil, federatedStep("a", map[string]*v1.Value{"token": v1.NewLiteral("plain-text")})),
-			want: `requires input "token" to be a whole secret reference`,
+			want: `receives the plugin's federated credential "partner_token", which takes a whole credential reference`,
 		},
 		{
 			name: "a federated credential's input given an expression",
 			wf:   federatedWorkflow(nil, federatedStep("a", map[string]*v1.Value{"token": v1.NewExpr("inputs.token")})),
-			want: `requires input "token" to be a whole secret reference`,
+			want: `receives the plugin's federated credential "partner_token", which takes a whole credential reference`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {

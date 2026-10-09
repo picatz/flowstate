@@ -102,7 +102,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		t.Fatalf("validating literal override mutation: %v", err)
 	}
 	text = diagnosticText(diags)
-	if !strings.Contains(text, "whole secret reference") || strings.Contains(text, "literal-token") {
+	if !strings.Contains(text, "which is not federated and takes a whole secret reference") || strings.Contains(text, "literal-token") {
 		t.Fatalf("literal override diagnostics = %q, want redacted whole-secret refusal", text)
 	}
 

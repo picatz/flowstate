@@ -160,11 +160,11 @@ func CredentialReferenceMatches(federated bool, value *Value) bool {
 func CredentialReferenceMessage(taskName, input, credential string, federated bool) string {
 	if federated {
 		return fmt.Sprintf(
-			"task %q input %q receives the plugin's federated credential %q, which takes a whole credential reference such as ${credential('target')}, never a stored secret",
+			"task %q input %q receives the plugin's federated credential %q, which takes a whole credential reference such as ${credential('target')}, never a literal, an expression or a stored secret",
 			taskName, input, credential)
 	}
 
 	return fmt.Sprintf(
-		"task %q input %q receives the plugin's credential %q, which is not federated and takes a whole secret reference such as ${secret('env:NAME')}, never a credential reference",
+		"task %q input %q receives the plugin's credential %q, which is not federated and takes a whole secret reference such as ${secret('env:NAME')}, never a literal, an expression or a credential reference",
 		taskName, input, credential)
 }

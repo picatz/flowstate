@@ -37,6 +37,7 @@ func TestCredentialBindingLocal(t *testing.T) {
 	for _, test := range conformance.CredentialBindingCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
+			conformance.RequireNoUse(t, test)
 			require.NotContains(t, test.Workflow.GetSteps()[0].GetTask().GetInputs(), "token",
 				"the run expanded the caller's own workflow instead of a copy")
 		})

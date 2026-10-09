@@ -3133,6 +3133,6 @@
       "credentials": []
     }
   ],
-  "claimsSchemaVersion": 4,
+  "claimsSchemaVersion": 5,
   "capabilityBindings": []
 }

@@ -478,7 +478,7 @@ func CredentialBindingRefusalCases() []Refusal {
 			Name: "a step that overrides the binding with a literal is refused",
 			Workflow: workflow("binding-literal-override", bind(map[string]*v1.Value{BoundCredentialName: fixtureSecretRef(boundSecretName)}),
 				boundCredentialStep("send", map[string]*v1.Value{"token": v1.NewLiteral("plain-text")})),
-			Contains: `step "send": task "bound.use" requires input "token" to be a whole secret reference`,
+			Contains: `step "send": task "bound.use" input "token" receives the plugin's credential "api_token", which is not federated and takes a whole secret reference`,
 			Omits:    "plain-text",
 		},
 		{
