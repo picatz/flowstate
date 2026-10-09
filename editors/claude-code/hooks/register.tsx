@@ -4,6 +4,7 @@ import type { Engine, Register } from 'claude-code'
 import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
+import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, runLine, toListing } from './runs'
 import type { Listing } from './runs'
@@ -86,6 +87,7 @@ const findInCwd = async ($: Engine): Promise<string | undefined> => {
 export const register: Register = (on, options) => {
   const flow = typeof options.flowBinary === 'string' && options.flowBinary ? options.flowBinary : 'flow'
   const isEnabled = options.validateOnEdit !== false
+  const guardsServer = options.guardServerActions !== false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -131,6 +133,58 @@ export const register: Register = (on, options) => {
       $.ui.status(broken ? `flowstate: ${report.diagnostics.length || '!'} problem(s)` : undefined)
 
       return broken ? { ...ran, context: [...(ran.context ?? []), summarize(report)] } : ran
+    })
+  }
+
+  // The decision comes after the rules and settings hooks have spoken, so a
+  // `deny` is final here and an `allow` is tightened to a question, never loosened.
+  on('tool.check', { tool: 'Bash' }, async ($, e, next) => {
+    const decided = await next(e)
+    if (!guardsServer || decided.decision === 'deny') return decided
+    const command = (e.input as { command?: unknown } | null)?.command
+    if (typeof command !== 'string') return decided
+
+    const found = analyzeCommand(command, flow)
+    if (found.actions.length === 0 && !found.uncertain) return decided
+
+    let address: string | undefined
+    try {
+      address = await $.env.get('FLOWSTATE_ADDRESS')
+    } catch {
+      address = undefined
+    }
+    return { ...decided, decision: 'ask', reason: askReason(found, address) }
+  }).catch(async (_$, e, next) => {
+    // A guard that failed must not wave a flow command through; commands that never name flow are left alone.
+    const decided = await next(e)
+    const command = (e.input as { command?: unknown } | null)?.command
+    if (!guardsServer || decided.decision === 'deny' || !namesFlow(command, flow)) return decided
+    return { ...decided, decision: 'ask', reason: UNCHECKED_BASH }
+  })
+
+  // Refuses a secret literal before it reaches a Flowfile, whatever the mode.
+  for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
+    on('tool.check', { tool }, async ($, e, next) => {
+      const decided = await next(e)
+      const path = (e.input as { file_path?: unknown } | null)?.file_path
+      if (decided.decision === 'deny' || typeof path !== 'string' || !isFlowfile(path)) return decided
+      // An edit replaces part of a line as often as a whole one, so scan the file as the edit leaves it.
+      let current: string | undefined
+      if (tool !== 'Write') {
+        try {
+          current = await $.fs.read(path)
+        } catch {
+          current = undefined
+        }
+      }
+      const findings = secretsIn(e.input, current)
+      return findings.length === 0 ? decided : { ...decided, decision: 'deny', reason: denyReason(path, findings, alreadyPresent(current, findings)) }
+    }).catch(async (_$, e, next) => {
+      // Nothing has run yet, so a failed secret check refuses a Flowfile write rather than allowing it.
+      const decided = await next(e)
+      const path = (e.input as { file_path?: unknown } | null)?.file_path
+      if (decided.decision === 'deny' || typeof path !== 'string' || !isFlowfile(path)) return decided
+      return { ...decided, decision: 'deny', reason: UNCHECKED_EDIT }
     })
   }
 

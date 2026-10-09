@@ -14,7 +14,7 @@ It needs `flow` on `PATH` (`go install github.com/picatz/flowstate/cmd/flow@late
 | --- | --- |
 | `.mcp.json` | Runs `flow mcp`: validate, compile, task catalog, local run, test, and debug tools, plus the language guide and examples as resources. |
 | `skills/` | `flowfile-author`, `flowfile-test`, and `flowfile-debug` teach the loop: read the guide, validate, test, step through. |
-| `hooks/` | A mod. After Claude edits a Flowfile it runs `flow validate`, tells the model what is wrong, shows a status-line count, and `/flowstate` opens a pane with the newest runs (from `flow list`, only when a server answers; with none it says so and stays local) and the Flowfiles touched this session. When the session's directory holds a Flowfile, or a prompt names one, it adds a short context block: the task names (at most 40, from `flow tasks -o json`) and the file's `flow validate` result (at most 5 problems). If `flow` is missing or fails it adds nothing, or says which leg did not answer. |
+| `hooks/` | A mod. After Claude edits a Flowfile it runs `flow validate`, tells the model what is wrong, shows a status-line count, and `/flowstate` opens a pane with the newest runs (from `flow list`, only when a server answers; with none it says so and stays local) and the Flowfiles touched this session. When the session's directory holds a Flowfile, or a prompt names one, it adds a short context block: the task names (at most 40, from `flow tasks -o json`) and the file's `flow validate` result (at most 5 problems). If `flow` is missing or fails it adds nothing, or says which leg did not answer. A guard on `tool.check` asks before a Bash command runs a `flow` verb that changes a server (`run`, `signal`, `cancel`, `terminate`, and `schedule create`, `delete`, `pause`, `resume`, `trigger`), naming the verb and the address (the last `--address`, else a `FLOWSTATE_ADDRESS` set for that command or exported earlier, else the session's, else `localhost:9233`); local verbs (`validate`, `fmt`, `lint`, `test`, `run local`, `tasks`, `compile`, `timeline`, `list`, `graph`) and `--help` right after a verb never ask. It follows separators, redirections, `VAR=value` prefixes, `env`, `sudo`, `timeout`, `bash -c`, `eval`, and the binary behind other wrappers (`go run ./cmd/flow`, `nice`, `ssh`, `docker exec`, `npx`, `find -exec`), so a wrapper may ask about `git flow run`. A command it cannot read (a `$(...)` or backtick, an unbalanced quote, `xargs`, a variable as the command, a shell without `-c` such as `echo "flow run x" \| sh`, or `python -c`, `node -e`, `perl -e`, `ruby -e`) asks only when its text also names `flow` and a gated verb on one line; a command over 64 KiB is not parsed and asks when it names `flow`. It also refuses an Edit, Write, or MultiEdit that puts an apparent secret literal in a Flowfile (a token shape such as `ghp_`, `xoxb-`, `AKIA`, `sk-`, a PEM private key, or a `password`, `secret`, `token`, `api_key`, `private_key`, or `credentials` style key holding a plain or quoted string, a block scalar, or an inline-map value) and points to `${secret('scheme:name')}`; an Edit is checked as the file it leaves, and text over 256 KiB is refused unread. This is a safety net for an agent acting in good faith, not a sandbox: scripts run by path, aliases and functions, obfuscated or constructed commands, and Flowfiles written through the shell (`cat > Flowfile`, `sed -i`) are out of its reach, and `flow debug attach` and `flow debug do` are not gated (a possible follow-up). |
 | `agents/` | `flowfile-engineer` takes an intent to a validated, tested, locally run Flowfile and reports each leg as passed, failed, or not run. |
 | `commands/` | `/flowstate:new <description>` hands a description to that agent, scaffolding with `flow init` when the directory has no Flowfile. |
 
@@ -26,12 +26,13 @@ installing: `claude --plugin-dir editors/claude-code`.
 
 ## Options
 
-Both are settings under the plugin's `/plugin` config screen.
+These are settings under the plugin's `/plugin` config screen.
 
 | Option | Default | Effect |
 | --- | --- | --- |
 | `flowBinary` | `flow` | The executable the mod runs; set it when `flow` is not on `PATH`. |
 | `validateOnEdit` | `true` | Turn the after-edit validation off. |
+| `guardServerActions` | `true` | Turn off the confirmation before a server-changing `flow` verb. The secret refusal has no option. |
 
 ## Types come from the schema
 
