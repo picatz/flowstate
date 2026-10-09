@@ -681,6 +681,23 @@ func AssertNoLeak(tb testing.TB, out *v1.Workflow_StepOutputs, material string) 
 	}
 }
 
+// RequireNoUse fails t when a case that names a counter for either the secret
+// provider ([Authority.ProviderCalls]) or the fixture exchanger
+// ([Federation.ExchangeCalls]) saw it used, which a denial that still ends the
+// run the same way cannot show by itself: the policy must have refused before
+// the provider or the broker was reached. Both driver callers use it, so the
+// ordering claim is asserted from one body.
+func RequireNoUse(t *testing.T, c AuthorityCase) {
+	t.Helper()
+
+	RequireNoExchange(t, c)
+	if c.Authority.ProviderCalls != nil {
+		if calls := c.Authority.ProviderCalls.Load(); calls != 0 {
+			t.Fatalf("the fixture secret provider resolved a reference %d time(s) that the secret policy should have denied first", calls)
+		}
+	}
+}
+
 // RequireNoExchange fails t when the case's fixture exchanger minted a
 // credential. A case that names [Federation.ExchangeCalls] claims the request
 // was refused before the broker was reached, which a run that still ends in a

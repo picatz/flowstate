@@ -175,7 +175,10 @@ type TaskCatalog struct {
 	// input claim, which TaskDescription carries only in the task's input schema,
 	// so a reader that predates it would ignore it; version 4 adds the
 	// `credential` input claim, with PluginDescription.credentials and
-	// TaskDescription.credential_inputs, for the same reason.
+	// TaskDescription.credential_inputs, for the same reason; version 5 redefines
+	// CredentialDeclaration.federated from metadata into an enforced rule: a
+	// federated credential is bound by a credential reference only and any other
+	// by a secret reference only.
 	//
 	// Exists because proto3 cannot mark a bool or a repeated string field
 	// `optional`, so none of those fields can distinguish "populated as
@@ -949,8 +952,9 @@ func (*CapabilityBinding_Plugin) isCapabilityBinding_Provider() {}
 //
 // It is the one definition: a plugin states it in its manifest and a catalog
 // reports it, both with this message. Declaring a credential grants nothing; the
-// host still resolves only a secret reference an author wrote, under the
-// deployment's secret access policy.
+// host still resolves only a secret or credential reference an author wrote (the
+// kind its `federated` flag selects), under the deployment's secret access and
+// credential assumption policies.
 type CredentialDeclaration struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Name is how an input claims the credential. Unique within a plugin.
@@ -958,10 +962,15 @@ type CredentialDeclaration struct {
 	// Description says what the credential is for, shown wherever the plugin is
 	// listed.
 	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	// Federated records that a `${credential('target')}` reference is intended to
-	// be able to stand in for a stored secret here. It is declaration metadata
-	// only until the binding slice enforces it; nothing refuses or permits a
-	// reference on its strength yet.
+	// Federated makes the credential one that is bound by a
+	// `${credential('target')}` reference and never by a stored `${secret()}`;
+	// false makes it a stored secret's, bound by `${secret()}` and never by a
+	// credential reference. The same rule is applied wherever a reference meets
+	// the credential's input: the Flowfile compiler, the server's admission of a
+	// specification built by hand, and the worker's dispatch, each refusing the
+	// other kind. It grants nothing: whether the reference resolves is still the
+	// deployment's secret access and credential assumption policies. A registry
+	// that was never told reads false, which is the closed direction.
 	Federated     bool `protobuf:"varint,3,opt,name=federated,proto3" json:"federated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

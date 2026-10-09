@@ -22,12 +22,16 @@ import (
 // the task, would still run, and the second is a secret in workflow history.
 func TestCredentialBindingDurable(t *testing.T) {
 	require.NoError(t, v1.DefaultRegistry().Register(conformance.BoundCredentialTaskDef()))
-	t.Cleanup(func() { v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName) })
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.FederatedCredentialTaskDef()))
+	t.Cleanup(func() {
+		v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName)
+		v1.DefaultRegistry().Unregister(conformance.FederatedCredentialTaskName)
+	})
 
 	for _, test := range conformance.CredentialBindingCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
-			conformance.RequireNoExchange(t, test)
+			conformance.RequireNoUse(t, test)
 		})
 	}
 }

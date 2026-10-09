@@ -255,7 +255,9 @@ func (b *Broker) Credential(ctx context.Context, identity WorkloadIdentity, ref 
 
 	requirement := exchanger.Requirement()
 
-	if err := b.rules.evaluate(ctx, target, subject, assumeVars(target, subject, requirement.Audience, identity, ref)); err != nil {
+	vars := assumeVars(target, subject, requirement.Audience, identity, ref)
+	addCredentialUse(ctx, vars)
+	if err := b.rules.evaluate(ctx, target, subject, vars); err != nil {
 		return Credential{}, err
 	}
 

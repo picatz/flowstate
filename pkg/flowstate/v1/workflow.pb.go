@@ -1361,11 +1361,14 @@ type PluginRequirement struct {
 	MinimumVersion string                 `protobuf:"bytes,2,opt,name=minimum_version,json=minimumVersion,proto3" json:"minimum_version,omitempty"`
 	// Credentials binds the plugin's declared credentials once for the workflow:
 	// credential name (a [CredentialDeclaration] of the plugin) to the whole
-	// secret reference that every task step of the plugin receives in the input
+	// reference that every task step of the plugin receives in the input
 	// claiming that credential, unless the step writes the input itself.
 	//
-	// A binding is only ever a SecretRef; any other kind of value is refused,
-	// because a binding is a reference and never a value. At most 8, the bound on
+	// A binding is only ever a SecretRef or a CredentialRef; any other kind of
+	// value is refused, because a binding is a reference and never a value. The
+	// credential's declaration picks the kind: a federated credential is bound
+	// by a CredentialRef and any other by a SecretRef, and the other kind is
+	// refused at the compiler, at admission and at dispatch. At most 8, the bound on
 	// a plugin's declarations. Admission and the compiler both expand the binding
 	// into the per-step inputs ([BindPluginCredentials]), so execution reads the
 	// per-step references, as if the file had written one on every step, and

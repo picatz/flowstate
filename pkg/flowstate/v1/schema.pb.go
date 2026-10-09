@@ -119,8 +119,9 @@ type InputOptions struct {
 	// [CredentialDeclaration]s the plugin that provides the task declares, by
 	// name (`^[a-z][a-z0-9_]{0,31}$`). Unset is no claim.
 	//
-	// It implies SECRET_REQUIRED, so the input is a whole secret reference the
-	// host resolves and never a literal, and it is an error beside SECRET_WHOLE_VALUE
+	// It implies SECRET_REQUIRED, so the input is a whole secret reference (or,
+	// for a credential the plugin declares federated, a whole credential
+	// reference) the host resolves and never a literal, and it is an error beside SECRET_WHOLE_VALUE
 	// or SECRET_NESTED, which would say the same thing less strictly. It cannot
 	// be beside `literal`: a credential is never text the author typed. Valid on
 	// a flowstate.v1.Value or a string field; a claim on a field of any other

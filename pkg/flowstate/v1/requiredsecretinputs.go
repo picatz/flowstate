@@ -27,14 +27,22 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // leaves a credential input unwritten says, from the compiler and from
 // [CheckInputClaims] alike: the input claims a plugin credential, so it is
 // either written on the step or bound once under `plugins:`. It names both
-// spellings, because the next thing the author needs is what to write.
-func CredentialInputUnboundMessage(taskName, input, credential string) string {
+// spellings, in the kind of reference the credential's declaration takes
+// (federated), because the next thing the author needs is what to write.
+func CredentialInputUnboundMessage(taskName, input, credential string, federated bool) string {
 	plugin, _ := pluginOfTask(taskName)
 
+	example := "${secret('env:NAME')}"
+	kind := "secret"
+	if federated {
+		example = "${credential('target')}"
+		kind = "credential"
+	}
+
 	return fmt.Sprintf(
-		"task %q input %q receives the plugin's credential %q, so write it as a whole secret reference such as ${secret('env:NAME')}, "+
-			"or bind it once under `plugins:` with `%s: {version: ..., credentials: {%s: ${secret('env:NAME')}}}`",
-		taskName, input, credential, plugin, credential)
+		"task %q input %q receives the plugin's credential %q, so write it as a whole %s reference such as %s, "+
+			"or bind it once under `plugins:` with `%s: {version: ..., credentials: {%s: %s}}`",
+		taskName, input, credential, kind, example, plugin, credential, example)
 }
 
 // CheckInputClaims refuses a workflow that writes anything but a whole
@@ -132,10 +140,20 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 		return nil
 	}
 
+	credentialInputs, err := claims.of(def.Name)
+	if err != nil {
+		return err
+	}
+
 	// Iterated over what the task declared rather than over what the caller
 	// supplied: the declaration is this deployment's own and short, the input
-	// map is the untrusted half.
+	// map is the untrusted half. A credential input is judged below, by the
+	// kind of reference its declaration takes, so its refusal does not suggest
+	// the kind it would then refuse.
 	for _, name := range def.RequiredSecretInputs {
+		if _, claimed := credentialInputs[name]; claimed {
+			continue
+		}
 		value, supplied := task.GetInputs()[name]
 		if !supplied {
 			continue
@@ -150,20 +168,24 @@ func checkNodeRequiredSecretInputs(stepID, position string, task *Task, registry
 		return fmt.Errorf("%s: %s", step, RequiredSecretInputMessage(def.Name, name))
 	}
 
-	credentialInputs, err := claims.of(def.Name)
-	if err != nil {
-		return err
-	}
 	for _, name := range slices.Sorted(maps.Keys(credentialInputs)) {
-		if _, supplied := task.GetInputs()[name]; supplied {
-			continue
-		}
 		step := fmt.Sprintf("step %q", stepID)
 		if position != "" {
 			step = fmt.Sprintf("step %q %s", stepID, position)
 		}
 
-		return fmt.Errorf("%s: %s", step, CredentialInputUnboundMessage(def.Name, name, credentialInputs[name]))
+		value, supplied := task.GetInputs()[name]
+		if !supplied {
+			return fmt.Errorf("%s: %s", step, CredentialInputUnboundMessage(def.Name, name, credentialInputs[name], CredentialFederated(def, credentialInputs[name])))
+		}
+
+		// The credential's declaration decides which kind of reference this input
+		// takes; a literal, an expression and the other kind are all refused in
+		// the words of that kind.
+		federated := CredentialFederated(def, credentialInputs[name])
+		if !CredentialReferenceMatches(federated, value) {
+			return fmt.Errorf("%s: %s", step, CredentialReferenceMessage(def.Name, name, credentialInputs[name], federated))
+		}
 	}
 
 	return nil

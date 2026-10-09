@@ -108,6 +108,15 @@ type EnforcementSubject struct {
 	// See AuditRecord.joined.
 	Joined bool
 
+	// Task and Credential say what a secret or credential use was for: the
+	// qualified task whose step made it and, when the input claims a plugin
+	// credential, "<plugin>/<name>". Names the policy rule read, never a
+	// reference or a value. Set by the secret and credential-assumption seams
+	// from the use the dispatch recorded ([auth.CredentialUse]); empty
+	// elsewhere. See AuditRecord.task and AuditRecord.credential.
+	Task       string
+	Credential string
+
 	// Count is how many refusals a bounded refusal record stands for, this
 	// one included. Zero on every record about one decision. Only the webhook
 	// receiver's refusal seam sets it; see AuditRecord.count for the bound it

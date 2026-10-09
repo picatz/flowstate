@@ -53,6 +53,8 @@ const (
 	attrDeliveryID = "flowstate.audit.delivery_id"
 	attrJoined     = "flowstate.audit.joined"
 	attrCount      = "flowstate.audit.count"
+	attrTask       = "flowstate.audit.task"
+	attrCredential = "flowstate.audit.credential"
 
 	// The server-minted request id a control-plane record carries, flat for
 	// the same reason: it is a field of the record.
@@ -163,6 +165,15 @@ func (e *logEmitter) Emit(ctx context.Context, record *v1.AuditRecord) error {
 	}
 	if record.GetCount() > 0 {
 		attrs = append(attrs, attribute.Int64(attrCount, int64(record.GetCount())))
+	}
+
+	// Present only on a secret or credential record that could name what the
+	// use was for, so a consumer selects on the attribute existing.
+	if record.GetTask() != "" {
+		attrs = append(attrs, attribute.String(attrTask, record.GetTask()))
+	}
+	if record.GetCredential() != "" {
+		attrs = append(attrs, attribute.String(attrCredential, record.GetCredential()))
 	}
 
 	// Present when the request had one, which is every control-plane record a

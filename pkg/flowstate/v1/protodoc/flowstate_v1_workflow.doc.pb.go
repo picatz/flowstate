@@ -833,11 +833,14 @@ func init() {
 			Name: "flowstate.v1.PluginRequirement.credentials",
 			Leading: " Credentials binds the plugin's declared credentials once for the workflow:\n" +
 				" credential name (a [CredentialDeclaration] of the plugin) to the whole\n" +
-				" secret reference that every task step of the plugin receives in the input\n" +
+				" reference that every task step of the plugin receives in the input\n" +
 				" claiming that credential, unless the step writes the input itself.\n" +
 				"\n" +
-				" A binding is only ever a SecretRef; any other kind of value is refused,\n" +
-				" because a binding is a reference and never a value. At most 8, the bound on\n" +
+				" A binding is only ever a SecretRef or a CredentialRef; any other kind of\n" +
+				" value is refused, because a binding is a reference and never a value. The\n" +
+				" credential's declaration picks the kind: a federated credential is bound\n" +
+				" by a CredentialRef and any other by a SecretRef, and the other kind is\n" +
+				" refused at the compiler, at admission and at dispatch. At most 8, the bound on\n" +
 				" a plugin's declarations. Admission and the compiler both expand the binding\n" +
 				" into the per-step inputs ([BindPluginCredentials]), so execution reads the\n" +
 				" per-step references, as if the file had written one on every step, and\n" +

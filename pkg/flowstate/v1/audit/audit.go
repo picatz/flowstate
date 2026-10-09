@@ -56,6 +56,11 @@ const MaxDispatchIDBytes = 256
 // to have kept to it.
 const MaxDeliveryIDBytes = 128
 
+// MaxUseBytes bounds the task and credential names a secret or credential
+// record carries, matching the max_bytes rules on AuditRecord.task and
+// AuditRecord.credential.
+const MaxUseBytes = 160
+
 // MaxCorrelationIDBytes bounds the server-minted request identifier a
 // control-plane record carries. The schema says the same number. A UUID is 36
 // bytes; the bound is held here anyway, because the value crosses a context
@@ -363,6 +368,8 @@ func (r *Recorder) recordEnforcement(ctx context.Context, subject v1.Enforcement
 		DeliveryId:       boundString(subject.DeliveryID, MaxDeliveryIDBytes),
 		Joined:           subject.Joined,
 		Count:            subject.Count,
+		Task:             boundString(subject.Task, MaxUseBytes),
+		Credential:       boundString(subject.Credential, MaxUseBytes),
 	}
 
 	return r.emit(ctx, record, decision, subject.Point.String())

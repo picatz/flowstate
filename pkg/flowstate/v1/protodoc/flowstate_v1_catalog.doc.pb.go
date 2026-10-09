@@ -76,7 +76,10 @@ func init() {
 				" input claim, which TaskDescription carries only in the task's input schema,\n" +
 				" so a reader that predates it would ignore it; version 4 adds the\n" +
 				" `credential` input claim, with PluginDescription.credentials and\n" +
-				" TaskDescription.credential_inputs, for the same reason.\n" +
+				" TaskDescription.credential_inputs, for the same reason; version 5 redefines\n" +
+				" CredentialDeclaration.federated from metadata into an enforced rule: a\n" +
+				" federated credential is bound by a credential reference only and any other\n" +
+				" by a secret reference only.\n" +
 				"\n" +
 				" Exists because proto3 cannot mark a bool or a repeated string field\n" +
 				" `optional`, so none of those fields can distinguish \"populated as\n" +
@@ -449,8 +452,9 @@ func init() {
 				"\n" +
 				" It is the one definition: a plugin states it in its manifest and a catalog\n" +
 				" reports it, both with this message. Declaring a credential grants nothing; the\n" +
-				" host still resolves only a secret reference an author wrote, under the\n" +
-				" deployment's secret access policy.\n",
+				" host still resolves only a secret or credential reference an author wrote (the\n" +
+				" kind its `federated` flag selects), under the deployment's secret access and\n" +
+				" credential assumption policies.\n",
 		},
 		{
 			Name:    "flowstate.v1.CredentialDeclaration.name",
@@ -463,10 +467,15 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.CredentialDeclaration.federated",
-			Leading: " Federated records that a `${credential('target')}` reference is intended to\n" +
-				" be able to stand in for a stored secret here. It is declaration metadata\n" +
-				" only until the binding slice enforces it; nothing refuses or permits a\n" +
-				" reference on its strength yet.\n",
+			Leading: " Federated makes the credential one that is bound by a\n" +
+				" `${credential('target')}` reference and never by a stored `${secret()}`;\n" +
+				" false makes it a stored secret's, bound by `${secret()}` and never by a\n" +
+				" credential reference. The same rule is applied wherever a reference meets\n" +
+				" the credential's input: the Flowfile compiler, the server's admission of a\n" +
+				" specification built by hand, and the worker's dispatch, each refusing the\n" +
+				" other kind. It grants nothing: whether the reference resolves is still the\n" +
+				" deployment's secret access and credential assumption policies. A registry\n" +
+				" that was never told reads false, which is the closed direction.\n",
 		},
 		{
 			Name:    "flowstate.v1.PluginDescription",

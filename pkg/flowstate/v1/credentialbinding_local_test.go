@@ -18,7 +18,11 @@ func registerBoundCredentialTask(t *testing.T) {
 	t.Helper()
 
 	require.NoError(t, v1.DefaultRegistry().Register(conformance.BoundCredentialTaskDef()))
-	t.Cleanup(func() { v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName) })
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.FederatedCredentialTaskDef()))
+	t.Cleanup(func() {
+		v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName)
+		v1.DefaultRegistry().Unregister(conformance.FederatedCredentialTaskName)
+	})
 }
 
 // TestCredentialBindingLocal is the local driver's half of the shared
@@ -33,6 +37,7 @@ func TestCredentialBindingLocal(t *testing.T) {
 	for _, test := range conformance.CredentialBindingCases() {
 		t.Run(test.Name, func(t *testing.T) {
 			runAuthorityCase(t, test)
+			conformance.RequireNoUse(t, test)
 			require.NotContains(t, test.Workflow.GetSteps()[0].GetTask().GetInputs(), "token",
 				"the run expanded the caller's own workflow instead of a copy")
 		})

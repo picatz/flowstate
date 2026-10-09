@@ -86,8 +86,9 @@ const (
 	SlotUnknown ValueSlot = iota
 
 	// SlotPluginCredential is a credential bound under a `plugins:` entry: always
-	// a secret reference, never an expression, and the reference every omitting
-	// step of that plugin receives. See [BindPluginCredentials].
+	// a secret or credential reference (which one is the plugin's declaration),
+	// never an expression, and the reference every omitting step of that plugin
+	// receives. See [BindPluginCredentials].
 	SlotPluginCredential
 	// SlotInputDefault is an `inputs:` declaration's `default:`.
 	SlotInputDefault

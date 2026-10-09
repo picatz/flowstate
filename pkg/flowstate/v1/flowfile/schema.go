@@ -130,7 +130,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		}
 		ds = append(ds, Diagnostic{
 			Step:    stepID,
-			Message: v1.CredentialInputUnboundMessage(def.Name, name, credentialInputs[name]),
+			Message: v1.CredentialInputUnboundMessage(def.Name, name, credentialInputs[name], v1.CredentialFederated(def, credentialInputs[name])),
 		})
 	}
 
@@ -165,6 +165,19 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		if d, bad := credentialPlacement(stepID, def, task, name); bad {
 			ds = append(ds, d)
 			continue
+		}
+		// A credential input takes the kind of reference its plugin's declaration
+		// says: a credential reference for a federated credential, a secret
+		// reference for any other; a literal, an expression or the other kind is
+		// refused in the words of the kind it takes.
+		if credential, claimed := credentialInputs[name]; claimed {
+			value := task.GetInputs()[name]
+			federated := v1.CredentialFederated(def, credential)
+			if !v1.CredentialReferenceMatches(federated, value) {
+				ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: v1.CredentialReferenceMessage(def.Name, name, credential, federated)})
+
+				continue
+			}
 		}
 		// A field the task's schema claims must be a literal is held to it before
 		// anything else is asked of the input, and a refusal ends the input's

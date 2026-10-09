@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"fmt"
 	"regexp"
+	"slices"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -106,4 +107,64 @@ func CheckPluginCredentials(declarations []*CredentialDeclaration, tasks []proto
 	}
 
 	return nil
+}
+
+// CredentialFederated reports whether def's plugin declares the named credential
+// federated, as def carries it ([TaskDef.FederatedCredentials]).
+func CredentialFederated(def TaskDef, credential string) bool {
+	return slices.Contains(def.FederatedCredentials, credential)
+}
+
+// FederatedCredentialsOf lists, from claims read by [InputClaims], the
+// credentials the task claims that declarations mark federated, sorted. It is
+// what a host sets [TaskDef.FederatedCredentials] from, with the plugin's
+// declarations in hand.
+func FederatedCredentialsOf(claims []InputClaim, declarations []*CredentialDeclaration) []string {
+	var out []string
+	for _, c := range claims {
+		if c.Credential == "" || slices.Contains(out, c.Credential) {
+			continue
+		}
+		for _, d := range declarations {
+			if d.GetName() == c.Credential && d.GetFederated() {
+				out = append(out, c.Credential)
+
+				break
+			}
+		}
+	}
+	slices.Sort(out)
+
+	return out
+}
+
+// CredentialReferenceMatches reports whether value is the reference the
+// credential's declaration allows: a federated credential is bound by a whole
+// `${credential()}` reference and never a stored secret, and any other by a whole
+// `${secret()}` reference and never a credential reference. A literal, an
+// expression or a nested reference matches neither. One rule for the compiler,
+// admission and dispatch, so the three cannot disagree about which spelling a
+// credential takes.
+func CredentialReferenceMatches(federated bool, value *Value) bool {
+	if federated {
+		return value.GetCredentialRef() != nil
+	}
+
+	return value.GetSecretRef() != nil
+}
+
+// CredentialReferenceMessage is the sentence every refusal of a credential input
+// written with the wrong kind of reference says, from the compiler, admission and
+// dispatch alike. It names the credential and what it takes, and never the
+// reference written.
+func CredentialReferenceMessage(taskName, input, credential string, federated bool) string {
+	if federated {
+		return fmt.Sprintf(
+			"task %q input %q receives the plugin's federated credential %q, which takes a whole credential reference such as ${credential('target')}, never a literal, an expression or a stored secret",
+			taskName, input, credential)
+	}
+
+	return fmt.Sprintf(
+		"task %q input %q receives the plugin's credential %q, which is not federated and takes a whole secret reference such as ${secret('env:NAME')}, never a literal, an expression or a credential reference",
+		taskName, input, credential)
 }

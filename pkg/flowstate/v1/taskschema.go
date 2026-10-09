@@ -495,10 +495,13 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 // `literal` input claim at admission (version 3), which a reader of version 2 would
 // ignore as an unknown option, and the plugin `credential` input claim with the
 // plugin credential declarations it names (version 4), which a reader of
-// version 3 would ignore the same way. Bump it only alongside
+// version 3 would ignore the same way, and the meaning of a credential's
+// `federated` declaration as an enforced rule (version 5): a federated
+// credential is bound by a credential reference only and any other by a secret
+// reference only, which a run pinned under version 4 never agreed to. Bump it only alongside
 // a change that adds or redefines one of those fields, the same event that would
 // justify a new entry in the doc comment on ClaimsSchemaVersion itself.
-const CurrentClaimsSchemaVersion uint32 = 4
+const CurrentClaimsSchemaVersion uint32 = 5
 
 // TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
 // be trusted to say when a task needs scope or accepts a secret, as opposed

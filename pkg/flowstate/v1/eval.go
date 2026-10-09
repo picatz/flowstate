@@ -3225,6 +3225,11 @@ func (t *Task) EvalInScope(ctx context.Context, scope *Scope) (*Node_Outputs, er
 		return nil, NewTaskError(t.Name, ErrorKindUnknownTask, fmt.Errorf(
 			"unknown task %q (available: %s)", t.Name, strings.Join(TaskNamesIn(ctx), ", ")))
 	}
+	// Names the task for the secret and assumption policies' `task` attribute
+	// and the audit trail, at the one place both drivers call a task's Fn, so
+	// a rule that pins a secret to a task decides the same way on each. A
+	// plugin task refines it with the credential of the input it resolves.
+	ctx = ContextWithTaskUse(ctx, t.Name)
 	out, err := def.Fn(ctx, t.Inputs, scope)
 	if err != nil || out == nil {
 		return out, err

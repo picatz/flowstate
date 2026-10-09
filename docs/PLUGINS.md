@@ -552,9 +552,10 @@ reference the host resolves, never a literal, and the manifest lists
 `^[a-z][a-z0-9_]{0,31}$`. The lattice is checked at build time by the SDK and at
 launch by the host, and either refuses the plugin: a claim names a declared
 credential, every declaration is named by at least one input, names are unique,
-and a plugin declares at most 8. `federated: true` records that a
-`${credential('target')}` may stand in for a stored secret. Declaring a credential
-grants nothing: an author still writes the reference, and the deployment's secret
+and a plugin declares at most 8. `federated: true` makes the credential one that is
+bound by a `${credential('target')}` reference and never by a stored
+`${secret(...)}`; left false it is bound by a `${secret(...)}` and never by a
+`${credential(...)}`. Declaring a credential grants nothing: an author still writes the reference, and the deployment's secret
 policy still decides whether it resolves. `flow plugins` lists each plugin's
 credentials and the input of each task that needs one, and the catalog carries
 them (`PluginDescription.credentials`, `TaskDescription.credential_inputs`) under
@@ -578,14 +579,26 @@ steps:
 
 A step that writes the input itself overrides the binding; a step with neither is
 refused when the file is validated and again when a specification is submitted. A
-binding is only ever a whole `${secret(...)}` reference, never a literal, an
-expression or a `${credential(...)}`, and it names a credential the plugin
-declares. The compiler and the server expand the binding into the per-step
+binding is only ever a whole reference, never a literal or an expression, and it
+names a credential the plugin declares. Which reference is the declaration's
+decision, and the one rule holds at the compiler, at the server's admission (a
+hand-built specification too) and at dispatch on the worker: a credential declared
+`federated` is bound by `${credential('target')}`, any other by
+`${secret('scheme:name')}`, in a `plugins:` binding and in a step's own input
+alike, and the other kind is refused naming the declaration and never the
+reference written. The compiler and the server expand the binding into the per-step
 references before a run exists, so execution reads the per-step reference (the
 stored workflow keeps both the binding and the expansion) and a plugin receives
 the string the host resolved it to: `sdk.DecodeInputs` refuses a claimed field
 that holds anything else, or that is missing. A caller's binding does not
 cross a `call:`; a callee binds its own.
+
+The deployment's policies see the use. A secret access rule and an assumption rule
+read `task` (`"slack.post"`) and `credential.plugin` / `credential.name`, and the
+audit record of the read carries them, so
+`secret.name == "SLACK_BOT_TOKEN" && credential.plugin == "slack"` pins a secret to
+one plugin's credential and `task == "slack.delete"` can deny one task. See
+[the access policy](SECRETS.md#the-access-policy).
 
 ## Where the contract catches authors out
 
@@ -595,7 +608,7 @@ a host, to somebody who may not be able to fix them.
 
 ### 1. Declaring no schema is a silent opt-out of the whole contract
 
-`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:238-239`), the host
+`Task.Input` and `Task.Output` may be nil (`pkg/flowstate/v1/plugin/sdk/sdk.go:240-241`), the host
 accepts a manifest that names no message for a side
 (`pkg/flowstate/v1/plugin/descriptor.go:34-36`), and `flow plugins` renders it as `inputs none`
 (`cmd/flow/tasks.go:592-596`, rendered from `cmd/flow/plugins.go:298-301`). Every
@@ -652,7 +665,7 @@ Two things follow that are worth knowing before you build on it:
   `pkg/flowstate/v1/plugin/sdk` pulls the module: 368 packages across 126 modules
   in the graph for the chapter-one plugin, and a 24 MB binary. That is a
   consequence of `TaskFunc` speaking in `flowstatev1.Value` and
-  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:337`), which is also what makes a plugin task
+  `flowstatev1.Scope` (`pkg/flowstate/v1/plugin/sdk/sdk.go:339`), which is also what makes a plugin task
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying

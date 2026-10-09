@@ -237,12 +237,13 @@ func pluginRequirementsToYAML(requirements []*v1.PluginRequirement) (yaml.MapSli
 
 		// The mapping form, with the credentials by name: a Go map has no order, so
 		// they are sorted, for `flow fmt` to write the same bytes twice. A binding
-		// that is not a secret reference is refused as the parser would refuse it.
+		// that is not a secret or credential reference is refused as the parser
+		// would refuse it.
 		credentials := make(yaml.MapSlice, 0, len(requirement.GetCredentials()))
 		for _, name := range slices.Sorted(maps.Keys(requirement.GetCredentials())) {
 			binding := requirement.GetCredentials()[name]
-			if binding.GetSecretRef() == nil {
-				return nil, fmt.Errorf("plugin %q credential %q is not a whole secret reference, so the parser would reject the marshalled file", requirement.GetName(), name)
+			if binding.GetSecretRef() == nil && binding.GetCredentialRef() == nil {
+				return nil, fmt.Errorf("plugin %q credential %q is not a whole secret or credential reference, so the parser would reject the marshalled file", requirement.GetName(), name)
 			}
 			written, err := inputValueToYAML(binding)
 			if err != nil {

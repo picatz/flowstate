@@ -81,14 +81,15 @@ func pluginOfTask(task string) (string, bool) {
 // pluginBindings returns the credential bindings of one workflow's `plugins:`,
 // plugin name to credential name to reference, after holding them to what a
 // binding is: at most [MaxPluginCredentials] per plugin, a [ValidCredentialName]
-// each, and a whole secret reference, never anything else. Plugins that bind
-// nothing are absent.
+// each, and a whole secret or credential reference, never anything else.
+// Plugins that bind nothing are absent.
 //
 // A reference is the only thing a binding may be because it is what crosses the
-// boundary in place of a value; a `${credential()}` reference is refused until a
-// plugin's declaration of the credential as federated is something this
-// enforcement point can read, which fails closed. The refusal names the plugin
-// and credential and never the binding.
+// boundary in place of a value. Which of the two kinds a credential takes is
+// the plugin's declaration, which only the registry can read, so
+// [bindWorkflowCredentials] holds each binding to it
+// ([CredentialReferenceMatches]) and this holds the shape. The refusal names the
+// plugin and credential and never the binding.
 func pluginBindings(wf *Workflow) (map[string]map[string]*Value, error) {
 	requirements := wf.GetPluginRequirements()
 	if len(requirements) > MaxPluginRequirements {
@@ -122,8 +123,8 @@ func pluginBindings(wf *Workflow) (map[string]map[string]*Value, error) {
 				return nil, fmt.Errorf("plugin %q binds credential %q, which is not a name matching %s", textbound.Truncate(plugin, 64), textbound.Truncate(name, 64), credentialName)
 			}
 			value := credentials[name]
-			if value.GetSecretRef() == nil {
-				return nil, fmt.Errorf("plugin %q credential %q must be bound to a whole secret reference such as ${secret('env:NAME')}, never a literal, an expression or a credential reference",
+			if value.GetSecretRef() == nil && value.GetCredentialRef() == nil {
+				return nil, fmt.Errorf("plugin %q credential %q must be bound to a whole reference such as ${secret('env:NAME')} or ${credential('target')}, never a literal or an expression",
 					textbound.Truncate(plugin, 64), name)
 			}
 		}
@@ -142,8 +143,13 @@ func pluginBindings(wf *Workflow) (map[string]map[string]*Value, error) {
 // plugin loads ([CheckPluginCredentials]), so a claim is a declaration. A plugin
 // with no task in the registry, or none carrying an input descriptor, is absent from the result; nothing can be said of
 // it here and a deployment without it is refused at plugin resolution.
-func declaredCredentials(registry *Registry, bindings map[string]map[string]*Value) (map[string]map[string]bool, error) {
-	declared := make(map[string]map[string]bool, len(bindings))
+//
+// The second result is the subset a plugin declares federated, read from the
+// same tasks ([TaskDef.FederatedCredentials]). A credential no task lists is a
+// stored secret only, the closed direction.
+func declaredCredentials(registry *Registry, bindings map[string]map[string]*Value) (declared, federated map[string]map[string]bool, err error) {
+	declared = make(map[string]map[string]bool, len(bindings))
+	federated = make(map[string]map[string]bool, len(bindings))
 	for _, def := range registry.All() {
 		plugin, qualified := pluginOfTask(def.Name)
 		if !qualified || bindings[plugin] == nil {
@@ -158,17 +164,21 @@ func declaredCredentials(registry *Registry, bindings map[string]map[string]*Val
 		}
 		inputs, err := TaskCredentialInputs(def)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		if declared[plugin] == nil {
 			declared[plugin] = make(map[string]bool)
+			federated[plugin] = make(map[string]bool)
 		}
 		for _, credential := range inputs {
 			declared[plugin][credential] = true
+			if CredentialFederated(def, credential) {
+				federated[plugin][credential] = true
+			}
 		}
 	}
 
-	return declared, nil
+	return declared, federated, nil
 }
 
 // BindPluginCredentials expands the credential bindings of `plugins:` into the
@@ -191,8 +201,10 @@ func declaredCredentials(registry *Registry, bindings map[string]map[string]*Val
 // durable exists, so a hand-built specification is expanded exactly as a compiled
 // one is.
 //
-// It is idempotent. It fails closed on a binding that is not a whole secret
-// reference, on one naming a credential none of the plugin's registered tasks
+// It is idempotent. It fails closed on a binding that is not a whole reference,
+// on one of the kind its credential's declaration does not take (a federated
+// credential is bound by a credential reference, any other by a secret
+// reference), on one naming a credential none of the plugin's registered tasks
 // claim (when the registry holds any of the plugin's tasks to say), on a plugin
 // required twice with bindings, and on an expansion past
 // [maxBoundCredentialBytes]. registry is the deployment's task registry; a nil
@@ -228,7 +240,7 @@ func bindWorkflowCredentials(wf *Workflow, registry *Registry, budget *int) erro
 		return nil
 	}
 
-	declared, err := declaredCredentials(registry, bindings)
+	declared, federated, err := declaredCredentials(registry, bindings)
 	if err != nil {
 		return err
 	}
@@ -241,6 +253,15 @@ func bindWorkflowCredentials(wf *Workflow, registry *Registry, budget *int) erro
 			if !known[name] {
 				return fmt.Errorf("plugin %q has no credential %q to bind; it declares %s",
 					textbound.Truncate(plugin, 64), name, listNames(slices.Sorted(maps.Keys(known))))
+			}
+
+			// The declaration decides the kind of reference: a federated
+			// credential is bound by a credential reference and nothing else, a
+			// stored one by a secret reference and nothing else. Neither is a
+			// fallback for the other, so a binding can never widen what the
+			// plugin declared.
+			if !CredentialReferenceMatches(federated[plugin][name], bindings[plugin][name]) {
+				return fmt.Errorf("plugin %q credential %q: %s", textbound.Truncate(plugin, 64), name, bindingKindHelp(federated[plugin][name]))
 			}
 		}
 	}
@@ -340,6 +361,16 @@ func ElideBoundCredentials(wf *Workflow, registry *Registry) error {
 	}})
 
 	return failure
+}
+
+// bindingKindHelp says which reference a plugin credential binds, for the refusal
+// of the other kind. It names the declaration, not the binding written.
+func bindingKindHelp(federated bool) string {
+	if federated {
+		return "is declared federated, so bind it to a whole credential reference such as ${credential('target')}, never a stored secret"
+	}
+
+	return "is not declared federated, so bind it to a whole secret reference such as ${secret('env:NAME')}, never a credential reference"
 }
 
 // listNames renders at most [MaxPluginCredentials] names for a message.

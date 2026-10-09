@@ -171,6 +171,7 @@ var notACorpus = map[string]string{
 // named, rather than resolved or missed.
 var unresolvedResults = map[string]account{
 	"BoundCredentialTaskDef":         {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"FederatedCredentialTaskDef":     {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"DispatchAuditTaskDef":           {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"DispatchAuditTighteningTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"ErrorKindTimeoutTaskDef":        {what: "a v1.TaskDef, which is a struct rather than a slice"},

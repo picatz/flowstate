@@ -473,6 +473,41 @@ base64, hex, a hash, splitting across two fields. It is a containment tier for
 accidents and is explicitly not containment against an adversarial plugin
 ([docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#plugins), `pkg/flowstate/v1/secrets/scrub.go:56`).
 
+**Credential bindings.** A plugin declares the credentials its task inputs receive,
+and a Flowfile binds each once under `plugins:`. A binding is a reference and
+nothing else, expanded into the per-step references the engine already enforces
+before a run exists (at compile and at the server's admission, so a hand-built
+specification is expanded and checked the same way), which means it adds no resolver
+and no new place a value can be: the resolution seam, the scrubber and the refusal to
+send a resolved value to a remote transport are unchanged. A binding grants nothing:
+the deployment's secret access policy and credential assumption policy still decide
+whether a reference resolves. The plugin's declaration decides which reference a
+credential takes (`federated` credentials are bound by `${credential()}` and every
+other by `${secret()}`, never the other kind), and the compiler, admission and the
+host at dispatch each refuse the wrong kind, failing closed on a registry that was
+not told. Both policies can now pin a use: they read `task` (`slack.post`) and
+`credential.plugin` / `credential.name`, and the audit record of the read carries the
+same two names, never the reference or the value, so a deployment can allow
+`SLACK_BOT_TOKEN` to the Slack plugin's `bot_token` and deny one task everything.
+The limits are the ones of a trusted plugin. The plugin is discovered by its
+executable's name, so `credential.plugin` is the host's, but `credential.name` and
+the `federated` flag are the plugin's own declaration: a rule that pins the name
+without the plugin can be matched by another plugin that declares the same name, and
+a plugin that declares a credential federated asks to be bound by a federated
+reference, which the policy and the claims digest (a changed declaration is a
+different plugin to a pinned run) are what stand behind. A rule on `task` or
+`credential` constrains which step may read a secret, not what a plugin does with a
+value once it holds it (the scrubber caveat above). The `task` a rule sees is the
+registry's name for the step, set at the one place both drivers call a task, and the
+attributes are empty for a read that is not a plugin credential's (a built-in
+task's `bearer:` has a task and no credential), so a rule that names a credential
+never permits such a read. That holds for rules written positively (`==`, `startsWith`, `in`): a negation such
+as `task != "x"` is true for an unset attribute, so allow rules should be positive.
+A plugin can also evade a deny keyed on `credential.name` by declaring an unclaimed
+secret input, which carries a task and no credential; deny rules should pin `task`
+or `credential.plugin`. `flow validate` without `--plugin-dir` cannot check a
+binding against a declaration (it has none to read); admission and dispatch still do.
+
 **Planned.** Vetting or signing what runs before a binary is trusted with a socket,
 #146, not landed. Isolation tiers with plugins declaring the tier they require and a
 tier that cannot enforce the declared policy refusing to dispatch, #341 E, not

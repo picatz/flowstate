@@ -73,8 +73,21 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		t.Fatalf("a literal binding was accepted: %s", diagnosticText(diags))
 	}
 	text := err.Error()
-	if !strings.Contains(text, "plugins.slack.credentials.bot_token") || !strings.Contains(text, "must be bound to a whole secret reference") || strings.Contains(text, "literal-token") {
-		t.Fatalf("literal binding diagnostics = %q, want redacted whole-secret refusal at the binding", text)
+	if !strings.Contains(text, "plugins.slack.credentials.bot_token") || !strings.Contains(text, "must be bound to a whole reference") || strings.Contains(text, "literal-token") {
+		t.Fatalf("literal binding diagnostics = %q, want redacted whole-reference refusal at the binding", text)
+	}
+
+	// The plugin does not declare bot_token federated, so the declaration it
+	// delivered binds it to a stored secret and a credential reference is refused
+	// at the binding and at a step's own input, naming the declaration and not the
+	// target written.
+	federated := strings.Replace(string(source), "${secret('env:SLACK_BOT_TOKEN')}", "${credential('leaky-target')}", 1)
+	_, err = flowfile.ValidateSource([]byte(federated))
+	if err == nil {
+		t.Fatal("a credential reference was accepted for a credential the plugin does not declare federated")
+	}
+	if text := err.Error(); !strings.Contains(text, "is not declared federated") || strings.Contains(text, "leaky-target") {
+		t.Fatalf("federated binding diagnostics = %q, want the declaration named and the target not echoed", text)
 	}
 
 	// A step's own input overrides the binding, and is held to the same claim
@@ -89,8 +102,18 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		t.Fatalf("validating literal override mutation: %v", err)
 	}
 	text = diagnosticText(diags)
-	if !strings.Contains(text, "whole secret reference") || strings.Contains(text, "literal-token") {
+	if !strings.Contains(text, "which is not federated and takes a whole secret reference") || strings.Contains(text, "literal-token") {
 		t.Fatalf("literal override diagnostics = %q, want redacted whole-secret refusal", text)
+	}
+
+	credentialOverride := strings.Replace(override, "token: literal-token", "token: ${credential('leaky-target')}", 1)
+	diags, err = flowfile.ValidateSource([]byte(credentialOverride))
+	if err != nil {
+		t.Fatalf("validating credential override mutation: %v", err)
+	}
+	text = diagnosticText(diags)
+	if !strings.Contains(text, "which is not federated") || strings.Contains(text, "leaky-target") {
+		t.Fatalf("credential override diagnostics = %q, want the declaration named and the target not echoed", text)
 	}
 
 	p, ok := host.Lookup("slack")

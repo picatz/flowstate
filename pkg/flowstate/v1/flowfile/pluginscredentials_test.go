@@ -27,7 +27,11 @@ func registerBoundPlugin(t *testing.T) {
 	t.Helper()
 
 	require.NoError(t, v1.DefaultRegistry().Register(conformance.BoundCredentialTaskDef()))
-	t.Cleanup(func() { v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName) })
+	require.NoError(t, v1.DefaultRegistry().Register(conformance.FederatedCredentialTaskDef()))
+	t.Cleanup(func() {
+		v1.DefaultRegistry().Unregister(conformance.BoundCredentialTaskName)
+		v1.DefaultRegistry().Unregister(conformance.FederatedCredentialTaskName)
+	})
 }
 
 func tokenName(t *testing.T, node *v1.Node) string {
@@ -79,17 +83,17 @@ func TestPluginCredentialsAreRefusedWhereTheyAreWritten(t *testing.T) {
 		{
 			name:    "a literal binding",
 			plugins: "plugins:\n  bound:\n    version: v0.1.0\n    credentials:\n      api_token: plain-text\n",
-			want:    `plugin "bound" credential "api_token" must be bound to a whole secret reference`,
+			want:    `plugin "bound" credential "api_token" must be bound to a whole reference`,
 		},
 		{
 			name:    "an expression binding",
 			plugins: "plugins:\n  bound:\n    version: v0.1.0\n    credentials:\n      api_token: ${inputs.token}\n",
-			want:    `plugin "bound" credential "api_token" must be bound to a whole secret reference`,
+			want:    `plugin "bound" credential "api_token" must be bound to a whole reference`,
 		},
 		{
 			name:    "a credential reference binding",
 			plugins: "plugins:\n  bound:\n    version: v0.1.0\n    credentials:\n      api_token: ${credential('partner')}\n",
-			want:    `plugin "bound" credential "api_token" must be bound to a whole secret reference`,
+			want:    `plugin "bound" credential "api_token": is not declared federated, so bind it to a whole secret reference`,
 		},
 		{
 			name:    "a credential the plugin does not declare",
@@ -278,10 +282,81 @@ func TestValidateExpandsBindingsOnAHandBuiltWorkflow(t *testing.T) {
 
 	ds := flowfile.Validate(build(map[string]*v1.Value{conformance.BoundCredentialName: v1.NewLiteral("plain-text")}))
 	require.Len(t, ds, 1)
-	require.Contains(t, ds[0].Message, "must be bound to a whole secret reference")
+	require.Contains(t, ds[0].Message, "must be bound to a whole reference")
 	require.NotContains(t, ds[0].Message, "plain-text")
 
 	ds = flowfile.Validate(build(nil))
 	require.NotEmpty(t, ds)
 	require.Contains(t, ds[0].Message, "receives the plugin's credential")
+}
+
+// A federated credential is bound by a credential reference and a stored one by a
+// secret reference, in the file as in a hand-built specification; the diagnostics
+// name the declaration and never echo the reference written.
+
+func TestAFederatedCredentialIsBoundByACredentialReference(t *testing.T) {
+	registerBoundPlugin(t)
+
+	wf, _, err := flowfile.Parse([]byte(boundHeader + `plugins:
+  federated:
+    version: v0.1.0
+    credentials:
+      partner_token: ${credential('partner')}
+steps:
+  - id: minted
+    federated.use:
+      note: a
+  - id: own
+    federated.use:
+      note: b
+      token: ${credential('other')}
+`))
+	require.NoError(t, err)
+
+	require.Equal(t, "partner", wf.GetPluginRequirements()[0].GetCredentials()["partner_token"].GetCredentialRef().GetTarget())
+	require.Equal(t, "partner", wf.GetSteps()[0].GetTask().GetInputs()["token"].GetCredentialRef().GetTarget())
+	require.Equal(t, "other", wf.GetSteps()[1].GetTask().GetInputs()["token"].GetCredentialRef().GetTarget(), "the binding replaced a step's own reference")
+
+	// And it reads back as written: the binding once, the override where it was.
+	out, err := flowfile.Marshal(wf)
+	require.NoError(t, err)
+	require.Equal(t, 1, strings.Count(string(out), "${credential('partner')}"), string(out))
+}
+
+func TestTheWrongKindOfReferenceIsRefusedForACredential(t *testing.T) {
+	registerBoundPlugin(t)
+
+	tests := []struct{ name, source, want string }{
+		{
+			name: "a stored secret bound to a federated credential",
+			source: boundHeader + "plugins:\n  federated:\n    version: v0.1.0\n    credentials:\n      partner_token: ${secret('env:LEAKY_NAME')}\n" +
+				"steps:\n  - id: a\n    federated.use:\n      note: a\n",
+			want: `plugin "federated" credential "partner_token": is declared federated, so bind it to a whole credential reference`,
+		},
+		{
+			name: "a step writing a stored secret into a federated credential",
+			source: boundHeader + "plugins:\n  federated: v0.1.0\n" +
+				"steps:\n  - id: a\n    federated.use:\n      note: a\n      token: ${secret('env:LEAKY_NAME')}\n",
+			want: `task "federated.use" input "token" receives the plugin's federated credential "partner_token"`,
+		},
+		{
+			name: "a step writing a credential reference into a stored credential",
+			source: boundHeader + "plugins:\n  bound: v0.1.0\n" +
+				"steps:\n  - id: a\n    bound.use:\n      note: a\n      token: ${credential('LEAKY_TARGET')}\n",
+			want: `task "bound.use" input "token" receives the plugin's credential "api_token", which is not federated`,
+		},
+		{
+			name: "a federated credential input written nowhere",
+			source: boundHeader + "plugins:\n  federated: v0.1.0\n" +
+				"steps:\n  - id: a\n    federated.use:\n      note: a\n",
+			want: `write it as a whole credential reference such as ${credential('target')}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := diagnose(t, tc.source)
+			require.Contains(t, got, tc.want)
+			require.NotContains(t, got, "LEAKY", "the diagnostic echoed the reference written")
+		})
+	}
 }

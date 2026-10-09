@@ -179,6 +179,22 @@ secrets:
   Reading a claim that is not present is an error, which denies; guard it with
   `"team" in identity.claims`. A claim keeps its JSON shape, so a list reads as
   `"sre" in identity.claims.groups` and a scalar read from a nested path (`{claim: slack.user, as: slack_user}`) as `identity.claims.slack_user`.
+- A rule also sees what the read is for: `task`, the qualified name of the task whose
+  step reads it (`"slack.post"`, `"http"`), and `credential.plugin` and
+  `credential.name`, the plugin and the credential it declared that the input
+  receives. They are empty where the read does not say (a built-in task's `bearer:`
+  has a task and no credential), and a rule naming either matches nothing there, so
+  an `allow` that pins them cannot be satisfied by a read that does not carry them.
+  That holds for `==`, `startsWith` and `in`; a negation (`task != "x"`,
+  `credential.plugin != "x"`) is true when the attribute is unset, so write `allow`
+  rules positively.
+  Least privilege is one line: `secret.name == "SLACK_BOT_TOKEN" && credential.plugin == "slack"`
+  lets that secret reach the Slack plugin's credential and nothing else, and
+  `deny: ['task == "slack.delete"']` withholds every secret from one task. Pin
+  `credential.plugin` beside `credential.name`: the plugin is the name the host
+  discovered from the executable, while the credential name is the plugin's own
+  declaration. The audit record of the read carries the same `task` and
+  `credential` (`slack/bot_token`), never the reference or the value.
 - The file must also contain at least one valid `issuers:` entry, even on a
   worker, which does not authenticate callers itself. A server and its workers
   normally share one reviewed file.
@@ -243,6 +259,10 @@ federation:
 > Like `secrets:`, `federation:` fails closed: with no `allow` rule, no workload
 > may assume any target, and `deny` rules alone permit nothing. Write an `allow`
 > rule for every target.
+
+The `allow` and `deny` rules also see `task` and `credential.plugin` /
+`credential.name`, as the `secrets:` rules do, so a target can be limited to the
+task that needs it: `target == "partner-api" && task == "anthropic.complete"`.
 
 A target is one of `token_exchange`, `client_credentials`, `gcp`, `aws`, or
 `assertion` (present the signed assertion itself to a relying party that

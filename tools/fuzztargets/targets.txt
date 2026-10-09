@@ -81,6 +81,7 @@ FuzzNamespaceMap             pkg/flowstate/v1/auth                       deep
 FuzzVerifyRefusesAMutatedToken pkg/flowstate/v1/auth                     deep
 FuzzMapClaims                pkg/flowstate/v1/auth                       deep
 FuzzActorChain               pkg/flowstate/v1/auth                       deep
+FuzzCredentialUseAttributes   pkg/flowstate/v1/auth                       deep
 FuzzPluginHandshake          pkg/flowstate/v1/plugin/internal/protocol   deep
 FuzzParseConfig              pkg/flowstate/v1/netpolicy                  deep
 FuzzParsePinsConfig          pkg/flowstate/v1/plugin                     deep

@@ -145,8 +145,10 @@ type Plugin struct {
 	// schema. At most [flowstatev1.MaxPluginCredentials]; every input claim must
 	// name a declared credential and every declaration must be named by at least
 	// one input, or the plugin does not build its manifest. Declaring a
-	// credential grants nothing: the host resolves only a secret reference an
-	// author wrote, into an input that is always SECRET_REQUIRED.
+	// credential grants nothing: the host resolves only a secret or credential
+	// reference an author wrote (a credential reference for a federated
+	// credential, a secret reference for any other), into an input that is
+	// always SECRET_REQUIRED.
 	Credentials []*flowstatev1.CredentialDeclaration
 
 	// Health reports whether the plugin can serve. Leaving it nil reports
