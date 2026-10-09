@@ -227,7 +227,13 @@ func (b *bucket) take() (time.Duration, error) {
 // means the opposite: the request is fine and it is early. Reusing the denial
 // path would make it permanent, which is precisely the defect #1180 fixed one
 // layer up.
-func (p *Policy) checkRate(ctx context.Context, u *url.URL, target string) error {
+//
+// afterRedirect is required rather than defaulted, and is copied onto the
+// refusal. [RateLimitedError.AfterRedirect] false is the answer that lets a
+// caller replay a non-idempotent request, so a constructor that omitted it
+// would claim "never sent" by silence. Forcing the caller to say which it is
+// keeps that claim an explicit decision at every construction site.
+func (p *Policy) checkRate(ctx context.Context, u *url.URL, target string, afterRedirect bool) error {
 	b := p.rateLimits.bucketFor(rateLimitKey(u.Hostname()))
 	if b == nil {
 		return nil
@@ -271,6 +277,7 @@ func (p *Policy) checkRate(ctx context.Context, u *url.URL, target string) error
 		Target:            target,
 		RequestsPerSecond: b.rate,
 		RetryAfter:        delay,
+		AfterRedirect:     afterRedirect,
 	}
 }
 

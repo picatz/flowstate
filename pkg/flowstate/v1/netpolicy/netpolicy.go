@@ -516,11 +516,10 @@ func (rt *roundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	// host's tokens. Every redirect hop re-enters here, so a hop counts against
 	// the host it is actually made to, which is the host the limit belongs to.
 	// See [Policy.checkRate], which is where the whole argument lives.
-	if err := rt.policy.checkRate(req.Context(), req.URL, req.URL.Redacted()); err != nil {
-		var limited *RateLimitedError
-		if req.Response != nil && errors.As(err, &limited) {
-			limited.AfterRedirect = true
-		}
+	//
+	// Go's client sets Response only on a request it built to follow a redirect,
+	// which is what says an earlier hop already reached its peer.
+	if err := rt.policy.checkRate(req.Context(), req.URL, req.URL.Redacted(), req.Response != nil); err != nil {
 		return nil, err
 	}
 

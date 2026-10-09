@@ -100,11 +100,11 @@ func TestHostRateLimitAllowsBurstThenRefusesWithADelay(t *testing.T) {
 	// A burst of one second's worth: four at 4/s, with the clock frozen so
 	// nothing refills underneath the assertion.
 	for i := range 4 {
-		require.NoError(t, policy.checkRate(t.Context(), target, target.String()),
+		require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false),
 			"request %d is inside one second's worth of a 4/s bound", i+1)
 	}
 
-	limited := requireRateLimited(t, policy.checkRate(t.Context(), target, target.String()), "api.example.com")
+	limited := requireRateLimited(t, policy.checkRate(t.Context(), target, target.String(), false), "api.example.com")
 	require.Equal(t, 250*time.Millisecond, limited.RetryAfter,
 		"a 4/s bucket frees its next token a quarter of a second after it empties")
 	require.InDelta(t, 4.0, limited.RequestsPerSecond, 0)
@@ -128,16 +128,16 @@ func TestHostRateLimitRefillsAfterTheDelayItReported(t *testing.T) {
 	require.NoError(t, err)
 
 	for range 3 {
-		require.NoError(t, policy.checkRate(t.Context(), target, target.String()))
+		require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false))
 	}
 
-	limited := requireRateLimited(t, policy.checkRate(t.Context(), target, target.String()), "api.example.com")
+	limited := requireRateLimited(t, policy.checkRate(t.Context(), target, target.String(), false), "api.example.com")
 
 	clock.advance(limited.RetryAfter)
 
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()),
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false),
 		"waiting exactly the delay the refusal reported must admit the request")
-	requireRateLimited(t, policy.checkRate(t.Context(), target, target.String()), "api.example.com")
+	requireRateLimited(t, policy.checkRate(t.Context(), target, target.String(), false), "api.example.com")
 }
 
 // TestHostRateLimitBucketUnderConcurrencyGrantsExactlyBurstTokens asserts the
@@ -280,14 +280,14 @@ func TestHostRateLimitKeysEachHostSeparately(t *testing.T) {
 	c, err := url.Parse("https://c.example.com/")
 	require.NoError(t, err)
 
-	require.NoError(t, policy.checkRate(t.Context(), a, a.String()))
-	requireRateLimited(t, policy.checkRate(t.Context(), a, a.String()), "a.example.com")
+	require.NoError(t, policy.checkRate(t.Context(), a, a.String(), false))
+	requireRateLimited(t, policy.checkRate(t.Context(), a, a.String(), false), "a.example.com")
 
-	require.NoError(t, policy.checkRate(t.Context(), b, b.String()),
+	require.NoError(t, policy.checkRate(t.Context(), b, b.String(), false),
 		"exhausting a.example.com must not spend b.example.com's tokens")
-	require.NoError(t, policy.checkRate(t.Context(), c, c.String()),
+	require.NoError(t, policy.checkRate(t.Context(), c, c.String(), false),
 		"a host the policy names no rate for is not rate limited at all")
-	require.NoError(t, policy.checkRate(t.Context(), c, c.String()))
+	require.NoError(t, policy.checkRate(t.Context(), c, c.String(), false))
 }
 
 // TestHostRateLimitKeyNormalizesTheWaysOneHostCanBeSpelled pins the key form,
@@ -336,8 +336,8 @@ func TestHostRateLimitIgnoresThePort(t *testing.T) {
 	secure, err := url.Parse("https://api.example.com/")
 	require.NoError(t, err)
 
-	require.NoError(t, policy.checkRate(t.Context(), plain, plain.String()))
-	requireRateLimited(t, policy.checkRate(t.Context(), secure, secure.String()), "api.example.com")
+	require.NoError(t, policy.checkRate(t.Context(), plain, plain.String(), false))
+	requireRateLimited(t, policy.checkRate(t.Context(), secure, secure.String(), false), "api.example.com")
 }
 
 // TestHostRateLimitDoesNotSpendATokenOnARefusedRequest checks the ordering the
@@ -365,7 +365,7 @@ func TestHostRateLimitDoesNotSpendATokenOnARefusedRequest(t *testing.T) {
 		requireDenied(t, policy.CheckURL(t.Context(), http.MethodDelete, target), ReasonDenyRule, "")
 	}
 
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()),
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false),
 		"the bucket must still be full: nothing above was a request to the host")
 }
 
@@ -394,7 +394,7 @@ func TestHostRateLimitFailsOpenOnAnInternalError(t *testing.T) {
 	require.NoError(t, err)
 
 	for range 3 {
-		require.NoError(t, policy.checkRate(t.Context(), target, target.String()),
+		require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false),
 			"a limiter that cannot decide must allow the request, not deny every request to every configured host")
 	}
 
@@ -416,9 +416,9 @@ func TestHostRateLimitBucketStartsFull(t *testing.T) {
 	target, err := url.Parse("https://api.example.com/")
 	require.NoError(t, err)
 
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()))
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()))
-	requireRateLimited(t, policy.checkRate(t.Context(), target, target.String()), "api.example.com")
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false))
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false))
+	requireRateLimited(t, policy.checkRate(t.Context(), target, target.String(), false), "api.example.com")
 }
 
 // TestHostRateLimitFractionalRateKeepsABurstOfOne covers the rate below one per
@@ -433,9 +433,9 @@ func TestHostRateLimitFractionalRateKeepsABurstOfOne(t *testing.T) {
 	target, err := url.Parse("https://api.example.com/")
 	require.NoError(t, err)
 
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()))
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false))
 
-	limited := requireRateLimited(t, policy.checkRate(t.Context(), target, target.String()), "api.example.com")
+	limited := requireRateLimited(t, policy.checkRate(t.Context(), target, target.String(), false), "api.example.com")
 	require.Equal(t, 2*time.Second, limited.RetryAfter, "half a request per second is one every two seconds")
 }
 
@@ -502,13 +502,13 @@ egress:
 	target, err := url.Parse("https://api.example.com/v1")
 	require.NoError(t, err)
 
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()))
-	require.NoError(t, policy.checkRate(t.Context(), target, target.String()))
-	requireRateLimited(t, policy.checkRate(t.Context(), target, target.String()), "api.example.com")
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false))
+	require.NoError(t, policy.checkRate(t.Context(), target, target.String(), false))
+	requireRateLimited(t, policy.checkRate(t.Context(), target, target.String(), false), "api.example.com")
 
 	other, err := url.Parse("https://other.example.com/v1")
 	require.NoError(t, err)
-	require.NoError(t, policy.checkRate(t.Context(), other, other.String()),
+	require.NoError(t, policy.checkRate(t.Context(), other, other.String(), false),
 		"the second host has its own bucket and its own number")
 }
 
