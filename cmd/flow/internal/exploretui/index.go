@@ -29,6 +29,10 @@ type Index struct {
 	// showRuns gives each workflow a "runs" row to open, whose children are read
 	// on demand and are not part of the graph. See [Index.WithRunRows].
 	showRuns bool
+
+	// showSteps gives each workflow a "steps" row, read on demand as well. See
+	// [Index.WithStepRows].
+	showSteps bool
 }
 
 // NewIndex indexes g. A nil graph is an empty one.
@@ -81,6 +85,16 @@ func NewIndex(g *v1.Graph) *Index {
 func (x *Index) WithRunRows() *Index {
 	c := *x
 	c.showRuns = true
+
+	return &c
+}
+
+// WithStepRows returns the index with a "steps" row under every workflow.
+// Opening it lists the steps the workflow declares, which the graph does not
+// hold: the screen reads them on request.
+func (x *Index) WithStepRows() *Index {
+	c := *x
+	c.showSteps = true
 
 	return &c
 }
@@ -144,13 +158,16 @@ func (x *Index) RootsNamed(filter string) []pane.Node {
 func (x *Index) Loader() pane.Loader {
 	return func(r pane.Request) ([]pane.Node, int, error) {
 		id, ok := nodeOf(r.Parent)
-		if !ok || isRunsRow(id) {
+		if !ok || isRunsRow(id) || isStepsRow(id) || isStepRow(id) {
 			return nil, 0, fmt.Errorf("no row %q", r.Parent)
 		}
 		edges := x.out[id]
 		children := make([]pane.Node, 0, len(edges)+1)
 		if x.showRuns && x.isWorkflow(id) {
 			children = append(children, pane.Node{ID: treeID(r.Parent, runsPrefix+id), Label: "runs", Value: "recent", Total: 1})
+		}
+		if x.showSteps && x.isWorkflow(id) {
+			children = append(children, pane.Node{ID: treeID(r.Parent, stepsPrefix+id), Label: "steps", Value: "declared", Total: 1})
 		}
 		for _, e := range edges {
 			children = append(children, x.row(treeID(r.Parent, e.GetTo()), e.GetTo(), e))
@@ -228,7 +245,13 @@ func (x *Index) Details(rowID string) pane.Inspector {
 
 		return pane.Inspector{Fields: fields, Note: "open the row to read the most recent runs"}
 	}
-	if strings.HasPrefix(id, noRunsPrefix) || strings.HasPrefix(id, moreRunsPrefix) {
+	if isStepsRow(id) {
+		return pane.Inspector{
+			Fields: []pane.Field{{Key: "kind", Value: "steps"}, {Key: "workflow", Value: x.label(strings.TrimPrefix(id, stepsPrefix))}},
+			Note:   "open the row to read the steps the workflow declares",
+		}
+	}
+	if strings.HasPrefix(id, noRunsPrefix) || strings.HasPrefix(id, moreRunsPrefix) || isStepRow(id) || strings.HasPrefix(id, noStepsRow) {
 		return pane.Inspector{}
 	}
 	n, known := x.nodes[id]
