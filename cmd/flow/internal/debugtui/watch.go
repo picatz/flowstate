@@ -43,8 +43,8 @@ type Watch struct {
 	// one that keeps failing says so once however many stops it fails at.
 	Said bool
 
-	// NotHeld reports that the run was not held when it was last read, so Value
-	// is of an earlier stop or absent.
+	// NotHeld reports that the run was not held when it was last read, so there
+	// is no value and no error to show.
 	NotHeld bool
 }
 
@@ -150,8 +150,12 @@ func (m *Model) applyWatches(results []watchResult) {
 
 		switch r.outcome {
 		case outcomeSkipped:
+			// The run moved under the read, so what the watch held is of an
+			// earlier stop. It reads as pending until the read that follows the
+			// move answers; Said stays, so a failing watch is not said twice.
+			w.Value, w.Err, w.NotHeld = nil, "", false
 		case outcomeNotHeld:
-			w.NotHeld = true
+			w.Value, w.Err, w.NotHeld, w.Said = nil, "", true, false
 		case outcomeError:
 			w.Value, w.NotHeld = nil, false
 			w.Err = ui.EscapeControl(cutValue(strings.TrimSpace(r.err)))

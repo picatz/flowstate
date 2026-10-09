@@ -12,6 +12,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/pane"
 	"github.com/picatz/flowstate/cmd/flow/internal/tui"
 	"github.com/picatz/flowstate/cmd/flow/internal/tui/tuitest"
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
@@ -665,4 +666,32 @@ func TestAWatchedValueOpensWithoutTouchingTheScopeRowOfTheSameName(t *testing.T)
 	// A child row is a name a person can inspect or watch: its expression, not its id.
 	m.screen.Tree.Select(watch.Children[3].ID)
 	assert.Equal(t, "steps.list.[3]", SelectedExpression(m.screen.Tree))
+}
+
+// TestAWatchNeverShowsAnEarlierStopsAnswer: when the run let go of the hold, a
+// watch that had been failing says "(not held)", not the old error; and when
+// the run moved under a read, the watch is pending, not the previous stop's
+// value beside the new stop.
+func TestAWatchNeverShowsAnEarlierStopsAnswer(t *testing.T) {
+	t.Parallel()
+
+	m := started(t, newFake())
+	m.screen.Watches = []Watch{
+		{Expr: "failing", Err: "undefined here", Said: true},
+		{Expr: "moved", Value: &v1.DebugValue{Rendered: "7"}},
+	}
+
+	m.applyWatches([]watchResult{{expr: "failing", outcome: outcomeNotHeld}})
+	assert.Equal(t, "(not held)", m.screen.Watches[0].text())
+	assert.False(t, m.screen.Watches[0].Said, "a hold that ended resets what the console said")
+
+	m.applyWatches([]watchResult{{expr: "moved", outcome: outcomeSkipped}})
+	assert.Nil(t, m.screen.Watches[1].Value, "the value of the stop before the move was kept")
+	assert.Equal(t, "(reading)", m.screen.Watches[1].text())
+
+	// A failing watch the run moved under stays unsaid-twice: Said survives.
+	m.screen.Watches[0] = Watch{Expr: "failing", Err: "undefined here", Said: true}
+	m.applyWatches([]watchResult{{expr: "failing", outcome: outcomeSkipped}})
+	assert.True(t, m.screen.Watches[0].Said)
+	assert.Equal(t, "(reading)", m.screen.Watches[0].text())
 }
