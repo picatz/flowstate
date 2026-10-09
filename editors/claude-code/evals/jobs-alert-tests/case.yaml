@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: jobs-alert-tests
+description: Add a Flowfile test with a happy-path case and a failure-path case.
+context:
+  scaffold_script: scaffold.sh

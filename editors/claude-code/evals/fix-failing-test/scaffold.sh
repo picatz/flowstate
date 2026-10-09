@@ -23,6 +23,8 @@ tests:
       - task: http
         returns:
           status_code: 500
+      - task: log
+        returns: {}
     expect:
       ran: [fetch, alert]
 EOF
