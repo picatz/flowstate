@@ -767,7 +767,7 @@ flow explore [path]... [flags]
 
 Open the graph `flow graph` writes as a screen you move around in: every workflow is a row, and opening one shows what it calls, the signals it waits for and the tasks it runs, to any depth. The pane beside it describes the selected row, including what calls it.
 
-It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
+It reads the same sources as `flow graph`, with the same flags: Flowfiles under the paths, and with `--live` the runs on the server at `--address`, counted by workflow and status, and each workflow gains a runs row: open it for its fifty most recent runs, and select one for its run id, status, times, starter and labels. Press r to read them again; what is open stays open. The screen changes nothing anywhere.
 
 Keys are the debugger's: j and k move, enter or l opens, h closes or goes to the parent, ? lists them all, q leaves. Rows can be clicked and the wheel scrolls.
 

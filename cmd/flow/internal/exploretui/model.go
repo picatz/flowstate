@@ -3,6 +3,7 @@ package exploretui
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -23,6 +24,12 @@ type Config struct {
 	// Source says what Load reads, for the header.
 	Source string
 
+	// Runs reads a workflow's recent runs by its declared name, for the rows
+	// under its "runs" row. Nil leaves those rows out, which is what a screen
+	// over files alone wants. It is called from a command, and is allowed to be
+	// slow. more says the workflow has runs the answer leaves out.
+	Runs func(ctx context.Context, workflow string) (runs []*v1.RunSummary, more bool, err error)
+
 	Style Style
 
 	// Size is the terminal's size until the first resize message says otherwise.
@@ -37,6 +44,14 @@ type graphMsg struct {
 	seq   uint64
 	graph *v1.Graph
 	err   error
+}
+
+// runsMsg is a finished read of a workflow's runs, for the "runs" row Parent.
+type runsMsg struct {
+	parent string
+	runs   []*v1.RunSummary
+	more   bool
+	err    error
 }
 
 // Model is the explorer screen.
@@ -66,7 +81,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 
 	return Model{
 		cfg: cfg, ctx: ctx, keys: keys, seq: 1,
-		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true},
+		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true, Runs: map[string]*v1.RunSummary{}},
 	}, nil
 }
 
@@ -108,6 +123,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.leave()
 	case graphMsg:
 		return m.loaded(msg)
+	case runsMsg:
+		return m.ran(msg)
 	}
 
 	return m, nil
@@ -165,14 +182,64 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	}
 
 	m.screen.Index = NewIndex(msg.graph)
+	if m.cfg.Runs != nil {
+		m.screen.Index = m.screen.Index.WithRunRows()
+	}
 	tree.SetRoots(m.screen.Index.Roots())
-	load := m.screen.Index.Loader()
+	var cmds []tea.Cmd
 	for _, id := range opened {
 		if request, ok := tree.Expand(id); ok {
-			_ = tree.Load(load, request)
+			if cmd := m.fill(request); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 		}
 	}
 	tree.Select(selected)
+	m.reveal()
+
+	return m, tea.Batch(cmds...)
+}
+
+// fill answers a request for the children of a row. The index holds a graph
+// node's, so those arrive at once; a "runs" row's are read from the server, so
+// that is a command and the answer comes back as a message.
+func (m *Model) fill(request pane.Request) tea.Cmd {
+	x := m.screen.Index
+	if x == nil {
+		return nil
+	}
+	if workflow, ok := x.RunsOf(request.Parent); ok {
+		ctx, runs := m.ctx, m.cfg.Runs
+
+		return func() tea.Msg {
+			rows, more, err := runs(ctx, workflow)
+
+			return runsMsg{parent: request.Parent, runs: rows, more: more, err: err}
+		}
+	}
+	if err := m.screen.Tree.Load(x.Loader(), request); err != nil {
+		m.toast(ui.ToneWarning, err.Error())
+	}
+
+	return nil
+}
+
+// ran folds a finished read of runs into the row it was asked for.
+func (m Model) ran(msg runsMsg) (tea.Model, tea.Cmd) {
+	if msg.err != nil {
+		if m.ctx.Err() != nil {
+			return m, nil
+		}
+		// The row stays open and empty, so the person sees where it failed; closing
+		// and opening it asks again.
+		m.screen.Tree.Collapse(msg.parent)
+		m.toast(ui.ToneDanger, "cannot read the runs: "+msg.err.Error())
+
+		return m, nil
+	}
+	rows, byRow := RunRows(msg.parent, msg.runs, msg.more)
+	m.screen.Tree.Fill(msg.parent, 0, rows, len(rows))
+	maps.Copy(m.screen.Runs, byRow)
 	m.reveal()
 
 	return m, nil
@@ -267,15 +334,17 @@ func (m Model) key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 		return m, m.read(m.seq)
 	default:
-		m.navigate(binding.Name)
+		return m, m.navigate(binding.Name)
 	}
 
 	return m, nil
 }
 
-// navigate moves within the tree.
-func (m *Model) navigate(name string) {
+// navigate moves within the tree, and returns the command a row that needs a
+// read starts.
+func (m *Model) navigate(name string) tea.Cmd {
 	tree, rows := m.screen.Tree, max(1, m.treeRows())
+	var cmd tea.Cmd
 	switch name {
 	case bindUp:
 		tree.Move(-1)
@@ -290,9 +359,9 @@ func (m *Model) navigate(name string) {
 	case bindEnd:
 		tree.End()
 	case bindToggle:
-		m.open(tree.Activate(tree.Selected()))
+		cmd = m.open(tree.Activate(tree.Selected()))
 	case bindExpand:
-		m.open(tree.Expand(tree.Selected()))
+		cmd = m.open(tree.Expand(tree.Selected()))
 	case bindCollapse:
 		if tree.Open(tree.Selected()) {
 			tree.Collapse(tree.Selected())
@@ -301,17 +370,17 @@ func (m *Model) navigate(name string) {
 		}
 	}
 	tree.Reveal(rows)
+
+	return cmd
 }
 
-// open answers a request to load children. The index holds them all, so the
-// answer is immediate.
-func (m *Model) open(request pane.Request, load bool) {
-	if !load || m.screen.Index == nil {
-		return
+// open answers a request to load children, if there is one.
+func (m *Model) open(request pane.Request, load bool) tea.Cmd {
+	if !load {
+		return nil
 	}
-	if err := m.screen.Tree.Load(m.screen.Index.Loader(), request); err != nil {
-		m.toast(ui.ToneWarning, err.Error())
-	}
+
+	return m.fill(request)
 }
 
 // scrollHelp moves the help overlay by delta lines, within the lines it has.
@@ -345,8 +414,10 @@ func (m Model) click(mouse tea.Mouse) (tea.Model, tea.Cmd) {
 		}
 	case pane.KindRow, pane.KindMore:
 		if id, ok := strings.CutPrefix(hit.ID, rowPrefix); ok {
-			m.open(m.screen.Tree.Activate(id))
+			cmd := m.open(m.screen.Tree.Activate(id))
 			m.screen.Tree.Reveal(max(1, m.treeRows()))
+
+			return m, cmd
 		}
 	}
 
