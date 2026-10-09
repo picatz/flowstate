@@ -199,7 +199,8 @@ export const register: Register = (on, options) => {
   on('classic.Stop', async ($, e, next) => {
     const out = await next(e)
     // The model was already sent back once by a Stop hook: never loop.
-    if (!nudges || e.stop_hook_active) return out
+    // An earlier Stop hook's block stands; this one neither replaces it nor spends its once-per-turn nudge.
+    if (!nudges || e.stop_hook_active || out.block !== undefined) return out
     try {
       const state = await read($, verify)
       let suite = false

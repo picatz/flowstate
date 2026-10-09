@@ -40,6 +40,13 @@ test('a command whose exit status says nothing about the check is not credited',
     'flow validate a.flow.yaml\necho ok',
     'flow validate --help',
     'flow test -h',
+    'flow validate --help=true',
+    'flow validate -h=true',
+    'flow test --list',
+    'flow test --list=true',
+    'flow test --watch .',
+    'flow validate --version',
+    'flow test --dry-run',
     'flow validate "unbalanced',
     `flow validate ${'a'.repeat(70 * 1024)}`,
   ]) {
@@ -109,14 +116,14 @@ test('a test suite is found by name and the scan is bounded', () => {
 })
 
 // The hooks themselves, with the engine stubbed.
-const stubTurn = (on: any, files: string[] = [], bash: { isError?: true; interrupted?: boolean } = {}) => {
+const stubTurn = (on: any, files: string[] = [], bash: { isError?: true; interrupted?: boolean; backgroundTaskId?: string } = {}, earlier?: string) => {
   on('turn.start', () => ({ turnId: 't' }))
-  on('classic.Stop', () => ({}))
+  on('classic.Stop', () => (earlier === undefined ? {} : { block: earlier }))
   on('tool.call', (_$: unknown, e: { tool: string }) =>
     e.tool === 'Bash'
       ? bash.isError
         ? { result: undefined, isError: true }
-        : { result: { stdout: '', stderr: '', interrupted: bash.interrupted ?? false } }
+        : { result: { stdout: '', stderr: '', interrupted: bash.interrupted ?? false, backgroundTaskId: bash.backgroundTaskId } }
       : { result: 'ok' })
   on('process.run', () => ({ value: { exitCode: 0, stdout: '{"file":"a.flow.yaml","diagnostics":[]}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.list', () => ({ value: files.map(name => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) }))
@@ -167,6 +174,14 @@ test('an interrupted validate leaves the nudge', async ($, on) => {
   expect((await stop($)).block).toContain('flow validate')
 })
 
+test('a backgrounded validate leaves the nudge', async ($, on) => {
+  stubTurn(on, [], { backgroundTaskId: 'b1' })
+  await $.turn.start({ text: 'go', turnId: 't' })
+  await $.tool.call({ tool: 'Write', file_path: 'a.flow.yaml', content: 'x' })
+  await $.tool.call({ tool: 'Bash', command: 'flow validate a.flow.yaml' })
+  expect((await stop($)).block).toContain('flow validate')
+})
+
 test('with a test suite beside it, validate is not enough', async ($, on) => {
   stubTurn(on, ['a.flow.yaml', 'a.test.yaml'])
   await $.turn.start({ text: 'go', turnId: 't' })
@@ -196,4 +211,12 @@ test('the reminder can be turned off', { options: { verifyBeforeDone: false } },
   await $.turn.start({ text: 'go', turnId: 't' })
   await $.tool.call({ tool: 'Write', file_path: 'a.flow.yaml', content: 'x' })
   expect((await stop($)).block).toBeUndefined()
+})
+
+test('a block an earlier Stop hook returned survives, and the nudge is kept for later', async ($, on) => {
+  stubTurn(on, [], {}, 'earlier hook says no')
+  await $.turn.start({ text: 'go', turnId: 't' })
+  await $.tool.call({ tool: 'Write', file_path: 'a.flow.yaml', content: 'x' })
+
+  expect((await stop($)).block).toBe('earlier hook says no')
 })

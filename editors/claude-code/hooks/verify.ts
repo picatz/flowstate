@@ -34,11 +34,14 @@ export const recordEdit = (state: Verify, path: unknown): Verify => {
   }
 }
 
+/** Flags that make `flow validate` or `flow test` exit 0 having checked nothing (or never exit), with or without `=value`. */
+const NO_RUN = new Set(['-h', '--help', '--version', '--list', '--watch', '--dry-run'])
+
 /**
  * Which check a Bash command is, when it is one: `flow validate` or `flow test`
  * run as a plain `&&` chain. Anything the exit status could not speak for (a
  * pipe, `;`, `||`, a background `&`, a substitution, a here-document, a command
- * the tokenizer did not follow, `--help`) is not credited: the nudge is advice,
+ * the tokenizer did not follow, a flag in NO_RUN) is not credited: the nudge is advice,
  * so a missed credit costs one reminder and a false one hides a real gap.
  */
 export const checkOf = (command: unknown, flowBinary = 'flow'): 'validate' | 'test' | undefined => {
@@ -51,7 +54,7 @@ export const checkOf = (command: unknown, flowBinary = 'flow'): 'validate' | 'te
   for (const words of segments) {
     const verb = words[1]
     if (!names.has(basename(words[0] ?? '')) || (verb !== 'validate' && verb !== 'test')) continue
-    if (words.slice(2).some(w => w === '-h' || w === '--help')) return undefined
+    if (words.slice(2).some(w => NO_RUN.has(w.split('=')[0]))) return undefined
     // `test` covers `validate`, so a chain naming both is credited with the stronger.
     if (found !== 'test') found = verb
   }
