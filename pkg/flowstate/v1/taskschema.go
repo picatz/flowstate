@@ -408,6 +408,16 @@ func taskInputNotes(def TaskDef) map[string][]string {
 	for _, name := range def.RequiredSecretInputs {
 		notes[name] = append(notes[name], requiredSecretReferenceNote)
 	}
+
+	// The fields a task claims must be written out, read from the descriptor so
+	// the page an author reads and the check the compiler applies are one fact.
+	// An unreadable claim is refused when the task loads, so none is shown here.
+	claims, _ := InputClaims(def.Inputs)
+	for _, c := range claims {
+		if len(c.Literal) > 0 {
+			notes[c.Name] = append(notes[c.Name], "must be literal text, never an expression, at: "+strings.Join(c.Literal, ", "))
+		}
+	}
 	// def.SecretInputs is the plugin whole-value list (TaskManifest.secret_inputs,
 	// #712): a different mechanism from AuthorityInputs/NestedSecretInputs, but
 	// the same fact about what an author may legally write there, so it earns

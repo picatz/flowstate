@@ -57,6 +57,10 @@ func RequiredSecretInputMessage(taskName, input string) string {
 // [CheckStructureDepth]. The first refusal ends the walk rather than being
 // latched while it runs on.
 //
+// The same walk also holds each task to the fields it claims must be literals
+// (see [LiteralFieldViolation]), so one pass over the specification applies every
+// claim the input option carries.
+//
 // The refusal names the step and the input and never the value: the value is
 // the credential this exists to keep out of durable state, and an error message
 // is a place values are read from.
@@ -73,6 +77,15 @@ func CheckRequiredSecretInputs(wf *Workflow, registry *Registry) error {
 			return err
 		}
 		if err := checkNodeRequiredSecretInputs(node.GetId(), "undo", node.GetUndo().GetTask(), registry); err != nil {
+			return err
+		}
+
+		// The literal claim shares this walk rather than making a second one: a
+		// position that can reach a task is a position both claims are held at.
+		if err := checkNodeLiteralFields(node.GetId(), "", node.GetTask(), registry); err != nil {
+			return err
+		}
+		if err := checkNodeLiteralFields(node.GetId(), "undo", node.GetUndo().GetTask(), registry); err != nil {
 			return err
 		}
 	}

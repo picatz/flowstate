@@ -65,21 +65,20 @@ signals:
   clicked:
     allow: ${sender.identity.principal == "flowstate://webhook#slack-click-approval/slack-click"}
 steps:
-  # The change as markup, built once: {change} is escaped, so a value that looks
-  # like <!channel> is shown, never acted on.
-  - id: change_markup
-    value:
-      markup:
-        template: "*{change}*"
-        args:
-          change: ${inputs.change}
   - id: notify
     slack.post:
       card:
         approval:
           title:
             plain: Approval required
-          summary: ${steps.change_markup.value}
+          # A markup template is a literal the host checks; {change} is the
+          # escaped argument, so a value that looks like <!channel> is shown,
+          # never acted on.
+          summary:
+            markup:
+              template: "*{change}*"
+              args:
+                change: ${inputs.change}
           approve:
             label:
               plain: Approve
@@ -119,7 +118,11 @@ steps:
           state: '${steps.gate.approved ? "ok" : "failed"}'
           title:
             plain: ${steps.outcome_title.value}
-          detail: ${steps.change_markup.value}
+          detail:
+            markup:
+              template: "Change: *{what}*"
+              args:
+                what: ${inputs.change}
       response_url: ${steps.gate.response_url}
       text: '${steps.outcome_title.value + ": " + inputs.change}'
   - id: answer_timeout
@@ -130,7 +133,11 @@ steps:
           state: warn
           title:
             plain: ${steps.outcome_title.value}
-          detail: ${steps.change_markup.value}
+          detail:
+            markup:
+              template: "Change: *{what}*"
+              args:
+                what: ${inputs.change}
       channel: ${steps.notify.channel}
       text: '${steps.outcome_title.value + ": " + inputs.change}'
       token: ${secret('env:SLACK_BOT_TOKEN')}

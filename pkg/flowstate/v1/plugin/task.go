@@ -63,6 +63,12 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
 	}
 
+	// A literal claim on a field it cannot constrain would look protected and
+	// not be, so the task is refused rather than loaded with it.
+	if _, err := flowstatev1.LiteralInputClaims(inputs); err != nil {
+		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
+	}
+
 	return flowstatev1.TaskDef{
 		Name:           qualified,
 		Summary:        manifest.GetSummary(),

@@ -98,7 +98,23 @@ func (Secret) EnumDescriptor() ([]byte, []int) {
 type InputOptions struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Secret is how the input accepts a secret reference. Unset is no claim.
-	Secret        Secret `protobuf:"varint,1,opt,name=secret,proto3,enum=flowstate.v1.Secret" json:"secret,omitempty"`
+	Secret Secret `protobuf:"varint,1,opt,name=secret,proto3,enum=flowstate.v1.Secret" json:"secret,omitempty"`
+	// Literal says the input must be written out as a literal: the text the
+	// author typed, never an expression, a secret or credential reference, or a
+	// structure holding either. Unset is no claim.
+	//
+	// It is for a string a task renders without escaping, such as the template of
+	// a chat message, where a value resolved from an event would be interpreted
+	// as the platform's markup. The task cannot tell a literal from an
+	// expression's result after resolution, so the claim is enforced before
+	// that: `flow validate` and the compiler refuse the step, and the host
+	// refuses a specification built by hand.
+	//
+	// Valid on a string field, singular or repeated, or a map whose values are
+	// strings, in the task's input message or in any message nested inside it
+	// through singular, repeated, or map fields. A claim on a field of any other
+	// shape is refused when the task is loaded.
+	Literal       bool `protobuf:"varint,2,opt,name=literal,proto3" json:"literal,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -138,6 +154,13 @@ func (x *InputOptions) GetSecret() Secret {
 		return x.Secret
 	}
 	return Secret_SECRET_UNSPECIFIED
+}
+
+func (x *InputOptions) GetLiteral() bool {
+	if x != nil {
+		return x.Literal
+	}
+	return false
 }
 
 var file_flowstate_v1_schema_proto_extTypes = []protoimpl.ExtensionInfo{
@@ -197,9 +220,10 @@ var File_flowstate_v1_schema_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_schema_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/schema.proto\x12\fflowstate.v1\x1a google/protobuf/descriptor.proto\"<\n" +
+	"\x19flowstate/v1/schema.proto\x12\fflowstate.v1\x1a google/protobuf/descriptor.proto\"V\n" +
 	"\fInputOptions\x12,\n" +
-	"\x06secret\x18\x01 \x01(\x0e2\x14.flowstate.v1.SecretR\x06secret*`\n" +
+	"\x06secret\x18\x01 \x01(\x0e2\x14.flowstate.v1.SecretR\x06secret\x12\x18\n" +
+	"\aliteral\x18\x02 \x01(\bR\aliteral*`\n" +
 	"\x06Secret\x12\x16\n" +
 	"\x12SECRET_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12SECRET_WHOLE_VALUE\x10\x01\x12\x13\n" +

@@ -40,7 +40,11 @@ func init() {
 		{
 			Name: "flowstate.chat.v1.Markup.template",
 			Leading: " template is the author-written text, a literal and never a value resolved\n" +
-				" from an event.\n",
+				" from an event.\n" +
+				"\n" +
+				" The claim makes the host refuse an expression, secret reference, or\n" +
+				" structure holding either here, since the adapter renders the template\n" +
+				" unescaped and cannot tell afterwards where its text came from.\n",
 		},
 		{
 			Name: "flowstate.chat.v1.Markup.args",

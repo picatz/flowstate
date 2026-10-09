@@ -8,6 +8,7 @@ package chatv1
 
 import (
 	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
+	_ "github.com/picatz/flowstate/pkg/flowstate/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
@@ -429,6 +430,10 @@ type Markup struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// template is the author-written text, a literal and never a value resolved
 	// from an event.
+	//
+	// The claim makes the host refuse an expression, secret reference, or
+	// structure holding either here, since the adapter renders the template
+	// unescaped and cannot tell afterwards where its text came from.
 	Template string `protobuf:"bytes,1,opt,name=template,proto3" json:"template,omitempty"`
 	// args maps a placeholder name to the value an adapter escapes before
 	// substituting it into the template.
@@ -1669,15 +1674,14 @@ var File_flowstate_chat_v1_chat_proto protoreflect.FileDescriptor
 
 const file_flowstate_chat_v1_chat_proto_rawDesc = "" +
 	"\n" +
-	"\x1cflowstate/chat/v1/chat.proto\x12\x11flowstate.chat.v1\x1a\x1bbuf/validate/validate.proto\"\x82\x01\n" +
+	"\x1cflowstate/chat/v1/chat.proto\x12\x11flowstate.chat.v1\x1a\x1bbuf/validate/validate.proto\x1a\x19flowstate/v1/schema.proto\"\x82\x01\n" +
 	"\x04Text\x12 \n" +
 	"\x05plain\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\xb8\x17H\x00R\x05plain\x123\n" +
 	"\x06markup\x18\x02 \x01(\v2\x19.flowstate.chat.v1.MarkupH\x00R\x06markup\x12\x14\n" +
 	"\x05emoji\x18\x03 \x01(\bR\x05emojiB\r\n" +
-	"\x04kind\x12\x05\xbaH\x02\b\x01\"\x91\x02\n" +
-	"\x06Markup\x12&\n" +
-	"\btemplate\x18\x01 \x01(\tB\n" +
-	"\xbaH\ar\x05\x10\x01\x18\xb8\x17R\btemplate\x12d\n" +
+	"\x04kind\x12\x05\xbaH\x02\b\x01\"\x97\x02\n" +
+	"\x06Markup\x12,\n" +
+	"\btemplate\x18\x01 \x01(\tB\x10\xbaH\ar\x05\x10\x01\x18\xb8\x17\x8a\xb5\x18\x02\x10\x01R\btemplate\x12d\n" +
 	"\x04args\x18\x02 \x03(\v2#.flowstate.chat.v1.Markup.ArgsEntryB+\xbaH(\x9a\x01%\x10 \"\x1ar\x182\x16^[a-z][a-z0-9_]{0,31}$*\x05r\x03\x18\xb8\x17R\x04args\x12@\n" +
 	"\bmentions\x18\x03 \x03(\v2\x1a.flowstate.chat.v1.MentionB\b\xbaH\x05\x92\x01\x02\x10\bR\bmentions\x1a7\n" +
 	"\tArgsEntry\x12\x10\n" +
