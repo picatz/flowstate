@@ -396,3 +396,26 @@ func TestFuzzRecordFanOutIsBoundedByWork(t *testing.T) {
 	require.Len(t, skipped, 1)
 	assert.Contains(t, skipped[0], "root: its type nests more than")
 }
+
+// TestFuzzListHonorsMinItems: a list below its floor is refused by the binder,
+// so the candidates are exactly the floor long, and a floor too long to build is
+// skipped with a reason instead of yielding inconclusive draws.
+func TestFuzzListHonorsMinItems(t *testing.T) {
+	t.Parallel()
+
+	list := &v1.Type{Kind: &v1.Type_List{List: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}}}
+
+	floor := uint64(5)
+	candidates, _ := inputCandidates(nil, &v1.InputDeclaration{Name: "xs", ValueType: list, MinItems: &floor})
+	require.NotEmpty(t, candidates)
+	for _, c := range candidates {
+		items, ok := c.([]any)
+		require.True(t, ok)
+		assert.Len(t, items, 5)
+	}
+
+	huge := uint64(maxCandidateNodes)
+	candidates, why := inputCandidates(nil, &v1.InputDeclaration{Name: "xs", ValueType: list, MinItems: &huge})
+	assert.Empty(t, candidates)
+	assert.Contains(t, why, "min_items")
+}

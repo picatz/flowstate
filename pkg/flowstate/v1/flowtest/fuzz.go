@@ -544,9 +544,6 @@ const (
 	// next twice cost twice as much per level; the caps above bound what is kept,
 	// and this bounds the work of producing it.
 	maxGeneratorSteps = 4096
-
-	// maxGeneratedItems bounds a list built to a declaration's `min_items:`.
-	maxGeneratedItems = 64
 )
 
 // inputCandidates are the boundary values worth trying for one declaration,
@@ -610,7 +607,13 @@ func (g *typeGenerator) candidates(t *v1.Type, d *v1.InputDeclaration, depth int
 		}
 		out = append(out, []any{picked[0], picked[len(picked)-1]})
 		if n := d.GetMinItems(); n > 1 {
-			out = append(out, slices.Repeat([]any{picked[0]}, int(min(n, maxGeneratedItems))))
+			// A list below its floor is refused by the binder, so only the floor
+			// itself is worth drawing. One too long to build is named, not left to
+			// make every draw inconclusive.
+			if n > maxCandidateNodes/2 {
+				return nil, fmt.Sprintf("min_items %d is more than the %d items fuzzing builds", n, maxCandidateNodes/2)
+			}
+			out = []any{slices.Repeat([]any{picked[0]}, int(n)), slices.Repeat([]any{picked[len(picked)-1]}, int(n))}
 		}
 
 		return bounded(out)

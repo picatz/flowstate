@@ -594,7 +594,7 @@ lacks fails with a missing-key error that a real task would not. Read the
 reported failure before treating it as a workflow defect, and widen the stub.
 A `--fuzz` run in which no file judged a generated case fails, since it verified
 nothing. Not yet covered: stub answers drawn from output descriptors,
-structural input types, and shrinking.
+and shrinking of a generated value within one input.
 
 ### Would the file notice the program changing: `--mutate`
 
