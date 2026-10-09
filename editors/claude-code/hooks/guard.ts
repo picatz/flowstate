@@ -123,7 +123,7 @@ export const tokenize = (raw: string): Tokens => {
   return { segments, quoted, exact }
 }
 
-const basename = (path: string): string => path.replace(/^.*[\\/]/, '')
+export const basename = (path: string): string => path.replace(/^.*[\\/]/, '')
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 /** A redirection operator with a word attached (`2>log`, `>>out`, `2>&1`) or standing alone (`>`, `<<<`, `&>`). */
 const REDIRECT = /^(?:\d*|&)[<>]/

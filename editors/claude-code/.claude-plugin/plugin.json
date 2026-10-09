@@ -24,6 +24,12 @@
       "title": "Confirm server actions",
       "description": "Ask before Claude runs a flow verb that changes a server (run, signal, cancel, terminate, schedule changes), naming the verb and the server address.",
       "default": true
+    },
+    "verifyBeforeDone": {
+      "type": "boolean",
+      "title": "Remind to verify",
+      "description": "Once per turn, remind Claude to run flow validate (or flow test, when a suite exists) before it finishes if it edited a Flowfile and none has passed since.",
+      "default": true
     }
   }
 }
