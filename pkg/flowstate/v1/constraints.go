@@ -205,6 +205,70 @@ func CompileOutputMustExpression(profile, mustExpr string) (*cel.Ast, error) {
 }
 
 func compileMustIn(env *cel.Env, mustExpr string) (*cel.Ast, error) {
+	key := compiledMustKey{env: env, expr: mustExpr}
+	if checked, ok := compiledMusts.get(key); ok {
+		return checked, nil
+	}
+	checked, err := compileMustUncached(env, mustExpr)
+	if err != nil {
+		return nil, err
+	}
+	compiledMusts.put(key, checked)
+
+	return checked, nil
+}
+
+// compiledMustKey names one compilation: the environment is one of the
+// bounded set [mustEnvFor] hands out, so the pointer stands for its profile and
+// `this` type.
+type compiledMustKey struct {
+	env  *cel.Env
+	expr string
+}
+
+// Bounds on [compiledMusts], the same shape as [parsedExprs]: the expression is
+// author-supplied text, so entries and the size of one are capped and a full
+// cache is emptied rather than grown.
+const (
+	compiledMustEntries = 1024
+	compiledMustMaxLen  = 1024
+)
+
+// compiledMusts remembers successful `must:` compilations. A constraint is
+// compiled again for every run that binds the input it guards, and a checked
+// [cel.Ast] is immutable once built, so sharing it is safe; a refusal is not
+// remembered, so every run of a bad constraint still reports it.
+var compiledMusts = &compiledMustCache{entries: map[compiledMustKey]*cel.Ast{}}
+
+type compiledMustCache struct {
+	mu      sync.Mutex
+	entries map[compiledMustKey]*cel.Ast
+}
+
+func (c *compiledMustCache) get(key compiledMustKey) (*cel.Ast, bool) {
+	if len(key.expr) > compiledMustMaxLen {
+		return nil, false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ast, ok := c.entries[key]
+
+	return ast, ok
+}
+
+func (c *compiledMustCache) put(key compiledMustKey, ast *cel.Ast) {
+	if len(key.expr) > compiledMustMaxLen {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.entries) >= compiledMustEntries {
+		clear(c.entries)
+	}
+	c.entries[key] = ast
+}
+
+func compileMustUncached(env *cel.Env, mustExpr string) (*cel.Ast, error) {
 	parsed, iss := env.Parse(mustExpr)
 	if iss != nil && iss.Err() != nil {
 		return nil, mustIssues(iss)
