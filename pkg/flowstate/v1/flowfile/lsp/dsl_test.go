@@ -1593,3 +1593,39 @@ func positionOfKey(t *testing.T, src, key string, minIndent int, after string) l
 	t.Fatalf("test source declares no key %q", key)
 	return lsp.Position{}
 }
+
+// TestLoopIteratorOverRecordsIsNamedByItsRecord: CEL holds a record as `dyn`, so
+// hover has to say what the item is from the declaration.
+func TestLoopIteratorOverRecordsIsNamedByItsRecord(t *testing.T) {
+	t.Parallel()
+
+	const src = `edition: v2026.4
+name: records
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true}
+inputs:
+  lines:
+    type: "list(Line)"
+    default: []
+steps:
+  - id: repeat
+    for_each:
+      items: ${inputs.lines}
+      as: line
+      steps:
+        - id: body
+          log:
+            message: ${line.sku}
+`
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///records.yaml"
+	require.Empty(t, messages(c.open(uri, src).Diagnostics))
+
+	pos := positionOf(t, src, "${line.sku}", 3)
+	got := c.hover(uri, pos.Line, pos.Character)
+	require.NotNil(t, got)
+	assert.Contains(t, hoverText(got), "Its type is `Line`")
+}
