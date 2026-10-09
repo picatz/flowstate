@@ -278,6 +278,11 @@ func (n literalNode) mapping() ([]literalEntry, bool) {
 					// knowable, so nothing under it can be shown literal.
 					return nil, false
 				}
+				if _, isString := constant.GetConstantKind().(*expr.Constant_StringValue); !isString {
+					// A key that is not text names no field, but a decoder
+					// that coerced it might; nothing under it is shown literal.
+					return nil, false
+				}
 				key = constant.GetStringValue()
 			}
 			out = append(out, literalEntry{key: key, node: literalNode{expr: entry.GetValue()}})
@@ -344,9 +349,14 @@ func (w *literalWalker) claimsUnder(md protoreflect.MessageDescriptor) []string 
 	if paths, done := w.claims[md]; done {
 		return paths
 	}
-	// A descriptor whose claims are malformed is refused when its task loads;
-	// here, unreadable claims are read as the claims there are.
-	paths, _ := LiteralInputClaims(md)
+	// A descriptor whose claims are malformed is refused when its task loads,
+	// but a task registered in process skips that load. Claims that cannot be
+	// read fail closed: the message is treated as claimed throughout, so only
+	// a literal passes beneath it.
+	paths, err := LiteralInputClaims(md)
+	if err != nil {
+		paths = []string{"unreadable claims"}
+	}
 	w.claims[md] = paths
 
 	return paths

@@ -282,6 +282,14 @@ func TestLiteralFieldViolation(t *testing.T) {
 			value: v1.NewStructureMap(map[string]*v1.Value{"name": v1.NewLiteral("x")}),
 		},
 		{
+			name: "a key that is not text hides which field the value lands in", input: "item",
+			value: exprValue(&expr.Expr{ExprKind: &expr.Expr_StructExpr{StructExpr: &expr.Expr_CreateStruct{Entries: []*expr.Expr_CreateStruct_Entry{{
+				KeyKind: &expr.Expr_CreateStruct_Entry_MapKey{MapKey: &expr.Expr{ExprKind: &expr.Expr_ConstExpr{ConstExpr: &expr.Constant{ConstantKind: &expr.Constant_Int64Value{Int64Value: 1}}}}},
+				Value:   identExpr("event"),
+			}}}}}),
+			field: "item.name", found: "an expression",
+		},
+		{
 			name: "a list element is held to the claim", input: "items",
 			value: exprValue(listExpr(asMap(map[string]*expr.Expr{"name": constExpr("a")}), asMap(map[string]*expr.Expr{"name": identExpr("event")}))),
 			field: "items[1].name", found: "an expression",
