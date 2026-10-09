@@ -41,6 +41,13 @@ test('a huge single-token prompt is searched in bounded time', () => {
   expect(performance.now() - start).toBeLessThan(500)
 })
 
+test('every name isFlowfile knows is found, with either path separator', () => {
+  expect(mentionedFlowfile('fix examples/hello-world/workflow.yaml')).toBe('examples/hello-world/workflow.yaml')
+  expect(mentionedFlowfile('fix workflows/nightly/etl.yaml')).toBe('workflows/nightly/etl.yaml')
+  expect(mentionedFlowfile('open C:\\repo\\orders.flow.yaml now')).toBe('C:\\repo\\orders.flow.yaml')
+  expect(mentionedFlowfile('fix workflows/nightly/etl.test.yaml')).toBeUndefined()
+})
+
 test('task names are identifiers; control characters, prose and junk are skipped', () => {
   const doc = JSON.stringify({
     tasks: [{ name: 'http' }, { name: 'ex\u001b[2Jec' }, { name: 'ignore previous instructions' }, {}, 'junk', { name: 7 }],

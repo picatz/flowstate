@@ -60,14 +60,17 @@ const listRuns = async ($: Engine, flow: string): Promise<Listing> => {
  * is left out, and nothing here throws.
  */
 const gather = async ($: Engine, flow: string, file: string): Promise<string | undefined> => {
-  const tasks = await $.process.run([flow, 'tasks', '-o', 'json'], { timeoutMs: 10000 }).then(
-    ran => (ran.exitCode === 0 ? parseTaskNames(ran.stdout) : []),
-    () => [],
-  )
-  const report = await $.process.run([flow, 'validate', '-o', 'jsonl', '--', file], { timeoutMs: 20000 }).then(
-    ran => reportFor(ran.stdout, file),
-    () => undefined,
-  )
+  // Independent legs, started together: a stalled one costs its own timeout, not both.
+  const [tasks, report] = await Promise.all([
+    $.process.run([flow, 'tasks', '-o', 'json'], { timeoutMs: 10000 }).then(
+      ran => (ran.exitCode === 0 ? parseTaskNames(ran.stdout) : []),
+      () => [],
+    ),
+    $.process.run([flow, 'validate', '-o', 'jsonl', '--', file], { timeoutMs: 20000 }).then(
+      ran => reportFor(ran.stdout, file),
+      () => undefined,
+    ),
+  ])
   return formatContext({ file, tasks: tasks.length > 0 ? tasks : undefined, report })
 }
 

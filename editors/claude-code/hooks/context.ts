@@ -13,17 +13,19 @@ const MAX_PROMPT = 8192
 /** A path in a prompt is a word; a longer one is not a path. */
 const MAX_PATH = 200
 
-/** A prompt word that names a Flowfile: a `*.flow.yaml` path, or `Flowfile` with its optional extension. */
-const MENTION = /[^\s"'`<>()[\]{},;|&$\\]{0,200}(?:\.flow\.ya?ml|(?<![\w.-])Flowfile(?:\.ya?ml)?)(?![\w-]|\.\w)/g
+/** A prompt word: a run of path characters (a long one is rejected whole, not truncated), so the final judgement is `isFlowfile`'s alone. */
+const WORD = /[^\s"'`<>()[\]{},;|&$]+/g
 
 /**
  * The first Flowfile path a prompt names, or undefined. The text is the
  * user's, but the path ends up in an argv after `--`, so it must still be a
- * bounded word with no control characters, and a test file is not a Flowfile.
+ * bounded word with no control characters, and `isFlowfile` decides what a
+ * Flowfile is (a test file is not one). A sentence's closing punctuation is
+ * not part of the path.
  */
 export const mentionedFlowfile = (text: string): string | undefined => {
-  for (const m of text.slice(0, MAX_PROMPT).matchAll(MENTION)) {
-    const path = m[0]
+  for (const m of text.slice(0, MAX_PROMPT).matchAll(WORD)) {
+    const path = m[0].replace(/[.:!?]+$/, '')
     if (path.length === 0 || path.length > MAX_PATH || clean(path, MAX_PATH + 1) !== path) continue
     if (isFlowfile(path)) return path
   }
