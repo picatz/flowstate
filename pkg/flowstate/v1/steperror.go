@@ -201,3 +201,53 @@ func FailedStepOutputs(f StepFailure) *Node_Outputs {
 		},
 	}
 }
+
+// A StepError is a failure positioned at the step it happened in. It renders
+// the sentence the local driver has always produced (`step "id": cause`) and
+// unwraps to the cause, so every message and every errors.Is/As is unchanged;
+// what it adds is that the step id is a field instead of a prefix a reader has
+// to parse back out of text.
+type StepError struct {
+	Step string
+	Err  error
+}
+
+func (e *StepError) Error() string { return fmt.Sprintf("step %q: %v", e.Step, e.Err) }
+
+func (e *StepError) Unwrap() error { return e.Err }
+
+// A CalleeError is a failure inside a called workflow, carried to the `call:`
+// step that ran it. It renders as it always has (`workflow "name": cause`) and
+// unwraps to the cause; what it adds is a typed boundary, so [FailedStepOf] can
+// stop at the caller's step instead of descending into the callee's.
+type CalleeError struct {
+	Workflow string
+	Err      error
+}
+
+func (e *CalleeError) Error() string { return fmt.Sprintf("workflow %q: %v", e.Workflow, e.Err) }
+
+func (e *CalleeError) Unwrap() error { return e.Err }
+
+// FailedStepOf names the step a run's failure happened in: the innermost step
+// the failure passes through before it reaches the task that raised it, so a
+// failure inside a block names the step in the block, and one a `call:`
+// brought back from its callee names the `call:` step, whose id is the only
+// one this workflow's author wrote. It is empty when the failure carries no
+// step, as a run's own timeout does.
+func FailedStepOf(err error) string {
+	var step string
+	for ; err != nil; err = errors.Unwrap(err) {
+		switch e := err.(type) {
+		case *StepError:
+			step = e.Step
+		case *CalleeError:
+			// The callee's steps are not this workflow's to name.
+			return step
+		case *TaskError:
+			return step
+		}
+	}
+
+	return step
+}

@@ -1,5 +1,5 @@
 # `fail:` is how a workflow refuses on purpose, so the tests that matter assert
-# the refusal: the run failed, and it failed with the sentence the author wrote.
+# the refusal: the run failed, in the step that refuses, with the declared error.
 # The happy path pins the opposite direction, that a funded transfer is not
 # stopped by either guard.
 edition: v2026.4
@@ -18,7 +18,7 @@ tests:
     inputs:
       amount_cents: 9000
     expect:
-      failed: true
+      failed: {step: reject_overdraft, error: InsufficientFunds}
       error_contains: 'balance 5000 cannot cover 9000'
 
   - name: a non-positive amount raises AmountNotPositive
@@ -26,5 +26,5 @@ tests:
     inputs:
       amount_cents: 0
     expect:
-      failed: true
+      failed: {step: reject_empty, error: AmountNotPositive}
       error_contains: 'amount must be positive, got 0'

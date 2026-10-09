@@ -293,7 +293,7 @@ signals:
 | Field | Claim |
 | --- | --- |
 | `outputs` | The run's declared `outputs:`, exactly: every declared output must be named. Ignored when `failed: true`. |
-| `failed` | Whether the run failed. `failed: false` is how a case claims "it finishes" and nothing more. |
+| `failed` | Whether the run failed. `failed: false` is how a case claims "it finishes" and nothing more. `failed: {step: id, error: Name}` claims it failed in that step with that declared error name or built-in kind (either key alone is a claim), so a different failure cannot satisfy it. |
 | `error_contains` | Text the run's error must contain. |
 | `ran` | Steps that must have run. Checked on failed runs too. |
 | `skipped` | Steps that must not have run. |
@@ -304,6 +304,22 @@ signals:
 | `check` | CEL claims over the finished run. See below. |
 | `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
 | `response` | For a case with a webhook `trigger:` whose webhook declares `respond_within:`: the document its receiver would answer with. `status:` is `completed`, `failed` or `running`; `outputs:` (completed only) must equal the declared outputs exactly, a sensitive one as the withheld marker. |
+
+A bare `failed: true` is satisfied by any failure. To pin the failure down, name
+where it happened and what it was, in the vocabulary `errors:` declares:
+
+```yaml
+expect:
+  failed: {step: reject_overdraft, error: InsufficientFunds}
+```
+
+`error:` is the failure's kind: a name the workflow declares under `errors:`,
+or a built-in kind such as `timeout`. `step:` is the innermost step the failure
+passes through before the task that raised it; for a failure that comes back
+through a `call:`, it is the `call:` step. A name that is neither declared nor
+built in fails the case with the names it could have been.
+[`examples/declared-errors`](../examples/declared-errors/workflow.test.yaml)
+uses it.
 
 An `expect:` with nothing in it is refused, because a case that asserts nothing
 passes whatever the run did.

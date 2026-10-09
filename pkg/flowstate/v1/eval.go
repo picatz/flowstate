@@ -1713,7 +1713,7 @@ func runNodes(ctx context.Context, nodes []*Node, scope *Scope, undo *UndoLog, p
 			// reached (#2124).
 			observeGuardFailed(ctx, node, err)
 
-			return fmt.Errorf("step %q: %w", node.GetId(), AttributeToStep(err, node))
+			return &StepError{Step: node.GetId(), Err: AttributeToStep(err, node)}
 		}
 		if !run {
 			// The one fact the transcript cannot carry — a skipped step
@@ -1871,7 +1871,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		// step's own `timeout:` also arrives here as a context error and that
 		// one is an ordinary failure the policy exists to tolerate.
 		if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
-			return fmt.Errorf("step %q: %w", node.GetId(), err)
+			return &StepError{Step: node.GetId(), Err: err}
 		}
 		// A park is no more a failure than a cancellation is: the durable driver
 		// holds the run at the wait, so a tolerated park would let the local run
@@ -1883,7 +1883,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 		if errors.Is(err, ErrRunParked) {
 			scope.Outputs.StepValues[node.GetId()] = failureRecord(err)
 
-			return fmt.Errorf("step %q: %w", node.GetId(), err)
+			return &StepError{Step: node.GetId(), Err: err}
 		}
 		if !StepTolerates(node.GetPolicy(), ClassifyError(err)) {
 			// Recorded on the way out, under the same key and in the same shape a
@@ -1903,7 +1903,7 @@ func recordStepOutcome(ctx context.Context, node *Node, outputs *Node_Outputs, e
 				return held
 			}
 
-			return fmt.Errorf("step %q: %w", node.GetId(), err)
+			return &StepError{Step: node.GetId(), Err: err}
 		}
 		// Recorded without the `step %q` position the propagating path adds:
 		// the id is implied by the key this is recorded under, and repeating it
@@ -2261,7 +2261,7 @@ func runCall(ctx context.Context, callerStep, callerKind string, call *Call, sco
 		//
 		// Carrying what the callee withholds, for a debugger rendering it at
 		// the caller (#2210). Empty, and so nothing, without one.
-		return nil, fmt.Errorf("workflow %q: %w", callee.GetName(), WithFailureSensitiveValues(QualifyStepWithin(err, callee.GetName()), ExecutingSensitiveFromContext(calleeCtx)))
+		return nil, &CalleeError{Workflow: callee.GetName(), Err: WithFailureSensitiveValues(QualifyStepWithin(err, callee.GetName()), ExecutingSensitiveFromContext(calleeCtx))}
 	}
 
 	// The callee's outputs are computed from its own scope, so both what they

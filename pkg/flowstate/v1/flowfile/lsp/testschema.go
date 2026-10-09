@@ -108,6 +108,10 @@ const (
 	// testLevelCheck is one `check:` list entry: [flowtest.CheckClaim]. The one
 	// level yamlKeys cannot read — see checkClaimKeys.
 	testLevelCheck testDocLevel = "check"
+	// testLevelFailed is `expect.failed:` written as a mapping:
+	// [flowtest.FailedClaim]. Hand-read for the reason testLevelCheck is — see
+	// failedClaimKeys.
+	testLevelFailed testDocLevel = "failed"
 )
 
 // testDocKeys is completion's document-shape table for the test language, one
@@ -198,7 +202,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "refused", detail: "bool", docs: "Asserts that the delivery was refused and no run happened."},
 		{name: "idempotency_key", detail: "string", docs: "Must equal the key the replayed delivery evaluated to. Only meaningful alongside `trigger:`."},
 		{name: "response", detail: "map", docs: "The document a waiting receiver would answer the replayed delivery with, for a webhook that declares `respond_within:`: `status:` (`completed`, `failed` or `running`) and, for a completed run, its declared `outputs:`. Only meaningful alongside `trigger:`."},
-		{name: "failed", detail: "bool", docs: "Asserts whether the run failed outright, as distinct from a step's failure being tolerated by `continue_on_error:`."},
+		{name: "failed", detail: "bool or map", docs: "Asserts whether the run failed outright, as distinct from a step's failure being tolerated by `continue_on_error:`. A mapping, `{step:, error:}`, also says where and how: the step it failed in and the declared error name or built-in kind it carries."},
 		{name: "error_contains", detail: "string", docs: "Must appear in the run's failure text. Only meaningful alongside `failed: true`."},
 		{name: "compensated", detail: "list", docs: "Names the steps that must have been undone, in any order."},
 		{name: "denied_signals", detail: "list", docs: "Names signals this case sends that the workflow's own `signals:` policy must refuse: each must have had at least one delivery denied, by the same check the server's Signal door runs."},
@@ -208,7 +212,17 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "invocations", detail: "list", docs: "How often tasks ran and in what order (#1667): `task:` or `step:` with `count:`, `never:`, or `at_least:`/`at_most:`, or an `order:` of steps."},
 		{name: "check", detail: "list", docs: "CEL claims over the finished run (#1072), for everything the named fields above cannot say."},
 	},
-	testLevelCheck: checkClaimKeys,
+	testLevelCheck:  checkClaimKeys,
+	testLevelFailed: failedClaimKeys,
+}
+
+// failedClaimKeys is [flowtest.FailedClaim]'s two keys, cited rather than
+// derived for the reason checkClaimKeys is: it implements UnmarshalYAML by
+// hand, so a misspelled key is refused, and declares no yaml struct tags.
+// They are the literals that method compares against.
+var failedClaimKeys = []dslKey{
+	{name: "step", detail: "step id", docs: "The step the run must fail in. For a failure that comes back through a `call:`, the `call:` step."},
+	{name: "error", detail: "error name", docs: "The error the run must fail with: a name the workflow declares under `errors:`, or a built-in kind such as `timeout`."},
 }
 
 // checkClaimKeys is [flowtest.CheckClaim]'s two keys, cited rather than
@@ -277,7 +291,8 @@ var testLevelChildren = map[testDocLevel]map[string]testDocLevel{
 		"sender": testLevelIdentity,
 	},
 	testLevelExpect: {
-		"check": testLevelCheck,
+		"check":  testLevelCheck,
+		"failed": testLevelFailed,
 	},
 }
 

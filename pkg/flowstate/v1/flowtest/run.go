@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -2502,14 +2503,16 @@ func assertExpectation(want *Expectation, spec *v1.Workflow, outputs *v1.Workflo
 
 	failed := runErr != nil
 	switch {
-	case want.Failed != nil && *want.Failed != failed:
+	case want.Failed != nil && want.Failed.Want != failed:
 		// An explicit expectation, in either direction, that did not hold:
 		// expected to fail and did not, or expected to succeed and did not.
 		failures = append(failures, &v1.Diagnostic{
 			Field: "expect.failed",
 			Message: fmt.Sprintf("expected the run to report failed=%t, got failed=%t (error: %s)",
-				*want.Failed, failed, renderedRunErr),
+				want.Failed.Want, failed, renderedRunErr),
 		})
+	case want.Failed != nil && failed:
+		failures = append(failures, assertFailedHow(want.Failed, spec, runErr, renderedRunErr)...)
 	case want.Failed == nil && failed:
 		// No expectation named this outcome as possible, so the case gets
 		// the same answer an explicit "expected to succeed" would: the run's
@@ -3083,6 +3086,50 @@ func setDebuggerRedactors(ctx context.Context, sensitive sensitiveInputs) bool {
 	return installed
 }
 
+// assertFailedHow judges the `step:` and `error:` of a `failed:` mapping
+// against a run that did fail. The kind is [v1.ClassifyError]'s, the one the
+// drivers record as `steps.<id>.failure.kind`, so a declared name from
+// `errors:` and a built-in kind are the same vocabulary here as in
+// `continue_on_error:`; the step is [v1.FailedStepOf]'s.
+func assertFailedHow(want *FailedClaim, spec *v1.Workflow, runErr error, renderedRunErr string) []*v1.Diagnostic {
+	var failures []*v1.Diagnostic
+	if want.Error != "" && !v1.ReportableFailureKind(spec, want.Error) {
+		// The claim can never hold, whatever the run did: say so, with the
+		// names it could have been, rather than only "got X".
+		failures = append(failures, &v1.Diagnostic{
+			Field: "expect.failed.error",
+			Value: want.Error,
+			Message: fmt.Sprintf("%q is neither an error this workflow declares under `errors:` (%s) nor a built-in kind (%s)",
+				want.Error, strings.Join(v1.DeclaredErrorNames(spec), ", "), strings.Join(builtinKindNames(), ", ")),
+		})
+	} else if got := v1.ClassifyError(runErr); want.Error != "" && string(got) != want.Error {
+		failures = append(failures, &v1.Diagnostic{
+			Field:   "expect.failed.error",
+			Value:   want.Error,
+			Message: fmt.Sprintf("expected the run to fail with %s, but it failed with %s (error: %s)", want.Error, got, renderedRunErr),
+		})
+	}
+	if got := v1.FailedStepOf(runErr); want.Step != "" && got != want.Step {
+		failures = append(failures, &v1.Diagnostic{
+			Step:  want.Step,
+			Field: "expect.failed.step",
+			Message: fmt.Sprintf("expected the run to fail in step %q, but it failed in %s (error: %s)",
+				want.Step, stepOrNone(got), renderedRunErr),
+		})
+	}
+
+	return failures
+}
+
+func builtinKindNames() []string {
+	var names []string
+	for _, kind := range v1.ErrorKinds() {
+		names = append(names, kind.String())
+	}
+
+	return names
+}
+
 // compensatedSteps are the steps whose `undo:` succeeded, in the order they
 // ran: the same list `run.compensated` binds, read from the structured account
 // rather than from the failure's text.
@@ -3115,4 +3162,13 @@ func freshCaseRegistry(test *Test, workflow *v1.Workflow, boundaries map[string]
 	}
 
 	return caseRegistry(stubs, v1.SensitiveInputNames(workflow), workflow, unanswered)
+}
+
+// stepOrNone names the step a failure happened in, or says there was none.
+func stepOrNone(step string) string {
+	if step == "" {
+		return "no step"
+	}
+
+	return strconv.Quote(step)
 }
