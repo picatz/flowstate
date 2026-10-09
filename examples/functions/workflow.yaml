@@ -21,6 +21,11 @@
 # and a field share is written once. The compiler expands it there too and the run checks
 # the plain predicate; `flow fmt` keeps the call as written.
 #
+# The same goes for the predicate that says who may act: `allow:` on a `signals:` entry,
+# on `debug:` and on a manual start (`triggers: manual:`) calls a function too (`isEditor` below, the caller's
+# claim passed in as an argument, since a body sees only its parameters). The server
+# evaluates the expanded predicate, and `flow fmt` keeps the call as written.
+#
 # A function may call another, and may not call itself, directly or through another.
 # A name the language already has (`size`, `has`, `sum`) is refused, so a definition
 # can never change what an existing expression means.
@@ -70,6 +75,12 @@ functions:
       name: string
     returns: bool
     body: ${name.matches("^[a-z]+$")}
+  isEditor:
+    description: Whether a team may sign a post off.
+    params:
+      team: string
+    returns: bool
+    body: ${team in ["editors", "desk"]}
 inputs:
   title:
     type: string
@@ -84,6 +95,16 @@ inputs:
     must: isWord(this)
   author:
     type: Author
+  review:
+    type: bool
+    default: false
+    description: hold the post for an editor's sign-off
+triggers:
+  manual:
+    allow: ${isEditor(sender.identity.claims.team)}
+signals:
+  sign-off:
+    allow: ${isEditor(sender.identity.claims.team)}
 steps:
   - id: publish
     log:
@@ -93,6 +114,18 @@ steps:
     if: ${isLong(inputs.title, 20)}
     log:
       message: ${"shorten before it is shown as " + slug(inputs.title)}
+  # Held for a sign-off only a team `isEditor` admits can give.
+  - id: signoff
+    if: ${inputs.review}
+    wait_for_signal:
+      name: sign-off
+      timeout: 1h
+      outputs:
+        timed_out: ${timed_out}
+  - id: signed
+    if: ${inputs.review && !steps.signoff.timed_out}
+    log:
+      message: signed off
 outputs:
   path:
     value: ${postPath(inputs.section, inputs.title)}

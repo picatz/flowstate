@@ -291,7 +291,15 @@ type ManualTrigger struct {
 	// the caller chooses the inputs, and there is no run starter to compare
 	// against, so a predicate over them alone would let the caller admit
 	// themselves. It contradicts [denied].
-	Allow         string `protobuf:"bytes,4,opt,name=allow,proto3" json:"allow,omitempty"`
+	Allow string `protobuf:"bytes,4,opt,name=allow,proto3" json:"allow,omitempty"`
+	// AllowSource is `allow` as the author wrote it, set only when it differs: an
+	// `allow` that calls a declared function (`FunctionDeclaration`) is stored
+	// expanded in `allow`, so the server evaluates plain CEL, and written here in
+	// the call form, without the `${` `}` fence, so `flow fmt` and Marshal write
+	// the file back as it was authored. Never evaluated, compiled or checked; a
+	// specification that carries one without a matching expansion is read by
+	// `allow` alone.
+	AllowSource   *string `protobuf:"bytes,5,opt,name=allow_source,json=allowSource,proto3,oneof" json:"allow_source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -343,6 +351,13 @@ func (x *ManualTrigger) GetRequireReason() bool {
 func (x *ManualTrigger) GetAllow() string {
 	if x != nil {
 		return x.Allow
+	}
+	return ""
+}
+
+func (x *ManualTrigger) GetAllowSource() string {
+	if x != nil && x.AllowSource != nil {
+		return *x.AllowSource
 	}
 	return ""
 }
@@ -1327,11 +1342,13 @@ const file_flowstate_v1_trigger_proto_rawDesc = "" +
 	"\bTriggers\x12?\n" +
 	"\bschedule\x18\x01 \x01(\v2\x1d.flowstate.v1.ScheduleTriggerB\x04\xe2A\x01\x01R\bschedule\x12F\n" +
 	"\bwebhooks\x18\x02 \x03(\v2\x1c.flowstate.v1.WebhookTriggerB\f\xe2A\x01\x01\xbaH\x05\x92\x01\x02\x10 R\bwebhooks\x129\n" +
-	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\x98\x01\n" +
+	"\x06manual\x18\x03 \x01(\v2\x1b.flowstate.v1.ManualTriggerB\x04\xe2A\x01\x01R\x06manual\"\xdb\x01\n" +
 	"\rManualTrigger\x12\x1c\n" +
 	"\x06denied\x18\x01 \x01(\bB\x04\xe2A\x01\x01R\x06denied\x12+\n" +
 	"\x0erequire_reason\x18\x02 \x01(\bB\x04\xe2A\x01\x01R\rrequireReason\x12\"\n" +
-	"\x05allow\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x10R\x05allowJ\x04\b\x03\x10\x04R\x12allowed_principals\"\xdc\x01\n" +
+	"\x05allow\x18\x04 \x01(\tB\f\xe2A\x01\x01\xbaH\x05r\x03\x18\x80\x10R\x05allow\x120\n" +
+	"\fallow_source\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10H\x00R\vallowSource\x88\x01\x01B\x0f\n" +
+	"\r_allow_sourceJ\x04\b\x03\x10\x04R\x12allowed_principals\"\xdc\x01\n" +
 	"\x0eTriggerContext\x12\x1b\n" +
 	"\x04kind\x18\x01 \x01(\tB\a\xbaH\x04r\x02\x18 R\x04kind\x12\x1b\n" +
 	"\x04name\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18@R\x04name\x12&\n" +
@@ -1481,6 +1498,7 @@ func file_flowstate_v1_trigger_proto_init() {
 		return
 	}
 	file_flowstate_v1_value_proto_init()
+	file_flowstate_v1_trigger_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

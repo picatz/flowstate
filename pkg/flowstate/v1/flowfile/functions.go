@@ -365,6 +365,37 @@ func (c *compiler) expandMust(m deferredMust) {
 	}
 }
 
+// expandPredicate expands the calls in an `allow:` predicate, which the server
+// stores and evaluates as source text and, like a `must:`, has no functions. It
+// returns what is stored and, when a call was expanded, the predicate as written
+// for `allow_source`, so Marshal writes the file back as authored. The scope rule
+// ("a predicate over `inputs` must also read the caller") and the cost bound are
+// asked of the expansion by [validatePolicyRules], because the expansion is what
+// runs.
+func (c *compiler) expandPredicate(text string, span Span, r ref) (string, *string, bool) {
+	if c.functions == nil {
+		return text, nil, true
+	}
+
+	var expanded string
+	if !c.expanding(span, r, func() (int, error) {
+		var (
+			nodes int
+			err   error
+		)
+		expanded, nodes, err = c.functions.ExpandText(text)
+
+		return nodes, err
+	}) {
+		return "", nil, false
+	}
+	if expanded == text {
+		return text, nil, true
+	}
+
+	return expanded, &text, true
+}
+
 // declaredFunctionsToYAML is the inverse of [compiler.declaredFunctions]: the
 // `functions:` block as written, in declaration order.
 func declaredFunctionsToYAML(declared []*v1.FunctionDeclaration) (yaml.MapSlice, error) {

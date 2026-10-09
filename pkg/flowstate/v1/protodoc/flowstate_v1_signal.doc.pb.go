@@ -54,6 +54,16 @@ func init() {
 				" retired; the wire encoding is unchanged and only the JSON name differs.\n",
 		},
 		{
+			Name: "flowstate.v1.SignalPolicy.allow_source",
+			Leading: " AllowSource is `allow` as the author wrote it, set only when it differs: an\n" +
+				" `allow` that calls a declared function (`FunctionDeclaration`) is stored\n" +
+				" expanded in `allow`, so the server evaluates plain CEL, and written here in\n" +
+				" the call form, without the `${` `}` fence, so `flow fmt` and Marshal write\n" +
+				" the file back as it was authored. Never evaluated, compiled or checked; a\n" +
+				" specification that carries one without a matching expansion is read by\n" +
+				" `allow` alone.\n",
+		},
+		{
 			Name: "flowstate.v1.Signal",
 			Leading: " Signal names something a workload waits to be told.\n" +
 				"\n" +

@@ -139,6 +139,13 @@ var exampleSignals = map[string]map[string]*v1.Node_Outputs{
 		"released": {NamedValues: map[string]*v1.Value{}},
 	},
 
+	// functions parks at `signoff` only for a post held with `review: true`; the
+	// harness starts it with the file's own defaults, so the gate is not reached
+	// here, and the signal is what an editor releasing a held post sends.
+	"functions": {
+		"sign-off": {NamedValues: map[string]*v1.Value{}},
+	},
+
 	// refund-approval is the getting-started tutorial's workflow, and this is
 	// the payload the tutorial's own `flow signal` line sends.
 	"refund-approval": {

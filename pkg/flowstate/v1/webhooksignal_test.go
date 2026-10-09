@@ -112,6 +112,31 @@ func TestABridgeNeedsAPolicyThatCouldAdmitItsTrigger(t *testing.T) {
 			policy:   &v1.SignalPolicy{Allow: namesTheTrigger().GetAllow() + ` || sender.identity.principal == "https://issuer.example.com#a@example.com"`},
 			admitted: true,
 		},
+		// The shape a declared function's expansion has: a bind around the same term.
+		{
+			name: "a function-backed predicate naming only a person is refused as the bare one is",
+			policy: &v1.SignalPolicy{Allow: `cel.bind(who, sender.identity.principal, sender.identity.principal == "` +
+				v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `")`},
+			refused: "every delivery would be denied",
+		},
+		{
+			name: "a function-backed predicate comparing the passed-in principal is refused when it omits the trigger",
+			policy: &v1.SignalPolicy{Allow: `cel.bind(who, sender.identity.principal, who == "` +
+				v1.QualifiedSubject("https://issuer.example.com", "sre-lead@example.com") + `")`},
+			refused: "every delivery would be denied",
+		},
+		{
+			name: "a function-backed predicate comparing the passed-in principal admits the trigger it names",
+			policy: &v1.SignalPolicy{Allow: `cel.bind(who, sender.identity.principal, who in ["` +
+				v1.QualifiedSubject(v1.WebhookPrincipalIssuer, v1.WebhookTriggerSubject("deploy-gate", "slack-approval")) + `"])`},
+			admitted: true,
+		},
+		{
+			name: "a function-backed predicate naming the trigger admits it",
+			policy: &v1.SignalPolicy{Allow: `cel.bind(who, sender.identity.principal, sender.identity.principal == "` +
+				v1.QualifiedSubject(v1.WebhookPrincipalIssuer, v1.WebhookTriggerSubject("deploy-gate", "slack-approval")) + `")`},
+			admitted: true,
+		},
 		{
 			name:   "an open side keeps a predicate satisfiable, so it is not refused",
 			policy: &v1.SignalPolicy{Allow: `sender.identity.principal == "https://issuer.example.com#a@example.com" || sender.identity.namespace == "ns"`},

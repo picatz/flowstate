@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"maps"
@@ -280,8 +281,8 @@ func (c *compiler) manualTrigger(key, n ast.Node, path string, r ref) *v1.Manual
 				"is not a `${...}` predicate; write the whole predicate as one `${...}` (for example "+
 					"`${sender.identity.claims.team == \"ops\"}`). Who may start the workload is one predicate, "+
 					"not a list")
-		} else if expression, ok := c.signalPolicyPredicate(resolved, p, allowRef); ok {
-			manual.Allow = expression
+		} else if expression, source, ok := c.signalPolicyPredicate(resolved, p, allowRef); ok {
+			manual.Allow, manual.AllowSource = expression, source
 		}
 	}
 
@@ -1034,7 +1035,7 @@ func manualTriggerToYAML(manual *v1.ManualTrigger) (any, error) {
 	}
 
 	if expression := manual.GetAllow(); expression != "" {
-		doc = append(doc, yaml.MapItem{Key: "allow", Value: fencedToYAML(expression)})
+		doc = append(doc, yaml.MapItem{Key: "allow", Value: fencedToYAML(cmp.Or(manual.GetAllowSource(), expression))})
 	}
 
 	if len(doc) == 0 {

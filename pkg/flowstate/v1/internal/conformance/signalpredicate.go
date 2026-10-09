@@ -16,6 +16,22 @@ const (
 	issuerB = "https://idp-b.example.com"
 )
 
+// FunctionAllowExpansion is the predicate the Flowfile compiler stores for an
+// `allow:` that calls a declared function, written out here so both drivers are
+// held to the plain CEL the server evaluates and not to the call.
+//
+// The file it comes from declares `isReleaseTeam(team: string): bool` with the body
+// `team == "release-managers"` and writes
+// `allow: ${isReleaseTeam(sender.identity.claims.team)}`. It is a constant for the
+// reason [FunctionMustExpansion] is, and `TestAFunctionInAnAllowIsCompiledToThePlainPredicate`
+// in the flowfile package compiles that file and asserts the compiler emits
+// exactly this.
+const FunctionAllowExpansion = `cel.bind(team, sender.identity.claims.team, team == "release-managers")`
+
+// FunctionAllowSource is the call form, carried beside the expansion and read by
+// nothing that runs.
+const FunctionAllowSource = `isReleaseTeam(sender.identity.claims.team)`
+
 func predicate(expression string) *v1.SignalPolicy {
 	return &v1.SignalPolicy{Allow: expression}
 }
@@ -182,6 +198,24 @@ func signalPredicateCases() []RehearsalSignalCase {
 			Policy: &v1.SignalPolicy{}, Starter: starter, Sender: approver(),
 			Why: "what a run frozen by a release that still recorded the retired rule list decodes " +
 				"to; it authorizes nobody, and is never read as an absent policy",
+		},
+		{
+			Name: "a predicate that called a declared function, for a sender it admits", SignalName: "deploy-approved",
+			Policy:  &v1.SignalPolicy{Allow: FunctionAllowExpansion, AllowSource: new(FunctionAllowSource)},
+			Starter: starter, Sender: approver(), Admitted: true,
+			Why: "the compiler stored the function's body, so both drivers evaluate plain CEL and neither has to know the name",
+		},
+		{
+			Name: "a predicate that called a declared function, for a sender it refuses", SignalName: "deploy-approved",
+			Policy:  &v1.SignalPolicy{Allow: FunctionAllowExpansion, AllowSource: new(FunctionAllowSource)},
+			Starter: starter, Sender: alice(issuerA),
+			Why: "the negative direction of the case above: a sender with no team is refused by the expansion, not admitted by the source",
+		},
+		{
+			Name: "a predicate whose source names a function nothing declares", SignalName: "deploy-approved",
+			Policy:  &v1.SignalPolicy{Allow: FunctionAllowExpansion, AllowSource: new("neverDeclared(sender.identity.claims.team)")},
+			Starter: starter, Sender: approver(), Admitted: true,
+			Why: "the source is never evaluated: the decision is the expansion's alone",
 		},
 		{
 			Name: "a predicate comparing with the starter, sender is the starter", SignalName: "deploy-approved",

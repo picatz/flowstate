@@ -64,7 +64,15 @@ type SignalPolicy struct {
 	//
 	// This field was `allow_expr` at the same number before the rule list was
 	// retired; the wire encoding is unchanged and only the JSON name differs.
-	Allow         string `protobuf:"bytes,3,opt,name=allow,proto3" json:"allow,omitempty"`
+	Allow string `protobuf:"bytes,3,opt,name=allow,proto3" json:"allow,omitempty"`
+	// AllowSource is `allow` as the author wrote it, set only when it differs: an
+	// `allow` that calls a declared function (`FunctionDeclaration`) is stored
+	// expanded in `allow`, so the server evaluates plain CEL, and written here in
+	// the call form, without the `${` `}` fence, so `flow fmt` and Marshal write
+	// the file back as it was authored. Never evaluated, compiled or checked; a
+	// specification that carries one without a matching expansion is read by
+	// `allow` alone.
+	AllowSource   *string `protobuf:"bytes,4,opt,name=allow_source,json=allowSource,proto3,oneof" json:"allow_source,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -102,6 +110,13 @@ func (*SignalPolicy) Descriptor() ([]byte, []int) {
 func (x *SignalPolicy) GetAllow() string {
 	if x != nil {
 		return x.Allow
+	}
+	return ""
+}
+
+func (x *SignalPolicy) GetAllowSource() string {
+	if x != nil && x.AllowSource != nil {
+		return *x.AllowSource
 	}
 	return ""
 }
@@ -693,9 +708,11 @@ var File_flowstate_v1_signal_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_signal_proto_rawDesc = "" +
 	"\n" +
-	"\x19flowstate/v1/signal.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"Q\n" +
+	"\x19flowstate/v1/signal.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\x1a\x1bflowstate/v1/identity.proto\x1a\x18flowstate/v1/value.proto\x1a\x1fgoogle/api/field_behavior.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x94\x01\n" +
 	"\fSignalPolicy\x12\x1e\n" +
-	"\x05allow\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\x05allowJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03R\x15distinct_from_starter\"\x87\x02\n" +
+	"\x05allow\x18\x03 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10R\x05allow\x120\n" +
+	"\fallow_source\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x10H\x00R\vallowSource\x88\x01\x01B\x0f\n" +
+	"\r_allow_sourceJ\x04\b\x01\x10\x02J\x04\b\x02\x10\x03R\x15distinct_from_starter\"\x87\x02\n" +
 	"\x06Signal\x12B\n" +
 	"\x04name\x18\x01 \x01(\tB.\xe2A\x01\x02\xbaH'\xc8\x01\x01r\"\x10\x01\x18\x80\x012\x1b^[A-Za-z0-9][A-Za-z0-9-_]*$R\x04name\x12;\n" +
 	"\aoutputs\x18\x02 \x03(\v2!.flowstate.v1.Signal.OutputsEntryR\aoutputs\x12+\n" +
@@ -781,6 +798,7 @@ func file_flowstate_v1_signal_proto_init() {
 	}
 	file_flowstate_v1_identity_proto_init()
 	file_flowstate_v1_value_proto_init()
+	file_flowstate_v1_signal_proto_msgTypes[0].OneofWrappers = []any{}
 	file_flowstate_v1_signal_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
