@@ -3,6 +3,7 @@ import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
+import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, runLine, toListing } from './runs'
 import type { Listing } from './runs'
@@ -53,6 +54,32 @@ const listRuns = async ($: Engine, flow: string): Promise<Listing> => {
   }
 }
 
+/**
+ * The tasks and the last validation for a Flowfile, as one context block. Both
+ * legs are local; a leg that fails to run, or exits non-zero without its answer,
+ * is left out, and nothing here throws.
+ */
+const gather = async ($: Engine, flow: string, file: string): Promise<string | undefined> => {
+  const tasks = await $.process.run([flow, 'tasks', '-o', 'json'], { timeoutMs: 10000 }).then(
+    ran => (ran.exitCode === 0 ? parseTaskNames(ran.stdout) : []),
+    () => [],
+  )
+  const report = await $.process.run([flow, 'validate', '-o', 'jsonl', '--', file], { timeoutMs: 20000 }).then(
+    ran => reportFor(ran.stdout, file),
+    () => undefined,
+  )
+  return formatContext({ file, tasks: tasks.length > 0 ? tasks : undefined, report })
+}
+
+/** The first Flowfile in the session's working directory, if it has one and can be listed. */
+const findInCwd = async ($: Engine): Promise<string | undefined> => {
+  try {
+    return cwdFlowfile((await $.fs.list()).filter(e => e.kind === 'file').map(e => e.name))
+  } catch {
+    return undefined
+  }
+}
+
 export const register: Register = (on, options) => {
   const flow = typeof options.flowBinary === 'string' && options.flowBinary ? options.flowBinary : 'flow'
   const isEnabled = options.validateOnEdit !== false
@@ -63,6 +90,22 @@ export const register: Register = (on, options) => {
       description: 'Show the validation state of Flowfiles touched this session',
     })
     return next(e)
+  })
+
+  // Once per conversation, when the working directory holds a Flowfile.
+  on('prompt.context', async ($, e, next) => {
+    const out = await next(e)
+    const file = await findInCwd($)
+    const text = file === undefined ? undefined : await gather($, flow, file)
+    return text === undefined ? out : { ...out, blocks: [...out.blocks, { name: 'flowstate', text }] }
+  })
+
+  // A prompt that names a Flowfile gets the same block beside it; this event
+  // sees the prompt, which `prompt.context` does not.
+  on('prompt.submit', async ($, e, next) => {
+    const file = mentionedFlowfile(e.text)
+    const text = file === undefined ? undefined : await gather($, flow, file)
+    return next(text === undefined ? e : { ...e, context: [...(e.context ?? []), text] })
   })
 
   on('command.run', { command: 'flowstate' }, async $ => {
