@@ -91,6 +91,19 @@ message InputOptions {
   // through singular, repeated, or map fields. A claim on a field of any other
   // shape is refused when the task is loaded.
   bool literal = 2;
+
+  // Credential names the plugin credential this input receives: one of the
+  // [CredentialDeclaration]s the plugin that provides the task declares, by
+  // name (`^[a-z][a-z0-9_]{0,31}$`). Unset is no claim.
+  //
+  // It implies SECRET_REQUIRED, so the input is a whole secret reference the
+  // host resolves and never a literal, and it is an error beside SECRET_WHOLE_VALUE
+  // or SECRET_NESTED, which would say the same thing less strictly. It cannot
+  // be beside `literal`: a credential is never text the author typed. Valid on
+  // a flowstate.v1.Value or a string field; a claim on a field of any other
+  // shape, or naming a credential the plugin does not declare, is refused when
+  // the plugin is loaded, as is a declared credential no input names.
+  string credential = 3;
 }
 
 extend google.protobuf.FieldOptions {

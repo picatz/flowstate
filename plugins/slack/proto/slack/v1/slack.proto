@@ -34,11 +34,11 @@ message Metadata {
 
 // PostInputs describes one new message.
 message PostInputs {
-  // token is a Slack bot token (xoxb-) carrying chat:write. The task requires
-  // this entire input to be a secret reference, which the host resolves before
-  // execution. A literal token is refused before it can enter durable history;
+  // token is a Slack bot token (xoxb-) carrying chat:write, the plugin's
+  // bot_token credential. The task requires this entire input to be a secret
+  // reference, which the host resolves before execution. A literal token is refused before it can enter durable history;
   // the resolved credential is capped at 4 KiB before becoming an HTTP header.
-  flowstate.v1.Value token = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
+  flowstate.v1.Value token = 1 [(flowstate.v1.input).credential = "bot_token"];
 
   // channel is a Slack conversation ID such as C0123ABCD. Names are refused: IDs
   // do not change when a channel is renamed and make the destination
@@ -105,7 +105,7 @@ message PostOutputs {
 // UpdateInputs describes a replacement of the body of a message this app posted.
 message UpdateInputs {
   // token is a Slack bot token (xoxb-) carrying chat:write, as for slack.post.
-  flowstate.v1.Value token = 1 [(flowstate.v1.input).secret = SECRET_REQUIRED];
+  flowstate.v1.Value token = 1 [(flowstate.v1.input).credential = "bot_token"];
 
   // channel is the conversation ID the message is in.
   string channel = 2 [(buf.validate.field).string.pattern = "^[CDG][A-Z0-9]{1,254}$"];

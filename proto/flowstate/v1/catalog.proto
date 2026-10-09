@@ -61,7 +61,9 @@ message TaskCatalog {
   // needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
   // expression_inputs; version 2 adds required_secret_inputs; version 3 adds the `literal`
   // input claim, which TaskDescription carries only in the task's input schema,
-  // so a reader that predates it would ignore it.
+  // so a reader that predates it would ignore it; version 4 adds the
+  // `credential` input claim, with PluginDescription.credentials and
+  // TaskDescription.credential_inputs, for the same reason.
   //
   // Exists because proto3 cannot mark a bool or a repeated string field
   // `optional`, so none of those fields can distinguish "populated as
@@ -281,6 +283,14 @@ message TaskDescription {
   // it prevents sensitive material from entering a compiled specification and
   // durable workflow history. Sorted and deduplicated like secret_inputs.
   repeated string required_secret_inputs = 14;
+
+  // CredentialInputs maps each input that claims a plugin credential, with the
+  // `(flowstate.v1.input).credential` option, to the name of that credential.
+  // Every name is in the plugin's credentials. Read from the input descriptor
+  // when the task is described, so it cannot disagree with it, and covered by
+  // the plugin's claims_digest. A credential input is also in secret_inputs and
+  // required_secret_inputs.
+  map<string, string> credential_inputs = 15;
 }
 
 // PluginCatalog is what a deployment's plugins add to this build, described so
@@ -406,6 +416,34 @@ message CapabilityBinding {
   RehearsalPosture rehearsal = 10 [(buf.validate.field).enum = {defined_only: true not_in: [0]}];
 }
 
+// CredentialDeclaration is a credential a plugin needs, named once at plugin
+// level so a task input says which one it receives with the
+// `(flowstate.v1.input).credential` option rather than each input restating what
+// kind of secret it takes.
+//
+// It is the one definition: a plugin states it in its manifest and a catalog
+// reports it, both with this message. Declaring a credential grants nothing; the
+// host still resolves only a secret reference an author wrote, under the
+// deployment's secret access policy.
+message CredentialDeclaration {
+  // Name is how an input claims the credential. Unique within a plugin.
+  string name = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 32
+    pattern: "^[a-z][a-z0-9_]{0,31}$"
+  }];
+
+  // Description says what the credential is for, shown wherever the plugin is
+  // listed.
+  string description = 2 [(buf.validate.field).string = {max_len: 256}];
+
+  // Federated records that a `${credential('target')}` reference is intended to
+  // be able to stand in for a stored secret here. It is declaration metadata
+  // only until the binding slice enforces it; nothing refuses or permits a
+  // reference on its strength yet.
+  bool federated = 3;
+}
+
 // PluginDescription is one plugin's identity and what it advertises.
 message PluginDescription {
   // Name is the segment after `flowstate-plugin-` in the executable's name, and
@@ -467,6 +505,11 @@ message PluginDescription {
   // old pin that predates this field: it is not compared, not
   // assumed safe, simply not asked.
   string claims_digest = 10;
+
+  // Credentials are the credentials this plugin declares, in declaration order;
+  // at most 8. Covered by claims_digest, because adding or loosening one (a
+  // newly federated credential) changes what an author may write.
+  repeated CredentialDeclaration credentials = 11 [(buf.validate.field).repeated = {max_items: 8}];
 }
 
 // TaskField is one input or output, described in the DSL's vocabulary.

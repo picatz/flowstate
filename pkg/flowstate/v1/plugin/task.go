@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -63,9 +64,9 @@ func (p *Plugin) taskDef(manifest *pluginv1.TaskManifest, cfg Config) (flowstate
 		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
 	}
 
-	// A literal claim on a field it cannot constrain would look protected and
-	// not be, so the task is refused rather than loaded with it.
-	if _, err := flowstatev1.LiteralInputClaims(inputs); err != nil {
+	// A claim on a field it cannot constrain would look protected and not be, so
+	// the task is refused rather than loaded with it.
+	if _, err := flowstatev1.InputClaims(inputs); err != nil {
 		return flowstatev1.TaskDef{}, pluginError(p.name, p.path, fmt.Errorf("task %q: %w", textbound.Truncate(name, 64), err))
 	}
 
@@ -142,6 +143,29 @@ func checkManifestInputNames(inputs protoreflect.MessageDescriptor, manifest *pl
 		return err
 	}
 	return check(manifest.GetRequiredSecretInputs(), "required_secret_inputs")
+}
+
+// checkManifestCredentials applies the credential lattice to a launched plugin:
+// the credentials its manifest declares against the input claims of the tasks
+// that were registered for it. See [flowstatev1.CheckPluginCredentials].
+//
+// It reads the registered definitions rather than the manifest's descriptors, so
+// a task refused for another reason is not counted as using a credential, and a
+// plugin whose only claimant was refused is refused for the declaration it then
+// leaves unused rather than loaded with it.
+func checkManifestCredentials(p *Plugin, defs map[string]taskBinding) error {
+	var inputs []protoreflect.MessageDescriptor
+	for _, name := range slices.Sorted(maps.Keys(defs)) {
+		if binding := defs[name]; binding.plugin == p {
+			inputs = append(inputs, binding.def.Inputs)
+		}
+	}
+
+	if err := flowstatev1.CheckPluginCredentials(p.Manifest().GetCredentials(), inputs); err != nil {
+		return pluginError(p.name, p.path, fmt.Errorf("%w: %w", ErrManifest, err))
+	}
+
+	return nil
 }
 
 // checkDescriptorSecretClaims refuses a task whose manifest lists and whose

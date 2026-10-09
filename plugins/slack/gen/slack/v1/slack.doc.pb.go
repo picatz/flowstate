@@ -29,9 +29,9 @@ func init() {
 		},
 		{
 			Name: "slack.v1.PostInputs.token",
-			Leading: " token is a Slack bot token (xoxb-) carrying chat:write. The task requires\n" +
-				" this entire input to be a secret reference, which the host resolves before\n" +
-				" execution. A literal token is refused before it can enter durable history;\n" +
+			Leading: " token is a Slack bot token (xoxb-) carrying chat:write, the plugin's\n" +
+				" bot_token credential. The task requires this entire input to be a secret\n" +
+				" reference, which the host resolves before execution. A literal token is refused before it can enter durable history;\n" +
 				" the resolved credential is capped at 4 KiB before becoming an HTTP header.\n",
 		},
 		{

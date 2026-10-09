@@ -456,6 +456,35 @@ func TestPluginCatalogRendersTheClaimsWithSecurityWeight(t *testing.T) {
 		"quiet_task declares no secret_inputs and the rendering invented one")
 }
 
+// TestPluginCatalogRendersCredentialDeclarations keeps a declared credential and
+// the input that takes it visible to an operator, and a plugin without any quiet.
+func TestPluginCatalogRendersCredentialDeclarations(t *testing.T) {
+	t.Parallel()
+
+	catalog := &v1.PluginCatalog{
+		Plugins: []*v1.PluginDescription{
+			{
+				Name:        "slack",
+				Credentials: []*v1.CredentialDeclaration{{Name: "bot_token", Description: "the bot token", Federated: true}},
+				Tasks: []*v1.TaskDescription{{
+					Name: "slack.post", SecretInputs: []string{"token"}, CredentialInputs: map[string]string{"token": "bot_token"},
+				}},
+			},
+			{Name: "plain", Tasks: []*v1.TaskDescription{{Name: "plain.do"}}},
+		},
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, writePluginCatalog(ui.Plain(&out, &bytes.Buffer{}), catalog))
+
+	rendered := out.String()
+	assert.Contains(t, rendered, "credential: bot_token (a federated token may stand in): the bot token")
+	assert.Contains(t, rendered, "needs credential bot_token in: token")
+
+	plain := rendered[strings.Index(rendered, "plain.do"):]
+	assert.NotContains(t, plain, "credential", "a plugin declaring none must not print credential lines")
+}
+
 // TestPluginMaxCallTimeoutIsReachableFromAShippedBinary is the claim
 // [plugin.Config.MaxCallTimeout] makes, held to: the ceiling is one this
 // deployment imposes on work an author asked for, and its documentation says an

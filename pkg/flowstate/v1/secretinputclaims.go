@@ -5,6 +5,8 @@ import (
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+
+	"github.com/picatz/flowstate/internal/textbound"
 )
 
 // An InputClaim is every claim a task's input message sets on one of its own
@@ -17,8 +19,14 @@ type InputClaim struct {
 	// Name is the field's name.
 	Name string
 
-	// Secret is the field's secret claim, [Secret_SECRET_UNSPECIFIED] for none.
+	// Secret is the field's secret claim, [Secret_SECRET_UNSPECIFIED] for none. A
+	// credential claim implies [Secret_SECRET_REQUIRED], so it is that here.
 	Secret Secret
+
+	// Credential is the name of the plugin credential the field receives, from
+	// the `credential` claim; empty for none. See [CheckPluginCredentials] for
+	// the check that it names a declared one.
+	Credential string
 
 	// Literal lists the fields at or under this one that claim to be literals,
 	// as dotted paths relative to the message (this field's own name first), in
@@ -38,6 +46,12 @@ type InputClaim struct {
 // claim needs a Value or a map of them (a map of strings is accepted, since that
 // is how a descriptor documents a mapping the task decodes as a structure). A
 // literal claim is valid on a string at any depth: see [LiteralInputClaims].
+//
+// A credential claim implies SECRET_REQUIRED and so has the whole-value shape
+// rule; it is an error beside SECRET_WHOLE_VALUE or SECRET_NESTED, which say the
+// same thing less strictly, beside a literal claim, and with a name that is not
+// a [ValidCredentialName]. A credential claim on a field below the top level
+// is refused too, because only top-level fields are read.
 func InputClaims(md protoreflect.MessageDescriptor) ([]InputClaim, error) {
 	if md == nil {
 		return nil, nil
@@ -51,8 +65,22 @@ func InputClaims(md protoreflect.MessageDescriptor) ([]InputClaim, error) {
 		name := string(fd.Name())
 
 		secret := Secret_SECRET_UNSPECIFIED
+		credential := ""
 		if input, _ := proto.GetExtension(fd.Options(), E_Input).(*InputOptions); input != nil {
 			secret = input.GetSecret()
+			credential = input.GetCredential()
+		}
+
+		if credential != "" {
+			if !ValidCredentialName(credential) {
+				return nil, fmt.Errorf("input %q claims credential %q, which is not a name matching ^[a-z][a-z0-9_]{0,31}$",
+					name, textbound.Truncate(credential, 64))
+			}
+			if secret != Secret_SECRET_UNSPECIFIED && secret != Secret_SECRET_REQUIRED {
+				return nil, fmt.Errorf("input %q claims credential %q and also %s; a credential is always SECRET_REQUIRED",
+					name, credential, secret)
+			}
+			secret = Secret_SECRET_REQUIRED
 		}
 
 		switch secret {
@@ -73,12 +101,15 @@ func InputClaims(md protoreflect.MessageDescriptor) ([]InputClaim, error) {
 		if err := collectFieldLiteralClaims(fd, "", map[protoreflect.FullName]bool{md.FullName(): true}, 0, &visits, &literal); err != nil {
 			return nil, err
 		}
+		if len(literal) > 0 && credential != "" {
+			return nil, fmt.Errorf("input %q claims credential %q and also a literal claim, which cannot both hold", name, credential)
+		}
 		if len(literal) > 0 && secret != Secret_SECRET_UNSPECIFIED {
 			return nil, fmt.Errorf("input %q declares %s and also a literal claim, which cannot both hold", name, secret)
 		}
 
 		if secret != Secret_SECRET_UNSPECIFIED || len(literal) > 0 {
-			claims = append(claims, InputClaim{Name: name, Secret: secret, Literal: literal})
+			claims = append(claims, InputClaim{Name: name, Secret: secret, Credential: credential, Literal: literal})
 		}
 	}
 

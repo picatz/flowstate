@@ -74,7 +74,9 @@ func init() {
 				" needs_scope, secret_inputs, shapes_outputs, deferred_inputs and\n" +
 				" expression_inputs; version 2 adds required_secret_inputs; version 3 adds the `literal`\n" +
 				" input claim, which TaskDescription carries only in the task's input schema,\n" +
-				" so a reader that predates it would ignore it.\n" +
+				" so a reader that predates it would ignore it; version 4 adds the\n" +
+				" `credential` input claim, with PluginDescription.credentials and\n" +
+				" TaskDescription.credential_inputs, for the same reason.\n" +
 				"\n" +
 				" Exists because proto3 cannot mark a bool or a repeated string field\n" +
 				" `optional`, so none of those fields can distinguish \"populated as\n" +
@@ -317,6 +319,15 @@ func init() {
 				" durable workflow history. Sorted and deduplicated like secret_inputs.\n",
 		},
 		{
+			Name: "flowstate.v1.TaskDescription.credential_inputs",
+			Leading: " CredentialInputs maps each input that claims a plugin credential, with the\n" +
+				" `(flowstate.v1.input).credential` option, to the name of that credential.\n" +
+				" Every name is in the plugin's credentials. Read from the input descriptor\n" +
+				" when the task is described, so it cannot disagree with it, and covered by\n" +
+				" the plugin's claims_digest. A credential input is also in secret_inputs and\n" +
+				" required_secret_inputs.\n",
+		},
+		{
 			Name: "flowstate.v1.PluginCatalog",
 			Leading: " PluginCatalog is what a deployment's plugins add to this build, described so\n" +
 				" that something other than a person can read it.\n" +
@@ -430,6 +441,34 @@ func init() {
 				" slice requires it to equal qualifier; alias registration is deferred.\n",
 		},
 		{
+			Name: "flowstate.v1.CredentialDeclaration",
+			Leading: " CredentialDeclaration is a credential a plugin needs, named once at plugin\n" +
+				" level so a task input says which one it receives with the\n" +
+				" `(flowstate.v1.input).credential` option rather than each input restating what\n" +
+				" kind of secret it takes.\n" +
+				"\n" +
+				" It is the one definition: a plugin states it in its manifest and a catalog\n" +
+				" reports it, both with this message. Declaring a credential grants nothing; the\n" +
+				" host still resolves only a secret reference an author wrote, under the\n" +
+				" deployment's secret access policy.\n",
+		},
+		{
+			Name:    "flowstate.v1.CredentialDeclaration.name",
+			Leading: " Name is how an input claims the credential. Unique within a plugin.\n",
+		},
+		{
+			Name: "flowstate.v1.CredentialDeclaration.description",
+			Leading: " Description says what the credential is for, shown wherever the plugin is\n" +
+				" listed.\n",
+		},
+		{
+			Name: "flowstate.v1.CredentialDeclaration.federated",
+			Leading: " Federated records that a `${credential('target')}` reference is intended to\n" +
+				" be able to stand in for a stored secret here. It is declaration metadata\n" +
+				" only until the binding slice enforces it; nothing refuses or permits a\n" +
+				" reference on its strength yet.\n",
+		},
+		{
 			Name:    "flowstate.v1.PluginDescription",
 			Leading: " PluginDescription is one plugin's identity and what it advertises.\n",
 		},
@@ -502,6 +541,12 @@ func init() {
 				" `flowstatev1.ResolvedPlugin.claims_digest` for how a worker treats an\n" +
 				" old pin that predates this field: it is not compared, not\n" +
 				" assumed safe, simply not asked.\n",
+		},
+		{
+			Name: "flowstate.v1.PluginDescription.credentials",
+			Leading: " Credentials are the credentials this plugin declares, in declaration order;\n" +
+				" at most 8. Covered by claims_digest, because adding or loosening one (a\n" +
+				" newly federated credential) changes what an author may write.\n",
 		},
 		{
 			Name:    "flowstate.v1.TaskField",

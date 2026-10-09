@@ -493,10 +493,12 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 // SecretInputs, RequiredSecretInputs, ShapesOutputs, DeferredInputs and
 // ExpressionInputs on every TaskDescription it produces and enforces the
 // `literal` input claim at admission (version 3), which a reader of version 2 would
-// ignore as an unknown option. Bump it only alongside
+// ignore as an unknown option, and the plugin `credential` input claim with the
+// plugin credential declarations it names (version 4), which a reader of
+// version 3 would ignore the same way. Bump it only alongside
 // a change that adds or redefines one of those fields, the same event that would
 // justify a new entry in the doc comment on ClaimsSchemaVersion itself.
-const CurrentClaimsSchemaVersion uint32 = 3
+const CurrentClaimsSchemaVersion uint32 = 4
 
 // TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
 // be trusted to say when a task needs scope or accepts a secret, as opposed
@@ -562,6 +564,11 @@ func Catalog() *TaskCatalog {
 // that is meant to be indistinguishable from a built-in. There is one way a task
 // is described, and this is it.
 func DescribeTask(def TaskDef) *TaskDescription {
+	// The credential each input claims, read off the descriptor so the catalog
+	// cannot say something the input option does not. An unreadable claim is
+	// refused when the task loads, so none is described here.
+	claims, _ := InputClaims(def.Inputs)
+
 	inputDescriptor, inputMessage := describedMessage(def.Inputs)
 	outputDescriptor, outputMessage := describedMessage(def.Outputs)
 
@@ -605,6 +612,7 @@ func DescribeTask(def TaskDef) *TaskDescription {
 		ShapesOutputs:        def.ShapesOutputs,
 		DeferredInputs:       canonicalStrings(def.DeferredInputs),
 		ExpressionInputs:     canonicalStrings(def.ExpressionInputs),
+		CredentialInputs:     CredentialInputs(claims),
 	}
 }
 
@@ -714,7 +722,8 @@ func fieldsSansSecretNote(fields []*TaskField) []*TaskField {
 
 // TaskDescriptionClaimsOnly returns a copy of t carrying only its name and
 // the claim fields with security weight (#712): NeedsScope, SecretInputs,
-// RequiredSecretInputs, ShapesOutputs, DeferredInputs, ExpressionInputs. Used to
+// RequiredSecretInputs, ShapesOutputs, DeferredInputs, ExpressionInputs,
+// CredentialInputs. Used to
 // build ClaimsDigest apart from TaskSchemaDigest — see
 // [TaskDescriptionSansClaims] for the reverse split and why both exist.
 func TaskDescriptionClaimsOnly(t *TaskDescription) *TaskDescription {
@@ -730,6 +739,7 @@ func TaskDescriptionClaimsOnly(t *TaskDescription) *TaskDescription {
 		ShapesOutputs:        t.GetShapesOutputs(),
 		DeferredInputs:       t.GetDeferredInputs(),
 		ExpressionInputs:     t.GetExpressionInputs(),
+		CredentialInputs:     t.GetCredentialInputs(),
 	}
 }
 

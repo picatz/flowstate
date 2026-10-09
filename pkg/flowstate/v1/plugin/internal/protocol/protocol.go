@@ -476,12 +476,28 @@ const Version8 = 8
 // deleted, for the reason [Version1] is.
 const Version9 = 9
 
-// Version10 is the current version of the plugin protocol: the same services and
+// Version10 was the tenth version of the plugin protocol: the same services and
 // routes as [Version9], and the same launch environment, with the engine-provided
-// descriptors carrying the `literal` input claim. Any later change to what a
-// provided descriptor claims, as well as any later domain package the engine
-// provides, is another descriptor-exchange change and moves the number again.
+// descriptors carrying the `literal` input claim.
+//
+// What ended version 10 is the `credential` input claim and the credential
+// declarations on the plugin manifest. A version 10 host reads neither: it would
+// load a plugin whose input claims a credential as the plain SECRET_REQUIRED
+// input it also is, and ignore the declarations the claim names, so the check
+// that a claim names a declared credential, and that every declaration is used,
+// would be skipped while the plugin believes the host holds it. The older host is
+// refused at the handshake rather than failing open. Retired rather than deleted,
+// for the reason [Version1] is.
 const Version10 = 10
+
+// Version11 is the current version of the plugin protocol: the same services and
+// routes as [Version10], and the same launch environment, with the plugin
+// manifest carrying credential declarations and the engine-provided descriptors
+// carrying the `credential` input claim. Any later change to what a provided
+// descriptor or the manifest claims, as well as any later domain package the
+// engine provides, is another descriptor-exchange change and moves the number
+// again.
+const Version11 = 11
 
 // MaxHandshakeLine bounds the handshake line, because it is the first thing an
 // untrusted process gets to say and the host reads it before it knows anything
@@ -589,7 +605,7 @@ const NetworkUnix = "unix"
 // 4, at parsing the grant for version 5, at descriptor linking again for
 // version 6 — which is precisely the failure each bump exists to prevent. A
 // version that cannot work must not be offered.
-func HostVersions() []int { return []int{Version10} }
+func HostVersions() []int { return []int{Version11} }
 
 // Handshake is what a plugin announces about itself once it is listening.
 type Handshake struct {

@@ -2,6 +2,7 @@ package flowstatev1
 
 import (
 	"fmt"
+	"github.com/picatz/flowstate/internal/textbound"
 	"maps"
 	"slices"
 	"strings"
@@ -58,6 +59,17 @@ func collectFieldLiteralClaims(fd protoreflect.FieldDescriptor, prefix string, e
 	}
 
 	path := prefix + string(fd.Name())
+
+	// InputClaims reads only a message's top-level fields, so a credential claim
+	// anywhere below would look protected in the schema and be read by nothing.
+	// This walk already visits every field under the top level, within its
+	// bounds, so it is where that is refused rather than left silent.
+	if depth > 0 {
+		if input, _ := proto.GetExtension(fd.Options(), E_Input).(*InputOptions); input.GetCredential() != "" {
+			return fmt.Errorf("field %q claims credential %q below the top level of the input message, where no claim is read; claim it on a top-level field", path, textbound.Truncate(input.GetCredential(), 64))
+		}
+	}
+
 	element := fd
 	if fd.IsMap() {
 		element = fd.MapValue()

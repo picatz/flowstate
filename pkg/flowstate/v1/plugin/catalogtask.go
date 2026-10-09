@@ -4,8 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
+
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/picatz/flowstate/internal/textbound"
 	pluginv1 "github.com/picatz/flowstate/pkg/flowstate/plugin/v1"
@@ -144,6 +147,7 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 
 	defs := make([]flowstatev1.TaskDef, 0, total)
 	for _, described := range catalog.GetPlugins() {
+		first := len(defs)
 		for _, task := range described.GetTasks() {
 			if err := checkQualified(described.GetName(), task.GetName()); err != nil {
 				return nil, err
@@ -154,6 +158,17 @@ func TaskDefsFromCatalog(catalog *flowstatev1.PluginCatalog, cfg Config) ([]flow
 				return nil, fmt.Errorf("plugin %q: %w", textbound.Truncate(described.GetName(), 64), err)
 			}
 			defs = append(defs, def)
+		}
+
+		// The credential lattice, held to a catalog as it is to a launch: a
+		// claim naming nothing the plugin declares, or a declaration nothing
+		// claims, is a catalog this build cannot read the claims of.
+		inputs := make([]protoreflect.MessageDescriptor, 0, len(defs)-first)
+		for _, def := range defs[first:] {
+			inputs = append(inputs, def.Inputs)
+		}
+		if err := flowstatev1.CheckPluginCredentials(described.GetCredentials(), inputs); err != nil {
+			return nil, fmt.Errorf("%w: plugin %q: %w", ErrDescriptor, textbound.Truncate(described.GetName(), 64), err)
 		}
 	}
 
@@ -343,10 +358,18 @@ func TaskDefFromDescription(described *flowstatev1.TaskDescription, cfg Config) 
 		return flowstatev1.TaskDef{}, fmt.Errorf("%w: task %q: %w", ErrDescriptor, textbound.Truncate(name, 64), err)
 	}
 
-	// A literal claim on a field it cannot constrain would look protected and
-	// not be, so the task is refused rather than loaded with it.
-	if _, err := flowstatev1.LiteralInputClaims(inputs); err != nil {
+	// A claim on a field it cannot constrain would look protected and not be,
+	// so the task is refused rather than loaded with it.
+	claims, err := flowstatev1.InputClaims(inputs)
+	if err != nil {
 		return flowstatev1.TaskDef{}, fmt.Errorf("%w: task %q: %w", ErrDescriptor, textbound.Truncate(name, 64), err)
+	}
+
+	// The description's credential_inputs is derived from the descriptor, so a
+	// catalog saying otherwise is not one that can be trusted about the rest.
+	if !maps.Equal(flowstatev1.CredentialInputs(claims), described.GetCredentialInputs()) {
+		return flowstatev1.TaskDef{}, fmt.Errorf("%w: task %q: credential_inputs does not match the credential claims of its input descriptor",
+			ErrDescriptor, textbound.Truncate(name, 64))
 	}
 
 	return flowstatev1.TaskDef{

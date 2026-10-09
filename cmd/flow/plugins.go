@@ -767,6 +767,17 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 			fmt.Fprintf(out, "  %s\n", theme.Muted.Render("launching it needs --auth-policy with a secrets section on a verb that runs tasks"))
 		}
 
+		for _, credential := range p.GetCredentials() {
+			line := credential.GetName()
+			if credential.GetFederated() {
+				line += " (a federated token may stand in)"
+			}
+			if description := credential.GetDescription(); description != "" {
+				line += ": " + description
+			}
+			fmt.Fprintf(out, "  credential: %s\n", line)
+		}
+
 		for _, task := range p.GetTasks() {
 			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(task.GetName()), task.GetSummary())
 
@@ -778,6 +789,9 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 			// two lines before they read what it takes.
 			if secretInputs := task.GetSecretInputs(); len(secretInputs) > 0 {
 				fmt.Fprintf(out, "    accepts a secret in: %s\n", strings.Join(secretInputs, ", "))
+			}
+			for _, input := range slices.Sorted(maps.Keys(task.GetCredentialInputs())) {
+				fmt.Fprintf(out, "    needs credential %s in: %s\n", task.GetCredentialInputs()[input], input)
 			}
 			fmt.Fprintf(out, "    receives prior step outputs: %s\n", yesNo(task.GetNeedsScope()))
 

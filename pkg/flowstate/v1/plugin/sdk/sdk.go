@@ -140,6 +140,15 @@ type Plugin struct {
 	// Tasks are the tasks this plugin provides.
 	Tasks []Task
 
+	// Credentials are the credentials this plugin's tasks take, each named once
+	// so an input claims one with `(flowstate.v1.input).credential` in its
+	// schema. At most [flowstatev1.MaxPluginCredentials]; every input claim must
+	// name a declared credential and every declaration must be named by at least
+	// one input, or the plugin does not build its manifest. Declaring a
+	// credential grants nothing: the host resolves only a secret reference an
+	// author wrote, into an input that is always SECRET_REQUIRED.
+	Credentials []*flowstatev1.CredentialDeclaration
+
 	// Health reports whether the plugin can serve. Leaving it nil reports
 	// serving always, which is right for a plugin with nothing to be unable to
 	// reach.
@@ -632,7 +641,7 @@ func readEnvironment() (environment, error) {
 		return environment{}, fmt.Errorf("sdk: %s: %w", protocol.VersionsEnv, err)
 	}
 
-	version, ok := protocol.Negotiate(offered, []int{protocol.Version10})
+	version, ok := protocol.Negotiate(offered, []int{protocol.Version11})
 	if !ok {
 		// Say what to do, not only what is wrong. This refusal is the whole
 		// point of the version bump: it is reached by whichever side is older,
@@ -643,7 +652,7 @@ func readEnvironment() (environment, error) {
 			"%w: the host offered %s and this plugin speaks %d; "+
 				"a host and its plugins must be upgraded together across this change, "+
 				"so upgrade whichever of the two is older",
-			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version10,
+			ErrProtocolVersion, protocol.FormatVersions(offered), protocol.Version11,
 		)
 	}
 
@@ -816,6 +825,11 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 		manifest.Schemes = slices.Clone(p.Secrets.Schemes)
 	}
 
+	if err := p.checkCredentialNames(); err != nil {
+		return nil, err
+	}
+	manifest.Credentials = slices.Clone(p.Credentials)
+
 	if len(p.Tasks) > 0 {
 		manifest.Capabilities = append(manifest.Capabilities,
 			pluginv1.Capability_CAPABILITY_TASKS,
@@ -840,6 +854,24 @@ func (p Plugin) manifest() (*pluginv1.PluginManifest, error) {
 	}
 
 	return manifest, nil
+}
+
+// checkCredentialNames applies the credential lattice at build time, with the
+// check the host applies at launch ([flowstatev1.CheckPluginCredentials]): a
+// misspelled claim would otherwise surface only as a plugin the host refuses.
+func (p Plugin) checkCredentialNames() error {
+	inputs := make([]protoreflect.MessageDescriptor, 0, len(p.Tasks))
+	for _, t := range p.Tasks {
+		if t.Input != nil {
+			inputs = append(inputs, t.Input.ProtoReflect().Descriptor())
+		}
+	}
+
+	if err := flowstatev1.CheckPluginCredentials(p.Credentials, inputs); err != nil {
+		return fmt.Errorf("sdk: %w", err)
+	}
+
+	return nil
 }
 
 // manifest builds the engine's description of one task, including the serialized

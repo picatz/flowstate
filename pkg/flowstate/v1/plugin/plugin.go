@@ -986,6 +986,19 @@ func manifestUnchanged(before, after *pluginv1.PluginManifest) error {
 		)
 	}
 
+	// Declarations are claims the tasks were validated against, so a plugin that
+	// comes back declaring a different set, or marking a credential federated,
+	// is not the plugin the workflows were checked with.
+	beforeCredentials, afterCredentials := before.GetCredentials(), after.GetCredentials()
+	if len(beforeCredentials) != len(afterCredentials) {
+		return fmt.Errorf("came back declaring %d credentials rather than %d", len(afterCredentials), len(beforeCredentials))
+	}
+	for i := range beforeCredentials {
+		if !proto.Equal(beforeCredentials[i], afterCredentials[i]) {
+			return fmt.Errorf("came back declaring credential %q differently than before", textbound.Truncate(afterCredentials[i].GetName(), 64))
+		}
+	}
+
 	beforeTasks, afterTasks := before.GetTasks(), after.GetTasks()
 	if len(beforeTasks) != len(afterTasks) {
 		return fmt.Errorf(

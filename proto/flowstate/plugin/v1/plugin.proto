@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.plugin.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/catalog.proto";
 import "flowstate/v1/identity.proto";
 import "flowstate/v1/run.proto";
 import "flowstate/v1/task.proto";
@@ -132,6 +133,12 @@ message PluginManifest {
   // Tasks are the task definitions this plugin provides, meaningful only with
   // CAPABILITY_TASKS.
   repeated TaskManifest tasks = 6 [(buf.validate.field).repeated = {max_items: 64}];
+
+  // Credentials are the credentials this plugin's tasks take, each named once
+  // so a task input claims one with `(flowstate.v1.input).credential`. Every
+  // input claim must name a declared credential and every declaration must be
+  // named by at least one input; the host refuses the plugin otherwise.
+  repeated flowstate.v1.CredentialDeclaration credentials = 7 [(buf.validate.field).repeated = {max_items: 8}];
 }
 
 // TaskManifest describes a task a plugin provides, so the engine can validate a
