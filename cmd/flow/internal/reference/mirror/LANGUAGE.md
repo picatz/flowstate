@@ -512,7 +512,9 @@ A name from the module is always written with the alias: the type `ids.Customer`
 call `ids.isUuid(x)` and the error `ids.NotFound`. The path is relative to the file,
 cannot climb above its directory or leave it through a symlink, and is read from
 disk; a cycle is refused, and a file names at most 16 modules. A path that is a
-workflow, not a module, is refused: run it with `call:`. See `examples/use-modules/`.
+workflow, not a module, is refused: run it with `call:`. An entry may pin the module with
+`digest: sha256:…`, checked before the module is compiled exactly as a `call:` pin is;
+`flow fix --repin` adopts a changed module's digest. See `examples/use-modules/`.
 
 ### Where expressions run, and why they are limited
 

@@ -60,7 +60,7 @@ import (
 func newBreakingCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "breaking <path>...",
-		Short: "Report workflows whose declared inputs or outputs broke a contract",
+		Short: "Report workflows and modules whose declared interface broke a contract",
 		Long: "Compile every Flowfile at the working tree and at a git ref, match each workflow to " +
 			"its previous self by path, and report interface breaks: a declared input that a caller must now supply, " +
 			"an input whose type narrowed, an input removed, a declared output removed or renamed, " +
@@ -68,6 +68,12 @@ func newBreakingCommand() *cobra.Command {
 			"(`types:`) whose fields changed in the direction that breaks that declaration. " +
 			"Loosening a contract passes, mirroring `buf breaking`: a contract may grow, not " +
 			"shrink.\n\n" +
+			"A module (a Flowfile with no steps) is matched by path the same way, and its interface is " +
+			"what a `use:` writes against: a type removed or changed between record and scalar, a " +
+			"scalar whose base or rule changed, a record field removed or made required, a function " +
+			"removed or given another parameter count or a narrowed parameter or weakened result, an " +
+			"error removed. A finding lists the files among the paths given that `use:` the module " +
+			"(its blast radius), read from source so an importer the change broke is still named.\n\n" +
 			"The comparison is over the compiled protos, not the YAML text, so it is immune to " +
 			"formatting and comment churn. Each finding names the position in the working-tree file, " +
 			"what broke, and what to do instead. Exit is 1 on any finding, 0 on none, the same as " +
@@ -174,6 +180,20 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 		neu, newOK := newByPath[path]
 
 		switch {
+		case oldOK && newOK && v1.IsModule(old.wf):
+			// A module has no inputs or outputs to compare; its interface is its
+			// types, function signatures and errors. Told apart by the old side, so
+			// a module that gained steps (and so became a workflow) reads as every
+			// declaration it had being removed, which is what its importers see.
+			found := moduleBreaks(old.wf, neu.wf)
+			for _, b := range found {
+				failed = true
+				printBreak(out, theme, neu.path, diagAt(neu.pos, b.key, flowfile.Diagnostic{Field: b.key, Message: b.message}))
+			}
+			if len(found) > 0 {
+				printBreak(out, theme, neu.path, flowfile.Diagnostic{
+					Field: "use", Message: blastRadius(importersOf(neu.path, files))})
+			}
 		case oldOK && newOK:
 			for _, d := range breakingDiagnostics(old.wf, neu.wf, neu.pos) {
 				failed = true
@@ -191,6 +211,17 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 				continue
 			}
 			failed = true
+			if v1.IsModule(old.wf) {
+				// Its importers no longer compile, so they are not in the working
+				// tree's compiled set; they are found from their source.
+				printBreak(out, theme, old.path, flowfile.Diagnostic{
+					Field: "use",
+					Message: fmt.Sprintf(
+						"module %q was removed; files that `use:` it break at their next compile (%s). Keep it, or move its importers off it in the same change; if it moved, compare it against its old self with `--moved %s=<new path>`",
+						old.wf.GetName(), blastRadius(importersOf(filepath.Join(root, filepath.FromSlash(path)), files)), path),
+				})
+				continue
+			}
 			printBreak(out, theme, old.path, flowfile.Diagnostic{
 				Field: "name",
 				Message: fmt.Sprintf(

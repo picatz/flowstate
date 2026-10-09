@@ -48,6 +48,11 @@ type fixOptions struct {
 	// stdout writes the result to standard output instead of back to the file,
 	// which is how a single file is piped somewhere else.
 	stdout bool
+
+	// repin replaces the edition migration with the one rewrite that adopts new
+	// bytes on purpose: each stale `digest:` on a `use:` entry becomes the digest
+	// of the module it names now. See [flowfile.RepinUses].
+	repin bool
 }
 
 // newFixCommand builds the `flow fix` command.
@@ -68,6 +73,13 @@ func newFixCommand() *cobra.Command {
 			"A run that rewrites a file another one pins with `digest:` reports every pin it " +
 			"invalidated, naming the digest to adopt, and exits non-zero. It never re-stamps one: " +
 			"a pin is the caller saying it read those bytes, and only a person can say that.\n\n" +
+			"`--repin` is the explicit counterpart: it does not migrate anything, and instead rewrites each " +
+			"stale `digest:` on a `use:` entry to the digest of the module the entry names now, in place, " +
+			"leaving every comment and the formatting as written. It adopts the module's current bytes as " +
+			"the ones you read, so read what changed first. It never adds a pin to an unpinned `use:`, and a " +
+			"module it cannot resolve and read leaves the whole file as it was. Modules are repinned " +
+			"before the files that use them, so a module that pins another and a file that pins " +
+			"that module are both current when one run ends.\n\n" +
 			"`--output json` or `--output jsonl` turns `--check` into a report a program reads " +
 			"instead of scrapes: what changed or would change, what was refused, and what pins the " +
 			"run invalidated, per file. CI that wants structured data rather than stderr text asks " +
@@ -100,13 +112,18 @@ flow fix --check examples/
 flow fix --check -o jsonl examples/*/workflow.yaml
 
 # Write the result somewhere else:
-flow fix --stdout old.yaml > new.yaml`,
+flow fix --stdout old.yaml > new.yaml
+
+# After reading a module change, adopt its digest in the files that pin it:
+flow fix --repin examples/`,
 	}
 
 	cmd.Flags().BoolVar(&opts.check, "check", false,
 		"report what would change and exit non-zero if anything would, without writing")
 	cmd.Flags().BoolVar(&opts.stdout, "stdout", false,
 		"write the result to standard output instead of back to the file")
+	cmd.Flags().BoolVar(&opts.repin, "repin", false,
+		"rewrite each stale `digest:` on a `use:` entry to its module's current digest, instead of migrating the edition")
 
 	// Diagnostics are a schema message, so `-o json`/`-o jsonl` mean here what they
 	// mean on `validate`: the fields are the schema's and addressable by name.
@@ -210,6 +227,12 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 	}
 	if opts.stdout && len(files) != 1 {
 		return newUsageError(fmt.Errorf("--stdout writes one document, but %d files were named", len(files)))
+	}
+	if opts.repin {
+		// A module is repinned before the files that use it, so that a module
+		// which pins another and a file which pins that module are both current
+		// when the run ends, whatever order the directory sorts them in.
+		files = orderDependenciesFirst(files, moduleTargets)
 	}
 
 	// Reports go to stderr and the rewritten document to stdout, so that
@@ -352,7 +375,12 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 		return fixOutcome{}, fmt.Errorf("error reading %s: %w", path, err)
 	}
 
-	result, err := flowfile.Fix(data)
+	var result flowfile.FixResult
+	if opts.repin {
+		result, err = flowfile.RepinUses(path, data)
+	} else {
+		result, err = flowfile.Fix(data)
+	}
 	if err != nil {
 		// Not YAML at all, or [flowfile.Fix] refused before a first pass for a
 		// reason of its own (too large, stuck in a rewrite cycle) — either way
@@ -478,6 +506,26 @@ func fixOne(out, reports io.Writer, theme ui.Theme, path string, opts fixOptions
 		return outcome, fmt.Errorf("error writing %s: %w", path, err)
 	}
 	return outcome, nil
+}
+
+// moduleTargets are the cleaned paths of the modules a file's `use:` names, read
+// from its source so that a file that does not compile yet still orders.
+func moduleTargets(file string) []string {
+	data, truncated, err := readFileBounded(file)
+	if err != nil || truncated {
+		return nil
+	}
+	uses, err := flowfile.ModuleUses(data)
+	if err != nil {
+		return nil
+	}
+
+	targets := make([]string, 0, len(uses))
+	for _, use := range uses {
+		targets = append(targets, filepath.Clean(filepath.Join(filepath.Dir(file), use.Path)))
+	}
+
+	return targets
 }
 
 // collectFlowfiles expands the paths given into the files to rewrite.

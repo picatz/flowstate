@@ -402,7 +402,8 @@ func formatSourceDigest(data []byte) string {
 //
 // # Case
 //
-// A pin is compared lower-cased. Hex has no case and neither does the algorithm
+// A pin is compared through [v1.CanonicalContentDigest], the one normalisation a
+// `use:` pin is held to as well. Hex has no case and neither does the algorithm
 // label, so `SHA256:AB12…` and `sha256:ab12…` name the same bytes, and refusing
 // one of them would be refusing a pin copied out of a tool that renders
 // upper-case for a difference that means nothing. The tree writes exactly one
@@ -417,9 +418,8 @@ func (c *compiler) verifySourcePin(pinNode ast.Node, stepPath string, r ref, tar
 	if !ok {
 		return false
 	}
-	pin := strings.ToLower(written)
-
-	if v1.ValidateContentDigest(pin) != nil {
+	pin, err := v1.CanonicalContentDigest(written)
+	if err != nil {
 		c.report(spanOfNode(pinNode), pinRef,
 			"is %s, which is not the shape of a pin; write `sha256:` and the 64 hex characters "+
 				"of the callee's SHA-256, which for %q is `digest: %s` right now",

@@ -108,6 +108,12 @@ const (
 	// own.
 	DiagnosticCodeModuleRefused DiagnosticCode = "module-refused"
 
+	// DiagnosticCodeModulePinMismatch marks a `use:` entry whose `digest:` does not
+	// verify: the module file's bytes hash to something other than the pin, or the
+	// pin is not a digest. The module is not used until the author reads what
+	// changed and repins.
+	DiagnosticCodeModulePinMismatch DiagnosticCode = "module-pin-mismatch"
+
 	// DiagnosticCodeExpectationUnmet marks a claim a test file made that the run
 	// contradicted — a step the case said would run and did not, a `check:` that
 	// came back false, an outcome `expect.failed` named and the run did not
@@ -237,6 +243,12 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Description: "A `use:` names a module the file may not take declarations from: a path " +
 				"outside what it may read, a file that is a workflow and not a module, a cycle " +
 				"of modules, a bound crossed, or a module that has errors of its own.",
+		},
+		{
+			Code: DiagnosticCodeModulePinMismatch,
+			Description: "A `use:` entry's `digest:` does not verify: the module file hashes to " +
+				"something other than the pin, or the pin is not a `sha256:` digest. The message " +
+				"names the digest the file has now; read what changed, then `flow fix --repin`.",
 		},
 	}
 }

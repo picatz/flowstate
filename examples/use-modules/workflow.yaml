@@ -14,6 +14,15 @@
 # is, so both drivers run plain CEL, and the compiled workflow records which module
 # bytes it was built from (`flow compile` shows them under `modules`).
 #
+# `digest:` pins the module to the exact bytes the author read, the way it pins a
+# `call:`. The compiler hashes the module once, checks the pin before it compiles
+# the module, and refuses with `module-pin-mismatch` (naming the digest the file has
+# now) when they differ, so a module edited after review is a change something had
+# to notice. It is optional; pin the modules whose change should stop the world.
+# After reading what changed in the module, `flow fix --repin examples/use-modules`
+# adopts the new digest in place, and `flow breaking` reports which importers an
+# incompatible edit to the module reaches.
+#
 # A module may use modules, up to four deep; a file names at most sixteen, and a
 # workflow's modules together are at most sixty-four. A cycle is refused, and so is a
 # path that is not a module: a file with steps is a workflow, and a step runs it with
@@ -26,6 +35,7 @@ name: use-modules
 use:
   ids:
     path: ./lib/ids.yaml
+    digest: sha256:03b18ca2a3b2d3aaa6ee8bb9fbb64ed0ae79fd73a9e530b387328797d54e97bf
 inputs:
   customer:
     type: ids.Customer
