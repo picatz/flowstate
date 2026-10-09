@@ -44,7 +44,7 @@ const BASE: Record<StatusKind, { symbol: string; tone: Tone; word: string }> = {
   failed: { symbol: '✗', tone: 'fail', word: 'failed' },
   running: { symbol: '●', tone: 'active', word: 'running' },
   waiting: { symbol: '◔', tone: 'wait', word: 'waiting' },
-  cancelled: { symbol: '–', tone: 'muted', word: 'cancelled' },
+  cancelled: { symbol: '⊘', tone: 'muted', word: 'cancelled' },
   skipped: { symbol: '–', tone: 'muted', word: 'skipped' },
   compensated: { symbol: '↺', tone: 'undone', word: 'compensated' },
   unknown: { symbol: '?', tone: 'muted', word: 'unknown' },

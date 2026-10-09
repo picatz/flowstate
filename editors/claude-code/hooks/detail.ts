@@ -29,7 +29,8 @@ export interface Detail {
   truncated: boolean
 }
 
-export type Parsed = { detail: Detail } | { error: string }
+/** `note` is what a successful `flow timeline` said on stderr, cleaned. */
+export type Parsed = { detail: Detail; note?: string } | { error: string }
 
 const toMs = (t: unknown): number | undefined => {
   const ms = typeof t === 'string' ? Date.parse(t) : NaN

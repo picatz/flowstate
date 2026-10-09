@@ -6,7 +6,7 @@ import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
-import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, toListing } from './runs'
+import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed } from './detail'
@@ -17,6 +17,7 @@ const PANE = 'flowstate'
 const MAX_REPORTS = 50
 const reports = atom({ plugin: 'flowstate', key: 'reports' } as const, [])
 const selected = atom({ plugin: 'flowstate', key: 'selected' } as const, '')
+const summary = atom({ plugin: 'flowstate', key: 'summary' } as const, { name: '', status: '', startTime: '', closeTime: '' })
 const filter = atom({ plugin: 'flowstate', key: 'filter' } as const, '')
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
@@ -72,7 +73,10 @@ const readTimeline = async ($: Engine, flow: string, id: string): Promise<Parsed
   try {
     const argv = [flow, 'timeline', '-o', 'json', '--max-entries', String(MAX_ENTRIES), '--', id]
     const ran = await $.process.run(argv, { timeoutMs: 5000 })
-    return ran.exitCode === 0 ? parseTimeline(ran.stdout) : { error: reason(ran.stderr) }
+    if (ran.exitCode !== 0) return { error: reason(ran.stderr) }
+    const parsed = parseTimeline(ran.stdout)
+    const note = stderrNote(ran.stderr)
+    return 'detail' in parsed && note !== '' ? { ...parsed, note } : parsed
   } catch (err) {
     return { error: clean(String(err), 100) || 'no answer' }
   }
@@ -216,6 +220,7 @@ export const register: Register = (on, options) => {
     const list = await read($, reports)
     const expr = await read($, filter)
     const id = await read($, selected)
+    const memo = await read($, summary)
     // Independent legs, started together: a stalled one costs its own timeout, not both.
     const [runs, account] = await Promise.all([
       listRuns($, flow, expr),
@@ -223,9 +228,11 @@ export const register: Register = (on, options) => {
     ])
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
     const detail = account && 'detail' in account ? account.detail : undefined
-    const facts = factsFor(row ?? { workflowId: id }, detail, Date.now())
+    // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
+    const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: memo.status, startTime: memo.startTime || null, closeTime: memo.closeTime || null })
+    const facts = factsFor(known ?? { workflowId: id }, detail, Date.now())
     const { shown, more } = visibleSteps(detail?.steps ?? [])
-    const head = statusOf(row?.status)
+    const head = statusOf(known?.status)
 
     return (
       <Box flexDirection="column">
@@ -236,7 +243,7 @@ export const register: Register = (on, options) => {
           placeholder={'CEL, as flow list --filter takes it: status == "FAILED"'}
           value={expr}
           submitLabel="filter"
-          onSubmit={v => update($, filter, () => v.trim())}
+          onSubmit={v => update($, filter, () => (v.trim() === '' ? '' : v))}
         />
         {expr !== '' && (
           <Box>
@@ -254,7 +261,15 @@ export const register: Register = (on, options) => {
           runs.runs.map(r => {
             const one = runRow(r)
             return (
-              <Button key={`run:${clean(r.workflowId, 200)}`} label={one.text} plain onPress={() => update($, selected, () => r.workflowId)}>
+              <Button key={`run:${clean(r.workflowId, 200)}`} label={one.text} plain onPress={async () => {
+                await update($, summary, () => ({
+                  name: clean(r.name, 80),
+                  status: clean(r.status, 40),
+                  startTime: clean(r.startTime, 40),
+                  closeTime: clean(r.closeTime, 40),
+                }))
+                await update($, selected, () => r.workflowId)
+              }}>
                 <Text color={COLOR[one.status.tone]}>{one.status.symbol}</Text> {one.text}
               </Button>
             )
@@ -263,10 +278,11 @@ export const register: Register = (on, options) => {
         {id !== '' && (
           <Box flexDirection="column">
             <Text bold>
-              <Text color={COLOR[head.tone]}>{head.symbol}</Text> {head.word} {clean(row?.name) || middleTruncate(id)}
+              <Text color={COLOR[head.tone]}>{head.symbol}</Text> {head.word} {clean(known?.name) || middleTruncate(id)}
             </Text>
             <Text dimColor>  id {clean(id, 256)}</Text>
             <Text>  {story(facts)}</Text>
+            {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
             {account && 'error' in account ? (
               <Text dimColor>  Timeline unavailable ({account.error}).</Text>
             ) : (
@@ -291,7 +307,7 @@ export const register: Register = (on, options) => {
                   </Box>
                 ))}
                 {more > 0 && <Text dimColor>  and {more} more; `flow timeline` with the id above lists them all</Text>}
-                {detail?.truncated && <Text dimColor>  The server clipped this account; flow timeline reads the rest.</Text>}
+                {detail?.truncated && <Text dimColor>  The server clipped this account; `flow timeline --help` says how to continue it (--run-id, --after-event-id).</Text>}
               </Box>
             )}
             <Button key="close-run" label="Close" plain onPress={() => update($, selected, () => '')}>

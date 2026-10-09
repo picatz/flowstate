@@ -257,3 +257,53 @@ test('parseTimeline reads protojson and keeps timing, retries and the run-level 
   expect(parsed.detail.runFailure).toBe('run failed')
   expect(factsFor({ workflowId: 'w', status: 'STATUS_FAILED' }, parsed.detail).failure).toBe('run failed')
 })
+
+test('a successful timeline that explains a gap on stderr shows the note, cleaned and bounded', async ($, on) => {
+  const note = `step "wait" is in retry backoff\u001b[31m; no failure row yet ${'x'.repeat(400)}`
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING']), timeline: { exitCode: 0, stdout: timeline(deploy).stdout, stderr: `${note}\n` } })
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  const shown = await ui.find({ type: 'Text', text: /in retry backoff/ })
+  expect(shown?.text).toMatch(/no failure row yet/)
+  expect(shown?.text).not.toMatch(/\u001b/)
+  expect(shown!.text.trim().length).toBeLessThanOrEqual(240)
+  await ui.unmount()
+})
+
+test('the card keeps the pressed run name and status when the listing no longer returns it', async ($, on) => {
+  const answers = { list: runs(['wf-1', 'STATUS_FAILED', 'Deploy']), timeline: timeline(deploy) }
+  stub(on, answers)
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  await ui.unmount()
+
+  answers.list = runs(['wf-9', 'STATUS_RUNNING', 'Newer'])
+  const again = await mount($)
+  expect(await again.find({ type: 'Button', text: /wf-1/ })).toBeUndefined()
+  expect(await again.find({ type: 'Text', text: /failed Deploy/ })).toBeDefined()
+  expect(await again.find({ type: 'Text', text: /unknown/ })).toBeUndefined()
+  await again.unmount()
+})
+
+test('filter text is passed unchanged, but all-whitespace means no filter', async ($, on) => {
+  const seen: string[][] = []
+  stub(on, { list: runs() }, seen)
+  const ui = await mount($)
+  await ui.input({ key: 'filter', text: '  status == "FAILED" ' })
+  expect(seen.at(-1)).toEqual(['flow', 'list', '-o', 'json', '--filter=  status == "FAILED" '])
+  await ui.input({ key: 'filter', text: '   ' })
+  expect(seen.at(-1)).toEqual(['flow', 'list', '-o', 'json'])
+  await ui.unmount()
+})
+
+test('the truncation note does not claim a plain rerun reads the rest', async ($, on) => {
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING']), timeline: timeline(deploy, { truncated: true }) })
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  const t = await ui.find({ type: 'Text', text: /clipped/ })
+  expect(t?.text).toMatch(/flow timeline --help/)
+  expect(t?.text).toMatch(/--run-id/)
+  expect(t?.text).toMatch(/--after-event-id/)
+  expect(t?.text).not.toMatch(/reads the rest/)
+  await ui.unmount()
+})

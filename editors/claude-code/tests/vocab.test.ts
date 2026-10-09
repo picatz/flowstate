@@ -14,11 +14,13 @@ test('every status has a symbol, a word, and a colour token, and the symbol alon
   expect(statusFor('failed')).toMatchObject({ symbol: '✗', tone: 'fail' })
   expect(statusFor('running')).toMatchObject({ symbol: '●', tone: 'active' })
   expect(statusFor('waiting')).toMatchObject({ symbol: '◔', tone: 'wait' })
-  expect(statusFor('cancelled')).toMatchObject({ symbol: '–', tone: 'muted' })
+  expect(statusFor('cancelled')).toMatchObject({ symbol: '⊘', tone: 'muted' })
+  expect(statusFor('skipped')).toMatchObject({ symbol: '–', tone: 'muted' })
   expect(statusFor('compensated')).toMatchObject({ symbol: '↺', tone: 'undone' })
   // Colour is never the only signal: no two kinds with different meanings share a symbol and word.
   const pairs = kinds.map(k => `${statusFor(k).symbol} ${statusFor(k).word}`)
   expect(new Set(pairs).size).toBe(kinds.length)
+  expect(new Set(kinds.map(k => statusFor(k).symbol)).size).toBe(kinds.length)
   expect(chip(statusFor('failed'))).toBe('✗ failed')
 })
 

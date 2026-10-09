@@ -35,6 +35,14 @@ export const rejection = (stderr: string): string => {
   return clean(body.join(' '), 240) || 'no server answered'
 }
 
+/**
+ * What a successful `flow timeline` said on stderr (it explains a gap in the
+ * account, such as a step waiting out a retry backoff), cleaned and bounded;
+ * empty when it said nothing.
+ */
+export const stderrNote = (stderr: string): string =>
+  clean(stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR').join(' '), 240)
+
 /** A page-walk stops after this many calls: a bounded scan can return short pages, but the pane never walks a whole history. */
 export const MAX_PAGES = 4
 

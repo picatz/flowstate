@@ -20,6 +20,8 @@ declare module 'claude-code' {
       reports: FileReport[]
       /** The workflow id whose detail card the pane shows; empty for none. */
       selected: string
+      /** The pressed run's name, status and times (cleaned, bounded), kept so its card outlives the listing's newest-runs window. */
+      summary: { name: string; status: string; startTime: string; closeTime: string }
       /** The CEL text in the Runs filter box, passed to `flow list --filter` unchanged; empty for none. */
       filter: string
     }
