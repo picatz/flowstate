@@ -98,13 +98,14 @@ built from its declared inputs. It is local only: it never runs `flow run` again
 a server, which stays a deliberate action through the Bash guard.
 
 - **Pick a file.** A Select lists the Flowfiles of the working directory and its
-  `workflows/` directory (`$.fs.list`, at most 500 entries read per directory, 12
-  offered, the rest counted). A file whose name is not plain (it starts with `-` or
+  `workflows/` directory (`$.fs.list`, cut to 500 entries per directory before anything is
+  searched, 12 offered, the rest counted). A file whose name is not plain (it starts with `-` or
   `.`, or holds a space or any character beyond letters, digits, `.`, `_`, `-`) is
   counted as "not offered", never rewritten.
 - **Read its inputs.** `flow compile -o json --schema=inputs -- <file>` (10 s) prints a
-  JSON Schema of the `inputs:` block. The result is cached per file and modification
-  time, so typing does not recompile. If the compile fails, prints something else, is
+  JSON Schema of the `inputs:` block. The answer, a failure included, is cached per file and modification
+  time, so typing and redraws do not recompile; saving the file or picking it again
+  reads it afresh. If the compile fails, prints something else, is
   over 256 KiB, or declares more than 24 inputs, the pane says so and draws no
   control and no Run button.
 - **One control per input.** A bool is a Select (`true`/`false`), an `enum` is a Select of
@@ -130,12 +131,14 @@ a server, which stays a deliberate action through the Bash guard.
   inputs are read again, and the values are checked against that declaration; if the
   file left the listing or no longer accepts them, nothing runs and the card says
   `not run:` with the reason. Input names come from the declared schema only (plain
-  identifiers), the file must be a listed Flowfile, and a value over 1000 characters
+  identifiers; `__proto__` is refused), the file must be a listed Flowfile, and a value over 1000 characters
   (8000 together) is refused, never cut.
 - **Nothing is altered silently.** Schema text (descriptions, defaults, examples, enum
   values) is cleaned (control and invisible format characters dropped) and bounded
   before it is drawn. A default, enum value or typed value that would have to be
-  altered to be shown or sent, and an input name that is not a plain identifier, is
+  altered to be shown or sent (a control, zero-width, bidi, word-joiner, tag or separator
+  character, a lone surrogate, or a default holding a number a double cannot hold exactly,
+  such as 9007199254740993), and an input name that is not a plain identifier, is
   refused instead: Run is unavailable and the reason is shown. A `sensitive:` input is
   never collected (its default is not in the schema either); a required one blocks
   Run, an optional one is left out.

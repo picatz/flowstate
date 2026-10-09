@@ -1,3 +1,4 @@
+import { clean } from '../hooks/runs'
 import { candidates, checkForm, cleanLines, parseInputs, resultOf, runArgv, submission } from '../hooks/form'
 import type { Field } from '../hooks/form'
 import { expect, test } from 'claude-code/testing'
@@ -554,4 +555,105 @@ test('cleanLines drops escapes and controls, keeps lines apart and bounds both c
   expect(long.lines[0]).toHaveLength(200)
   expect(long.cut).toBe(true)
   expect(resultOf({ exitCode: 0, stdout: 'fine', stderr: '', isStdoutTruncated: true }, 'a.flow.yaml').text).toMatch(/\(output cut\)/)
+})
+
+// Review follow-ups.
+
+test('an input named __proto__ is refused by name, and its refusal blocks Run', async ($, on) => {
+  const compile = schemaOf(JSON.parse('{"__proto__":{"type":"integer"}}'), ['__proto__'])
+  const f = fieldsOf(compile)
+  expect(f.map(x => [x.name, x.refused])).toEqual([['__proto__', 'its name is not a plain identifier']])
+  expect(checkForm(f, {}).blocked).toBe('__proto__: its name is not a plain identifier')
+  expect(runArgv('flow', 'a.flow.yaml', [{ name: '__proto__', value: '1' }], f)).toBeUndefined()
+  const { ui, seen } = await open($, on, { compile })
+  expect(await ui.find({ type: 'Button', text: /Run locally/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Run locally is unavailable: __proto__: its name is not a plain identifier/ })).toBeDefined()
+  expect(runs(seen)).toEqual([])
+  await ui.unmount()
+})
+
+test('errors are keyed without a prototype, so no declared name can lose its error', () => {
+  // `constructor` and `toString` are inherited names on a plain object; their errors must still be found.
+  const f = fieldsOf(schemaOf({ constructor: { type: 'integer' }, toString: { type: 'integer' } }, ['constructor', 'toString']))
+  const c = checkForm(f, { constructor: 'abc', toString: 'x' })
+  expect(Object.keys(c.errors)).toEqual(['constructor', 'toString'])
+  expect(c.blocked).toMatch(/^constructor: must be a whole number/)
+})
+
+test('a broken file is compiled once, not on every redraw', async ($, on) => {
+  const { ui, seen } = await open($, on, { compile: fail('deploy.flow.yaml:3:1: bad') })
+  for (let i = 0; i < 10; i++) {
+    await ui.input({ plugin: 'flowstate', key: 'filter', text: `status == "x${i}"` })
+    expect(await ui.find({ type: 'Text', text: /Inputs unavailable/ })).toBeDefined()
+  }
+  // Each submit redraws the pane (and lists runs again), so the count proves the redraws happened.
+  expect(seen.filter(a => a[1] === 'list').length).toBeGreaterThan(10)
+  expect(compiles(seen)).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('an edit and a revert does not bring the old question back', async ($, on) => {
+  const { ui, seen } = await filled($, on)
+  await ui.press({ key: 'run-local' })
+  await type(ui, 'service', 'api2')
+  await type(ui, 'service', 'api')
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  expect(runs(seen)).toEqual([])
+  await ui.unmount()
+})
+
+test('a value typed for an input that the schema now marks sensitive is neither echoed nor sent', async ($, on) => {
+  const { ui, seen } = await open($, on, { compile: schemaOf({ token: { type: 'string' }, name: { type: 'string' } }) })
+  await type(ui, 'token', 'hunter2-value')
+  world.compile = schemaOf({ token: { type: 'string', 'x-flowstate-sensitive': true }, name: { type: 'string' } })
+  world.dirs = { '': [entry('deploy.flow.yaml', 'file', 77)] }
+  await type(ui, 'name', 'n')
+  await ui.press({ key: 'run-local' })
+  expect(await texts(ui)).not.toMatch(/hunter2/)
+  await ui.press({ key: 'confirm-run' })
+  expect(runs(seen)).toEqual([['flow', 'run', 'local', '--no-color', '--input=name=n', '--', 'deploy.flow.yaml']])
+  await ui.unmount()
+})
+
+test('submission never includes a sensitive input, whatever was typed', () => {
+  const f = fieldsOf(schemaOf({ token: { type: 'string', 'x-flowstate-sensitive': true } }))
+  expect(submission(f, { token: 'x' })).toEqual([])
+})
+
+test('invisible and format characters are refused: word joiner, soft hyphen, separators, tags, lone surrogates', () => {
+  const f = fieldsOf(schemaOf({ s: { type: 'string' } }))[0]
+  for (const bad of ['a⁠b', 'a⁤b', 'a­b', 'a؜b', 'a b', 'a b', 'a᠎b', 'a͏b', 'a\u{e0041}b', 'a\ud800b', 'a\udc00b']) {
+    expect(checkForm([f], { s: bad }).blocked, JSON.stringify(bad)).toMatch(/contains a control or invisible character/)
+  }
+  expect(checkForm([f], { s: 'ünï 😀 — ok' }).blocked).toBe('')
+  expect(clean('a⁠­ \u{e0041}\ud800b')).toBe('ab')
+  expect(clean('😀')).toBe('😀')
+})
+
+test('a number a double cannot hold exactly is refused as a default, scalar or nested, and never sent', async ($, on) => {
+  const text = (dflt: string) => `{"type":"object","properties":{"n":{"type":"integer","default":${dflt}}}}`
+  for (const dflt of ['9007199254740993', '-9007199254740993', '1.2345678901234567']) {
+    const f = fieldsOf(ok(text(dflt)))[0]
+    expect([f.initial, f.refused], dflt).toEqual(['', 'its declared default is a number the form cannot show or send exactly'])
+  }
+  const nested = fieldsOf(ok('{"type":"object","properties":{"l":{"type":"array","default":[1,{"a":[9007199254740993]}]},"safe":{"type":"integer","default":9007199254740991},"x":{"type":"number","default":0.1}}}'))
+  expect(nested.map(f => [f.name, f.refused !== '', f.initial])).toEqual([['l', true, ''], ['safe', false, '9007199254740991'], ['x', false, '0.1']])
+  // An example is just not shown.
+  expect(fieldsOf(ok('{"type":"object","properties":{"n":{"type":"integer","examples":[9007199254740993]}}}'))[0].example).toBe('')
+  const { ui, seen } = await open($, on, { compile: ok(text('9007199254740993')) })
+  expect(await ui.find({ type: 'Button', text: /Run locally/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /Run locally is unavailable: n: its declared default is a number/ })).toBeDefined()
+  expect(runs(seen)).toEqual([])
+  await ui.unmount()
+})
+
+test('a 100k-entry listing is cut before any search: a late workflows/ directory and late Flowfiles are not seen', async ($, on) => {
+  const junk = Array.from({ length: 100000 }, (_, i) => entry(`n${i}.md`))
+  junk[600] = entry('workflows', 'dir')
+  junk[700] = entry('late.flow.yaml')
+  junk[10] = entry('early.flow.yaml')
+  const { ui } = await open($, on, { dirs: { '': junk, workflows: [entry('deep.yaml')] } }, '')
+  const select = await control(ui, 'Select', 'run-file')
+  expect(select.options.map((o: { value: string }) => o.value)).toEqual(['', 'early.flow.yaml'])
+  await ui.unmount()
 })

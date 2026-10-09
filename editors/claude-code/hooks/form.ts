@@ -34,8 +34,8 @@ const MAX_LINE = 200
 const MAX_HELP = 240
 const MAX_NAME = 64
 
-/** An input name as the mod will put it after `--input=`: an identifier, so no `=`, space or flag-looking text. */
-export const INPUT_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/
+/** An input name as the mod will put it after `--input=`: an identifier, so no `=`, space or flag-looking text, and not `__proto__`, which a state object cannot hold as a key. */
+export const INPUT_NAME = /^(?!__proto__$)[A-Za-z_][A-Za-z0-9_]{0,63}$/
 /**
  * The files the form may run: a plain relative path in the working directory
  * (or its `workflows/` directory) with no leading `-` or `.`, so it can be
@@ -110,6 +110,28 @@ export type Parsed = { fields: Field[] } | { error: string }
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 const count = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.trunc(v) : 0)
 
+/** Stands in the parsed schema for a number the text writes that a double cannot hold exactly. */
+const INEXACT = '\u0000inexact-number'
+const TOKENS = /"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g
+
+/**
+ * JSON.parse turns 9007199254740993 into another double, and a form that sent
+ * that would override the engine's exact default. Every number token that cannot
+ * be held exactly (more than 15 significant digits, or an integer beyond 2^53) is
+ * replaced by a marker before parsing, so a default or example holding one is
+ * refused rather than altered.
+ */
+const marked = (text: string): string =>
+  text.replace(TOKENS, tok => {
+    if (tok[0] === '"') return tok
+    const digits = tok.replace(/[eE].*$/, '').replace(/[-.]/g, '').replace(/^0+/, '')
+    const whole = !/[.eE]/.test(tok)
+    return (whole ? BigInt(tok) > 9007199254740991n || BigInt(tok) < -9007199254740991n : digits.length > 15) ? JSON.stringify(INEXACT) : tok
+  })
+
+const inexact = (v: unknown): boolean =>
+  v === INEXACT || (Array.isArray(v) ? v.some(inexact) : isRecord(v) && Object.values(v).some(inexact))
+
 /** A default or example as the text a control holds, or undefined where it is not that kind of value. */
 const textOf = (kind: Kind, v: unknown): string | undefined => {
   switch (kind) {
@@ -155,10 +177,11 @@ const fieldOf = (name: string, p: Record<string, unknown>, required: boolean): F
     }
   }
   const dflt = sensitive ? undefined : textOf(kind, p.default)
+  if (!sensitive && inexact(p.default)) refused ||= 'its declared default is a number the form cannot show or send exactly'
   if (dflt !== undefined && (dflt.length > MAX_VALUE || hasHidden(dflt))) refused ||= 'its declared default cannot be shown or sent as declared'
   const must = typeof p['x-flowstate-must'] === 'string' ? clean(p['x-flowstate-must'], 120) : ''
   const help = [clean(p.description, MAX_HELP), must && `(rule: ${must})`].filter(Boolean).join(' ')
-  const sample = sensitive || !Array.isArray(p.examples) ? undefined : textOf(kind, p.examples[0])
+  const sample = sensitive || !Array.isArray(p.examples) || inexact(p.examples[0]) ? undefined : textOf(kind, p.examples[0])
   const hint = p.format === 'date-time' ? 'RFC 3339, e.g. 2026-10-09T10:00:00Z' : ''
   return {
     name,
@@ -188,7 +211,7 @@ export const parseInputs = (stdout: string): Parsed => {
   if (stdout.length > MAX_SCHEMA) return { error: 'the schema is larger than the form reads' }
   let doc: unknown
   try {
-    doc = JSON.parse(stdout)
+    doc = JSON.parse(marked(stdout))
   } catch {
     return { error: 'flow compile did not print a JSON schema' }
   }
@@ -257,7 +280,8 @@ export interface Checked {
 
 /** Checks every control against its declared type. A sensitive input is never collected, so a required one blocks. */
 export const checkForm = (fields: readonly Field[], values: Readonly<Record<string, string>>): Checked => {
-  const errors: Record<string, string> = {}
+  // No prototype, so an input named `__proto__` keeps its error like any other.
+  const errors: Record<string, string> = Object.create(null)
   let total = 0
   for (const f of fields) {
     if (f.sensitive) {

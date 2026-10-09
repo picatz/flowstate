@@ -9,13 +9,13 @@ import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
-import type { Parsed } from './detail'
+import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, hasTestFile, nudgeFor, recordCheck, recordEdit } from './verify'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from './vocab'
-import { MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
-import type { Field, Pair, Parsed, Result } from './form'
+import { MAX_SCAN, MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
+import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
 
 const PANE = 'flowstate'
 /** The pane and the stored state keep the most recent Flowfiles only. */
@@ -91,7 +91,7 @@ const listRuns = async ($: Engine, flow: string, expr: string): Promise<Listing>
  * One run's account, from `flow timeline`. Like the listing, a failure to answer
  * is a state of the card, never an error, and `--` keeps an id from being a flag.
  */
-const readTimeline = async ($: Engine, flow: string, id: string): Promise<Parsed> => {
+const readTimeline = async ($: Engine, flow: string, id: string): Promise<TimelineParsed> => {
   try {
     const argv = [flow, 'timeline', '-o', 'json', '--max-entries', String(MAX_ENTRIES), '--', id]
     const ran = await $.process.run(argv, { timeoutMs: 5000 })
@@ -152,11 +152,14 @@ const gather = async ($: Engine, flow: string, file: string): Promise<string | u
 const listFlowfiles = async ($: Engine): Promise<ReturnType<typeof candidates> & { stamp: Map<string, number> }> => {
   const stamp = new Map<string, number>()
   try {
-    const top = await $.fs.list()
-    const sub = top.some(e => e.kind === 'dir' && e.name === 'workflows') ? await $.fs.list('workflows').catch(() => []) : []
-    for (const e of top) stamp.set(e.name, e.mtimeMs)
-    for (const e of sub) stamp.set(`workflows/${e.name}`, e.mtimeMs)
-    return { ...candidates(top, sub), stamp }
+    // Bounded before any search: a huge directory costs one slice, not a scan.
+    const top = (await $.fs.list()).slice(0, MAX_SCAN)
+    const sub = top.some(e => e.kind === 'dir' && e.name === 'workflows') ? (await $.fs.list('workflows').catch(() => [])).slice(0, MAX_SCAN) : []
+    const found = candidates(top, sub)
+    // Stamps only for the files on offer.
+    const mtimes = new Map([...top.map(e => [e.name, e.mtimeMs] as const), ...sub.map(e => [`workflows/${e.name}`, e.mtimeMs] as const)])
+    for (const f of found.files) stamp.set(f, mtimes.get(f) ?? 0)
+    return { ...found, stamp }
   } catch {
     return { files: [], more: 0, stamp }
   }
@@ -167,7 +170,7 @@ const listFlowfiles = async ($: Engine): Promise<ReturnType<typeof candidates> &
  * bounded, and `--` keeps the path from being a flag. A failure to answer is a
  * state of the form (no controls, no Run), never an error.
  */
-const readInputs = async ($: Engine, flow: string, file: string): Promise<Parsed> => {
+const readInputs = async ($: Engine, flow: string, file: string): Promise<InputsParsed> => {
   try {
     const ran = await $.process.run([flow, 'compile', '-o', 'json', '--schema=inputs', '--', file], { timeoutMs: 10000 })
     if (ran.exitCode !== 0) return { error: cleanLines(ran.stderr, 3, 160).lines.join(' ') || 'flow compile failed' }
@@ -196,7 +199,7 @@ export const register: Register = (on, options) => {
   /** One local run at a time, the same way. */
   let running = false
   /** Schemas by file and modification time, so typing in a control does not recompile the file on every key. */
-  const schemas = new Map<string, Parsed>()
+  const schemas = new Map<string, InputsParsed>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -382,16 +385,15 @@ export const register: Register = (on, options) => {
     const offered = await listFlowfiles($)
     const chosen = await read($, runFile)
     const file = offered.files.includes(chosen) ? chosen : ''
-    let schema: Parsed | undefined
+    let schema: InputsParsed | undefined
     if (file !== '') {
       const key = `${file}@${offered.stamp.get(file) ?? 0}`
       schema = schemas.get(key)
       if (schema === undefined) {
         schema = await readInputs($, flow, file)
-        if ('fields' in schema) {
-          if (schemas.size >= 16) schemas.clear()
-          schemas.set(key, schema)
-        }
+        // A failed read is kept too (until the file changes or is picked again), so a broken file is not recompiled on every redraw.
+        if (schemas.size >= 16) schemas.clear()
+        schemas.set(key, schema)
       }
     }
     const fields: Field[] = schema && 'fields' in schema ? schema.fields : []
@@ -592,6 +594,7 @@ export const register: Register = (on, options) => {
             value={file}
             onSelect={async v => {
               if (v !== '' && !offered.files.includes(v)) return
+              schemas.clear()
               await update($, runConfirm, () => NO_RUN_CONFIRM)
               await update($, runResult, () => NO_RUN_RESULT)
               await update($, runValues, () => ({}))
