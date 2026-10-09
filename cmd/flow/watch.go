@@ -426,7 +426,7 @@ var serverFlagNames = []string{
 // FLOWSTATE_* variables follow it too.
 func debugAttachCommand(cmd *cobra.Command) func(workflowID, runID string) *exec.Cmd {
 	return func(workflowID, runID string) *exec.Cmd {
-		args := []string{"debug", "attach", workflowID}
+		args := []string{"debug", "attach"}
 		if runID != "" {
 			args = append(args, "--run-id", runID)
 		}
@@ -435,6 +435,9 @@ func debugAttachCommand(cmd *cobra.Command) func(workflowID, runID string) *exec
 				args = append(args, "--"+name+"="+flag.Value.String())
 			}
 		}
+		// The id comes last, after "--", so a workflow id that starts with a
+		// dash is a name and never a flag.
+		args = append(args, "--", workflowID)
 
 		program, err := os.Executable()
 		if err != nil {

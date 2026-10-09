@@ -754,10 +754,14 @@ func TestWatchAttachCommandCarriesTheServerTheWatchUses(t *testing.T) {
 
 	command := debugAttachCommand(watchCmd)("order-1", "run-7")
 	require.Equal(t,
-		[]string{"debug", "attach", "order-1", "--run-id", "run-7", "--address=https://flow.example.com", "--token-file=/run/token"},
+		[]string{"debug", "attach", "--run-id", "run-7", "--address=https://flow.example.com", "--token-file=/run/token", "--", "order-1"},
 		command.Args[1:])
 
 	// An unset flag is not forwarded: the environment already carries it.
 	bare := debugAttachCommand(flowCommand(t, "watch"))("order-1", "")
-	require.Equal(t, []string{"debug", "attach", "order-1"}, bare.Args[1:])
+	require.Equal(t, []string{"debug", "attach", "--", "order-1"}, bare.Args[1:])
+
+	// An id that looks like a flag stays a name.
+	hostile := debugAttachCommand(flowCommand(t, "watch"))("--session=x", "")
+	require.Equal(t, []string{"debug", "attach", "--", "--session=x"}, hostile.Args[1:])
 }

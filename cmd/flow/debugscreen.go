@@ -46,6 +46,7 @@ func (n *screenNarration) Write(p []byte) (int, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 
+	written := len(p)
 	room := max(0, maxScreenNarrationBytes-n.buf.Len())
 	if len(p) > room {
 		n.dropped += len(p) - room
@@ -53,7 +54,9 @@ func (n *screenNarration) Write(p []byte) (int, error) {
 	}
 	n.buf.Write(p)
 
-	return len(p), nil
+	// Every byte was accepted, kept or counted, so a caller is not told of a
+	// short write.
+	return written, nil
 }
 
 // flushTo writes what was kept to w, and says how much was not. It empties the

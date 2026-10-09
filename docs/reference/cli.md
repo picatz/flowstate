@@ -552,7 +552,7 @@ flow debug attach order-1234 --tui=false
 | `--tls-client-cert-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_CERT_FILE` | PEM client certificate to present when a server requires one via `--tls-client-auth require` (overrides FLOWSTATE_TLS_CLIENT_CERT_FILE); must be given with `--tls-client-key-file`. Unset presents no certificate, which a server requiring one refuses at the handshake |
 | `--tls-client-key-file <string>` | `string` | — | `FLOWSTATE_TLS_CLIENT_KEY_FILE` | PEM private key matching `--tls-client-cert-file` (overrides FLOWSTATE_TLS_CLIENT_KEY_FILE) |
 | `--token-file <string>` | `string` | — | `FLOWSTATE_TOKEN_FILE` | file holding the bearer token to authenticate with (overrides FLOWSTATE_TOKEN_FILE); re-read per request, so a rotating token keeps working. Without it, FLOWSTATE_TOKEN is used, then the login stored by `flow login`, and none of them means anonymous |
-| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never used under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out is declined with a note on stderr where there is no terminal |
+| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr where there is no usable terminal, under --script or a machine --output, or with TERM=dumb |
 | `--wait <duration>` | `duration` | `1m0s` | — | how long a movement waits for the next stop before reporting the run still running |
 
 ## `flow debug do`
@@ -1790,7 +1790,7 @@ flow run local examples/hello-world/workflow.yaml --debug
 | `--signal-as-namespace <string>` | `string` | — | — | tenant namespace to deliver `--signal` as (local runs only) |
 | `--signal-as-subject <string>` | `string` | — | — | authenticated subject to deliver `--signal` as, with `--signal-as-issuer` (local runs only) |
 | `--task-policy <string>` | `string` | — | `FLOWSTATE_TASK_POLICY` | path to a task-shape policy (YAML) governing which identities may dispatch which tasks (default $FLOWSTATE_TASK_POLICY); unset, every identity may dispatch every task |
-| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never used under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out is declined with a note on stderr where there is no terminal |
+| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr where there is no usable terminal, under --script or a machine --output, or with TERM=dumb |
 
 ## `flow schedule`
 
@@ -2639,7 +2639,7 @@ flow test -o jsonl examples/
 | `--seeds <int>` | `int` | `0` | — | also run every case under N seeded schedules of the local driver's own choices (`parallel:` branch order, where an `async:` step's work happens), and fail when a case's observables depend on which one ran; 0, the default, runs written order only |
 | `--swarm` | `bool` | `false` | — | with `--seeds` or `--seed`, run each seed with a random subset of the case's `faults:` on instead of all of them, so a failure that needs one kind of fault alone, or two without a third, can occur; a reported seed replays only with the same flag |
 | `--timeout <duration>` | `duration` | `0s` | — | real-time limit for one case (default 30s, at most 10m); the virtual clock still decides what a workflow waits for, so this bounds a case that is stuck, not one that waits long |
-| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never used under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out is declined with a note on stderr where there is no terminal |
+| `--tui` | `bool` | `true` | — | drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. --tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr where there is no usable terminal, under --script or a machine --output, or with TERM=dumb |
 | `--watch` | `bool` | `false` | — | run once, then again after every change to a YAML file under the paths given, until interrupted; clears a terminal between runs and writes one document per run to a pipe; refused with --debug |
 
 ## `flow timeline`

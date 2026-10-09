@@ -107,8 +107,9 @@ func ciSet(value string) bool {
 // addTUIFlag declares --tui on a command that can open the screen.
 func addTUIFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool("tui", true, "drive the run from the full-screen debugger (keyboard and mouse); it is the default at a terminal "+
-		"of at least 60x12 and is never used under --script, a pipe, a machine --output, CI or TERM=dumb. "+
-		"--tui=false keeps the line editor; --tui spelled out is declined with a note on stderr where there is no terminal")
+		"of at least 60x12 and is never the default under --script, a pipe, a machine --output, CI or TERM=dumb. "+
+		"--tui=false keeps the line editor; --tui spelled out opens it under CI but is declined with a note on stderr "+
+		"where there is no usable terminal, under --script or a machine --output, or with TERM=dumb")
 }
 
 // terminalRefusal is why a full-screen view of at least min cells cannot be

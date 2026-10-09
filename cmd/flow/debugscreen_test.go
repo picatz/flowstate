@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -79,4 +81,34 @@ func TestMachineOutputIsUnchangedByTheDefaultFlip(t *testing.T) {
 			assert.NotContains(t, asked.Stderr, "--tui", "a default that declined said something")
 		})
 	}
+}
+
+// TestTheScreenNarrationIsBoundedAndNeverWritesShort: a run that talks past the
+// bound keeps the first megabyte, counts the rest, and is told its writes all
+// succeeded, because io.Writer callers treat a short count as an error.
+func TestTheScreenNarrationIsBoundedAndNeverWritesShort(t *testing.T) {
+	t.Parallel()
+
+	var n screenNarration
+	chunk := bytes.Repeat([]byte("x"), maxScreenNarrationBytes-3)
+	written, err := n.Write(chunk)
+	require.NoError(t, err)
+	assert.Equal(t, len(chunk), written)
+
+	over := []byte("0123456789")
+	written, err = n.Write(over)
+	require.NoError(t, err)
+	assert.Equal(t, len(over), written, "a write past the room was reported short")
+
+	written, err = n.Write([]byte("more"))
+	require.NoError(t, err)
+	assert.Equal(t, 4, written, "a write with no room left was reported short")
+
+	var out bytes.Buffer
+	n.flushTo(&out)
+	assert.Equal(t, maxScreenNarrationBytes+len("(11 more bytes of the run's account were not kept while the screen was open)\n"), out.Len())
+	assert.Contains(t, out.String(), "(11 more bytes of the run's account were not kept while the screen was open)")
+
+	_, err = io.Copy(&n, bytes.NewReader(make([]byte, 5)))
+	assert.NoError(t, err, "io.Copy saw a short write")
 }
