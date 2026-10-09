@@ -6,10 +6,13 @@ description: Use when asked to write or change a Flowstate plugin (a task provid
 # Authoring a Flowstate plugin
 
 A plugin is a separate executable a worker launches; its tasks appear to a
-Flowfile as `<plugin>.<task>:`. The full walkthrough is `docs/PLUGINS.md`; the
-worked example is `pkg/flowstate/v1/plugin/examples/flowstate-plugin-example`,
-and `examples/plugins/` holds Flowfiles that use plugin tasks. Read both before
-writing code.
+Flowfile as `<plugin>.<task>:`. The full walkthrough is
+[docs/PLUGINS.md](https://github.com/picatz/flowstate/blob/main/docs/PLUGINS.md);
+the worked example is
+[flowstate-plugin-example](https://github.com/picatz/flowstate/tree/main/pkg/flowstate/v1/plugin/examples/flowstate-plugin-example),
+and [examples/plugins](https://github.com/picatz/flowstate/tree/main/examples/plugins)
+holds Flowfiles that use plugin tasks. Read them before writing code. Later
+mentions of PLUGINS.md mean that page.
 
 ## Decide first
 
@@ -49,10 +52,17 @@ writing code.
 
 ## Secrets and errors
 
-- Secrets stay references until the point of use. Name an input that takes one in
-  `SecretInputs` (and `RequiredSecretInputs`), or declare a credential with
-  `Credentials:` and `(flowstate.v1.input).credential`. The host resolves it
-  worker-side and `DecodeInputs` hands your function the resolved string.
+- Secrets stay references until the point of use. An input that accepts one
+  carries a `(flowstate.v1.input).secret` claim in the `.proto`
+  (`SECRET_WHOLE_VALUE`, or `SECRET_REQUIRED` for one that must be a reference),
+  and the task's `SecretInputs` / `RequiredSecretInputs` must list exactly the
+  same fields: the host compares the two and refuses a plugin that disagrees.
+  `SECRET_NESTED` is refused. The host resolves the reference worker-side and
+  `DecodeInputs` hands your function the resolved string.
+- A credential (`Credentials:` on the plugin plus `(flowstate.v1.input).credential`
+  on the input) is a layer on top of that, not a replacement: the claim implies
+  `SECRET_REQUIRED`, so the input still appears in both task lists, and it
+  lets an author bind it once under `plugins:`.
 - Never put a secret, token, or credential-bearing backend message in a returned
   error, a log line, stderr, or a health message: errors are written to durable
   workflow history.
@@ -66,9 +76,11 @@ writing code.
   egress policy and `max_response_bytes`; do not build your own `http.Client`.
 - Call `sdk.WithCredentials(ctx)` when a secret travels somewhere the SDK cannot
   see (a query string, a custom header, a body).
-- A non-HTTP protocol that needs its own bound uses
-  `sdk.HTTPClientWithBounds(maxResponseBytes, timeout)`; it changes what is
-  bounded, never what may be reached.
+- HTTP with its own size or time bound (a packfile, a paginated listing) uses
+  `sdk.HTTPClientWithBounds(maxResponseBytes, timeout)`. Any other dial
+  (a custom transport or protocol-native client) goes through the egress
+  policy from `sdk.EgressPolicy()` or `sdk.EgressPolicyWithBounds(...)`; never
+  a raw `net.Dial`. The bounds change what is sized, never what may be reached.
 - Cap every list, page count, and read a remote party controls.
 
 ## Validate, test, run locally first
