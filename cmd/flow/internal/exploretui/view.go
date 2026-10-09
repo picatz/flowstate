@@ -190,7 +190,12 @@ func (s Screen) graphView(cell pane.Rect, hits *pane.Hits, st Style) string {
 	body := o
 	body.Height, body.Origin, body.Hits, body.Prefix = cell.H-1, pane.Rect{X: cell.X, Y: cell.Y + 1, W: cell.W, H: cell.H - 1}, hits, rowPrefix
 
-	return pane.Heading(paneGraph, note, cell.W, o) + "\n" + s.Tree.View(body, "no workflows: name a Flowfile or a directory of them")
+	empty := "no workflows: name a Flowfile or a directory of them"
+	if strings.TrimSpace(s.Filter) != "" && len(s.Index.Roots()) > 0 {
+		empty = "no workflow matches the filter: esc clears it"
+	}
+
+	return pane.Heading(paneGraph, note, cell.W, o) + "\n" + s.Tree.View(body, empty)
 }
 
 // detailsView is the inspector pane for the selected row.

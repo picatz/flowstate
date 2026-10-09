@@ -228,3 +228,35 @@ func TestARefreshDropsTheSummariesOfRowsItDiscarded(t *testing.T) {
 
 	assert.Empty(t, m.Screen().Runs, "a summary no row can reach is not kept")
 }
+
+func TestNarrowingTheWorkflowsReadsNothingAndKeepsTheOpenRuns(t *testing.T) {
+	r := &runner{runs: []*v1.RunSummary{runSummary("orders-1", "r1", v1.RunResponse_STATUS_COMPLETED)}}
+	m, _ := started(t, fleet(), withRuns(r))
+	m = openRuns(t, m)
+	m = press(m, "j")
+	selected := m.Screen().Tree.Selected()
+	require.Contains(t, m.Screen().Runs, selected)
+	require.Len(t, r.asked, 1)
+
+	for _, k := range []string{"f", "c", "h", "e", "c", "k"} {
+		m = press(m, k)
+	}
+	assert.Len(t, r.asked, 1, "a key typed into the filter sent no request")
+	assert.Equal(t, selected, m.Screen().Tree.Selected(), "the run is still selected")
+	assert.Contains(t, view(m), "r1", "and still described")
+
+	// A workflow the filter hid is closed when it comes back, and a person
+	// opening its runs row is asking, which asks.
+	m = press(m, "esc", "f", "z", "esc")
+	m = openRuns(t, m)
+	assert.Len(t, r.asked, 2)
+}
+
+func TestAFilterThatMatchesNothingSaysSoAndNotThatThereAreNoWorkflows(t *testing.T) {
+	m, _ := started(t, fleet())
+	m = press(m, "f", "z", "z")
+
+	out := view(m)
+	assert.Contains(t, out, "no workflow matches the filter")
+	assert.NotContains(t, out, "name a Flowfile")
+}

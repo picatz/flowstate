@@ -56,6 +56,12 @@ type runsMsg struct {
 	err  error
 }
 
+// runsAnswer is one finished read of a "runs" row.
+type runsAnswer struct {
+	rows []pane.Node
+	by   map[string]*v1.RunSummary
+}
+
 // Model is the explorer screen.
 type Model struct {
 	cfg  Config
@@ -75,6 +81,14 @@ type Model struct {
 	gens    map[string]uint64
 	pending string
 
+	// answers holds what each "runs" row was last read as, so narrowing the
+	// workflows shows an open row again from what was read and sends nothing to
+	// the server; only a refresh reads again.
+	answers map[string]runsAnswer
+	// reuse says rows are being opened again by a rebuild, which uses answers; a
+	// person opening a row asks the server afresh.
+	reuse bool
+
 	quitting bool
 }
 
@@ -89,7 +103,7 @@ func New(ctx context.Context, cfg Config) (Model, error) {
 	}
 
 	return Model{
-		cfg: cfg, ctx: ctx, keys: keys, seq: 1, gens: map[string]uint64{},
+		cfg: cfg, ctx: ctx, keys: keys, seq: 1, gens: map[string]uint64{}, answers: map[string]runsAnswer{},
 		screen: Screen{Size: cfg.Size, Source: cfg.Source, Tree: pane.NewTree(nil), Keys: keys, Loading: true, Runs: map[string]*v1.RunSummary{}},
 	}, nil
 }
@@ -180,6 +194,8 @@ func (m Model) loaded(msg graphMsg) (tea.Model, tea.Cmd) {
 	}
 	m.screen.Problem = ""
 
+	m.answers = map[string]runsAnswer{}
+
 	return m, m.rebuild(NewIndex(msg.graph))
 }
 
@@ -197,8 +213,9 @@ func (m *Model) rebuild(x *Index) tea.Cmd {
 		}
 	}
 
-	// Summaries belong to rows the new tree is about to rebuild; the reads below
-	// fill the ones that are open again.
+	// Summaries belong to rows the new tree is about to rebuild; the rows that
+	// are open again are filled from what was read, or read afresh after a
+	// refresh emptied the answers.
 	m.screen.Runs = map[string]*v1.RunSummary{}
 	m.screen.Index = x
 	if m.cfg.Runs != nil {
@@ -206,6 +223,7 @@ func (m *Model) rebuild(x *Index) tea.Cmd {
 	}
 	tree.SetRoots(m.screen.Index.RootsNamed(m.screen.Filter))
 	var cmds []tea.Cmd
+	m.reuse = true
 	for _, id := range opened {
 		if request, ok := tree.Expand(id); ok {
 			if cmd := m.fill(request); cmd != nil {
@@ -213,6 +231,7 @@ func (m *Model) rebuild(x *Index) tea.Cmd {
 			}
 		}
 	}
+	m.reuse = false
 	m.pending = ""
 	if !tree.Select(selected) {
 		m.pending = selected
@@ -231,6 +250,12 @@ func (m *Model) fill(request pane.Request) tea.Cmd {
 		return nil
 	}
 	if workflow, ok := x.RunsOf(request.Parent); ok {
+		if answer, ok := m.answers[request.Parent]; ok && m.reuse {
+			m.screen.Tree.Fill(request.Parent, 0, answer.rows, len(answer.rows))
+			maps.Copy(m.screen.Runs, answer.by)
+
+			return nil
+		}
 		ctx, runs := m.ctx, m.cfg.Runs
 		m.gens[request.Parent]++
 		gen := m.gens[request.Parent]
@@ -269,6 +294,7 @@ func (m Model) ran(msg runsMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	maps.Copy(m.screen.Runs, byRow)
+	m.answers[msg.parent] = runsAnswer{rows: rows, by: byRow}
 	if m.pending != "" && m.screen.Tree.Select(m.pending) {
 		m.pending = ""
 	}
