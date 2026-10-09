@@ -1261,6 +1261,17 @@ func RunWithInputs(ctx context.Context, w *Workflow, inputs map[string]*Value) (
 		if err := CheckTaskCapabilitiesIn(ctx, w); err != nil {
 			return nil, err
 		}
+		// The admission check the server runs, from the registry dispatch reads:
+		// a hand-built specification must not put an expression where a task
+		// claims a literal or a whole secret reference just because no server
+		// sits in front of this driver.
+		registry, ok := RegistryFromContext(ctx)
+		if !ok {
+			registry = DefaultRegistry()
+		}
+		if err := CheckRequiredSecretInputs(w, registry); err != nil {
+			return nil, err
+		}
 
 		return eval(ctx, w, bound)
 	})

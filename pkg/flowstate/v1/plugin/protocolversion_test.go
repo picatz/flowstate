@@ -56,9 +56,9 @@ func TestProtocolVersionNamesItsRoutes(t *testing.T) {
 		}
 	}
 
-	// Version 9 is what that package is worth today. Asserted so the constant
+	// Version 10 is what that package is worth today. Asserted so the constant
 	// cannot be renumbered back to something already spent.
-	if got, want := protocol.HostVersions(), []int{protocol.Version9}; len(got) != len(want) || got[0] != want[0] {
+	if got, want := protocol.HostVersions(), []int{protocol.Version10}; len(got) != len(want) || got[0] != want[0] {
 		t.Errorf("HostVersions() = %v, want %v", got, want)
 	}
 }
@@ -111,14 +111,15 @@ func TestRetiredProtocolVersionIsNotOffered(t *testing.T) {
 		{protocol.Version3, protocol.Version6},
 		{protocol.Version4, protocol.Version6},
 		{protocol.Version5, protocol.Version6},
-		{protocol.Version1, protocol.Version9},
-		{protocol.Version2, protocol.Version9},
-		{protocol.Version3, protocol.Version9},
-		{protocol.Version4, protocol.Version9},
-		{protocol.Version5, protocol.Version9},
-		{protocol.Version6, protocol.Version9},
-		{protocol.Version7, protocol.Version9},
-		{protocol.Version8, protocol.Version9},
+		{protocol.Version1, protocol.Version10},
+		{protocol.Version2, protocol.Version10},
+		{protocol.Version3, protocol.Version10},
+		{protocol.Version4, protocol.Version10},
+		{protocol.Version5, protocol.Version10},
+		{protocol.Version6, protocol.Version10},
+		{protocol.Version7, protocol.Version10},
+		{protocol.Version8, protocol.Version10},
+		{protocol.Version9, protocol.Version10},
 	} {
 		if pair[0] == pair[1] {
 			t.Errorf("two protocol versions are both %d; a retired version number must not be reused", pair[0])
@@ -149,14 +150,14 @@ func TestNegotiationRefusesARetiredPluginClearly(t *testing.T) {
 	if !ok {
 		t.Fatal("a current plugin failed to negotiate with the host")
 	}
-	if got != protocol.Version9 {
-		t.Errorf("negotiated version = %d, want %d", got, protocol.Version9)
+	if got != protocol.Version10 {
+		t.Errorf("negotiated version = %d, want %d", got, protocol.Version10)
 	}
 
 	// The refusal an operator reads names both sides. Checked because the value of
 	// failing here rather than on `Describe` is entirely in what it says.
 	rendered := protocol.FormatVersions(protocol.HostVersions())
-	if !strings.Contains(rendered, strconv.Itoa(protocol.Version9)) {
+	if !strings.Contains(rendered, strconv.Itoa(protocol.Version10)) {
 		t.Errorf("FormatVersions(%v) = %q, which does not name the version the host speaks",
 			protocol.HostVersions(), rendered)
 	}
@@ -327,7 +328,7 @@ func TestAPluginSpeakingThePreviousVersionIsRefusedAtTheHandshake(t *testing.T) 
 
 	for _, want := range []string{
 		strconv.Itoa(protocol.Version6),
-		strconv.Itoa(protocol.Version9),
+		strconv.Itoa(protocol.Version10),
 	} {
 		if !strings.Contains(openErr.Error(), want) {
 			t.Errorf("Open error = %q, want it to name version %s; a refusal naming one side does not say which build is old",
@@ -469,7 +470,7 @@ func TestTheSchemaOptionsFileIsRefusedAtTheHandshake(t *testing.T) {
 	t.Parallel()
 
 	unprovided := []int{protocol.Version6}
-	provided := []int{protocol.Version9}
+	provided := []int{protocol.Version10}
 
 	// New plugin, old host: the direction that fails. A host built before the
 	// file was engine-provided offers only 6; a plugin built after it speaks

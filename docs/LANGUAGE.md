@@ -1608,6 +1608,19 @@ or submitted, not when the step runs. Which part of the workload's position the
 relying party sees in the assertion is the target's `subject_level`, the
 deployment's choice, not the Flowfile's ([Subject level](SECRETS.md#subject-level)).
 
+### Literal-only fields
+
+A few task fields, such as the `template` of a chat `markup` text, are
+interpreted as markup and so must be written out, never computed. Writing
+`template: ${event.body.text}` there is refused by `flow validate`, naming the
+field and its line, and again when a specification is submitted. Other fields
+beside it stay free: in `markup: {template: "*{who}*", args: {who: ${event.user}}}`
+the argument is an expression and is escaped by the task. An expression or a
+reference standing for the whole `markup` is refused too, since it could carry
+anything into the template; write the mapping out. A task's page in `flow tasks`
+and the plugin guide ([Literal-only inputs](PLUGINS.md#literal-only-inputs))
+say which fields claim this.
+
 ### Sensitive values
 
 `sensitive: true` on an input or output withholds it from displays: `flow get`,

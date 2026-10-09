@@ -19,6 +19,24 @@ func init() {
 			Leading: " Secret is how the input accepts a secret reference. Unset is no claim.\n",
 		},
 		{
+			Name: "flowstate.v1.InputOptions.literal",
+			Leading: " Literal says the input must be written out as a literal: the text the\n" +
+				" author typed, never an expression, a secret or credential reference, or a\n" +
+				" structure holding either. Unset is no claim.\n" +
+				"\n" +
+				" It is for a string a task renders without escaping, such as the template of\n" +
+				" a chat message, where a value resolved from an event would be interpreted\n" +
+				" as the platform's markup. The task cannot tell a literal from an\n" +
+				" expression's result after resolution, so the claim is enforced before\n" +
+				" that: `flow validate` and the compiler refuse the step, and the host\n" +
+				" refuses a specification built by hand.\n" +
+				"\n" +
+				" Valid on a string field, singular or repeated, or a map whose values are\n" +
+				" strings, in the task's input message or in any message nested inside it\n" +
+				" through singular, repeated, or map fields. A claim on a field of any other\n" +
+				" shape is refused when the task is loaded.\n",
+		},
+		{
 			Name: "flowstate.v1.Secret",
 			Leading: " Secret says how a task input accepts a host secret reference: the claim a\n" +
 				" task makes about one input, written on the field it describes rather than in\n" +

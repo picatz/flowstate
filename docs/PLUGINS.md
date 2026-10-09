@@ -494,6 +494,35 @@ evaluates your protovalidate rules over it, so a `string.max_len` on a nested
 field or a `repeated.max_items` on a list of blocks is reported by `flow
 validate`, at the line that wrote the input, before the run starts.
 
+### Literal-only inputs
+
+Some text must be what the author typed. A chat message template is rendered as
+platform markup, so a value resolved from a webhook or a model would reach it
+unescaped, and by the time your task decodes its input an expression's result
+looks exactly like typed text. Say so in the schema with the `literal` claim:
+
+```protobuf
+import "flowstate/v1/schema.proto";
+
+message Markup {
+  string template = 1 [(flowstate.v1.input).literal = true];
+  map<string, string> args = 2;   // escaped values: expressions are fine here
+}
+```
+
+The claim is valid on a string, a list of strings, or a map of strings, in the
+input message or in any message nested inside it through singular, repeated, or
+map fields. Anywhere else, or beside a `secret` claim, it refuses the plugin at
+launch. `flow validate` and the compiler then refuse an expression, a secret or
+credential reference, or a structure holding either at that field, naming the
+field path (`body[1].markup.template`) at the line of the input. An expression
+that builds the surrounding structure is fine so long as the claimed field is
+written out in it; an expression standing for the whole structure is refused,
+because it could carry anything into the field. The host makes the same check
+when a specification is submitted, so one built by hand cannot skip it. A
+claimed field is not otherwise special: it is still a string your task
+validates.
+
 ## Where the contract catches authors out
 
 Everything above works. What follows is what an outside author learns by walking
@@ -563,9 +592,9 @@ Two things follow that are worth knowing before you build on it:
   identical in shape to a built-in one.
 - **The wire protocol is versioned; the Go API is not.** The protocol is
   negotiated at launch and a mismatch is refused at startup with a message saying
-  which side to upgrade. The current version is 9 (`Version9`,
+  which side to upgrade. The current version is 10 (`Version10`,
   `pkg/flowstate/v1/plugin/internal/protocol/protocol.go`); [Reaching the
-  network](#reaching-the-network) says what versions 6 to 9 changed. Nothing
+  network](#reaching-the-network) says what versions 6 to 10 changed. Nothing
   equivalent covers the Go types you compile against.
 
 The in-tree plugin modules are not the counter-example they look like. Each
@@ -910,6 +939,11 @@ Protocol version 9 is the same kind of change again: `flowstate.chat.v1`, the
 vendor-neutral chat model, joined the engine-provided domain packages, so a
 plugin built after it ships no copy of `flowstate/chat/v1/chat.proto` and a
 version 8 host has no such file to link against.
+
+Protocol version 10 changes what a provided descriptor claims rather than which
+files are provided: `flowstate.chat.v1.Markup.template` declares the `literal`
+input claim, and a plugin links the host's copy of `chat.proto`, so a version 9
+host would enforce no such claim. It is refused at the handshake instead.
 
 Which posture to take toward the default is yours, and both are defensible. A
 plugin whose work is an ordinary request to a public host accepts it — `git`,

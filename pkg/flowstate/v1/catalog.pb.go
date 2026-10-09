@@ -171,7 +171,9 @@ type TaskCatalog struct {
 	// ClaimsSchemaVersion is bumped whenever TaskDescription gains a field
 	// describing a task's security-relevant claims — started at 1 for
 	// needs_scope, secret_inputs, shapes_outputs, deferred_inputs and
-	// expression_inputs; version 2 adds required_secret_inputs.
+	// expression_inputs; version 2 adds required_secret_inputs; version 3 adds the `literal`
+	// input claim, which TaskDescription carries only in the task's input schema,
+	// so a reader that predates it would ignore it.
 	//
 	// Exists because proto3 cannot mark a bool or a repeated string field
 	// `optional`, so none of those fields can distinguish "populated as

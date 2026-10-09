@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.chat.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/schema.proto";
 
 option go_package = "flowstatechatv1";
 
@@ -52,7 +53,14 @@ message Text {
 message Markup {
   // template is the author-written text, a literal and never a value resolved
   // from an event.
-  string template = 1 [(buf.validate.field).string = {min_len: 1, max_len: 3000}];
+  //
+  // The claim makes the host refuse an expression, secret reference, or
+  // structure holding either here, since the adapter renders the template
+  // unescaped and cannot tell afterwards where its text came from.
+  string template = 1 [
+    (buf.validate.field).string = {min_len: 1, max_len: 3000},
+    (flowstate.v1.input).literal = true
+  ];
 
   // args maps a placeholder name to the value an adapter escapes before
   // substituting it into the template.

@@ -85,6 +85,7 @@ func corpusSizes() map[string]int {
 		"StepIDRefusalCases":              len(StepIDRefusalCases()),
 		"IdentityCases":                   len(IdentityCases()),
 		"InterpolationCases":              len(InterpolationCases()),
+		"LiteralClaimRefusalCases":        len(LiteralClaimRefusalCases()),
 		"LogCases":                        len(LogCases()),
 		"LoopCases":                       len(LoopCases()),
 		"LoopExhaustionTranscriptCases":   len(LoopExhaustionTranscriptCases()),

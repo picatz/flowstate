@@ -408,6 +408,16 @@ func taskInputNotes(def TaskDef) map[string][]string {
 	for _, name := range def.RequiredSecretInputs {
 		notes[name] = append(notes[name], requiredSecretReferenceNote)
 	}
+
+	// The fields a task claims must be written out, read from the descriptor so
+	// the page an author reads and the check the compiler applies are one fact.
+	// An unreadable claim is refused when the task loads, so none is shown here.
+	claims, _ := InputClaims(def.Inputs)
+	for _, c := range claims {
+		if len(c.Literal) > 0 {
+			notes[c.Name] = append(notes[c.Name], "must be literal text, never an expression, at: "+strings.Join(c.Literal, ", "))
+		}
+	}
 	// def.SecretInputs is the plugin whole-value list (TaskManifest.secret_inputs,
 	// #712): a different mechanism from AuthorityInputs/NestedSecretInputs, but
 	// the same fact about what an author may legally write there, so it earns
@@ -481,10 +491,12 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 // CurrentClaimsSchemaVersion is [TaskCatalog.ClaimsSchemaVersion]'s current
 // value: every build carrying this constant populates NeedsScope,
 // SecretInputs, RequiredSecretInputs, ShapesOutputs, DeferredInputs and
-// ExpressionInputs on every TaskDescription it produces. Bump it only alongside
+// ExpressionInputs on every TaskDescription it produces and enforces the
+// `literal` input claim at admission (version 3), which a reader of version 2 would
+// ignore as an unknown option. Bump it only alongside
 // a change that adds or redefines one of those fields, the same event that would
 // justify a new entry in the doc comment on ClaimsSchemaVersion itself.
-const CurrentClaimsSchemaVersion uint32 = 2
+const CurrentClaimsSchemaVersion uint32 = 3
 
 // TaskDescriptionClaimsKnown reports whether a catalog's TaskDescriptions can
 // be trusted to say when a task needs scope or accepts a secret, as opposed

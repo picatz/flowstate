@@ -147,6 +147,15 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 			ds = append(ds, d)
 			continue
 		}
+		// A field the task's schema claims must be a literal is held to it before
+		// anything else is asked of the input, and a refusal ends the input's
+		// checks: the value is not one this could type-check, and a second
+		// sentence about the same input would bury the one that matters.
+		if violation := v1.LiteralFieldViolation(def.Inputs, name, task.GetInputs()[name]); violation != nil {
+			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: fmt.Sprintf("task %q: %s", def.Name, violation)})
+
+			continue
+		}
 		if slices.Contains(def.RequiredSecretInputs, name) {
 			if value := task.GetInputs()[name]; value.GetSecretRef() == nil && value.GetCredentialRef() == nil {
 				ds = append(ds, Diagnostic{

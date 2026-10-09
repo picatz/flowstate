@@ -996,6 +996,21 @@ func TestRunWorkflowInputsRefused(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowLiteralClaimsRefused is the local driver's half of the literal
+// claim: the server refuses these specifications at admission, so a rehearsal that
+// ran them would say yes where production says no.
+func TestRunWorkflowLiteralClaimsRefused(t *testing.T) {
+	conformance.RegisterLiteralClaimTask(t)
+	for _, test := range conformance.LiteralClaimRefusalCases() {
+		t.Run(test.Name, func(t *testing.T) {
+			out, err := v1.RunWithInputs(t.Context(), test.Workflow, test.Inputs)
+			require.Error(t, err, "the submission was accepted")
+			require.Contains(t, err.Error(), test.Contains)
+			require.Empty(t, out.GetStepValues(), "a step ran before the refusal")
+		})
+	}
+}
+
 // TestRunWorkflowStepIDsRefused is the local driver's half of the step-id scope
 // rules at the submit boundary (#1430): a hand-built specification with a step
 // named for a root, a duplicate id, or an id `steps.<id>` cannot parse is refused
