@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/debugtui"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
@@ -62,6 +63,12 @@ type reversibleFront struct {
 	Console *debugConsole
 	Panes   *debugPanes
 	Theme   ui.Theme
+
+	// Screen, when set, is the full-screen debugger the lines come from instead
+	// of Next and Console. It is handed the reversible target, the driver over
+	// it and the capabilities of its first stop; how the person leaves decides
+	// how the case ends, as the same words do at the line editor.
+	Screen func(ctx context.Context, over screenOver) (debugtui.Outcome, error)
 
 	// Emit receives the shown run's account. Defaults to writing it to Out.
 	Emit func(text string, tone flowdebug.Tone)
@@ -189,14 +196,17 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 	// The first stop, or the end of a case with no steps to hold at. after is
 	// the revision the run ended at, once it has: what follows is the case's
 	// verdict, or an autopsy, which holds a failed case for questions.
-	var after uint64
+	var (
+		after uint64
+		held  *v1.DebugSnapshot
+	)
 	ended := false
 	for {
 		snapshot, err := reversible.WaitSnapshot(ctx, after)
 		if err != nil {
 			return flowtest.RunResult{}, err
 		}
-		after = snapshot.GetRevision()
+		after, held = snapshot.GetRevision(), snapshot
 		if terminalDebugState(snapshot.GetState()) {
 			ended = true
 
@@ -205,6 +215,9 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		if snapshot.GetState() != v1.DebugRunState_DEBUG_RUN_STATE_RUNNING {
 			break
 		}
+	}
+	if f.Screen != nil && !ended {
+		return f.screen(ctx, reversible, driver, held.GetCapabilities(), after, verdict)
 	}
 	for {
 		if ended {
@@ -287,6 +300,57 @@ func (f *reversibleFront) run(ctx context.Context) (flowtest.RunResult, error) {
 		}
 	}
 }
+
+// screen plays the case under the full-screen debugger and returns its result.
+//
+// The screen ends the way the line loop's exits do: ctrl-C ends the case as
+// `quit` does, a detach the run took lets it run on unattended, and everything
+// else (ctrl-D, a lost terminal) releases it, resuming every stop until it
+// ends. A failed case is held for questions as an autopsy; nobody is left to
+// ask them once the screen is closed, so it is let go to deliver its verdict.
+func (f *reversibleFront) screen(
+	ctx context.Context,
+	reversible *flowdebug.Reversible,
+	driver *flowdebug.Driver,
+	capabilities *v1.DebugCapabilities,
+	after uint64,
+	verdict <-chan flowtest.RunResult,
+) (flowtest.RunResult, error) {
+	outcome, screenErr := f.Screen(ctx, screenOver{
+		Target: reversible, Driver: driver, Capabilities: capabilities, Local: true,
+	})
+	if ctx.Err() != nil {
+		return flowtest.RunResult{}, ctx.Err()
+	}
+
+	switch {
+	case screenErr != nil || outcome == debugtui.OutcomeInterrupt:
+		if session := f.shown.Load(); session != nil {
+			quitCtx, stop := context.WithTimeout(ctx, 2*time.Second)
+			_ = session.Control(quitCtx, "quit")
+			stop()
+		}
+		after = reversibleRevision(ctx, reversible)
+	case outcome == debugtui.OutcomeDetach || outcome == debugtui.OutcomeEnded:
+		after = reversibleRevision(ctx, reversible)
+	default:
+		after, _ = f.release(ctx, driver, after)
+	}
+
+	for range maxAutopsyReleases {
+		result, autopsy, err := awaitEnd(ctx, reversible, after, verdict)
+		if err != nil || !autopsy {
+			return result, errors.Join(err, screenErr)
+		}
+		after, _ = f.release(ctx, driver, after)
+	}
+
+	return flowtest.RunResult{}, errors.Join(errors.New("the case did not end after the screen closed"), screenErr)
+}
+
+// maxAutopsyReleases bounds how many times a closed screen lets a held case go
+// before it gives up waiting for the verdict.
+const maxAutopsyReleases = 4
 
 // awaitEnd waits for what follows a run that ended at revision after: the
 // case's verdict, or an autopsy, which holds a failed case at its end so it can

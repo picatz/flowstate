@@ -70,7 +70,16 @@ type Model struct {
 	// quit records that the person asked to stop, so the outcome is not
 	// reported as the run's.
 	quit bool
+
+	// notice is what the last `d` has to say when it did not open the
+	// debugger: a refusal, or why the debugger ended badly. It replaces the
+	// footer until the next key.
+	notice string
 }
+
+// AttachedMsg reports that the debugger the `d` key opened has ended, with the
+// error it ended in, if any.
+type AttachedMsg struct{ Err error }
 
 // PollMsg is the clock: its time is what elapsed is measured against.
 type PollMsg struct{ At time.Time }
@@ -207,6 +216,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.Key(msg)
 
+	case AttachedMsg:
+		if msg.Err != nil {
+			m.notice = fmt.Sprintf("the debugger ended with an error: %v", msg.Err)
+		}
+
+		return m, nil
+
 	case PollMsg:
 		if m.first.IsZero() {
 			m.first = msg.At
@@ -256,14 +272,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // asserting *only* that a key produces no command has no message loop to
 // read one back from.
 func (m Model) Key(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.notice = ""
+
 	switch msg.String() {
 	case "q", "esc", "ctrl+c":
 		m.quit = true
 
 		return m, tea.Quit
+	case "d":
+		return m.attachDebugger()
 	}
 
 	return m, nil
+}
+
+// attachDebugger hands the terminal to `flow debug attach` for the run being
+// watched and takes it back when the debugger ends. It is offered only where
+// the caller supplied the command, and refused, in words, for a run with no
+// workflow id to name: the debugger addresses a run by that id, and an attach
+// to an empty one would ask the server about nothing.
+func (m Model) attachDebugger() (tea.Model, tea.Cmd) {
+	if m.state.attach == nil {
+		return m, nil
+	}
+	if m.state.workflowID == "" {
+		m.notice = "there is no workflow id to attach the debugger to"
+
+		return m, nil
+	}
+
+	command := m.state.attach(m.state.workflowID, m.state.runID)
+
+	return m, tea.ExecProcess(command, func(err error) tea.Msg { return AttachedMsg{Err: err} })
+}
+
+// footer is the hint line: what stops the watch, what `d` does where it is
+// offered, and, in place of both, why the last key was refused.
+func (m Model) footer() string {
+	switch {
+	case m.notice != "":
+		return m.notice
+	case m.state.attach != nil:
+		return "q stops watching, not the run · d attaches the debugger"
+	}
+
+	return "q stops watching, not the run"
 }
 
 // View draws the run.
@@ -335,7 +388,7 @@ func (m Model) View() tea.View {
 		fmt.Fprintf(&b, "\n%s\n", m.note(theme.Danger, symbols.Failure, state.failure))
 	}
 
-	fmt.Fprintf(&b, "\n%s\n", theme.Muted.Render("q stops watching, not the run"))
+	fmt.Fprintf(&b, "\n%s\n", theme.Muted.Render(m.footer()))
 
 	// Trimmed once, over the whole screen, rather than per line as it is
 	// built.

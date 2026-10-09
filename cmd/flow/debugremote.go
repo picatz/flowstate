@@ -40,6 +40,12 @@ workflow code at a step boundary only: work already dispatched keeps running,
 and so does time. The session is leased: this command renews it while it runs,
 and a session nobody renews lapses and the run resumes on its own.
 
+At a terminal of at least 60x12 the debugger is a full-screen view with keyboard and
+mouse. --tui=false keeps the line editor. The view is never used under --script, with a
+piped stdin or stdout, with a machine --output, in CI (the CI environment variable) or
+with TERM=dumb: there the commands are read from the input and answered as text, exactly
+as before.
+
 Commands are read from the terminal, or from --script. Leaving with ` + "`detach`" + `, or
 at the end of input, releases the run; ` + "`disconnect`" + ` leaves the session attached
 for a later ` + "`flow debug attach --session <id>`" + `.
@@ -62,7 +68,10 @@ flow debug attach order-1234 --script debug.txt -o jsonl
 flow debug attach order-1234 --session 5d3f…
 
 # Walk a closed run's record, both ways, in the full-screen debugger:
-flow debug attach order-1234 --history --run-id 5d3f… --tui`
+flow debug attach order-1234 --history --run-id 5d3f…
+
+# The line editor instead of the full-screen debugger:
+flow debug attach order-1234 --tui=false`
 
 func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd := &cobra.Command{
@@ -85,8 +94,7 @@ func addDebugRemoteCommands(debugCmd *cobra.Command) {
 	attachCmd.Flags().Duration("wait", time.Minute, "how long a movement waits for the next stop before reporting the run still running")
 	attachCmd.Flags().Bool("history", false, "walk the recorded run named by --run-id instead of holding it: every point is reachable both ways, "+
 		"nothing runs, and what it shows is reconstructed from its history")
-	attachCmd.Flags().Bool("tui", false, "drive the run from a full-screen debugger (keyboard and mouse) instead of the line editor; "+
-		"needs a terminal at least 60x12, and is declined with a note on stderr where there is none")
+	addTUIFlag(attachCmd)
 
 	getCmd := &cobra.Command{
 		Use:   "get <workflow-id>",
@@ -186,17 +194,12 @@ func runDebugAttach(cmd *cobra.Command, args []string) (err error) {
 		}
 	}
 
-	// --tui is opt-in and is declined, with a sentence on stderr, wherever the
-	// screen could not be drawn: the attach then runs as it would have without
-	// the flag, byte for byte on stdout.
+	// The screen is the default at a terminal and nowhere else: wherever it
+	// could not be drawn the attach runs as it did before it existed, byte for
+	// byte on stdout, and says so on stderr only if --tui was spelled out.
 	surface := newSurface(cmd)
-	wantTUI, _ := cmd.Flags().GetBool("tui")
-	if wantTUI {
-		if why := debugTUIRefusal(cmd.InOrStdin(), surface.Out, script, format); why != "" {
-			fmt.Fprintf(surface.Err, "flow: --tui is not used: %s; using the line editor\n", why)
-			wantTUI = false
-		}
-	}
+	wantTUI, note := debugScreen(cmd, cmd.InOrStdin(), surface.Out, script, format, os.Getenv)
+	fmt.Fprint(surface.Err, note)
 
 	var (
 		sourceMap *v1.DebugSourceMap
