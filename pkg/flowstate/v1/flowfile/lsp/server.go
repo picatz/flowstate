@@ -630,13 +630,15 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		return
 	}
-	diagnostics := diagnose(doc)
+	diagnostics := publishable(doc, diagnoseCarried(doc))
 	s.logger().Debug("published diagnostics",
 		"uri", doc.uri, "version", doc.version, "count", len(diagnostics))
-	s.notify(ctx, conn, lsp.PublishDiagnosticsParams{
+	if err := conn.Notify(ctx, "textDocument/publishDiagnostics", publishDiagnosticsParams{
 		URI:         doc.uri,
 		Diagnostics: diagnostics,
-	})
+	}); err != nil {
+		s.logger().Warn("publishing diagnostics failed", "uri", doc.uri, "error", err)
+	}
 }
 
 // siblingDocumentURI retains the client's spelling of a local file URI while
