@@ -153,6 +153,21 @@ const withoutRedirects = (words: string[], quoted: boolean[]): { words: string[]
   return { words: kept, odd }
 }
 
+/** A word that holds whitespace is a command line, never an assignment or an option. */
+const hasSpace = (w: string): boolean => /\s/.test(w)
+/** Drops an option glued to the command line it carries: `-S"flow run x"`, `--split-string=...`, `-vS...`, `-c...`, a git alias `alias.x=!...`. */
+const withoutOptionPrefix = (w: string): string => w.replace(/^(?:--split-string=|-[A-Za-z]*[cS]|[\w.-]+=!)/, '')
+/** Whether `env` is given `-S`/`--split-string`, which runs a command line the parse may not have followed. */
+const splitsString = (words: string[]): boolean => {
+  for (let i = 0; i < words.length; i++) {
+    if (basename(words[i]) !== 'env') continue
+    for (let j = i + 1; j < words.length && words[j].startsWith('-'); j++) {
+      if (/^(?:--split-string(?:=|$)|-[A-Za-z]*S)/.test(words[j])) return true
+    }
+  }
+  return false
+}
+
 const setEnv = (env: Map<string, string>, assignment: string) => {
   const eq = assignment.indexOf('=')
   env.set(assignment.slice(0, eq), assignment.slice(eq + 1))
@@ -169,7 +184,7 @@ const unwrap = (words: string[], env: Map<string, string>, exported: Map<string,
   let i = 0
   while (i < words.length) {
     const w = words[i]
-    if (ASSIGNMENT.test(w)) {
+    if (ASSIGNMENT.test(w) && !hasSpace(w)) {
       setEnv(env, w)
       i++
     } else if (KEYWORDS.has(w)) {
@@ -182,7 +197,7 @@ const unwrap = (words: string[], env: Map<string, string>, exported: Map<string,
     } else if (w === 'env' || w === 'sudo' || w === 'timeout') {
       i++
       // Options, and for `timeout` its duration; `env -u NAME` and `sudo -u user` take a value.
-      while (i < words.length && (words[i].startsWith('-') || (w === 'timeout' && /^\d/.test(words[i])))) {
+      while (i < words.length && !hasSpace(words[i]) && (words[i].startsWith('-') || (w === 'timeout' && /^\d/.test(words[i])))) {
         const takesValue = w !== 'timeout' && ['-u', '-C', '-g', '-h', '-p'].includes(words[i])
         i += takesValue ? 2 : 1
       }
@@ -244,6 +259,11 @@ const shellScriptAt = (words: string[], from: number): number => {
 
 /** Heads whose arguments are file names or text, never a command: the wrapper pass leaves them alone. */
 const ARGS_ONLY = new Set(['cp', 'mv', 'rm', 'mkdir', 'touch', 'test', '['])
+/** Git subcommands that never execute their arguments: what follows is a message, a path, or a ref. */
+const GIT_TEXT_ONLY = new Set([
+  'commit', 'log', 'show', 'diff', 'add', 'status', 'tag', 'branch', 'checkout', 'switch', 'restore', 'stash', 'push', 'pull', 'fetch', 'clone',
+  'remote', 'config', 'blame', 'grep', 'describe', 'cherry-pick', 'merge', 'reset', 'rm', 'mv', 'apply', 'am', 'format-patch', 'shortlog',
+])
 const TEST_RUNNERS = new Set(['bun', 'npm', 'pnpm', 'yarn'])
 
 /** A command longer than this is asked about, unread: the parse would spend more than the question is worth. */
@@ -284,6 +304,7 @@ export const analyzeCommand = (command: string, flowBinary = 'flow'): Analysis =
       const stripped = withoutRedirects(segments[s], quoted[s])
       if (stripped.odd) uncertain = true
       if (stripped.words.every(w => ASSIGNMENT.test(w)) && stripped.words.some(w => w.startsWith('FLOWSTATE_ADDRESS='))) addressAssigned = true
+      if (splitsString(stripped.words)) uncertain = true
       const words = unwrap(stripped.words, env, exported)
       if (words.length === 0) continue
       const head = basename(words[0])
@@ -307,8 +328,8 @@ export const analyzeCommand = (command: string, flowBinary = 'flow'): Analysis =
       if (INTERPRETER.test(head) && words.some((w, i) => i > 0 && /^(?:-c|-e|-E|--eval)$/.test(w))) uncertain = true
       if (DISPLAY.has(head) || ARGS_ONLY.has(head)) continue
       if (TEST_RUNNERS.has(head) && words[1] === 'test') continue
-      // `git commit -m "flow run x"` is text; `git flow ...` is the one place git hands over to a binary of that name.
-      if (head === 'git' && !names.has(basename(words[1] ?? ''))) continue
+      // `git commit -m "flow run x"` is text; `bisect run`, `rebase --exec`, `-c alias.x=!...` and `git flow` hand over to a command.
+      if (head === 'git' && GIT_TEXT_ONLY.has(words[1] ?? '') && !(words[1] === 'config' && words.some(w => w.includes('alias')))) continue
 
       // The wrapper pass: the binary behind something this parser does not model
       // (`go run ./cmd/flow`, `nice -n 5 flow`, `ssh h flow`, `find -exec flow`),
@@ -318,7 +339,7 @@ export const analyzeCommand = (command: string, flowBinary = 'flow'): Analysis =
         if (consumed.has(i)) continue
         const w = words[i]
         if (/\s/.test(w)) {
-          if (mentions(w)) recurse(w, env)
+          if (mentions(w)) recurse(withoutOptionPrefix(w), env)
         } else if (i === 0) {
           continue
         } else if (names.has(basename(w))) {
@@ -356,6 +377,12 @@ const namesVerb = (text: string, names: Set<string>): boolean => {
   for (let start = 0; start <= text.length; ) {
     let end = text.indexOf('\n', start)
     if (end < 0) end = text.length
+    // A line this long is not scanned (the patterns backtrack): naming the binary is reason enough to ask.
+    if (end - start > MAX_LINE) {
+      if ([...names].some(n => text.slice(start, end).includes(n))) return true
+      start = end + 1
+      continue
+    }
     const line = text.slice(start, end)
     if (tight.test(line) || variable.test(line)) return true
     start = end + 1

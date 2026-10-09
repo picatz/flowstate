@@ -691,3 +691,38 @@ test('an edit that adds a secret to a clean file is not described as already the
   expect(alreadyPresent('a: 1', [{ line: 1, what: 'the key password holding a literal value' }])).toBe(false)
   expect(alreadyPresent(undefined, [{ line: 1, what: 'x' }])).toBe(false)
 })
+
+test('env -S, --split-string and su -c carry a command line that is followed, attached or not', () => {
+  for (const c of [
+    'env -S "FOO=1 flow run x"',
+    'env -S"flow run x"',
+    'env --split-string="flow run x"',
+    'env -vS"flow run x"',
+    'su -c"flow run x" bob',
+  ]) {
+    expect(verbs(c)).toEqual(['flow run'])
+  }
+  expect(analyzeCommand('env -S "echo hi"').uncertain).toBe(false)
+  expect(analyzeCommand('env -S "FOO=1 flow run local x"').actions).toEqual([])
+  expect(verbs('FOO=1 BAR=2 flow run x')).toEqual(['flow run'])
+})
+
+test('git runs its arguments for bisect, rebase --exec and aliases, never for text-only subcommands', () => {
+  expect(verbs('git bisect run flow run x')).toEqual(['flow run'])
+  expect(verbs("git -c alias.x='!flow run x' x")).toEqual(['flow run'])
+  expect(verbs('git rebase --exec "flow run x"')).toEqual(['flow run'])
+  expect(verbs('git commit -m "flow run local"')).toEqual([])
+  expect(verbs('git commit -am "feat: flow run retries"')).toEqual([])
+  expect(verbs('git log --grep "flow run x"')).toEqual([])
+  expect(verbs('git config user.name "flow run x"')).toEqual([])
+})
+
+test('a long line of the binary name is answered fast, not scanned quadratically', () => {
+  const command = '$(x) ' + 'flow -a '.repeat(8000) + 'z'
+  expect(command.length).toBeLessThanOrEqual(MAX_COMMAND)
+  const start = performance.now()
+  const out = analyzeCommand(command)
+  expect(performance.now() - start).toBeLessThan(500)
+  expect(out.uncertain).toBe(true)
+  expect(analyzeCommand('$(x) ' + 'a '.repeat(8000)).uncertain).toBe(false)
+})
