@@ -1,5 +1,4 @@
 import { count } from './statusline'
-import { isTestFile } from './flowfile'
 import { clean } from './runs'
 import { chip, middleTruncate, statusFor } from './vocab'
 import type { Status } from './vocab'
@@ -50,6 +49,8 @@ export interface Band {
   cut: boolean
   /** Why the outcome is what it is, when the counts do not say. */
   note: string
+  /** The last rerun of one case, kept beside the suite's verdict and never replacing it. */
+  rerun?: { name: string; outcome: 'passed' | 'failed' | 'unknown'; note: string }
 }
 
 /** A string the CLI sent that `clean` left whole: non-empty, within the bound, no hidden character. */
@@ -135,12 +136,21 @@ export const bandFor = ({ stdout, ok, unfinished, partial }: TestRun): Band => {
       if (band.failing.length < MAX_FAILING) band.failing.push({ name: 'file refused', file: name, line: 0, reason: why || 'refused' })
       else band.more++
     }
+    // `--run` selects every case of a file whose name matches, and a file may repeat a name: a case is
+    // rerunnable alone only when its name is the file's one and the scan saw the whole file.
+    const counts = new Map<string, number>()
+    const raws: string[] = []
+    const mine = band.failing.length
+    let capped = false
     for (const rawCase of list(file.cases)) {
       if (seen++ >= MAX_CASES) {
         band.cut = true
+        capped = true
         break
       }
       const c = obj(rawCase)
+      const rawName = typeof c?.name === 'string' ? c.name : ''
+      counts.set(rawName, (counts.get(rawName) ?? 0) + 1)
       if (c?.passed === true) band.passed++
       else if (c?.passed === false) {
         band.failed++
@@ -157,8 +167,12 @@ export const bandFor = ({ stdout, ok, unfinished, partial }: TestRun): Band => {
           line,
           reason: clean(first?.message, MAX_REASON) || clean(c.error, MAX_REASON) || 'no reason given',
         })
+        raws.push(rawName)
       } else unreadable++
     }
+    band.failing.slice(mine).forEach((f, k) => {
+      if (capped || (counts.get(raws[k]) ?? 0) > 1) f.exact = false
+    })
     band.skipped += list(file.skipped).length
     for (const cov of list(file.coverage)) band.uncovered += list(obj(cov)?.unreached).length
   }
@@ -201,10 +215,12 @@ export const bandText = (b: Band): string[] => [
   `test ${chip(headOf(b))}${summaryOf(b) === '' ? '' : ` · ${summaryOf(b)}`}`,
   ...b.failing.map(f => `  ${failingLine(f)}`),
   ...(b.more > 0 ? [`  and ${count(b.more)} more`] : []),
+  ...rerunLine(b),
 ]
 
 /** A test file the band may rerun: a plain path, not a flag, with no parent segment. */
-const RERUN_FILE = /^[A-Za-z0-9_./][A-Za-z0-9._/@+-]*$/
+const RERUN_TEST_FILE = /\.test\.ya?ml$/
+const RERUN_FILE =/^[A-Za-z0-9_./][A-Za-z0-9._/@+-]*$/
 
 /** `regexp.QuoteMeta`: `--run` takes a regular expression, and a case name is a literal. */
 export const quoteMeta = (s: string): string => s.replace(/[\\.+*?()|[\]{}^$]/g, '\\$&')
@@ -220,7 +236,7 @@ export const quoteMeta = (s: string): string => s.replace(/[\\.+*?()|[\]{}^$]/g,
  */
 export const rerunArgv = (flow: string, f: Failing): string[] | undefined => {
   if (f.exact !== true || f.name === '' || f.name.length > MAX_NAME) return undefined
-  if (f.file === '' || f.file.length > MAX_FILE || !RERUN_FILE.test(f.file) || f.file.split('/').includes('..') || !isTestFile(f.file)) return undefined
+  if (f.file === '' || f.file.length > MAX_FILE || !RERUN_FILE.test(f.file) || f.file.split('/').includes('..') || !RERUN_TEST_FILE.test(f.file)) return undefined
   return [flow, 'test', '-o', 'json', `--run=^${quoteMeta(f.name)}$`, '--', f.file]
 }
 
@@ -230,9 +246,27 @@ export const rerunQuestion = (f: Failing): string => `Rerun the case "${f.name}"
 /** A rerun is stopped after this long and then reported as outcome unknown. */
 export const RERUN_TIMEOUT_MS = 60000
 
-/** The band after a rerun: the lone-test result of that one case, or unknown when it did not finish. */
-export const rerunBand = (ran: { exitCode: number; stdout: string; isStdoutTruncated?: boolean } | undefined, err?: unknown): Band => {
-  if (ran === undefined) return unknownBand(`rerun outcome unknown: ${clean(String(err), 80) || 'no answer'}`)
-  const b = bandFor({ stdout: ran.stdout, ok: ran.exitCode === 0, partial: ran.isStdoutTruncated === true })
-  return b.detailed && b.note === '' ? { ...b, note: 'rerun of one case' } : b
+/**
+ * The band after a rerun of one case. The suite's verdict is not replaced: the
+ * headline, counts, skips and the other failures stay as the full run left them,
+ * and the rerun is one labelled line. A rerun is `passed` or `failed` only when
+ * its JSON was read; anything else (no output, text, cut, a throw or timeout) is
+ * unknown, whatever the exit status. A failed rerun refreshes that case's detail.
+ */
+export const applyRerun = (band: Band, f: Failing, ran: { exitCode: number; stdout: string; isStdoutTruncated?: boolean } | undefined, err?: unknown): Band => {
+  const got = ran === undefined ? undefined : bandFor({ stdout: ran.stdout, ok: ran.exitCode === 0, partial: ran.isStdoutTruncated === true })
+  const outcome: 'passed' | 'failed' | 'unknown' = got?.detailed === true ? got.outcome : 'unknown'
+  const fresh = outcome === 'failed' ? got?.failing.find(x => x.name === f.name && x.file === f.file) : undefined
+  return {
+    ...band,
+    failing: fresh === undefined ? band.failing : band.failing.map(x => (x.name === f.name && x.file === f.file ? fresh : x)),
+    rerun: { name: f.name, outcome, note: ran === undefined ? clean(String(err), 80) || 'no answer' : '' },
+  }
+}
+
+/** The labelled line a rerun leaves under the suite's own verdict; says which flags it did not carry. */
+export const rerunLine = (b: Band): string[] => {
+  if (b.rerun === undefined) return []
+  const word = b.rerun.outcome === 'passed' ? '✓ passed' : b.rerun.outcome === 'failed' ? '✗ failed' : '? unknown'
+  return [`  rerun of ${b.rerun.name} with default flags (the run's own flags are not carried): ${word}${b.rerun.note === '' ? '' : ` (${b.rerun.note})`}`]
 }

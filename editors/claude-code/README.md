@@ -235,8 +235,16 @@ expectation and its reason (`✗ failed wrong output (w.test.yaml:18): ...`, and
   names up to 60 and files up to 80 characters) and the file is a plain
   `*.test.yaml` path with no parent segment; otherwise there is no button. The
   file is the one the band recorded, read again at Confirm. The result replaces the
-  band with the same model (`rerun of one case`); a timeout (60 s), a failure to
-  start, or unreadable output reads `? unknown`, never passed. There is no Open
+  suite's verdict stays: the headline, counts and other failures are kept, and the
+  rerun is one labelled line (`rerun of <name> with default flags (the run's own
+  flags are not carried): ✓ passed`); a failed rerun also refreshes that case's
+  detail. It is passed or failed only when its JSON was read: a timeout (60 s), a
+  failure to start, empty, text or unreadable output reads `? unknown`, whatever
+  the exit status. A rerun whose band moved meanwhile (edit, Hide, a new `flow
+  test`) writes nothing, and any band change drops an open question. No button
+  when the file repeats the case's name (`--run` would select both), when the
+  scan was cut, or unless the file ends `.test.yaml`/`.test.yml` (not
+  `testdefaults.yaml` or `x.test.yaml.bak`). There is no Open
   button for `file:line`: the mod API offers no way to open a file in an editor.
 - Editing a Flowfile or a `*.test.yaml` through Edit, Write or MultiEdit clears
   it (an edit made by a shell command is not seen), and so does the Hide button.

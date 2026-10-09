@@ -13,7 +13,7 @@ import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
-import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, rerunBand, rerunQuestion, summaryOf, unknownBand } from './testband'
+import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, applyRerun, rerunLine, rerunQuestion, summaryOf, unknownBand } from './testband'
 import type { Band } from './testband'
 import { NO_SEEN, seenFrom, statusText } from './statusline'
 import type { Seen } from './statusline'
@@ -55,6 +55,14 @@ const outputsRaw = atom({ plugin: 'flowstate', key: 'outputsRaw' } as const, fal
 const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
+/** Bumped by every write of the band, so a slow rerun can tell the band moved while it ran. */
+const bandWrites = { n: 0 }
+/** Every band write goes through here: it moves the count and takes any open Rerun question away. */
+const setBand = async ($: Engine, value: Band | null): Promise<void> => {
+  bandWrites.n++
+  await update($, testBand, () => value)
+  await update($, rerunConfirm, () => NO_RERUN)
+}
 
 const validate = async (
   $: Engine,
@@ -304,7 +312,7 @@ export const register: Register = (on, options) => {
       const ran = await next(e)
       if (ran.deny === undefined && ran.isError !== true) {
         // A result for the old files must not stand as current.
-        if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await update($, testBand, () => null).catch(() => undefined)
+        if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await setBand($, null).catch(() => undefined)
         if (nudges) {
           await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
           await refreshStatus($, nudges, heard)
@@ -328,7 +336,7 @@ export const register: Register = (on, options) => {
       const verdict = isLoneTest((e as { command?: unknown }).command, flow)
         ? bandFor({ stdout, ok: passed, unfinished, partial: result?.persistedOutputPath !== undefined })
         : unknownBand('chained command; run flow test on its own')
-      await update($, testBand, () => verdict).catch(() => undefined)
+      await setBand($, verdict).catch(() => undefined)
     }
     if (!nudges) return ran
     await update($, verify, s => recordCheck(s, check, passed)).catch(() => undefined)
@@ -374,7 +382,7 @@ export const register: Register = (on, options) => {
             test <Text color={COLOR[head.tone]}>{head.symbol} {head.word}</Text>
             {sum === '' ? '' : ` · ${sum}`}{' '}
           </Text>
-          <Button key="hide" label="Hide" onPress={() => update($, testBand, () => null)} />
+          <Button key="hide" label="Hide" onPress={() => setBand($, null)} />
         </Box>
         {band.failing.map((f, i) => {
           const argv = rerunArgv(flow, f)
@@ -417,13 +425,19 @@ export const register: Register = (on, options) => {
                           const again = now?.failing.find(x => x.file === c.file && x.name === c.name)
                           const run = again === undefined ? undefined : rerunArgv(flow, again)
                           if (run === undefined) return
-                          let after: Band
+                          const started = bandWrites.n
+                          let ran: Awaited<ReturnType<typeof $.process.run>> | undefined
+                          let failure: unknown
                           try {
-                            after = rerunBand(await $.process.run(run, { timeoutMs: RERUN_TIMEOUT_MS }))
+                            ran = await $.process.run(run, { timeoutMs: RERUN_TIMEOUT_MS })
                           } catch (err) {
-                            after = rerunBand(undefined, err)
+                            failure = err
                           }
-                          await update($, testBand, () => after)
+                          // The band may have been cleared, hidden or replaced while this ran: then this result is for nothing.
+                          if (bandWrites.n !== started) return
+                          const current = await read($, testBand)
+                          if (current === null) return
+                          await setBand($, applyRerun(current, again!, ran, failure))
                         } finally {
                           rerunning = false
                         }
@@ -441,6 +455,7 @@ export const register: Register = (on, options) => {
           )
         })}
         {band.more > 0 && <Text dimColor>{`  and ${band.more} more`}</Text>}
+        {rerunLine(band).map(l => <Text key="rerun" dimColor>{l}</Text>)}
       </Box>
     )
   })

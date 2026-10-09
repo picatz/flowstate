@@ -52,6 +52,8 @@ declare module 'claude-code' {
         more: number
         cut: boolean
         note: string
+        /** The last rerun of one case, kept beside the suite's verdict and never replacing it. */
+        rerun?: { name: string; outcome: 'passed' | 'failed' | 'unknown'; note: string }
       } | null
       /** This turn's Flowfile edits and the checks since (hooks/verify.ts); reset when a turn starts. */
       verify: { edited: string[]; validated: boolean; tested: boolean; nudged: boolean }
