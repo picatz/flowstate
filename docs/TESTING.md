@@ -565,8 +565,13 @@ Not yet covered: a worker killed mid-activity.
 Generation is driven by the workflow's declared `inputs:`: boundary values for
 a `string` (empty, one character, non-ASCII, `${1 + 1}` as data, and `min_len:` or
 `max_len:` characters, capped at 4096), an `int` (zero, one past either side of zero, 2^31, 2^53-1),
-a `double` and a `bool`, every `values:` entry for an enum, and each optional
-input absent. The first runs walk these boundary values one input at a time
+a `double` and a `bool`, a `timestamp` (epoch, a normal instant, the largest year), a
+`duration` (`0s`, `90m`, a negative one) and `bytes` (empty, short, 256 zero bytes), every
+`values:` entry for an enum, and each optional input absent. A `list(T)` is tried empty,
+with one element and with two; a `map(string, T)` empty and with one entry; a record
+declared under `types:` as an object with every field and as one with only its
+`required:` fields, its fields drawn the same way, down to the type's own depth. Each
+composite is capped at six candidates and 1024 nodes, picked rather than crossed. The first runs walk these boundary values one input at a time
 with the others as the case wrote them, so a small `--fuzz N` still exercises
 each boundary and a failure points at one input; later runs combine them at
 random. Every candidate set is bound through the same `BindRunInputs` a
@@ -579,16 +584,17 @@ A generated run fails when it ends in an `Internal` or `Expression` error (a
 breaks the case's `invariants:`. The first failure is reported apart from the
 authored cases with its seed and the `inputs:` overlay to merge over the case's own;
 `flow test --fuzz-seed S` replays exactly it (a `sensitive:` input is left out of the overlay, so the case keeps its own value for it). A finding is shrunk before it is printed: the inputs the seed changed are put back at the case's own values, delta-debugging style, until putting any one more back stops the failure, so the overlay holds only the inputs that matter. The search is bounded (256 re-runs) and reports itself as not minimal when it ran out; it finds *a* failure of the smaller set, not necessarily the first. An input the case supplies and the generated run left out cannot be written in an overlay, so the report names it separately to remove from the case. A generated case that errors before the run (an input the stubs have no answer for, for one) is reported as could not be judged, and a file where every generated case did so fails: nothing was verified. Inputs the workflow declares
-`sensitive:` are never generated or printed, and inputs of a type not generated
-yet (lists, maps, timestamps) are named in the report rather than skipped
-silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run
+`sensitive:`, and inputs whose record holds a `sensitive:` field, are never generated
+or printed, and inputs with no declared shape to draw from (a `map(string, dyn)` or
+`list(dyn)`, a record that refers to itself) are named in the report rather than
+skipped silently. `--fuzz` is refused with `--seeds`, `--debug` and `--list`: a run
 explores one dimension, so a finding names one cause. A finding can be an artifact of the stubs: they answer what the authored inputs
 need, so an input that takes a branch reading a field the stub's fixed answer
 lacks fails with a missing-key error that a real task would not. Read the
 reported failure before treating it as a workflow defect, and widen the stub.
 A `--fuzz` run in which no file judged a generated case fails, since it verified
 nothing. Not yet covered: stub answers drawn from output descriptors,
-structural input types, and shrinking.
+and shrinking of a generated value within one input.
 
 ### Would the file notice the program changing: `--mutate`
 

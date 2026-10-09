@@ -115,9 +115,9 @@ func TestFuzzNamesTheInputsItDidNotGenerate(t *testing.T) {
 	const workflow = `edition: v2026.4
 name: lists
 inputs:
-  tags:
-    type: list(string)
-    default: [a]
+  blob:
+    type: "map(string, dyn)"
+    default: {a: 1}
   token:
     type: string
     sensitive: true
@@ -138,7 +138,7 @@ tests:
 	assert.Zero(t, run.Report.GetFuzz().GetCases())
 	skipped := run.Report.GetFuzz().GetSkippedInputs()
 	require.Len(t, skipped, 2, "%v", skipped)
-	assert.Contains(t, skipped[0]+skipped[1], "tags")
+	assert.Contains(t, skipped[0]+skipped[1], "blob")
 	assert.Contains(t, skipped[0]+skipped[1], "token: declared sensitive")
 }
 
@@ -228,4 +228,42 @@ tests:
 	assert.NotContains(t, finding.GetInputs(), "s3cret-value")
 	assert.NotContains(t, finding.GetInputs(), "token")
 	assert.NotContains(t, finding.GetFailure(), "s3cret-value")
+}
+
+// A record input is generated and run: the fuzz judges generated cases whose
+// order is a whole record, which it used to name as not generated.
+func TestFuzzRunsOverRecordInputs(t *testing.T) {
+	t.Parallel()
+
+	const workflow = `edition: v2026.4
+name: orders
+types:
+  Line:
+    fields:
+      sku: {type: string, required: true}
+      quantity: {type: int, required: true}
+  Order:
+    fields:
+      id: {type: string, required: true}
+      lines: {type: "list(Line)"}
+inputs:
+  order:
+    type: Order
+    default: {id: o1, lines: []}
+steps:
+  - id: ping
+    http: {method: GET, url: "https://example.com/"}
+`
+	run := runFuzz(t, workflow, `edition: v2026.4
+tests:
+  - name: authored
+    workflow: ./workflow.yaml
+    stubs: [{task: http, returns: {status_code: 200, body: ''}}]
+    expect: {failed: false}
+`, flowtest.FuzzOptions{Runs: 8})
+	fuzz := run.Report.GetFuzz()
+	require.NotNil(t, fuzz)
+	assert.Empty(t, fuzz.GetSkippedInputs())
+	assert.Nil(t, fuzz.GetFinding())
+	assert.Positive(t, fuzz.GetRuns())
 }

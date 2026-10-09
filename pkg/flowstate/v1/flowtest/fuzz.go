@@ -2,6 +2,7 @@ package flowtest
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"maps"
@@ -502,13 +503,21 @@ type inputSlot struct {
 // inputSlots are the declared inputs something is generated for, and why
 // nothing is for each of the rest, in declaration order.
 func inputSlots(spec *v1.Workflow) (slots []inputSlot, skipped []string) {
+	table := v1.TypesOf(spec)
 	for _, d := range spec.GetDeclaredInputs() {
 		if d.GetSensitive() {
 			skipped = append(skipped, fmt.Sprintf("%s: declared sensitive, never generated", d.GetName()))
 
 			continue
 		}
-		candidates, why := inputCandidates(d)
+		// A record that holds a sensitive field is sensitive whole, as everywhere
+		// else a run is shown, even when the input was not marked so.
+		if table.HoldsSensitive(d.DeclaredType()) {
+			skipped = append(skipped, fmt.Sprintf("%s: its type holds a sensitive field, never generated", d.GetName()))
+
+			continue
+		}
+		candidates, why := inputCandidates(table, d)
 		if len(candidates) == 0 {
 			skipped = append(skipped, fmt.Sprintf("%s: %s", d.GetName(), why))
 
@@ -520,9 +529,52 @@ func inputSlots(spec *v1.Workflow) (slots []inputSlot, skipped []string) {
 	return slots, skipped
 }
 
+const (
+	// maxTypeCandidates bounds the candidates generated for one list, map or
+	// record, whatever its parts offer: a nested type picks from its parts' sets
+	// and never takes their product.
+	maxTypeCandidates = 6
+
+	// maxCandidateNodes bounds the size of one generated composite, counted in
+	// nodes, so a list of lists of lists cannot double its way past memory.
+	maxCandidateNodes = 1024
+
+	// maxGeneratorSteps bounds the types one declaration's generator visits. A
+	// record is expanded once per field that names it, so records that each name the
+	// next twice cost twice as much per level; the caps above bound what is kept,
+	// and this bounds the work of producing it.
+	maxGeneratorSteps = 4096
+)
+
 // inputCandidates are the boundary values worth trying for one declaration,
-// or why there are none.
-func inputCandidates(d *v1.InputDeclaration) ([]any, string) {
+// or why there are none. table resolves the records the declaration names.
+func inputCandidates(table v1.TypeTable, d *v1.InputDeclaration) ([]any, string) {
+	g := &typeGenerator{table: table, expanding: map[string]bool{}}
+
+	candidates, why := g.candidates(d.DeclaredType(), d, 0)
+	if g.steps > maxGeneratorSteps {
+		// Not a partial answer: a record with fields quietly dropped would be
+		// generated as though it were whole.
+		return nil, fmt.Sprintf("its type nests more than %d levels of records and lists to draw from", maxGeneratorSteps)
+	}
+
+	return candidates, why
+}
+
+// typeGenerator draws candidates from a structural type.
+type typeGenerator struct {
+	table v1.TypeTable
+	// expanding holds the records being expanded, so a record that reaches itself
+	// ends instead of recursing.
+	expanding map[string]bool
+	// steps counts the types visited, against [maxGeneratorSteps].
+	steps int
+}
+
+// candidates are the values worth trying for type t. d, which may be nil, is
+// the declaration that carries t's constraints (an input, or a record's field);
+// an element of a list or map has none.
+func (g *typeGenerator) candidates(t *v1.Type, d *v1.InputDeclaration, depth int) ([]any, string) {
 	if len(d.GetValues()) > 0 {
 		out := make([]any, 0, len(d.GetValues()))
 		for _, v := range d.GetValues() {
@@ -531,26 +583,186 @@ func inputCandidates(d *v1.InputDeclaration) ([]any, string) {
 
 		return out, ""
 	}
-	switch d.GetType() {
-	case v1.InputDeclaration_TYPE_STRING:
-		out := []any{"", "x", "é✓ ", "${1 + 1}"}
-		if d.MinLen != nil && d.GetMinLen() > 0 {
+	if depth > v1.MaxStructureDepth {
+		return nil, fmt.Sprintf("nested deeper than %d levels", v1.MaxStructureDepth)
+	}
+	if g.steps++; g.steps > maxGeneratorSteps {
+		return nil, "too many nested types"
+	}
+
+	switch kind := t.GetKind().(type) {
+	case *v1.Type_Scalar_:
+		return scalarCandidates(kind.Scalar, d)
+	case *v1.Type_Enum:
+		return nil, "an enum that declares no values"
+	case *v1.Type_List:
+		elems, why := g.candidates(kind.List, nil, depth+1)
+		if len(elems) == 0 {
+			return nil, fmt.Sprintf("%s has no element to draw: %s", v1.TypeString(t), why)
+		}
+		picked := pick(elems, 2)
+		out := []any{[]any{}}
+		for _, c := range picked {
+			out = append(out, []any{c})
+		}
+		out = append(out, []any{picked[0], picked[len(picked)-1]})
+		if n := d.GetMinItems(); n > 1 {
+			// A list below its floor is refused by the binder, so only the floor
+			// itself is worth drawing. One too long to build is named, not left to
+			// make every draw inconclusive.
+			if n > maxCandidateNodes/2 {
+				return nil, fmt.Sprintf("min_items %d is more than the %d items fuzzing builds", n, maxCandidateNodes/2)
+			}
+			out = []any{slices.Repeat([]any{picked[0]}, int(n)), slices.Repeat([]any{picked[len(picked)-1]}, int(n))}
+		}
+
+		return bounded(out)
+	case *v1.Type_Map_:
+		elems, why := g.candidates(kind.Map.GetValue(), nil, depth+1)
+		if len(elems) == 0 {
+			return nil, fmt.Sprintf("%s has no value to draw: %s", v1.TypeString(t), why)
+		}
+		out := []any{map[string]any{}}
+		for _, c := range pick(elems, 2) {
+			out = append(out, map[string]any{"k": c})
+		}
+
+		return bounded(out)
+	case *v1.Type_Message:
+		return g.record(kind.Message, depth)
+	default:
+		return nil, fmt.Sprintf("%s inputs are not generated: no declared type to draw from", v1.TypeString(t))
+	}
+}
+
+// record are the values of the record type name: closed objects built from its
+// fields, some with every field and some with only the required ones.
+func (g *typeGenerator) record(name string, depth int) ([]any, string) {
+	declared, ok := g.table[name]
+	switch {
+	case !ok:
+		return nil, fmt.Sprintf("record %s is not declared under `types:`", name)
+	case g.expanding[name]:
+		return nil, fmt.Sprintf("record %s refers to itself", name)
+	}
+	g.expanding[name] = true
+	defer delete(g.expanding, name)
+
+	type fieldSet struct {
+		name       string
+		required   bool
+		candidates []any
+	}
+	var fields []fieldSet
+	for _, f := range declared.GetFields() {
+		candidates, why := g.candidates(f.DeclaredType(), f, depth+1)
+		switch {
+		case len(candidates) > 0:
+			fields = append(fields, fieldSet{f.GetName(), f.GetRequired(), candidates})
+		case f.GetRequired():
+			return nil, fmt.Sprintf("record %s, field %s: %s", name, f.GetName(), why)
+		}
+		// An optional field nothing is generated for stays absent.
+	}
+
+	build := func(i int, all bool) map[string]any {
+		object := map[string]any{}
+		for _, f := range fields {
+			if all || f.required {
+				object[f.name] = f.candidates[i%len(f.candidates)]
+			}
+		}
+
+		return object
+	}
+	var out []any
+	for i := range 3 {
+		for _, object := range []map[string]any{build(i, true), build(i, false)} {
+			if !slices.ContainsFunc(out, func(seen any) bool { return reflect.DeepEqual(seen, object) }) {
+				out = append(out, object)
+			}
+		}
+	}
+
+	return bounded(out)
+}
+
+// pick is at most n of candidates, spread from the first to the last.
+func pick(candidates []any, n int) []any {
+	if len(candidates) <= n {
+		return candidates
+	}
+	out := make([]any, n)
+	for i := range n {
+		out[i] = candidates[i*(len(candidates)-1)/(n-1)]
+	}
+
+	return out
+}
+
+// bounded drops the candidates larger than [maxCandidateNodes] and keeps at
+// most [maxTypeCandidates] of the rest.
+func bounded(candidates []any) ([]any, string) {
+	out := slices.DeleteFunc(candidates, func(c any) bool { return nodes(c) > maxCandidateNodes })
+	if len(out) == 0 {
+		return nil, fmt.Sprintf("every generated value is larger than %d nodes", maxCandidateNodes)
+	}
+
+	return out[:min(len(out), maxTypeCandidates)], ""
+}
+
+// nodes counts the values in v, a composite's members included.
+func nodes(v any) int {
+	switch v := v.(type) {
+	case []any:
+		n := 1
+		for _, e := range v {
+			n += nodes(e)
+		}
+
+		return n
+	case map[string]any:
+		n := 1
+		for _, e := range v {
+			n += nodes(e)
+		}
+
+		return n
+	}
+
+	return 1
+}
+
+// scalarCandidates are the boundary values of a scalar, shaped under d's length
+// bounds. A timestamp is the RFC 3339 text, a duration the Go duration text and
+// bytes the standard base64 text, the spellings a test file and a submit bind.
+func scalarCandidates(s v1.Type_Scalar, d *v1.InputDeclaration) ([]any, string) {
+	switch s {
+	case v1.Type_SCALAR_STRING:
+		out := []any{"", "x", "é✓ ", "${1 + 1}"}
+		if d.GetMinLen() > 0 {
 			out = append(out, strings.Repeat("a", int(min(d.GetMinLen(), maxGeneratedString))))
 		}
 		longest := uint64(64)
-		if d.MaxLen != nil {
+		if d != nil && d.MaxLen != nil {
 			longest = d.GetMaxLen()
 		}
 		out = append(out, strings.Repeat("a", int(min(longest, maxGeneratedString))))
 
 		return out, ""
-	case v1.InputDeclaration_TYPE_INT:
+	case v1.Type_SCALAR_INT:
 		return []any{int64(0), int64(1), int64(-1), int64(2), int64(100), int64(1 << 31), int64(-(1 << 31)), int64(1<<53 - 1)}, ""
-	case v1.InputDeclaration_TYPE_FLOAT:
+	case v1.Type_SCALAR_DOUBLE:
 		return []any{0.0, 1.5, -1.5, 1e-9, 1e9, 0.1}, ""
-	case v1.InputDeclaration_TYPE_BOOL:
+	case v1.Type_SCALAR_BOOL:
 		return []any{true, false}, ""
+	case v1.Type_SCALAR_TIMESTAMP:
+		return []any{"1970-01-01T00:00:00Z", "2026-02-28T12:30:00Z", "2024-02-29T23:59:59+05:30", "9999-12-31T23:59:59Z"}, ""
+	case v1.Type_SCALAR_DURATION:
+		return []any{"0s", "1ns", "90m", "-1s", "8760h"}, ""
+	case v1.Type_SCALAR_BYTES:
+		return []any{"", "AA==", "aGVsbG8=", base64.StdEncoding.EncodeToString(make([]byte, 256))}, ""
 	default:
-		return nil, fmt.Sprintf("%s inputs are not generated yet", strings.ToLower(strings.TrimPrefix(d.GetType().String(), "TYPE_")))
+		return nil, fmt.Sprintf("%s inputs are not generated yet", strings.ToLower(strings.TrimPrefix(s.String(), "SCALAR_")))
 	}
 }
