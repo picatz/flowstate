@@ -102,6 +102,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 
 	if problems, ok := errors.AsType[*flowtest.Diagnostics](err); ok {
 		byURI := map[lsp.DocumentURI][]lsp.Diagnostic{doc.uri: {}}
+		sources := testSourceLines{}
 		for _, problem := range problems.Problems {
 			uri := doc.uri
 			if includedDefaults != nil && sameTestSource(problem.File, includedDefaults) {
@@ -111,9 +112,8 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 			} else if problem.File != "" && (!hasPath || filepath.Clean(problem.File) != filepath.Clean(path)) {
 				uri = fileURI(problem.File)
 			}
-			source := sourceForTestDiagnostic(doc, includedDefaults, uri, problem.File)
 			byURI[uri] = append(byURI[uri], lsp.Diagnostic{
-				Range:    testProblemRange(source, problem.Line, problem.Column),
+				Range:    testProblemRange(sources.of(doc, includedDefaults, uri, problem.File), problem.Line, problem.Column),
 				Severity: lsp.Error,
 				Source:   diagnosticSource,
 				Code:     codeTestFile,
@@ -139,7 +139,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		} else if defaultsPath != "" && filepath.Clean(defaultsErr.Path) == filepath.Clean(defaultsPath) {
 			uri = defaultsURI
 		}
-		source := sourceForTestDiagnostic(doc, includedDefaults, uri, defaultsErr.Path)
+		source := strings.Join(testSourceLines{}.of(doc, includedDefaults, uri, defaultsErr.Path), "\n")
 		owner := newDocument(uri, 0, source, doc.tasks)
 		d, _ := yamlDiagnostic(owner, defaultsErr.Err, codeTestFile)
 		return []diagnosticPublication{
@@ -178,33 +178,53 @@ func sortedTestPublications(own lsp.DocumentURI, byURI map[lsp.DocumentURI][]lsp
 	return out
 }
 
-func sourceForTestDiagnostic(doc, defaults *document, uri lsp.DocumentURI, path string) string {
-	if uri == doc.uri {
-		return doc.text
+// testSourceLines memoizes, for one diagnostic pass, the lines of each source a
+// problem can be positioned in. A sibling file is read and split once however
+// many problems it owns: the problem count and the file size are both the
+// workspace author's, so a read per problem is unbounded work per keystroke.
+type testSourceLines map[lsp.DocumentURI][]string
+
+// of returns the lines of the source that owns uri, reading it from disk at most
+// once per pass. A source that cannot be read is remembered as having no lines.
+func (c testSourceLines) of(doc, defaults *document, uri lsp.DocumentURI, path string) []string {
+	if lines, ok := c[uri]; ok {
+		return lines
 	}
-	if defaults != nil && uri == defaults.uri {
-		return defaults.text
+	var lines []string
+	switch {
+	case uri == doc.uri:
+		lines = splitTestSource(doc.text)
+	case defaults != nil && uri == defaults.uri:
+		lines = splitTestSource(defaults.text)
+	default:
+		if data, ok := readCalleeSource(path); ok {
+			lines = splitTestSource(string(data))
+		}
 	}
-	data, ok := readCalleeSource(path)
-	if !ok {
-		return ""
+	c[uri] = lines
+	return lines
+}
+
+func splitTestSource(source string) []string {
+	if source == "" {
+		return nil
 	}
-	return string(data)
+	return strings.Split(source, "\n")
 }
 
 // testProblemRange converts the loader's one-based rune column to LSP's
 // zero-based UTF-16 column. With no source text it keeps the exact line and a
-// conservative point; it never guesses an enclosing token.
-func testProblemRange(source string, line, column int) lsp.Range {
+// conservative point; it never guesses an enclosing token. The source arrives
+// already split, so a pass over many problems splits each file once.
+func testProblemRange(lines []string, line, column int) lsp.Range {
 	if line <= 0 {
 		return documentStart
 	}
 	line--
 	character := max(column-1, 0)
-	if source == "" {
+	if len(lines) == 0 {
 		character = 0
 	}
-	lines := strings.Split(source, "\n")
 	if line < len(lines) {
 		runes := []rune(lines[line])
 		character = min(character, len(runes))

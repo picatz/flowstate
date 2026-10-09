@@ -697,7 +697,7 @@ func diagnosticsHaveCode(diagnostics []lsp.Diagnostic, code string) bool {
 
 func TestAProblemRangeWithoutSourceUsesAConservativeCharacter(t *testing.T) {
 	t.Parallel()
-	rng := testProblemRange("", 7, 200)
+	rng := testProblemRange(nil, 7, 200)
 	assert.Equal(t, 6, rng.Start.Line)
 	assert.Zero(t, rng.Start.Character)
 }
