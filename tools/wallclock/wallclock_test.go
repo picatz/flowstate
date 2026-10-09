@@ -180,6 +180,7 @@ func TestTheRepositoryWallClockSleepsOnlyGoDown(t *testing.T) {
 // work #1706 still asks for, and this table is how the count is kept honest
 // while it happens.
 var repositoryPolls = map[string]int{
+	"cmd/flow/debugscreen_linux_test.go":             3, // a real pseudo-terminal the child writes to
 	"cmd/flow/debugworkerrestart_test.go":            5,
 	"cmd/flow/internal/debugtui/program_test.go":     2, // a real bubbletea Program on a pipe
 	"cmd/flow/internal/debugtui/pty_linux_test.go":   3, // a real pseudo-terminal the child writes to
