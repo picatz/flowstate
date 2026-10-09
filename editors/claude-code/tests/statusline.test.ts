@@ -1,9 +1,10 @@
 import { FRESH_MS, NO_SEEN, seenFrom, statusText } from '../hooks/statusline'
 import type { Seen } from '../hooks/statusline'
+import type { RunSummary } from '../types/flowstate'
 import { expect, test } from 'claude-code/testing'
 
 const NOW = Date.UTC(2026, 9, 9, 12, 0, 0)
-const seen = (over: Partial<Seen> = {}): Seen => ({ at: NOW - 1000, address: 'flow.example:9233', failed: 2, waiting: 1, ...over })
+const seen = (over: Partial<Seen> = {}): Seen => ({ at: NOW - 1000, address: 'flow.example:9233', failed: 2, ...over })
 const clean = { file: 'a.flow.yaml', diagnostics: [] }
 
 test('with nothing known the line names the one command to start', () => {
@@ -38,23 +39,24 @@ test('an owed verification leg is shown with its command', () => {
 })
 
 test('a server answer shows only while fresh and only when someone needs attending to', () => {
-  expect(statusText({ now: NOW, seen: seen() })).toMatch(/^flowstate: server flow\.example:9233 ✗ 2 failed, ◔ 1 waiting at \d\d:\d\d$/)
+  expect(statusText({ now: NOW, seen: seen() })).toMatch(/^flowstate: server flow\.example:9233 ✗ 2 need attention at \d\d:\d\d$/)
   expect(statusText({ now: NOW, seen: seen({ at: NOW - FRESH_MS }) })).toContain('nothing checked yet')
   expect(statusText({ now: NOW, seen: seen({ at: NOW + 5000 }) })).toContain('nothing checked yet')
-  expect(statusText({ now: NOW, seen: seen({ failed: 0, waiting: 0 }) })).toContain('nothing checked yet')
+  expect(statusText({ now: NOW, seen: seen({ failed: 0 }) })).toContain('nothing checked yet')
   expect(statusText({ now: NOW, seen: seen({ address: '' }) })).toContain('server localhost:9233')
 })
 
 test('counts are capped and an address is cleaned and bounded', () => {
-  const text = statusText({ now: NOW, seen: seen({ failed: 1e9, waiting: Infinity, address: `h\u202e${'x'.repeat(200)}\u001b:9233` }) })
-  expect(text).toContain('✗ 99+ failed, ◔ 99+ waiting')
+  const text = statusText({ now: NOW, seen: seen({ failed: 1e9, address: `h\u202e${'x'.repeat(200)}\u001b:9233` }) })
+  expect(text).toContain('✗ 99+ need attention')
   expect(text).not.toMatch(/[\u0000-\u001f\u007f-\u009f\u202a-\u202e]/)
   expect(text.length).toBeLessThan(120)
 })
 
-test('seenFrom counts failed and waiting runs; an unknown status counts as neither', () => {
-  const runs = ['STATUS_FAILED', 'STATUS_TIMED_OUT', 'waiting', 'STATUS_RUNNING', 'STATUS_COMPLETED', 'odd'].map(status => ({ workflowId: 'w', status }))
-  expect(seenFrom(runs as never, 'h:1', 7)).toEqual({ at: 7, address: 'h:1', failed: 2, waiting: 1 })
+test('seenFrom counts failed, timed-out and terminated runs; running and unknown ones are never attention', () => {
+  const statuses = ['STATUS_FAILED', 'STATUS_TIMED_OUT', 'STATUS_TERMINATED', 'STATUS_RUNNING', 'STATUS_COMPLETED', 'STATUS_CANCELED', 'STATUS_UNSPECIFIED']
+  const runs = statuses.map(status => ({ workflowId: 'w', status }) as RunSummary)
+  expect(seenFrom(runs, 'h:1', 7)).toEqual({ at: 7, address: 'h:1', failed: 3 })
 })
 
 // The hooks, with the engine stubbed: every process the line could have started is recorded.
@@ -105,7 +107,7 @@ test('a passing check clears the owed leg, and a test suite changes which leg is
 test('the Runs pane puts the attention count and address on the line; a filtered listing does not', async ($, on) => {
   const { argvs, lines } = stub(on, { list: failedRun, address: 'flow.example:9233' })
   const ui = await mount($)
-  expect(lines.at(-1)).toMatch(/^flowstate: server flow\.example:9233 ✗ 1 failed at \d\d:\d\d$/)
+  expect(lines.at(-1)).toMatch(/^flowstate: server flow\.example:9233 ✗ 1 need attention at \d\d:\d\d$/)
   // The line does not make the pane redraw in a loop.
   expect(argvs.filter(a => a[1] === 'list').length).toBeLessThan(4)
   await ui.input({ key: 'filter', text: 'status == "FAILED"' })
@@ -145,6 +147,34 @@ test('a local run from the form puts its result on the line, success or failure,
   await ui.press({ key: 'confirm-run' })
   expect(lines.at(-1)).toBe('flowstate: run ✗ failed deploy.flow.yaml')
   expect(argvs.filter(a => a[1] === 'run').length).toBe(2)
+  await ui.unmount()
+})
+
+test('a refusal before the run replaces the previous result on the line, and spawns nothing', async ($, on) => {
+  const argvs: string[][] = []
+  const lines: string[] = []
+  let listed = true
+  on('process.run', (_$: unknown, e: { argv: string[] }) => {
+    argvs.push(e.argv)
+    const compile = e.argv[1] === 'compile'
+    return { value: { exitCode: compile || e.argv[1] === 'run' ? 0 : 1, stdout: compile ? '{"type":"object","properties":{}}' : 'COMPLETED\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('fs.list', () => ({ value: listed ? [{ name: 'deploy.flow.yaml', kind: 'file', size: 1, mtimeMs: 1, isLink: false }] : [] }))
+  on('env.get', () => ({ value: undefined }))
+  on('ui.status', (_$: unknown, e: unknown) => {
+    lines.push(typeof e === 'string' ? e : String((e as { text?: string }).text))
+    return { value: undefined }
+  })
+  const ui = await mount($)
+  await ui.select({ plugin: 'flowstate', key: 'run-file', value: 'deploy.flow.yaml' })
+  await ui.press({ key: 'run-local' })
+  await ui.press({ key: 'confirm-run' })
+  expect(lines.at(-1)).toBe('flowstate: run ✓ succeeded deploy.flow.yaml')
+  await ui.press({ key: 'run-local' })
+  listed = false
+  await ui.press({ key: 'confirm-run' })
+  expect(lines.at(-1)).toBe('flowstate: run – not run deploy.flow.yaml')
+  expect(argvs.filter(a => a[1] === 'run').length).toBe(1)
   await ui.unmount()
 })
 

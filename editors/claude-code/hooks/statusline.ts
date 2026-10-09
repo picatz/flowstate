@@ -8,27 +8,25 @@ import { chip, middleTruncate, statusFor, statusOf } from './vocab'
 export interface Seen {
   at: number
   address: string
+  /** Runs the listing reports as failed, timed out or terminated; a run waiting on a gate is `running` there, so none are counted as waiting. */
   failed: number
-  waiting: number
 }
 
-export const NO_SEEN: Seen = { at: 0, address: '', failed: 0, waiting: 0 }
+export const NO_SEEN: Seen = { at: 0, address: '', failed: 0 }
 
 /** A server's answer older than this is not shown: the line is only redrawn on events, so it also says when it knew. */
 export const FRESH_MS = 120_000
 /** A count is shown up to this and then as `99+`. */
 const MAX_COUNT = 99
 
-/** Counts the failed and waiting runs of an unfiltered listing (a filtered one counts something else). */
+/** Counts the failed, timed-out and terminated runs of an unfiltered listing (a filtered one counts something else). */
 export const seenFrom = (runs: readonly RunSummary[], address: string, at: number): Seen => {
   let failed = 0
-  let waiting = 0
   for (const r of runs) {
-    const kind = statusOf(r.status).kind
-    if (kind === 'failed') failed++
-    else if (kind === 'waiting') waiting++
+    const s = statusOf(r.status)
+    if (s.kind === 'failed' || s.word === 'terminated') failed++
   }
-  return { at, address, failed, waiting }
+  return { at, address, failed }
 }
 
 const count = (n: number): string => (n > MAX_COUNT ? `${MAX_COUNT}+` : String(Math.max(0, Math.trunc(n) || 0)))
@@ -80,12 +78,8 @@ export const statusText = ({ report, run, owes, seen, now }: Inputs): string => 
     parts.push(`run ${chip(s)} ${file(run.file)}`)
   }
   if (owes !== undefined) parts.push(chip(statusFor('waiting', `owes ${clean(owes, 20)}`)))
-  if (seen !== undefined && seen.at > 0 && now >= seen.at && now - seen.at < FRESH_MS && seen.failed + seen.waiting > 0) {
-    const bits = [
-      ...(seen.failed > 0 ? [chip(statusFor('failed', `${count(seen.failed)} failed`))] : []),
-      ...(seen.waiting > 0 ? [chip(statusFor('waiting', `${count(seen.waiting)} waiting`))] : []),
-    ]
-    parts.push(`server ${middleTruncate(seen.address || DEFAULT_ADDRESS, 30)} ${bits.join(', ')} at ${clock(seen.at)}`)
+  if (seen !== undefined && seen.at > 0 && now >= seen.at && now - seen.at < FRESH_MS && seen.failed > 0) {
+    parts.push(`server ${middleTruncate(seen.address || DEFAULT_ADDRESS, 30)} ${chip(statusFor('failed', `${count(seen.failed)} need attention`))} at ${clock(seen.at)}`)
   }
   return parts.length === 0 ? 'flowstate: nothing checked yet, run /flowstate' : `flowstate: ${parts.join(' · ')}`
 }

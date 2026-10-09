@@ -412,7 +412,7 @@ export const register: Register = (on, options) => {
     const target = targetOf(await envAddress($))
     // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
     const seen = 'runs' in runs && expr === '' && 'address' in target ? seenFrom(runs.runs, target.address, Date.now()) : NO_SEEN
-    const changed = seen.failed !== heard.failed || seen.waiting !== heard.waiting || seen.address !== heard.address || seen.at - heard.at > 30_000 || (seen.at === 0) !== (heard.at === 0)
+    const changed = seen.failed !== heard.failed || seen.address !== heard.address || seen.at - heard.at > 30_000 || (seen.at === 0) !== (heard.at === 0)
     heard = seen
     if (changed) await refreshStatus($, nudges, heard)
     const parkable = id !== '' && (facts.waitingOn !== undefined || ['running', 'waiting'].includes(head.kind))
@@ -445,6 +445,11 @@ export const register: Register = (on, options) => {
     const questioned = file !== '' && asking.file === file && JSON.stringify(asking.inputs) === JSON.stringify(sent)
     const ranLast = await read($, runResult)
     const rawView = await read($, outputsRaw)
+    /** Every change to the last run's result goes through here, so the status line never keeps showing an older one. */
+    const setRun = async (next: typeof NO_RUN_RESULT) => {
+      await update($, runResult, () => next)
+      await refreshStatus($, nudges, heard)
+    }
     /** A change to the form takes any pending question away: Confirm only ever runs what the question named. */
     const setValue = async (name: string, v: string) => {
       await update($, runConfirm, () => NO_RUN_CONFIRM)
@@ -639,7 +644,7 @@ export const register: Register = (on, options) => {
               schemas.clear()
               outSchemas.clear()
               await update($, runConfirm, () => NO_RUN_CONFIRM)
-              await update($, runResult, () => NO_RUN_RESULT)
+              await setRun(NO_RUN_RESULT)
               await update($, runValues, () => ({}))
               await update($, runFile, () => v)
             }}
@@ -700,7 +705,7 @@ export const register: Register = (on, options) => {
                     // The first press only asks: nothing runs until Confirm.
                     const now = await read($, runValues)
                     if (checkForm(fields, now).blocked !== '') return
-                    await update($, runResult, () => NO_RUN_RESULT)
+                    await setRun(NO_RUN_RESULT)
                     await update($, runConfirm, () => ({ file, inputs: submission(fields, now) }))
                   }}
                 >
@@ -729,7 +734,7 @@ export const register: Register = (on, options) => {
                         // This button was drawn for one question: if it has moved on, it acts on nothing.
                         if (c.file === '' || c.file !== file) return
                         await update($, runConfirm, () => NO_RUN_CONFIRM)
-                        const stop = (why: string) => update($, runResult, () => ({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [], cards: null }))
+                        const stop = (why: string) => setRun({ file: c.file, kind: 'notrun' as const, text: `not run: ${why}`, lines: [], cards: null })
                         // Everything is read again: the file must still be a listed Flowfile and its declaration must still accept exactly these values.
                         const listed = await listFlowfiles($)
                         if (!listed.files.includes(c.file)) return stop('the file is no longer listed')
@@ -776,8 +781,7 @@ export const register: Register = (on, options) => {
                             }
                           }
                         }
-                        await update($, runResult, () => ({ file: c.file, ...result, lines, cards }))
-                        await refreshStatus($, nudges, heard)
+                        await setRun({ file: c.file, ...result, lines, cards })
                       } finally {
                         running = false
                       }
