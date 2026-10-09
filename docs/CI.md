@@ -253,7 +253,7 @@ required-status-checks list to see, so it participates in neither.
 ### Workflows outside the plan
 
 `editors.yml` (**Editors**) runs on every push to `main`, and on pull requests
-that touch the paths it lists, in two jobs: *Neovim LSP smoke* drives a real, pinned Neovim through
+that touch the paths it lists; its jobs include *Neovim LSP smoke* drives a real, pinned Neovim through
 `tools/editorsmoke/probe.lua` against `flow lsp` and asserts the fenced
 configuration in `docs/EDITORS.md` is byte-identical to the file it loads; *VS
 Code extension* builds and tests the extension; *Claude Code plugin* runs `claude plugin validate` and `claude plugin test` on `editors/claude-code` with the CLI binary fetched at a pinned version and verified against its published SHA-512 (empty home, no credentials). None is one of the plan's
