@@ -18,9 +18,10 @@ positional file. Never run anything against a server: `flow validate` and
 
 1. Run `flow tasks --expressions` once if a function is unfamiliar; do not
    guess a spelling.
-2. Write `<tmp>/cel.flow.yaml` under the system temp directory (never in the
-   repository). Put the expression in an output, with `type:` when you want
-   the result checked as a type:
+2. Make a directory of your own with `mktemp -d` (never in the repository, and
+   never a shared fixed path: another session may be doing the same), then write
+   `<dir>/cel.flow.yaml` in it. Put the expression in an output, with `type:`
+   when you want the result checked as a type:
 
    ```yaml
    edition: v2026.4
@@ -39,9 +40,9 @@ positional file. Never run anything against a server: `flow validate` and
    Quote the whole value when the expression holds `: ` (`'${a ? b : c}'`).
    Use one output per expression. Declare each input the expression reads; a
    declared input is never null, so ask `has(inputs.x)`, not `inputs.x == null`.
-3. `flow validate -o jsonl -- <tmp>/cel.flow.yaml`. A type error is reported
+3. `flow validate -o jsonl -- <dir>/cel.flow.yaml`. A type error is reported
    here, with its line, column, and message, and nothing ran.
-4. If it validates, `flow run local -o json --input=n=21 -- <tmp>/cel.flow.yaml`.
+4. If it validates, `flow run local -o json --input=n=21 -- <dir>/cel.flow.yaml`.
    Read `.runOutputs.result` for the value. A runtime error (a missing map key,
    division by zero) is `.status: STATUS_FAILED` with `.error.message` and
    usually the failing `subexpression` and a caret. `flow run local` executes
@@ -50,7 +51,8 @@ positional file. Never run anything against a server: `flow validate` and
    into the sandbox, and never `flow run local` a file you did not write.
 5. Report the inputs, the expression, the result and its declared type, or the
    error with a one-sentence explanation and a corrected expression that you
-   also ran. Name what you did not check.
+   also ran. Name what you did not check. Then remove the directory you made
+   (`rm -r -- <dir>`, only the one `mktemp -d` printed).
 
 Pitfalls to check the expression against (rules in `docs/STYLE.md` and
 `docs/DSL.md`):
