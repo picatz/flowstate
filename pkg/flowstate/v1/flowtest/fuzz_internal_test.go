@@ -1,7 +1,9 @@
 package flowtest
 
 import (
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -361,4 +363,36 @@ func TestFuzzNestedCandidatesStayBounded(t *testing.T) {
 	for _, c := range candidates {
 		assert.LessOrEqual(t, nodes(c), maxCandidateNodes)
 	}
+}
+
+// TestFuzzRecordFanOutIsBoundedByWork: a record is expanded once per field that
+// names it, so records that each name the next twice cost double per level. The
+// candidate caps bound what is kept, not the work, so a chain this long would
+// hang planning without the step budget.
+func TestFuzzRecordFanOutIsBoundedByWork(t *testing.T) {
+	t.Parallel()
+
+	record := func(name string) *v1.Type { return &v1.Type{Kind: &v1.Type_Message{Message: name}} }
+	const length = 24
+
+	wf := &v1.Workflow{Name: "fan"}
+	for i := range length {
+		fields := []*v1.InputDeclaration{
+			{Name: "a", ValueType: record(fmt.Sprintf("R%d", i+1))},
+			{Name: "b", ValueType: record(fmt.Sprintf("R%d", i+1))},
+		}
+		wf.DeclaredTypes = append(wf.DeclaredTypes, &v1.TypeDeclaration{Name: fmt.Sprintf("R%d", i), Fields: fields})
+	}
+	wf.DeclaredTypes = append(wf.DeclaredTypes, &v1.TypeDeclaration{
+		Name:   fmt.Sprintf("R%d", length),
+		Fields: []*v1.InputDeclaration{{Name: "s", Required: true, ValueType: &v1.Type{Kind: &v1.Type_Scalar_{Scalar: v1.Type_SCALAR_STRING}}}},
+	})
+	wf.DeclaredInputs = []*v1.InputDeclaration{{Name: "root", Required: true, ValueType: record("R0")}}
+
+	start := time.Now()
+	slots, skipped := inputSlots(wf)
+	assert.Less(t, time.Since(start), 5*time.Second, "planning the inputs took time exponential in the chain")
+	assert.Empty(t, slots)
+	require.Len(t, skipped, 1)
+	assert.Contains(t, skipped[0], "root: its type nests more than")
 }

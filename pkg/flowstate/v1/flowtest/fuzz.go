@@ -539,6 +539,12 @@ const (
 	// nodes, so a list of lists of lists cannot double its way past memory.
 	maxCandidateNodes = 1024
 
+	// maxGeneratorSteps bounds the types one declaration's generator visits. A
+	// record is expanded once per field that names it, so records that each name the
+	// next twice cost twice as much per level; the caps above bound what is kept,
+	// and this bounds the work of producing it.
+	maxGeneratorSteps = 4096
+
 	// maxGeneratedItems bounds a list built to a declaration's `min_items:`.
 	maxGeneratedItems = 64
 )
@@ -548,7 +554,14 @@ const (
 func inputCandidates(table v1.TypeTable, d *v1.InputDeclaration) ([]any, string) {
 	g := &typeGenerator{table: table, expanding: map[string]bool{}}
 
-	return g.candidates(d.DeclaredType(), d, 0)
+	candidates, why := g.candidates(d.DeclaredType(), d, 0)
+	if g.steps > maxGeneratorSteps {
+		// Not a partial answer: a record with fields quietly dropped would be
+		// generated as though it were whole.
+		return nil, fmt.Sprintf("its type nests more than %d levels of records and lists to draw from", maxGeneratorSteps)
+	}
+
+	return candidates, why
 }
 
 // typeGenerator draws candidates from a structural type.
@@ -557,6 +570,8 @@ type typeGenerator struct {
 	// expanding holds the records being expanded, so a record that reaches itself
 	// ends instead of recursing.
 	expanding map[string]bool
+	// steps counts the types visited, against [maxGeneratorSteps].
+	steps int
 }
 
 // candidates are the values worth trying for type t. d, which may be nil, is
@@ -573,6 +588,9 @@ func (g *typeGenerator) candidates(t *v1.Type, d *v1.InputDeclaration, depth int
 	}
 	if depth > v1.MaxStructureDepth {
 		return nil, fmt.Sprintf("nested deeper than %d levels", v1.MaxStructureDepth)
+	}
+	if g.steps++; g.steps > maxGeneratorSteps {
+		return nil, "too many nested types"
 	}
 
 	switch kind := t.GetKind().(type) {
