@@ -43,9 +43,11 @@ positional file. Never run anything against a server: `flow validate` and
    here, with its line, column, and message, and nothing ran.
 4. If it validates, `flow run local -o json --input=n=21 -- <tmp>/cel.flow.yaml`.
    Read `.runOutputs.result` for the value. A runtime error (a missing map key,
-   division by zero) is `.status: STATUS_FAILED` with `.error.message`, the
-   failing `subexpression`, and a caret. `flow run local` executes the file's
-   steps, so keep the sandbox to a `log` step.
+   division by zero) is `.status: STATUS_FAILED` with `.error.message` and
+   usually the failing `subexpression` and a caret. `flow run local` executes
+   the file's steps, so run only the sandbox you wrote, whose one step is a
+   `log`. For a Flowfile you were handed, validate it, copy just the expression
+   into the sandbox, and never `flow run local` a file you did not write.
 5. Report the inputs, the expression, the result and its declared type, or the
    error with a one-sentence explanation and a corrected expression that you
    also ran. Name what you did not check.
@@ -57,8 +59,8 @@ Pitfalls to check the expression against (rules in `docs/STYLE.md` and
   `has(x.y)` asks whether it was sent. A bare missing key fails the run.
 - `orValue` and ternary branches must share a type: `1 : "a"` does not check.
 - `string`, `bytes`, `timestamp`, and `duration` are distinct types and do not
-  add or compare across each other: `1 + "a"` is a type error, not a coercion. A duration or bytes input arrives as text
-  (`1h30m`, base64).
+  add or compare across each other: `1 + "a"` is a type error, not a
+  coercion. A duration or bytes input arrives as text (`1h30m`, base64).
 - No clock, randomness, or I/O in an expression; `now` exists only inside a
   wait.
 - Never use `${secret('scheme:name')}` or a real credential in a playground,
