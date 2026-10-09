@@ -83,6 +83,8 @@ on:
       - 'editors/vscode/**'
       - 'editors/tree-sitter-cel/**'
       - 'editors/nvim/**'
+      - 'editors/claude-code/**'
+      - '.github/claude-cli/**'
       - '.github/workflows/editors.yml'
 
 permissions:
@@ -292,3 +294,43 @@ jobs:
 
       - name: Check the injections in Neovim
         run: nvim --headless -u NONE -l editors/nvim/test/ts_test.lua
+
+  claude-code:
+    name: Claude Code plugin
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials: false — see the same note on the neovim job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '22'
+          # No `cache: npm`, for the reason given on the vscode job.
+
+      # The claude CLI is the only tool that can say whether the plugin loads
+      # and whether the mod's tests pass, so it is installed, but from a
+      # lockfile: `npm ci` refuses a tree that disagrees with
+      # .github/claude-cli/package-lock.json, which records the integrity hash
+      # of the CLI and of its native binary. .npmrc there sets ignore-scripts,
+      # so no install script runs; the platform package ships the binary itself
+      # and it is run from there. Bumping the CLI is a commit that changes
+      # package.json and the lockfile together.
+      - name: Install the claude CLI
+        working-directory: .github/claude-cli
+        run: |
+          set -euo pipefail
+          npm ci
+          bin="$PWD/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+          "$bin" --version
+          echo "CLAUDE_BIN=$bin" >> "$GITHUB_ENV"
+
+      # Both commands run with an empty home and a minimal environment: no
+      # credentials, no account, no network call the check depends on.
+      - name: Validate the plugin
+        run: env -i PATH="$PATH" HOME="$(mktemp -d)" "$CLAUDE_BIN" plugin validate editors/claude-code
+
+      - name: Test the plugin
+        run: env -i PATH="$PATH" HOME="$(mktemp -d)" DISABLE_AUTOUPDATER=1 "$CLAUDE_BIN" plugin test editors/claude-code
