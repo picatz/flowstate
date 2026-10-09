@@ -263,7 +263,7 @@
   },
   "devDependencies": {
     "@types/node": "26.6.3",
-    "@types/vscode": "1.138.0",
+    "@types/vscode": "1.91.0",
     "tm-grammars": "1.32.22",
     "typescript": "7.0.2",
     "vscode-oniguruma": "2.0.1",

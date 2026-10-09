@@ -176,3 +176,12 @@ updates:
     open-pull-requests-limit: 5
     cooldown:
       default-days: 7
+    # @types/vscode is pinned to the `engines.vscode` floor in package.json:
+    # its version names the editor API the extension type-checks against, so a
+    # newer one would let a call to an API the floor lacks compile cleanly and
+    # fail on an older editor. Raising the floor is a deliberate edit to both.
+    ignore:
+      - dependency-name: "@types/vscode"
+        update-types:
+          - version-update:semver-major
+          - version-update:semver-minor

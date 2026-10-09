@@ -101,6 +101,23 @@ func TestBlobMaxBytesIsRefusedRatherThanLowered(t *testing.T) {
 	}
 }
 
+// TestBlobDefaultNeverExceedsWhatMaxBytesMayRequest pins that omitting
+// max_bytes cannot read more than the ceiling an explicit max_bytes may name,
+// which is what keeps a default-sized parse_json result under the host's
+// task-output limit.
+func TestBlobDefaultNeverExceedsWhatMaxBytesMayRequest(t *testing.T) {
+	got, err := boundedBlobBytes(0)
+	if err != nil {
+		t.Fatalf("boundedBlobBytes(0): %v", err)
+	}
+	if got > maxBlobBytes {
+		t.Errorf("an unset max_bytes allows %d bytes, over the %d an explicit one may request", got, maxBlobBytes)
+	}
+	if _, err := boundedBlobBytes(got); err != nil {
+		t.Errorf("the default %d is refused when named explicitly: %v", got, err)
+	}
+}
+
 // TestParsedJSONKeepsIntegersTheRegistryServed is why parse_json does not
 // decode into `any` directly.
 //

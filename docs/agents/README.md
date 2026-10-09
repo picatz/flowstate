@@ -255,6 +255,8 @@ and whether a deterministic mechanism can prevent it more reliably.
 
 - Verify the loaded memory files and skills with `/context`.
 - Use `/doctor` when always-loaded guidance grows or becomes inconsistent.
+- Enabled plugins and the hook binaries are trusted without a pin or a digest, by
+  decision: [THREAT_MODEL.md](../../THREAT_MODEL.md#agent-host-to-checkout) records why.
 - The repository's `.claude/settings.json` hooks guard generated files, process
   cleanup, merge review state, and formatting. SessionStart builds those four
   existing commands once in the checkout-local ignored `.claude/hooks/.bin`

@@ -18,7 +18,9 @@ import (
 const (
 	// defaultBlobBytes is what a call that names no limit may download. An
 	// in-toto attestation or a small SBOM fits; a layer does not, on purpose.
-	defaultBlobBytes = 1 << 20
+	// It never exceeds maxBlobBytes, so a call that names no limit cannot read
+	// more than one that names the ceiling may.
+	defaultBlobBytes = min(1<<20, maxBlobBytes)
 
 	// blobEnvelopeReserve is what a result costs beside the blob's own bytes:
 	// the digest, the media type, the size, the parsed form when one is asked

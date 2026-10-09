@@ -104,14 +104,14 @@ Every one of these is a limit on bytes another party controls:
 | a resolved credential | 4 KiB |
 | referrers returned | 50 by default, 200 maximum |
 | annotations per descriptor | 32, each key 256 B and value 1 KiB |
-| a blob | 1 MiB by default; `max_bytes` up to 950,272 B |
+| a blob | 950,272 B by default and at most; `max_bytes` may lower it |
 
 The referrers and blob limits are derived from the host's ceiling on one
 step's outputs, `MaxTaskOutputBytes` (2 MiB less a 64 KiB reserve,
 2,031,616 B), less a 128 KiB envelope: a referrers index gets all of what is
 left, and a blob half of it, because `parse_json` can carry the payload a
-second time. The 1 MiB default a call gets when it names no `max_bytes` is
-above that ceiling (#2158), so a call with `parse_json` should name one.
+second time. A call that names no `max_bytes` gets the ceiling itself, never
+more than an explicit one may request.
 
 A `limit` or `max_bytes` over the ceiling is **refused, never lowered**. A
 silently clamped limit would answer "two hundred attachments" for an image with

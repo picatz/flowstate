@@ -17,9 +17,11 @@ import (
 // See the note in pkg/flowstate/v1/celeval_bench_test.go for why none of these
 // are wired into CI.
 
-// benchWorkflow is the source every benchmark below runs against: the largest
-// example in the repository at the time of writing (366 lines), which is the
-// honest end of the range for a hand-written Flowfile.
+// benchWorkflow is the source every benchmark below runs against:
+// examples/approval-gate, a mid-sized hand-written Flowfile (about 100 lines,
+// against a longest example of about 300). It is deliberately not the largest:
+// it is held fixed so a number compares across commits with benchstat, and a
+// claim to be the extreme would stop holding the day a longer example lands.
 func benchWorkflow(b *testing.B) []byte {
 	b.Helper()
 
