@@ -489,3 +489,40 @@ steps:
 	assert.Contains(t, res.Output(), `no plugin task "example.greet" is registered here`,
 		"the answer with no flag is not the installation-question diagnostic:\n%s", res.Output())
 }
+
+// TestTestChecksAStubbedPluginTaskAgainstACatalog is #1294: `flow test` took no
+// catalog, so a suite stubbing a misspelled plugin task passed, and a green
+// suite proved nothing about the task it named. Both directions, with the
+// plugin binary deleted before either run: the shipped example's own suite
+// passes against the catalog, and the same suite with one letter of the stubbed
+// task changed fails, naming the real task.
+func TestTestChecksAStubbedPluginTaskAgainstACatalog(t *testing.T) {
+	bin := buildFlowBinary(t)
+	catalog := pluginCatalogFor(t, bin)
+
+	shipped := "../../examples/plugins/greet/workflow.test.yaml"
+	output, err := runFlowCapturing(t, bin, "test", "--"+pluginCatalogFlag, catalog, shipped)
+	require.NoError(t, err, "the shipped suite does not pass against its own catalog:\n%s", output)
+
+	data, err := os.ReadFile(shipped)
+	require.NoError(t, err)
+	suite := strings.Replace(string(data), "- task: example.greet", "- task: example.gret", 1)
+	require.NotEqual(t, string(data), suite, "the fixture edit changed nothing")
+
+	dir := t.TempDir()
+	workflow, err := os.ReadFile("../../examples/plugins/greet/workflow.yaml")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), workflow, 0o600))
+	typo := filepath.Join(dir, "workflow.test.yaml")
+	require.NoError(t, os.WriteFile(typo, []byte(suite), 0o600))
+
+	output, err = runFlowCapturing(t, bin, "test", "--"+pluginCatalogFlag, catalog, typo)
+	require.Error(t, err, "a stub naming a task the catalog does not carry passed:\n%s", output)
+	assert.Contains(t, output, `did you mean "example.greet"?`, output)
+
+	// And without a catalog the stub-name check is not made: the case still
+	// fails (the step's real task went unstubbed), but not on the stub's name.
+	output, _ = runFlowCapturing(t, bin, "test", typo)
+	assert.NotContains(t, output, "stub names task",
+		"the stub-name check ran with no catalog supplied:\n%s", output)
+}

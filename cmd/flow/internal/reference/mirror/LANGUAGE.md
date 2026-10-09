@@ -1647,6 +1647,9 @@ step with `unknown task` instead.
 Validation knows a plugin's tasks only when told where the plugin is:
 `flow validate --plugin-dir ./plugins` launches it to read its schema, and
 `--plugin-catalog catalog.json` reads a saved catalog without running anything.
+`flow test --plugin-catalog catalog.json` takes the catalog too: a stub naming a
+plugin task the catalog does not carry fails the case, where without it any
+plugin task name is stubbable.
 The first-party plugins are listed in [plugins/](../plugins/), each with its
 tasks and bounds.
 

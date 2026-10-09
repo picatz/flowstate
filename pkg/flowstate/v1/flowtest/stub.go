@@ -220,6 +220,54 @@ func stubTaskNames(compiled []compiledStub) []string {
 	return names
 }
 
+// registeredTasksKey marks a context whose cases must stub only tasks the
+// build's registry already knows.
+type registeredTasksKey struct{}
+
+// contextRequiringRegisteredTasks asks the cases run under ctx to refuse a
+// task-form stub naming a task [v1.DefaultRegistry] does not hold (#1294).
+//
+// Off by default, because a plugin task is stubbable by name with no plugin
+// installed and a suite written that way is legitimate. A caller that has told
+// the registry what exists (`flow test --plugin-catalog`) turns it on, which is
+// what makes a misspelled task name, or one the catalog no longer carries, a
+// failure rather than a green suite over a task nothing provides.
+func contextRequiringRegisteredTasks(ctx context.Context) context.Context {
+	return context.WithValue(ctx, registeredTasksKey{}, true)
+}
+
+func registeredTasksRequired(ctx context.Context) bool {
+	required, _ := ctx.Value(registeredTasksKey{}).(bool)
+
+	return required
+}
+
+// checkStubbedTasksRegistered refuses every task-form stub whose task the
+// registry does not hold, naming the nearest registered task when one is close.
+// Called before [swapRegistry] pre-registers the stubbed names, which would
+// otherwise make every name resolvable.
+func checkStubbedTasksRegistered(registry *v1.Registry, compiled []compiledStub) error {
+	var known []string
+	for _, name := range stubTaskNames(compiled) {
+		if _, ok := registry.Lookup(name); ok {
+			continue
+		}
+		if known == nil {
+			for _, def := range registry.All() {
+				known = append(known, def.Name)
+			}
+			slices.Sort(known)
+		}
+		if suggestion, ok := nearest.Name(name, known); ok {
+			return fmt.Errorf("stub names task %q, which no registered task or supplied plugin catalog provides; did you mean %q?", name, suggestion)
+		}
+
+		return fmt.Errorf("stub names task %q, which no registered task or supplied plugin catalog provides", name)
+	}
+
+	return nil
+}
+
 // bindStubs resolves every stub to the task it answers and groups them by task
 // name, preserving the order the stubs were written so a task's matchers are
 // still tried as the switch-like sequence [Stub.Where] documents.
