@@ -136,18 +136,13 @@ func (d *recordDiff) field(at string, was, now *v1.InputDeclaration, depth int) 
 
 	if d.output {
 		switch {
-		case was.GetRequired() && !now.GetRequired():
-			d.add(at, "is no longer required")
+		case guaranteed(was) && !guaranteed(now):
+			d.add(at, "is no longer always present")
 		case !v1.TypeAssignable(newType, oldType):
 			d.add(at, "weakened its type from %s to %s", v1.TypeString(oldType), v1.TypeString(newType))
-		case was.GetMust() != "" && was.GetMust() != now.GetMust():
-			d.add(at, "its `must:` was removed or changed")
-		default:
-			// A caller switching on the field has not seen a member added.
-			if _, isEnum := oldType.GetKind().(*v1.Type_Enum); isEnum {
-				if added := removedValues(now.GetValues(), was.GetValues()); len(added) > 0 {
-					d.add(at, "widened its declared values (added: %s)", strings.Join(added, ", "))
-				}
+		case was.GetType() == now.GetType():
+			if why := constraintWeakened(was, now); why != "" {
+				d.add(at, "weakened its guarantee (%s)", why)
 			}
 		}
 	} else {
@@ -156,7 +151,9 @@ func (d *recordDiff) field(at string, was, now *v1.InputDeclaration, depth int) 
 			d.add(at, "now must be supplied")
 		case !v1.TypeAssignable(oldType, newType):
 			d.add(at, "narrowed its type from %s to %s", v1.TypeString(oldType), v1.TypeString(newType))
-		default:
+		case was.GetType() == now.GetType():
+			// Only a field whose type held: a changed type was judged just above, and
+			// its constraints (an enum's members) belong to the type it left.
 			if why := constraintNarrowed(was, now); why != "" {
 				d.add(at, "narrowed its constraint (%s)", why)
 			}
@@ -165,6 +162,30 @@ func (d *recordDiff) field(at string, was, now *v1.InputDeclaration, depth int) 
 
 	d.types(at, oldType, newType, depth+1)
 }
+
+// guaranteed reports whether a computed record always carries the field: record
+// defaults are filled in before a caller receives the value, so a field is
+// present when it is required or has a default to fill it with.
+func guaranteed(field *v1.InputDeclaration) bool {
+	return field.GetRequired() || field.GetDefault() != nil
+}
+
+// constraintWeakened reports how a field's guarantees loosened from was to now,
+// or "" when they held or tightened. It is [constraintNarrowed] read the other
+// way: what an output promised is weakened exactly when the old declaration was
+// the stricter of the two.
+func constraintWeakened(was, now *v1.InputDeclaration) string {
+	why := constraintNarrowed(now, was)
+
+	return reversed.Replace(why)
+}
+
+var reversed = strings.NewReplacer(
+	"raised", "lowered",
+	"lowered", "raised",
+	"must tightened", "`must:` removed or changed",
+	"values removed: ", "values added: ",
+)
 
 func fieldsByName(record *v1.TypeDeclaration) map[string]*v1.InputDeclaration {
 	fields := make(map[string]*v1.InputDeclaration, len(record.GetFields()))
