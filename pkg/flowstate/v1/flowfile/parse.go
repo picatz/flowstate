@@ -694,6 +694,14 @@ type compiler struct {
 	// for the names they may call. See [compiler.must].
 	functionsRead bool
 	deferredMusts []deferredMust
+
+	// scalarNames are the types this file declares as constrained scalars, known
+	// before any declaration is read like typeNames; scalarTypes holds their
+	// declarations as they are compiled, and scalarUses the declarations that name
+	// one, lowered by [compiler.lowerScalarTypes] once every rule is final.
+	scalarNames map[string]bool
+	scalarTypes map[string]*v1.TypeDeclaration
+	scalarUses  []scalarUse
 }
 
 // enter accounts for descending into one more value, and reports whether the
@@ -995,6 +1003,10 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.DeclaredOutputs = c.declaredOutputs(f.value, "outputs", ref{path: "outputs", label: "outputs"})
 	}
 
+	// A declaration that names a constrained scalar carries its base and its rule
+	// from here on, before anything reads a declaration's type.
+	c.lowerScalarTypes()
+
 	// A declaration typed by a record with a `sensitive:` field is sensitive whole.
 	v1.DeriveSensitive(workflow)
 
@@ -1209,6 +1221,10 @@ func (c *compiler) declaredInput(e entry, parent, noun string) *v1.InputDeclarat
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural
+			c.useScalar(structural, text, spanOfNode(f.value), typeRef, scalarUse{
+				typ: &declaration.Type, valueType: &declaration.ValueType,
+				must: &declaration.Must, mustSource: &declaration.MustSource, typeSource: &declaration.TypeSource,
+			})
 		}
 	} else {
 		// Required rather than inferred from the default, deliberately: a type
@@ -1439,6 +1455,10 @@ func (c *compiler) declaredOutput(e entry, parent string) *v1.OutputDeclaration 
 			}
 			declaration.Type = declared
 			declaration.ValueType = structural
+			c.useScalar(structural, text, spanOfNode(f.value), typeRef, scalarUse{
+				typ: &declaration.Type, valueType: &declaration.ValueType,
+				must: &declaration.Must, mustSource: &declaration.MustSource, typeSource: &declaration.TypeSource,
+			})
 		}
 	}
 

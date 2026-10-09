@@ -36,6 +36,10 @@ type TypeTable map[string]*TypeDeclaration
 // already seen is ignored: the compiler refuses a duplicate, and a hand-built
 // specification that carries one is judged by the first, which is the one a reader
 // scanning the list meets first.
+//
+// A constrained scalar ([TypeDeclaration.IsScalar]) is not a record and is not in
+// the table: the compiler lowers every use of one to its base, so no value is ever
+// typed by its name.
 func TypesOf(wf *Workflow) TypeTable {
 	declared := wf.GetDeclaredTypes()
 	if len(declared) == 0 {
@@ -44,12 +48,86 @@ func TypesOf(wf *Workflow) TypeTable {
 
 	table := make(TypeTable, len(declared))
 	for _, d := range declared {
+		if d.IsScalar() {
+			continue
+		}
 		if _, seen := table[d.GetName()]; !seen {
 			table[d.GetName()] = d
 		}
 	}
 
 	return table
+}
+
+// IsScalar reports whether the declaration is a constrained scalar: a base type
+// and a rule over `this`, rather than a record of fields.
+func (x *TypeDeclaration) IsScalar() bool { return x != nil && x.Base != nil }
+
+// scalarBases are the built-in scalars a constrained scalar may be based on, in
+// the order a diagnostic lists them. An enum is not one: its members belong to
+// `values:` on a declaration, and a list, a map and a record are not scalars.
+var scalarBases = []InputDeclaration_Type{
+	InputDeclaration_TYPE_STRING,
+	InputDeclaration_TYPE_INT,
+	InputDeclaration_TYPE_FLOAT,
+	InputDeclaration_TYPE_BOOL,
+	InputDeclaration_TYPE_TIMESTAMP,
+	InputDeclaration_TYPE_DURATION,
+	InputDeclaration_TYPE_BYTES,
+}
+
+// ScalarBase reports whether t is a type a constrained scalar can be based on.
+func ScalarBase(t InputDeclaration_Type) bool { return slices.Contains(scalarBases, t) }
+
+// checkScalarType judges a constrained scalar on its own: it is a base and a rule,
+// the rule compiles against the base with `this` the only name it reads, and the
+// example is a value the pair admits.
+func checkScalarType(profile string, d *TypeDeclaration) error {
+	name := d.GetName()
+	if len(d.GetFields()) > 0 {
+		return fmt.Errorf("type %q has a base type and also declares fields; a type is a constrained scalar or a record, not both", name)
+	}
+	if !ScalarBase(d.GetBase()) {
+		return fmt.Errorf("type %q is based on %s, which a type cannot constrain; the bases are %s",
+			name, DeclaredTypeName(d.GetBase()), scalarBaseNames())
+	}
+	if d.Must == nil {
+		return fmt.Errorf("type %q is a %s with no `must:`; a constrained scalar is its base type and a rule over `this`, "+
+			"so write the rule or use %s where the type is used", name, DeclaredTypeName(d.GetBase()), DeclaredTypeName(d.GetBase()))
+	}
+	if _, err := CompileMustExpression(profile, d.GetMust(), d.GetBase()); err != nil {
+		return fmt.Errorf("type %q %w", name, err)
+	}
+
+	probe := &InputDeclaration{Name: name, Type: d.GetBase(), Must: d.Must, Example: d.GetExample()}
+	if err := CheckInputExampleIn(nil, profile, probe); err != nil {
+		return fmt.Errorf("type %q %w", name, err)
+	}
+
+	return nil
+}
+
+func scalarBaseNames() string {
+	names := make([]string, 0, len(scalarBases))
+	for _, b := range scalarBases {
+		names = append(names, DeclaredTypeName(b))
+	}
+
+	return strings.Join(names, ", ")
+}
+
+// checkNoScalarRefs refuses a [Type_Message] that names a constrained scalar. The
+// compiler lowers a use to the base, so a specification that still names the type
+// was not compiled, and a run would have no table entry to judge a value by.
+func checkNoScalarRefs(t *Type, scalars map[string]bool) error {
+	for _, name := range messageNames(t, nil, 0) {
+		if scalars[name] {
+			return fmt.Errorf("the type %s is a constrained scalar, not a record; a specification carries its base type and "+
+				"rule at the use (the Flowfile compiler lowers `type: %s`), and a list or map of it is not expressible yet", name, name)
+		}
+	}
+
+	return nil
 }
 
 // checkRecord refuses a literal that is not a value of the record name: a map
@@ -229,6 +307,13 @@ func CheckRecordDeclarations(wf *Workflow) error {
 
 	table := TypesOf(wf)
 
+	scalars := map[string]bool{}
+	for _, declaration := range wf.GetDeclaredTypes() {
+		if declaration.IsScalar() {
+			scalars[declaration.GetName()] = true
+		}
+	}
+
 	seen := make(map[string]bool, len(wf.GetDeclaredTypes()))
 	for _, declaration := range wf.GetDeclaredTypes() {
 		name := declaration.GetName()
@@ -239,6 +324,16 @@ func CheckRecordDeclarations(wf *Workflow) error {
 
 		if err := Validate(declaration); err != nil {
 			return fmt.Errorf("type %q is invalid: %w", name, err)
+		}
+		if declaration.IsScalar() {
+			if err := checkScalarType(wf.GetProfile(), declaration); err != nil {
+				return err
+			}
+
+			continue
+		}
+		if declaration.Example != nil {
+			return fmt.Errorf("type %q is a record with an example; only a constrained scalar (`type:` and `must:`) carries one", name)
 		}
 		if len(declaration.GetFields()) > MaxRecordFields {
 			return fmt.Errorf("type %q declares %d fields; the most a record holds is %d",
@@ -262,13 +357,30 @@ func CheckRecordDeclarations(wf *Workflow) error {
 			}
 			fields[field.GetName()] = true
 
+			if err := checkNoScalarRefs(field.GetValueType(), scalars); err != nil {
+				return fmt.Errorf("type %q field %q: %w", name, field.GetName(), err)
+			}
 			if err := checkRecordField(name, field, table, wf.GetProfile()); err != nil {
 				return err
 			}
 		}
 	}
 
+	for _, function := range wf.GetDeclaredFunctions() {
+		for _, parameter := range function.GetParameters() {
+			if err := checkNoScalarRefs(parameter.GetType(), scalars); err != nil {
+				return fmt.Errorf("function %q parameter %q: %w", function.GetName(), parameter.GetName(), err)
+			}
+		}
+		if err := checkNoScalarRefs(function.GetResult(), scalars); err != nil {
+			return fmt.Errorf("function %q result: %w", function.GetName(), err)
+		}
+	}
+
 	for _, declaration := range wf.GetDeclaredInputs() {
+		if err := checkNoScalarRefs(declaration.GetValueType(), scalars); err != nil {
+			return fmt.Errorf("input %q: %w", declaration.GetName(), err)
+		}
 		if err := checkTypeResolves(declaration.GetValueType(), table); err != nil {
 			return fmt.Errorf("input %q: %w", declaration.GetName(), err)
 		}
@@ -277,6 +389,9 @@ func CheckRecordDeclarations(wf *Workflow) error {
 		}
 	}
 	for _, declaration := range wf.GetDeclaredOutputs() {
+		if err := checkNoScalarRefs(declaration.GetValueType(), scalars); err != nil {
+			return fmt.Errorf("output %q: %w", declaration.GetName(), err)
+		}
 		if err := checkTypeResolves(declaration.GetValueType(), table); err != nil {
 			return fmt.Errorf("output %q: %w", declaration.GetName(), err)
 		}

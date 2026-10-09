@@ -1560,7 +1560,7 @@ func waitToYAML(wait *v1.Wait) (string, any, error) {
 func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, error) {
 	out := make(yaml.MapSlice, 0, len(declarations))
 	for _, declaration := range declarations {
-		entry := yaml.MapSlice{{Key: "type", Value: declaredTypeText(declaration.GetType(), declaration.GetValueType())}}
+		entry := yaml.MapSlice{{Key: "type", Value: cmp.Or(declaration.GetTypeSource(), declaredTypeText(declaration.GetType(), declaration.GetValueType()))}}
 
 		// Written right after `type:`, the position [declaredInput] reads it
 		// from and the position an author reaches for: the closed set a
@@ -1613,8 +1613,8 @@ func declaredInputsToYAML(declarations []*v1.InputDeclaration) (yaml.MapSlice, e
 		if declaration.MaxItems != nil {
 			entry = append(entry, yaml.MapItem{Key: "max_items", Value: declaration.GetMaxItems()})
 		}
-		if declaration.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(cmp.Or(declaration.GetMustSource(), declaration.GetMust()))})
+		if must, ok := writtenMust(declaration.Must, declaration.MustSource, declaration.TypeSource); ok {
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(must)})
 		}
 
 		out = append(out, yaml.MapItem{Key: declaration.GetName(), Value: entry})
@@ -1641,7 +1641,7 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 		// declaration written before the field existed is one — so the absent
 		// case is silence rather than a spelling for "unspecified".
 		if declaration.GetType() != v1.InputDeclaration_TYPE_UNSPECIFIED {
-			entry = append(entry, yaml.MapItem{Key: "type", Value: declaredTypeText(declaration.GetType(), declaration.GetValueType())})
+			entry = append(entry, yaml.MapItem{Key: "type", Value: cmp.Or(declaration.GetTypeSource(), declaredTypeText(declaration.GetType(), declaration.GetValueType()))})
 		}
 		if len(declaration.GetValues()) > 0 {
 			values := make([]any, 0, len(declaration.GetValues()))
@@ -1654,8 +1654,8 @@ func declaredOutputsToYAML(declarations []*v1.OutputDeclaration) (yaml.MapSlice,
 		if declaration.Description != nil {
 			entry = append(entry, yaml.MapItem{Key: "description", Value: textToYAML(declaration.GetDescription())})
 		}
-		if declaration.Must != nil {
-			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(cmp.Or(declaration.GetMustSource(), declaration.GetMust()))})
+		if must, ok := writtenMust(declaration.Must, declaration.MustSource, declaration.TypeSource); ok {
+			entry = append(entry, yaml.MapItem{Key: "must", Value: textToYAML(must)})
 		}
 		if declaration.GetSensitive() {
 			entry = append(entry, yaml.MapItem{Key: "sensitive", Value: true})

@@ -460,3 +460,30 @@ func TestCompletionDecodesTheCallTargetAsYAML(t *testing.T) {
 		assert.Empty(t, got.Items, "a shape that cannot be a path offers nothing rather than a guess")
 	})
 }
+
+// TestHoverOnACallArgumentOfAScalarTypeNamesTheTypeAndItsRule checks that a callee
+// input whose only rule is its scalar type's is not described as unconstrained:
+// the hover names the type, its base and the rule the argument is held to.
+func TestHoverOnACallArgumentOfAScalarTypeNamesTheTypeAndItsRule(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	callee := filepath.Join(dir, "callee.yaml")
+	require.NoError(t, os.WriteFile(callee, []byte(scalarHoverSource), 0o644))
+
+	src := "edition: v2026.4\nname: caller\nsteps:\n  - id: go\n    call: ./callee.yaml\n    with:\n      id: abc-12\n"
+	caller := filepath.Join(dir, "workflow.yaml")
+	require.NoError(t, os.WriteFile(caller, []byte(src), 0o644))
+
+	c := newClient(t)
+	c.initialize()
+	uri := "file://" + caller
+	c.open(uri, src)
+
+	pos := positionOf(t, src, "id: abc-12", 1)
+	got := hoverText(c.hover(uri, pos.Line, pos.Character))
+	assert.Contains(t, got, "`Code` (`string`)")
+	assert.Contains(t, got, "The scalar type `Code`")
+	assert.Contains(t, got, "A `string` that must satisfy `size(this) == 6`.")
+	assert.Contains(t, got, "Example:")
+}

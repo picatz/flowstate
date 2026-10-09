@@ -78,6 +78,12 @@ var exampleCorpusGlobs = []string{
 // written down here, not a silently reappearing map.
 var constructsWithoutAnExample = map[string]string{
 	"output.type.TYPE_BYTES": "an output cannot declare a data kind yet: the run document has no plain-JSON form for it (#1436)",
+
+	// A constrained scalar is based on a built-in scalar, and these three enum values
+	// are not scalars: the compiler refuses them as a `base`, so no file can write one.
+	"type.base.TYPE_ENUM":   "not a scalar: an enum's members belong to `values:` on a declaration, so a type refuses it as a base",
+	"type.base.TYPE_LIST":   "not a scalar: a list is a container, and a rule over its elements is a `must:` on the container",
+	"type.base.TYPE_STRUCT": "not a scalar: a record is declared with `fields:`, never as a base",
 }
 
 // The required set is derived from the schema three ways: the two `kind` oneofs

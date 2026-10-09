@@ -684,6 +684,30 @@ func init() {
 				" one without a matching expansion is read by `must` alone.\n",
 		},
 		{
+			Name: "flowstate.v1.TypeDeclaration.base",
+			Leading: " Base makes this a constrained scalar rather than a record: a value of the\n" +
+				" base type that also satisfies `must`, with `this` the value. A constrained\n" +
+				" scalar declares no `fields`, and its `must` is required, because a scalar\n" +
+				" type with no rule is its base. The base is a built-in scalar (string, int,\n" +
+				" float, bool, timestamp, duration or bytes), never another declared type.\n" +
+				"\n" +
+				" Nothing at run time names a constrained scalar. The Flowfile compiler lowers\n" +
+				" each `type: <name>` that uses one to this base and to `must` conjoined with\n" +
+				" the use's own, keeping the name in `InputDeclaration.type_source` and\n" +
+				" `OutputDeclaration.type_source`, so a [Type.message] never names one and a\n" +
+				" specification that does is refused. A worker that predates `base` reads a\n" +
+				" scalar declaration as a record with no fields, so a workflow that declares one\n" +
+				" needs upgraded workers wherever it runs, including as a `call:` target, whose\n" +
+				" inputs are bound against its own declarations.\n",
+		},
+		{
+			Name: "flowstate.v1.TypeDeclaration.example",
+			Leading: " Example is an illustrative value of the type, never applied at run time and\n" +
+				" checked when the specification compiles against the base and `must`, the\n" +
+				" way `InputDeclaration.example` is. Carried by a constrained scalar only; the\n" +
+				" use keeps no copy, so an editor shows it from the declaration.\n",
+		},
+		{
 			Name: "flowstate.v1.Concurrency",
 			Leading: " Concurrency is \"at most one run of this workflow per key\", answered at submit.\n" +
 				"\n" +
@@ -1147,6 +1171,17 @@ func init() {
 				" one without a matching expansion is read by `must` alone.\n",
 		},
 		{
+			Name: "flowstate.v1.InputDeclaration.type_source",
+			Leading: " TypeSource is the name this declaration's type was written with, set only\n" +
+				" when that name is a constrained scalar (`TypeDeclaration.base`). The compiler\n" +
+				" lowers such a use: `type` and `value_type` carry the base, `must` carries the\n" +
+				" type's rule conjoined with the declaration's own, expanded, and the\n" +
+				" declaration's own `must` as written moves to `must_source` (absent when it\n" +
+				" wrote none), so `flow fmt` and Marshal write `type: <type_source>` and the\n" +
+				" author's own rule back. Never evaluated or checked: a run reads `type` and\n" +
+				" `must` alone, and so does an older worker.\n",
+		},
+		{
 			Name: "flowstate.v1.InputDeclaration.values",
 			Leading: " Values is the closed set of strings a `type: enum` value may be. Only the\n" +
 				" per-declaration shape lives here: that they are non-empty, bounded, and\n" +
@@ -1254,6 +1289,12 @@ func init() {
 				" the call form, so `flow fmt` and Marshal write the file back as it was\n" +
 				" authored. Never evaluated, compiled or checked; a specification that carries\n" +
 				" one without a matching expansion is read by `must` alone.\n",
+		},
+		{
+			Name: "flowstate.v1.OutputDeclaration.type_source",
+			Leading: " TypeSource is the name this declaration's type was written with, set only\n" +
+				" when that name is a constrained scalar; see `InputDeclaration.type_source`,\n" +
+				" whose lowering this follows exactly.\n",
 		},
 		{
 			Name: "flowstate.v1.OutputDeclaration.sensitive",

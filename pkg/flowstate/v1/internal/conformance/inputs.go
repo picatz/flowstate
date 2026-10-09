@@ -186,6 +186,19 @@ func InputOutputCases(httpBaseURL string) []Case {
 			ExpectedOutputs: held("show"),
 		},
 		{
+			// A constrained scalar is lowered where it is used, so what both drivers
+			// evaluate is the base type and the plain rule; the type's name is read by
+			// neither, and a value the rule admits runs.
+			Name:     "a scalar type's rule admits a value it accepts",
+			Workflow: scalarTypeWorkflow("inputs-scalar-type"),
+			Inputs: map[string]*v1.Value{
+				"id":    v1.NewLiteral("abc-12"),
+				"alias": v1.NewLiteral("xyz-99"),
+				"tag":   v1.NewLiteralMap(map[string]any{"code": "xyz-99"}),
+			},
+			ExpectedOutputs: held("show"),
+		},
+		{
 			// A record field's default is filled where the value is bound, so a step
 			// reads the field whether or not the caller sent it, on both drivers.
 			Name: "a record field left out takes its default",
@@ -929,6 +942,42 @@ func InputRefusalCases() []Refusal {
 				"id": v1.NewLiteral("ABC-12"),
 			},
 			Contains: `input "id" must satisfy`,
+		},
+		{
+			// The same specification as the case that admits, with a value the type's
+			// rule refuses, and then one only the use's own rule refuses.
+			Name:     "a scalar type's rule refuses a value it rejects",
+			Workflow: scalarTypeWorkflow("inputs-scalar-type-refused"),
+			Inputs: map[string]*v1.Value{
+				"id": v1.NewLiteral("ABC-12"),
+			},
+			Contains: `input "id" must satisfy`,
+		},
+		{
+			Name:     "a use's own rule is held beside the scalar type's",
+			Workflow: scalarTypeWorkflow("inputs-scalar-type-own-rule"),
+			Inputs: map[string]*v1.Value{
+				"id": v1.NewLiteral("abc-00"),
+			},
+			Contains: `input "id" must satisfy`,
+		},
+		{
+			Name:     "a scalar type's rule is held where no rule of the use's own is written",
+			Workflow: scalarTypeWorkflow("inputs-scalar-type-alone"),
+			Inputs: map[string]*v1.Value{
+				"id":    v1.NewLiteral("abc-12"),
+				"alias": v1.NewLiteral("nope"),
+			},
+			Contains: `input "alias" must satisfy`,
+		},
+		{
+			Name:     "a scalar type's rule is held on a record field",
+			Workflow: scalarTypeWorkflow("inputs-scalar-type-field"),
+			Inputs: map[string]*v1.Value{
+				"id":  v1.NewLiteral("abc-12"),
+				"tag": v1.NewLiteralMap(map[string]any{"code": "nope"}),
+			},
+			Contains: "the field at .code must satisfy",
 		},
 		{
 			Name:     "a must that called a function refuses a record field the function rejects",

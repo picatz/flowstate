@@ -1,0 +1,120 @@
+# A scalar type is lowered where it is used, so what is worth testing is that the rule
+# is held at every kind of use: an input, a use's own rule beside the type's, a record
+# field and an output, and for the bases that are not text.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: values the types admit run, and the output keeps its type
+    inputs:
+      slug: release-notes
+      consent: true
+    expect:
+      ran: [closing, announce]
+      outputs:
+        published_as: release-notes
+        closes_at: "2026-03-01T11:00:00Z"
+
+  - name: the rule of the type refuses an input
+    inputs:
+      slug: Release Notes
+      consent: true
+    expect:
+      failed: true
+      error_contains: 'input "slug" must satisfy'
+
+  - name: a use's own rule is held beside the type's
+    inputs:
+      slug: release-notes
+      channel: admin
+      consent: true
+    expect:
+      failed: true
+      error_contains: 'input "channel" must satisfy'
+
+  - name: the type's rule still holds where a use adds its own
+    inputs:
+      slug: release-notes
+      channel: Not-A-Slug
+      consent: true
+    expect:
+      failed: true
+      error_contains: 'input "channel" must satisfy'
+
+  - name: a bool type refuses false
+    inputs:
+      slug: release-notes
+      consent: false
+    expect:
+      failed: true
+      error_contains: 'input "consent" must satisfy'
+
+  - name: a record field is held to the type
+    inputs:
+      slug: release-notes
+      consent: true
+      release:
+        slug: Not A Slug
+    expect:
+      failed: true
+      error_contains: slug
+
+  - name: a field typed by an int type refuses a port below its range
+    inputs:
+      slug: release-notes
+      consent: true
+      release:
+        slug: other-release
+        port: 80
+    expect:
+      failed: true
+      error_contains: port
+
+  - name: a field typed by an int type admits a port inside its range
+    inputs:
+      slug: release-notes
+      consent: true
+      release:
+        slug: other-release
+        port: 9090
+    expect:
+      ran: [closing, announce]
+
+  - name: a double type is held to its range
+    inputs:
+      slug: release-notes
+      consent: true
+      ratio: 1.5
+    expect:
+      failed: true
+      error_contains: 'input "ratio" must satisfy'
+
+  - name: a timestamp type is held to its rule
+    inputs:
+      slug: release-notes
+      consent: true
+      opens: "2019-01-01T00:00:00Z"
+    expect:
+      failed: true
+      error_contains: 'input "opens" must satisfy'
+
+  - name: a duration type is held to its rule
+    inputs:
+      slug: release-notes
+      consent: true
+      window: 48h
+    expect:
+      failed: true
+      error_contains: 'input "window" must satisfy'
+
+  - name: a bytes type is held to its rule
+    inputs:
+      slug: release-notes
+      consent: true
+      seal: ""
+    expect:
+      failed: true
+      error_contains: 'input "seal" must satisfy'
