@@ -276,7 +276,7 @@ func exprSites(wf *v1.Workflow, pos *Positions, visit func(writtenExpr)) {
 				v1.SlotWebhookSignalCorrelate, v1.SlotWebhookSignalArgument:
 				triggerSite(pos, site, visit)
 
-			case v1.SlotInputDefault, v1.SlotInputExample, v1.SlotTypeFieldDefault, v1.SlotTypeFieldExample, v1.SlotSwitchCaseValue:
+			case v1.SlotInputDefault, v1.SlotInputExample, v1.SlotTypeFieldDefault, v1.SlotTypeFieldExample, v1.SlotTypeExample, v1.SlotSwitchCaseValue:
 				// The three positions the language refuses an expression in: a
 				// declaration's `default:` and `example:` are values checked
 				// against the declaration's own type, and a case is a literal a

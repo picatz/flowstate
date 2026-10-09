@@ -106,3 +106,47 @@ func recordHoverSourceWith(message string) string {
 	const marker = "${string(inputs.order.total.cents)} ${inputs.order.id}"
 	return strings.Replace(recordHoverSource, marker, message, 1)
 }
+
+const scalarHoverSource = `edition: ` + flowfile.CurrentEdition + `
+name: scalar-hover
+types:
+  Code:
+    description: A three-letter, two-digit code.
+    type: string
+    must: size(this) == 6
+    example: abc-12
+inputs:
+  id:
+    type: Code
+    required: true
+    must: this != "abc-00"
+steps:
+  - id: show
+    log:
+      message: ${inputs.id}
+`
+
+// TestHoverOnAnInputOfAScalarTypeNamesTheTypeItsBaseAndItsRule checks that a use of a
+// constrained scalar reads as the type the author wrote, not the lowered base alone:
+// the name with the base it is held to, the use's own rule and not the conjoined
+// expansion, and the type's description, rule and example.
+func TestHoverOnAnInputOfAScalarTypeNamesTheTypeItsBaseAndItsRule(t *testing.T) {
+	t.Parallel()
+
+	c := newClient(t)
+	c.initialize()
+	const uri = "file:///scalar-hover.yaml"
+	require.Empty(t, messages(c.open(uri, scalarHoverSource).Diagnostics), "premise: the file compiles")
+
+	pos := positionOf(t, scalarHoverSource, "inputs.id", len("inputs.i"))
+	got := c.hover(uri, pos.Line, pos.Character)
+	require.NotNil(t, got)
+	text := hoverText(got)
+
+	assert.Contains(t, text, "`id`** · `Code` (`string`) · required")
+	assert.Contains(t, text, "Must satisfy `this != \"abc-00\"`.", "the use's own rule as written")
+	assert.NotContains(t, text, "&&", "the conjoined rule the run evaluates is not what the author wrote")
+	assert.Contains(t, text, "The scalar type `Code`: A three-letter, two-digit code.")
+	assert.Contains(t, text, "A `string` that must satisfy `size(this) == 6`.")
+	assert.Contains(t, text, "Example: `\"abc-12\"`.")
+}

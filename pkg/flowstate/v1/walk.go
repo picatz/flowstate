@@ -180,6 +180,10 @@ const (
 	// SlotTypeFieldExample is a record type field's `example:`, with the same
 	// standing as [SlotTypeFieldDefault].
 	SlotTypeFieldExample
+	// SlotTypeExample is a constrained scalar type's `example:`: an illustrative
+	// literal, never bound to a run, held to the base and `must` when the file
+	// compiles, with the same standing as [SlotInputExample].
+	SlotTypeExample
 )
 
 // ValueSlotSchemaPath maps each slot to the schema field it names.
@@ -195,6 +199,7 @@ func ValueSlotSchemaPath() map[ValueSlot]string {
 		SlotInputExample:          "Workflow.declared_inputs[].example",
 		SlotTypeFieldDefault:      "Workflow.declared_types[].fields[].default",
 		SlotTypeFieldExample:      "Workflow.declared_types[].fields[].example",
+		SlotTypeExample:           "Workflow.declared_types[].example",
 		SlotWorkflowVar:           "Workflow.vars{}",
 		SlotDeclaredOutput:        "Workflow.declared_outputs[].value",
 		SlotWebhookIdempotencyKey: "Workflow.triggers.webhooks[].idempotency_key",
@@ -320,6 +325,8 @@ func (s ValueSite) Field() string {
 	case SlotTypeFieldDefault:
 		return "types." + s.Name + ".default"
 	case SlotTypeFieldExample:
+		return "types." + s.Name + ".example"
+	case SlotTypeExample:
 		return "types." + s.Name + ".example"
 	case SlotWorkflowVar, SlotStepVar:
 		return VarsRoot + "." + s.Name
@@ -457,6 +464,7 @@ func walkWorkflowValuesBeforeSteps(wf *Workflow, w Walk) {
 	}
 
 	for _, record := range wf.GetDeclaredTypes() {
+		w.value(ValueSite{Slot: SlotTypeExample, Name: record.GetName(), Value: record.GetExample()})
 		for _, field := range record.GetFields() {
 			name := record.GetName() + ".fields." + field.GetName()
 			w.value(ValueSite{Slot: SlotTypeFieldDefault, Name: name, Value: field.GetDefault()})

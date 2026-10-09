@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"cmp"
 	"fmt"
 	"slices"
 	"strings"
@@ -76,7 +77,7 @@ func hoverInputPath(doc *document, v *value, f fence, cursor int) *lsp.Hover {
 
 	rng := v.fenceSpanOrWhole(doc.index, f, start, end)
 
-	return markdownHover(inputPathDoc(strings.Join(segments[1:upto+1], "."), declaration, parent, table, declaredOnLine(doc, segments[1], parent)), rng)
+	return markdownHover(inputPathDoc(strings.Join(segments[1:upto+1], "."), declaration, parent, wf, declaredOnLine(doc, segments[1], parent)), rng)
 }
 
 // inputPathDoc renders one declaration reached by a path: the input itself, or a
@@ -84,7 +85,8 @@ func hoverInputPath(doc *document, v *value, f fence, cursor int) *lsp.Hover {
 //
 // line is the sentence naming where a top-level input is declared, empty for a
 // field, which names its record instead.
-func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.TypeDeclaration, table v1.TypeTable, line string) string {
+func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.TypeDeclaration, wf *v1.Workflow, line string) string {
+	table := v1.TypesOf(wf)
 	provenance := line
 	if parent != nil {
 		provenance = fmt.Sprintf("A field of the record `%s`.", parent.GetName())
@@ -93,6 +95,17 @@ func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.Type
 	var b strings.Builder
 	b.WriteString(declarationDoc(path, declaration, provenance))
 	typ := declaration.DeclaredType()
+
+	if scalar := scalarTypeNamed(wf, declaration.GetTypeSource()); scalar != nil {
+		fmt.Fprintf(&b, "\n\nThe scalar type `%s`", scalar.GetName())
+		if description := scalar.GetDescription(); description != "" {
+			fmt.Fprintf(&b, ": %s", description)
+		}
+		fmt.Fprintf(&b, "\n\nA `%s` that must satisfy `%s`.", v1.TypeString(v1.TypeOfLegacy(scalar.GetBase())), cmp.Or(scalar.GetMustSource(), scalar.GetMust()))
+		if text, ok := declaredValueText(scalar.GetExample()); ok {
+			fmt.Fprintf(&b, "\n\nExample: `%s`.", text)
+		}
+	}
 
 	if record := table[typ.GetMessage()]; record != nil {
 		fmt.Fprintf(&b, "\n\nThe record `%s`", record.GetName())
@@ -110,6 +123,20 @@ func inputPathDoc(path string, declaration *v1.InputDeclaration, parent *v1.Type
 	}
 
 	return b.String()
+}
+
+// scalarTypeNamed finds the constrained scalar the workflow declares under name.
+func scalarTypeNamed(wf *v1.Workflow, name string) *v1.TypeDeclaration {
+	if name == "" {
+		return nil
+	}
+	for _, t := range wf.GetDeclaredTypes() {
+		if t.IsScalar() && t.GetName() == name {
+			return t
+		}
+	}
+
+	return nil
 }
 
 // declaredInput finds the workflow input called name.
@@ -192,7 +219,7 @@ func hoverInputDeclaration(doc *document, pos lsp.Position) *lsp.Hover {
 				return nil
 			}
 
-			return markdownHover(inputPathDoc(in.key, declaration, nil, v1.TypesOf(wf), declaredOnLine(doc, in.key, nil)), in.keyRange)
+			return markdownHover(inputPathDoc(in.key, declaration, nil, wf, declaredOnLine(doc, in.key, nil)), in.keyRange)
 		}
 	}
 

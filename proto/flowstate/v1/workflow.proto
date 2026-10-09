@@ -806,6 +806,25 @@ message TypeDeclaration {
   // authored. Never evaluated, compiled or checked; a specification that carries
   // one without a matching expansion is read by `must` alone.
   optional string must_source = 5;
+
+  // Base makes this a constrained scalar rather than a record: a value of the
+  // base type that also satisfies `must`, with `this` the value. A constrained
+  // scalar declares no `fields`, and its `must` is required, because a scalar
+  // type with no rule is its base. The base is a built-in scalar (string, int,
+  // float, bool, timestamp, duration or bytes), never another declared type.
+  //
+  // Nothing at run time names a constrained scalar. The Flowfile compiler lowers
+  // each `type: <name>` that uses one to this base and to `must` conjoined with
+  // the use's own, keeping the name in `InputDeclaration.type_source` and
+  // `OutputDeclaration.type_source`, so a [Type.message] never names one and a
+  // specification that does is refused.
+  optional InputDeclaration.Type base = 6 [(buf.validate.field).enum = {defined_only: true}];
+
+  // Example is an illustrative value of the type, never applied at run time and
+  // checked when the specification compiles against the base and `must`, the
+  // way `InputDeclaration.example` is. Carried by a constrained scalar only; the
+  // use keeps no copy, so an editor shows it from the declaration.
+  Value example = 7;
 }
 
 // Concurrency is "at most one run of this workflow per key", answered at submit.
@@ -1413,6 +1432,16 @@ message InputDeclaration {
   // one without a matching expansion is read by `must` alone.
   optional string must_source = 19;
 
+  // TypeSource is the name this declaration's type was written with, set only
+  // when that name is a constrained scalar (`TypeDeclaration.base`). The compiler
+  // lowers such a use: `type` and `value_type` carry the base, `must` carries the
+  // type's rule conjoined with the declaration's own, expanded, and the
+  // declaration's own `must` as written moves to `must_source` (absent when it
+  // wrote none), so `flow fmt` and Marshal write `type: <type_source>` and the
+  // author's own rule back. Never evaluated or checked: a run reads `type` and
+  // `must` alone, and so does an older worker.
+  optional string type_source = 20 [(buf.validate.field).string = {max_len: 128}];
+
   // Values is the closed set of strings a `type: enum` value may be. Only the
   // per-declaration shape lives here: that they are non-empty, bounded, and
   // distinct. Whether `values` may be present at all (only on `TYPE_ENUM`),
@@ -1517,6 +1546,11 @@ message OutputDeclaration {
   // authored. Never evaluated, compiled or checked; a specification that carries
   // one without a matching expansion is read by `must` alone.
   optional string must_source = 9;
+
+  // TypeSource is the name this declaration's type was written with, set only
+  // when that name is a constrained scalar; see `InputDeclaration.type_source`,
+  // whose lowering this follows exactly.
+  optional string type_source = 10 [(buf.validate.field).string = {max_len: 128}];
 
   // Sensitive marks this output's value the way `InputDeclaration.sensitive`
   // marks an input's: display etiquette, never containment. See that field's

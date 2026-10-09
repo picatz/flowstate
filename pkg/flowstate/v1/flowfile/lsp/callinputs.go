@@ -268,7 +268,13 @@ func callInputDoc(declaration *v1.InputDeclaration, called calledWorkflow) strin
 // hover has none.
 func declarationDoc(label string, declaration *v1.InputDeclaration, provenance string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "**`%s`** · `%s`", label, v1.TypeString(declaration.DeclaredType()))
+	if source := declaration.GetTypeSource(); source != "" {
+		// A constrained scalar was lowered to its base; the name the author wrote is
+		// what they look for, and the base is what it is held to.
+		fmt.Fprintf(&b, "**`%s`** · `%s` (`%s`)", label, source, v1.TypeString(declaration.DeclaredType()))
+	} else {
+		fmt.Fprintf(&b, "**`%s`** · `%s`", label, v1.TypeString(declaration.DeclaredType()))
+	}
 	if declaration.GetRequired() {
 		b.WriteString(" · required")
 	} else {
@@ -297,7 +303,14 @@ func declarationDoc(label string, declaration *v1.InputDeclaration, provenance s
 	if bounds := declaredBounds(declaration); len(bounds) > 0 {
 		fmt.Fprintf(&b, "\n\nHeld to %s.", strings.Join(bounds, ", "))
 	}
-	if must := declaration.GetMust(); must != "" {
+	must := declaration.GetMust()
+	if declaration.GetTypeSource() != "" {
+		// The stored rule is the type's and the use's together, expanded; what the
+		// author wrote here is the use's own, and the type's is described beside the
+		// type.
+		must = declaration.GetMustSource()
+	}
+	if must != "" {
 		fmt.Fprintf(&b, "\n\nMust satisfy `%s`.", must)
 	}
 	if declaration.GetExample() != nil {

@@ -647,7 +647,8 @@ func readsSteps(slot v1.ValueSlot) bool {
 		v1.SlotInputDefault,
 		v1.SlotInputExample,
 		v1.SlotTypeFieldDefault,
-		v1.SlotTypeFieldExample:
+		v1.SlotTypeFieldExample,
+		v1.SlotTypeExample:
 		return false
 	default:
 		return true

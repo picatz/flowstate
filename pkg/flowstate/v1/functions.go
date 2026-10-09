@@ -448,3 +448,18 @@ func (s *FunctionSet) plainText(parsed *exprpb.ParsedExpr) (string, error) {
 
 	return cel.AstToString(cel.ParsedExprToAst(parsed))
 }
+
+// NodeCount is the number of CEL nodes src parses to, 0 for source that does not
+// parse. It is the unit of the expansion budget ([MaxFunctionExpansionNodes]), so
+// a compiler that copies a stored rule to another place can spend the same budget
+// an expansion does.
+func NodeCount(src string) int {
+	value := NewExpr(src)
+	if value.Error() != nil {
+		return 0
+	}
+	nodes := 0
+	walkParsed(value.GetExpr().GetExpr(), func(*exprpb.Expr) { nodes++ })
+
+	return nodes
+}

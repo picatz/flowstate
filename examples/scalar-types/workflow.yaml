@@ -1,0 +1,109 @@
+# A type that is a scalar and a rule: `type:` and `must:` on a type, used by name.
+#
+# `types:` names a record when it has `fields:`. When it has `type:` (a built-in
+# scalar: string, int, double, bool, timestamp, duration or bytes) and a `must:` over
+# `this`, it names a constrained scalar instead: a value of that base that also
+# satisfies the rule. It is written once and used wherever a `type:` is written, on an
+# input, an output or a record field, so the rule an input and a field share is not
+# copied between them.
+#
+# A use may add a `must:` of its own (`channel` below) and both hold. The rule may call
+# a declared function (`isSlug`), and `example:` is checked against the base and the
+# rule when the file compiles, so a stale one is an error rather than a lie.
+#
+# Nothing at run time knows the name. The compiler lowers each use to the base type and
+# the type's rule, conjoined with the use's own, so both drivers check plain CEL, and
+# `flow fmt` writes `type: Slug` back as written. A rule reads `this` and nothing else,
+# so a type means the same wherever it is used. A list or map of a scalar type is not
+# expressible yet; put the rule on the container, `must: this.all(x, ...)`.
+#
+#   flow run local examples/scalar-types/workflow.yaml \
+#       --input-file examples/scalar-types/inputs.json
+edition: v2026.4
+name: scalar-types
+types:
+  Slug:
+    description: Lowercase words joined by dashes, as a URL carries them.
+    type: string
+    must: isSlug(this)
+    example: hello-world
+  Port:
+    type: int
+    must: this >= 1024 && this <= 65535
+  Ratio:
+    type: double
+    must: this >= 0.0 && this <= 1.0
+  Consent:
+    type: bool
+    must: this
+  Deadline:
+    type: timestamp
+    must: this.getFullYear() >= 2026
+  Window:
+    type: duration
+    must: this > duration("0s") && this <= duration("24h")
+  Seal:
+    type: bytes
+    must: size(this) > 0 && size(this) <= 32
+  Release:
+    description: What is being published, and where it listens.
+    fields:
+      slug:
+        type: Slug
+        required: true
+      port:
+        type: Port
+        default: 8080
+functions:
+  isSlug:
+    description: Whether text is lowercase words joined by single dashes.
+    params:
+      text: string
+    returns: bool
+    body: ${text.matches("^[a-z0-9]+(-[a-z0-9]+)*$")}
+inputs:
+  slug:
+    type: Slug
+    required: true
+    description: the name the release is published under
+  channel:
+    type: Slug
+    default: general
+    description: where it is announced, which may not be the admin channel
+    must: this != "admin"
+  consent:
+    type: Consent
+    required: true
+    description: the sender's confirmation, which must be true
+  release:
+    type: Release
+    default:
+      slug: hello-world
+  ratio:
+    type: Ratio
+    default: 0.25
+    description: the share of traffic sent to the new release
+  opens:
+    type: Deadline
+    default: 2026-03-01T09:00:00Z
+  window:
+    type: Window
+    default: 2h
+  seal:
+    type: Seal
+    default: aGk=
+steps:
+  - id: closing
+    value: ${inputs.opens + inputs.window}
+  - id: announce
+    log:
+      message: ${"%s goes to %s on port %d until %s".format([inputs.slug, inputs.channel, inputs.release.port, string(steps.closing.value)])}
+outputs:
+  published_as:
+    value: ${inputs.slug}
+    type: Slug
+    description: the slug the release is published under
+  closes_at:
+    value: ${steps.closing.value}
+    type: timestamp
+    description: when the window closes

@@ -246,7 +246,8 @@ func workflowUsingEveryValuePosition() *Workflow {
 			Example: NewLiteral("somebody"),
 		}},
 		DeclaredTypes: []*TypeDeclaration{{
-			Name: "Person",
+			Name:    "Person",
+			Example: NewLiteral("somebody"),
 			Fields: []*InputDeclaration{{
 				Name:    "name",
 				Default: NewLiteral("nobody"),

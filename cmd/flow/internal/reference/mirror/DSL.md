@@ -776,6 +776,54 @@ its description and, for a record, the fields it holds. An optional read (`input
 read is an `optional(string)` and the index a `string`. A path that leaves the record into a
 list or a map ends there: the element of a `list(Line)` is not typed yet.
 
+*Since written, a scalar of your own:* **a type with `type:` and `must:` is a constrained
+scalar.** A rule that several declarations share (an id, a slug, a port) is declared once, as a
+type whose `type:` is a built-in scalar (`string`, `int`, `double`, `bool`, `timestamp`,
+`duration` or `bytes`) and whose `must:` is a predicate over `this`, the value, and is used by
+name wherever a `type:` is written:
+
+```yaml
+types:
+  Slug:
+    description: Lowercase words joined by dashes.
+    type: string
+    must: isSlug(this)
+    example: hello-world
+  Release:
+    fields:
+      slug: {type: Slug, required: true}
+inputs:
+  channel: {type: Slug, default: general, must: this != "admin"}
+```
+
+A use is a base type and a rule, and nothing else, so the runtime never meets the name:
+the compiler lowers each `type: Slug` on an input, an output or a record field to the base type
+and `must` as the type's rule, expanded, conjoined with the use's own (`(isSlug rule) && (this !=
+"admin")`), which is all either driver evaluates, so a spec compiled with scalar types runs on
+a worker that predates them. The name is kept in `type_source` and the use's own `must` as written
+in `must_source` (on `InputDeclaration` and `OutputDeclaration`; the type's own `base` and
+`example` are on `TypeDeclaration`), so `flow fmt` writes `type: Slug` and the author's rule back and
+is a fixed point over it, and hovering an input of the type names the type, its base, its
+description, its rule and its example. Nothing evaluates `type_source`.
+
+- **One mechanism.** The rule is the `must:` the language already has, held by the one function
+  an input's is, and may call a declared function. It reads `this` and nothing else, so a
+  rule that names `inputs`, `vars` or `now` is refused where the type is declared, once, not at
+  every use. The base is a built-in scalar and never another declared type, so there is no chain
+  to follow and no cycle to refuse; a list, a map, an `enum` and a record are refused as a base.
+- **A rule is required, and a type is one thing.** A scalar type with no `must:` is its base
+  and is refused, naming the base to write instead; a type with both `type:` and `fields:` is
+  refused. `example:` is carried by a scalar type only, is held to the base and the rule when
+  the file compiles, and is never bound to a run.
+- **Bounded where it is spent.** Each use copies the type's rule, so each use spends the size of
+  that rule against the same 100000-node budget a function expansion does, and the refusal is
+  made once, where the budget runs out.
+- **Used directly, for now.** A scalar type is the whole of a `type:` on an input, an output or a
+  record field. Inside `list(...)` or `map(string, ...)`, or as a function's parameter or result,
+  it is refused with the spelling to use instead (a `must:` such as `this.all(x, ...)` on the
+  container, or the base type), and a specification that carries the name in a `Type.message`
+  is refused at submit, so no worker ever has to resolve one.
+
 ### `state:` gets a byte bound now, not an open question
 
 The proposal flags a bound on entity `state:` as an open question. It is not one.

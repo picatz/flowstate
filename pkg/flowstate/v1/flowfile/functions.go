@@ -173,6 +173,9 @@ func (c *compiler) declaredFunction(e entry, parent string) (*v1.FunctionDeclara
 			if t, err := parseType(c.typeEnv, text); err != nil {
 				c.report(spanOfNode(f.value), returnsRef, "is %q, which is not a type: %s", text, err)
 				complete = false
+			} else if name := c.scalarIn(t); name != "" {
+				c.report(spanOfNode(f.value), returnsRef, "names the constrained scalar %s; a function is typed by built-in types, so write its base", name)
+				complete = false
 			} else {
 				declaration.Result = t
 			}
@@ -241,6 +244,11 @@ func (c *compiler) functionParameters(n ast.Node, path, function string) ([]*v1.
 		t, err := parseType(c.typeEnv, text)
 		if err != nil {
 			c.report(spanOfNode(e.value), paramRef, "is %q, which is not a type: %s", text, err)
+			complete = false
+			continue
+		}
+		if name := c.scalarIn(t); name != "" {
+			c.report(spanOfNode(e.value), paramRef, "names the constrained scalar %s; a function is typed by built-in types, so write its base", name)
 			complete = false
 			continue
 		}
