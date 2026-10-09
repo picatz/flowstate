@@ -101,7 +101,8 @@ type Model struct {
 	// the server; only a refresh reads again.
 	answers map[string]answer
 	// reuse says rows are being opened again by a rebuild, which uses answers; a
-	// person opening a row asks the server afresh.
+	// person opening a row that holds no children asks afresh, and one that
+	// still holds them shows them until r reads again.
 	reuse bool
 
 	quitting bool
@@ -349,6 +350,13 @@ func (m Model) stepped(msg stepsMsg) (tea.Model, tea.Cmd) {
 	}
 	maps.Copy(m.screen.Steps, byRow)
 	m.answers[msg.parent] = answer{rows: rows, steps: byRow}
+	if msg.graph.GetPartial() {
+		why := "a bound was reached"
+		if notes := msg.graph.GetNotes(); len(notes) > 0 {
+			why = notes[0]
+		}
+		m.toast(ui.ToneWarning, "the step list is incomplete: "+ui.EscapeControl(why))
+	}
 	m.reveal()
 
 	return m, nil

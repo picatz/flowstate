@@ -17,6 +17,7 @@ import (
 type stepper struct {
 	mu    sync.Mutex
 	err   error
+	note  string
 	asked []string
 }
 
@@ -32,7 +33,12 @@ func (s *stepper) read(_ context.Context, workflow string) (*v1.Graph, error) {
 	}
 	each := &v1.Node{Id: "each", Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: []*v1.Node{task("push", "http")}}}}
 
-	return graph.Steps(&v1.Workflow{Name: workflow, Steps: []*v1.Node{task("build", "exec"), each}}), nil
+	g := graph.Steps(&v1.Workflow{Name: workflow, Steps: []*v1.Node{task("build", "exec"), each}})
+	if s.note != "" {
+		g.Partial, g.Notes = true, []string{s.note}
+	}
+
+	return g, nil
 }
 
 func withSteps(s *stepper) func(*Config) { return func(c *Config) { c.Steps = s.read } }
@@ -88,6 +94,15 @@ func TestAFailedStepsReadIsSaidAndCanBeAskedAgain(t *testing.T) {
 	assert.Contains(t, view(m), "build")
 }
 
+func TestAPartialStepGraphIsSaidToBeIncomplete(t *testing.T) {
+	m, _ := started(t, fleet(), withSteps(&stepper{note: "stopped at 10 steps\x1b[2J"}))
+	m = openSteps(m)
+
+	v := view(m)
+	assert.Contains(t, v, "the step list is incomplete: stopped at 10 steps")
+	assert.NotContains(t, v, "\x1b[2J", "a note is escaped before it reaches the terminal")
+}
+
 func TestNarrowingTheWorkflowsReadsNoStepsAgain(t *testing.T) {
 	s := &stepper{}
 	m, _ := started(t, fleet(), withSteps(s))
@@ -119,4 +134,8 @@ func TestStepRowsAreWrittenOnceAndAGraphWithNoStepsSaysSo(t *testing.T) {
 	rows, _ = StepRows("p", &v1.Graph{})
 	require.Len(t, rows, 1)
 	assert.Equal(t, "no steps", rows[0].Label)
+	assert.Equal(t, "the workflow declares none", rows[0].Value)
+
+	rows, _ = StepRows("p", &v1.Graph{Partial: true})
+	assert.Equal(t, "none could be listed", rows[0].Value, "a truncated graph is not claimed to be empty")
 }

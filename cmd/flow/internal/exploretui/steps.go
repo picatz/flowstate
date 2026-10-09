@@ -83,7 +83,11 @@ func StepRows(parent string, g *v1.Graph) ([]pane.Node, map[string]*v1.GraphNode
 
 	rows := build(root, 0)
 	if len(rows) == 0 {
-		rows = []pane.Node{{ID: treeID(parent, noStepsRow), Label: "no steps", Value: "the workflow declares none"}}
+		value := "the workflow declares none"
+		if g.GetPartial() {
+			value = "none could be listed"
+		}
+		rows = []pane.Node{{ID: treeID(parent, noStepsRow), Label: "no steps", Value: value}}
 	}
 
 	return rows, byRow
