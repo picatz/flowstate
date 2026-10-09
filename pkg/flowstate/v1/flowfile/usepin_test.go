@@ -144,6 +144,7 @@ func TestAUsePinThatIsNotTextIsRefused(t *testing.T) {
 	dir := tree(t, map[string]string{"w.yaml": workflowUsing(useWithPin("12345"), ""), "lib/ids.yaml": idsModule})
 	ds := pinProblems(t, dir, "w.yaml")
 	assert.Contains(t, ds[0].Message, "must be a string")
+	assert.Equal(t, v1.DiagnosticCodeModulePinMismatch, ds[0].Code, "a pin that is not text is a pin that does not verify")
 }
 
 func TestAUsePinIsCheckedBeforeTheModuleIsCompiled(t *testing.T) {
@@ -461,4 +462,18 @@ func TestRepinFollowsAModulesOwnChange(t *testing.T) {
 	require.True(t, result.Changed())
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "w.yaml"), result.Source, 0o644))
 	require.NoError(t, validateAt(t, dir, "w.yaml"))
+}
+
+func TestRepinStampsTwoEntriesForOneModuleFromOneRead(t *testing.T) {
+	t.Parallel()
+
+	old := digestOf(t, "old\n")
+	use := "use:\n  ids:\n    path: ./lib/ids.yaml\n    digest: " + old + "\n  same:\n    path: ./lib/../lib/ids.yaml\n    digest: " + old + "\n"
+	src := workflowUsing(use, "")
+	dir := tree(t, map[string]string{"w.yaml": src, "lib/ids.yaml": idsModule})
+
+	result, err := flowfile.RepinUses(filepath.Join(dir, "w.yaml"), []byte(src))
+	require.NoError(t, err)
+	require.Len(t, result.Changes, 2)
+	assert.Equal(t, 2, strings.Count(string(result.Source), digestOf(t, idsModule)), "both entries carry the one digest")
 }

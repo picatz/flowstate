@@ -101,6 +101,10 @@ type moduleSession struct {
 
 	// reads counts the files read for modules, shared like loaded.
 	reads *int
+
+	// ignorePins skips verifying `use:` digests, for [ParseAtWithoutModulePins]
+	// only. Shared by every module the compile reaches.
+	ignorePins bool
 }
 
 func newModuleSession() *moduleSession {
@@ -296,7 +300,7 @@ func (c *compiler) useModule(e entry, parent string) {
 	}
 
 	var pin *modulePin
-	if digestField, pinned := fields.get("digest"); pinned {
+	if digestField, pinned := fields.get("digest"); pinned && !c.session.ignorePins {
 		pinPath := fieldPath(path, "digest")
 		pin = &modulePin{alias: e.name, node: digestField.value, path: pinPath, ref: ref{path: pinPath, label: "use " + e.name + " digest"}}
 	}
@@ -386,7 +390,7 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 	}
 
 	module, positions, err := parse(data, resolved, ancestors, c.callBudget,
-		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads})
+		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads, ignorePins: c.session.ignorePins})
 	if err != nil {
 		return refuse("uses %q, which failed to compile; first problem: %s", target, firstProblem(err.Error()))
 	}
@@ -418,8 +422,14 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 // the digest of bytes already read. Fail closed: a pin that does not verify means
 // the author has not authorised these bytes, so the module contributes nothing.
 func (c *compiler) verifyModulePin(pin *modulePin, target, actual string) bool {
+	before := len(c.diags)
 	written, ok := c.text(pin.node, pin.path, pin.ref)
 	if !ok {
+		// A pin that is not text is a pin that does not verify: coded the same.
+		for i := before; i < len(c.diags); i++ {
+			c.diags[i].Code = v1.DiagnosticCodeModulePinMismatch
+		}
+
 		return false
 	}
 

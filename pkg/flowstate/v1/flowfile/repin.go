@@ -79,6 +79,9 @@ func RepinUses(file string, source []byte) (FixResult, error) {
 		now string
 	}
 	var edits []edit
+	// One read per resolved module per run, so two entries naming one file are
+	// stamped from the same bytes and cannot come to differ.
+	digests := map[string]string{}
 	for _, pin := range uses {
 		located := ResolveCallTarget(file, pin.Call)
 		if message := explainRefusal(located, pin.Call, usingFile); message != "" {
@@ -89,7 +92,12 @@ func RepinUses(file string, source []byte) (FixResult, error) {
 
 			continue
 		}
-		data, err := readBoundedSource(located.Path)
+		now, seen := digests[located.Path]
+		var data []byte
+		var err error
+		if !seen {
+			data, err = readBoundedSource(located.Path)
+		}
 		if err != nil {
 			result.Refusals = append(result.Refusals, Diagnostic{
 				Line: pin.Line, Column: pin.Column, Field: "use." + pin.Alias + ".digest",
@@ -98,7 +106,10 @@ func RepinUses(file string, source []byte) (FixResult, error) {
 
 			continue
 		}
-		now := v1.ContentDigest(data)
+		if !seen {
+			now = v1.ContentDigest(data)
+			digests[located.Path] = now
+		}
 
 		written, shapeErr := v1.CanonicalContentDigest(pin.Digest)
 		if shapeErr != nil {
@@ -138,6 +149,17 @@ func RepinUses(file string, source []byte) (FixResult, error) {
 		return result, nil
 	}
 	if len(edits) == 0 {
+		return result, nil
+	}
+
+	if bytes.Contains(source, []byte("\r")) {
+		// Line numbers and the splice below are by "\n"; a file with carriage returns
+		// is not one this can edit in place without guessing, so it is not edited.
+		result.Refusals = append(result.Refusals, Diagnostic{
+			Line: edits[0].pin.Line, Column: edits[0].pin.Column, Field: "use." + edits[0].pin.Alias + ".digest",
+			Message: "the file has CRLF line endings, which `flow fix --repin` does not edit in place; convert it to LF, or write the new digests by hand",
+		})
+
 		return result, nil
 	}
 

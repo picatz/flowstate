@@ -8,8 +8,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // A module is a contract and a `use:` may pin it. These tests are the two commands
@@ -346,4 +348,77 @@ func TestBreakingAModuleThatBecameAWorkflowBreaksItsImporters(t *testing.T) {
 	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
 	require.Error(t, err)
 	assert.Contains(t, out, "no longer a module")
+}
+
+// TestBreakingRemovingAScalarRuleIsNotBreaking: a rule that is gone loosens the type;
+// a new or different one is read as tightened.
+func TestBreakingRemovingAScalarRuleIsNotBreaking(t *testing.T) {
+	base := "edition: v2026.4\nname: ids\ntypes:\n  Id:\n    type: string\n    must: this != \"\"\n"
+	was, _, err := flowfile.Parse([]byte(base))
+	require.NoError(t, err)
+	wasType := was.GetDeclaredTypes()[0]
+
+	loosened := proto.Clone(wasType).(*v1.TypeDeclaration)
+	loosened.Must = nil
+	assert.Empty(t, typeBreak(was, was, wasType, loosened))
+
+	changed := proto.Clone(wasType).(*v1.TypeDeclaration)
+	changed.Must = proto.String("this.size() > 3")
+	assert.Contains(t, typeBreak(was, was, wasType, changed), "its rule changed")
+}
+
+func TestFixRepinRefusesCRLFFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "lib/ids.yaml", idsModuleSource)
+	source := strings.ReplaceAll(billSource(v1.ContentDigest([]byte("old\n"))), "\n", "\r\n")
+	bill := writeFixture(t, dir, "bill.yaml", source)
+
+	out, err := runFixRepin(t, bill)
+	require.Error(t, err)
+	assert.Contains(t, out, "CRLF")
+	assert.Equal(t, source, string(readFixture(t, bill)))
+}
+
+// TestBreakingStillSeesAFileWhoseModulePinWasRepinned: the ref's version of a file is
+// compiled against the working tree's modules, so a module edited and its importer
+// repinned in one change leaves the ref's pin stale for the modules it now reads.
+// That must not hide the importer's own incompatible change.
+func TestBreakingStillSeesAFileWhoseModulePinWasRepinned(t *testing.T) {
+	tree := breakingTree(idsModuleSource)
+	tree["bill.yaml"] = billSource(v1.ContentDigest([]byte(idsModuleSource)))
+	delete(tree, "refund.yaml")
+	dir := gitInitRepoFiles(t, tree)
+
+	edited := idsModuleSource + "  Extra: {}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lib", "ids.yaml"), []byte(edited), 0o644))
+	repinned := strings.Replace(billSource(v1.ContentDigest([]byte(edited))),
+		"inputs:\n", "inputs:\n  region:\n    type: string\n    required: true\n", 1)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "bill.yaml"), []byte(repinned), 0o644))
+
+	out, err := runBreakingCLI(t, dir, "--against", "HEAD", ".")
+	require.Error(t, err, out)
+	assert.Contains(t, out, `input "region" now must be supplied`)
+}
+
+// TestFixRepinOrdersThroughAnInTreeSymlink: the dependency a file names is the module
+// it resolves to, so a symlinked name does not hide the edge from the ordering.
+func TestFixRepinOrdersThroughAnInTreeSymlink(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir, "lib/base.yaml", "edition: v2026.4\nname: base\nerrors:\n  Bad: {}\n")
+	mid := "edition: v2026.4\nname: mid\nuse:\n  base:\n    path: ./base.yaml\n    digest: " + v1.ContentDigest([]byte("old base\n")) + "\nerrors:\n  Worse: {}\n"
+	writeFixture(t, dir, "lib/mid.yaml", mid)
+	if err := os.Symlink("mid.yaml", filepath.Join(dir, "lib", "z-link.yaml")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	user := func(name, path, pin string) string {
+		return "edition: v2026.4\nname: " + name + "\nuse:\n  m:\n    path: " + path + "\n    digest: " + pin + "\nerrors:\n  E: {}\n"
+	}
+	writeFixture(t, dir, "lib/a-outer.yaml", user("outer", "./z-link.yaml", v1.ContentDigest([]byte(mid))))
+	outerNow := v1.ContentDigest(readFixture(t, filepath.Join(dir, "lib", "a-outer.yaml")))
+	writeFixture(t, dir, "a-top.yaml", "edition: v2026.4\nname: top\nuse:\n  o:\n    path: ./lib/a-outer.yaml\n    digest: "+outerNow+"\nsteps:\n  - id: a\n    log:\n      message: hi\n")
+
+	out, err := runFixRepin(t, dir)
+	require.NoError(t, err, out)
+	out, err = runFixRepin(t, "--check", dir)
+	require.NoError(t, err, "one run settles the chain through the symlink: %s", out)
 }

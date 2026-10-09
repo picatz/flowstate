@@ -522,7 +522,12 @@ func moduleTargets(file string) []string {
 
 	targets := make([]string, 0, len(uses))
 	for _, use := range uses {
-		targets = append(targets, filepath.Clean(filepath.Join(filepath.Dir(file), use.Path)))
+		// Resolved as a compile and a repin resolve it, so an in-tree symlink names
+		// the module it points at; a path that does not resolve is left to those to
+		// refuse, and orders nowhere.
+		if located := flowfile.ResolveCallTarget(file, use.Path); located.Refusal == flowfile.CallTargetResolved {
+			targets = append(targets, located.Path)
+		}
 	}
 
 	return targets

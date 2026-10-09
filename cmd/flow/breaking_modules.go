@@ -139,7 +139,9 @@ func typeBreak(old, neu *v1.Workflow, was, now *v1.TypeDeclaration) string {
 		if was.GetBase() != now.GetBase() {
 			reasons = append(reasons, fmt.Sprintf("its base changed from %s to %s", typeName(was.GetBase()), typeName(now.GetBase())))
 		}
-		if now.GetMust() != was.GetMust() {
+		if now.GetMust() != "" && now.GetMust() != was.GetMust() {
+			// A rule that is gone only loosens; one that is new or different is read
+			// as tightened, the way an input's `must:` is.
 			reasons = append(reasons, "its rule changed, which is read as tightened")
 		}
 
@@ -203,14 +205,32 @@ type importer struct {
 	alias string
 }
 
-// importersOf reads the `use:` block of each file and returns the ones that name
-// the module at modulePath, by the rule a compile resolves a `use:` path by. A file
-// that cannot be read is skipped: it is not known to use anything, and `validate`
-// owns saying why it is unreadable.
-func importersOf(modulePath string, files []string) []importer {
-	want := canonicalFile(modulePath)
+// An importerIndex answers "who uses this module" for a whole invocation from one
+// pass over the files: each file's `use:` block is read and resolved once, however
+// many modules have findings.
+type importerIndex struct {
+	files []string
+	built bool
+	byKey map[string][]importer
+}
 
-	var out []importer
+// of returns the files that name the module at modulePath, in the order the files
+// were given.
+func (x *importerIndex) of(modulePath string) []importer {
+	if !x.built {
+		x.byKey = importersByModule(x.files)
+		x.built = true
+	}
+
+	return x.byKey[canonicalFile(modulePath)]
+}
+
+// importersByModule reads the `use:` block of each file and groups the files by
+// the module each entry names, by the rule a compile resolves a `use:` path by. A
+// file that cannot be read is skipped: it is not known to use anything, and
+// `validate` owns saying why it is unreadable.
+func importersByModule(files []string) map[string][]importer {
+	out := map[string][]importer{}
 	for _, file := range files {
 		data, truncated, err := readFileBounded(file)
 		if err != nil || truncated {
@@ -225,9 +245,8 @@ func importersOf(modulePath string, files []string) []importer {
 			if located.Refusal != flowfile.CallTargetResolved {
 				continue
 			}
-			if canonicalFile(located.Path) == want {
-				out = append(out, importer{file: file, alias: use.Alias})
-			}
+			key := canonicalFile(located.Path)
+			out[key] = append(out[key], importer{file: file, alias: use.Alias})
 		}
 	}
 

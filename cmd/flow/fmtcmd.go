@@ -421,7 +421,7 @@ func orderCalleesBeforeCallers(files []string) []string {
 func orderDependenciesFirst(files []string, dependencies func(file string) []string) []string {
 	index := make(map[string]int, len(files))
 	for i, f := range files {
-		index[filepath.Clean(f)] = i
+		index[canonicalPath(f)] = i
 	}
 
 	// dependsOn[i] holds the indices, within files, of the files files[i] reads
@@ -432,7 +432,7 @@ func orderDependenciesFirst(files []string, dependencies func(file string) []str
 	dependsOn := make([][]int, len(files))
 	for i, f := range files {
 		for _, target := range dependencies(f) {
-			if j, ok := index[target]; ok && j != i {
+			if j, ok := index[canonicalPath(target)]; ok && j != i {
 				dependsOn[i] = append(dependsOn[i], j)
 			}
 		}

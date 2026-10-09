@@ -174,6 +174,9 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 	surface := newSurface(cmd)
 	out, theme := surface.Out, surface.Theme
 
+	// Read once, and only if a module has a finding to name importers for.
+	importers := &importerIndex{files: files}
+
 	var failed bool
 	for _, path := range sortedPaths(newByPath, oldByPath) {
 		old, oldOK := oldByPath[path]
@@ -192,7 +195,7 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 			}
 			if len(found) > 0 {
 				printBreak(out, theme, neu.path, flowfile.Diagnostic{
-					Field: "use", Message: blastRadius(importersOf(neu.path, files))})
+					Field: "use", Message: blastRadius(importers.of(neu.path))})
 			}
 		case oldOK && newOK:
 			for _, d := range breakingDiagnostics(old.wf, neu.wf, neu.pos) {
@@ -218,7 +221,7 @@ func runBreaking(cmd *cobra.Command, paths []string) error {
 					Field: "use",
 					Message: fmt.Sprintf(
 						"module %q was removed; files that `use:` it break at their next compile (%s). Keep it, or move its importers off it in the same change; if it moved, compare it against its old self with `--moved %s=<new path>`",
-						old.wf.GetName(), blastRadius(importersOf(filepath.Join(root, filepath.FromSlash(path)), files)), path),
+						old.wf.GetName(), blastRadius(importers.of(filepath.Join(root, filepath.FromSlash(path)))), path),
 				})
 				continue
 			}
@@ -440,7 +443,10 @@ func compileRef(root, ref string, paths, headFiles, extraRels []string) map[stri
 			continue // Absent at the ref: a new file, nothing to compare.
 		}
 		abs := filepath.Join(root, rel)
-		wf, pos, err := flowfile.ParseAt(data, abs)
+		// Pins are not enforced here: this side is read only for its contract, and
+		// its pins were written for the ref's modules while the modules it reads are
+		// the working tree's.
+		wf, pos, err := flowfile.ParseAtWithoutModulePins(data, abs)
 		if err != nil {
 			continue
 		}
