@@ -1,0 +1,10 @@
+{
+  "flowstate": {
+    "command": "flow",
+    "args": ["lsp"],
+    "extensionToLanguage": {
+      ".flow.yaml": "flowfile",
+      ".flow.yml": "flowfile"
+    }
+  }
+}

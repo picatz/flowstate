@@ -15,6 +15,9 @@ It needs `flow` on `PATH` (`go install github.com/picatz/flowstate/cmd/flow@late
 | `.mcp.json` | Runs `flow mcp`: validate, compile, task catalog, local run, test, and debug tools, plus the language guide and examples as resources. |
 | `skills/` | `flowfile-author`, `flowfile-test`, and `flowfile-debug` teach the loop: read the guide, validate, test, step through. |
 | `hooks/` | A mod. After Claude edits a Flowfile it runs `flow validate`, tells the model what is wrong, shows a status-line count, and `/flowstate` opens a pane listing the Flowfiles touched this session. |
+| `agents/` | `flowfile-engineer` takes an intent to a validated, tested, locally run Flowfile and reports each leg as passed, failed, or not run. |
+| `commands/` | `/flowstate:new <description>` hands a description to that agent, scaffolding with `flow init` when the directory has no Flowfile. |
+| `.lsp.json` | Runs `flow lsp` for `*.flow.yaml` and `*.flow.yml`. Claude Code maps servers by extension only, so a file named `Flowfile` or `workflow.yaml` is covered by the validation hook and the MCP tools instead of the language server. |
 
 Check the plugin with `claude plugin validate editors/claude-code` and run the
 mod's tests with `claude plugin test editors/claude-code`. Try it without
