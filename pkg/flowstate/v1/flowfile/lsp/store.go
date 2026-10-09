@@ -251,6 +251,11 @@ type documentStore struct {
 	docs        map[lsp.DocumentURI]*document
 	localByPath map[string]lsp.DocumentURI
 
+	// canonByPath caches [canonicalPath] of each localByPath key, filled the first
+	// time a lookup needs it and outside mu, so a lookup never resolves symlinks
+	// while holding the lock every request takes.
+	canonByPath map[string]string
+
 	// building counts the document notifications in flight per URI: incremented
 	// before the parse starts, decremented once the result is in docs.
 	building map[lsp.DocumentURI]int
@@ -749,11 +754,49 @@ func (s *documentStore) get(uri lsp.DocumentURI) (*document, bool) {
 // client spelled its URI with an empty or localhost authority.
 func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	uri, ok := s.localByPath[filepath.Clean(path)]
+	var missing []string
+	if !ok {
+		for p := range s.localByPath {
+			if _, cached := s.canonByPath[p]; !cached {
+				missing = append(missing, p)
+			}
+		}
+	}
+	s.mu.Unlock()
+
+	if !ok {
+		// The client may have opened the file through a symlinked directory; the
+		// same file under its real path is the same buffer.
+		want := canonicalPath(path)
+		resolved := make(map[string]string, len(missing))
+		for _, p := range missing {
+			resolved[p] = canonicalPath(p)
+		}
+
+		s.mu.Lock()
+		if s.canonByPath == nil {
+			s.canonByPath = make(map[string]string)
+		}
+		for p, c := range resolved {
+			if _, open := s.localByPath[p]; open {
+				s.canonByPath[p] = c
+			}
+		}
+		for p, u := range s.localByPath {
+			if s.canonByPath[p] == want {
+				uri, ok = u, true
+				break
+			}
+		}
+		s.mu.Unlock()
+	}
 	if !ok {
 		return nil, false
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	doc, ok := s.docs[uri]
 	return doc, ok
 }
@@ -785,6 +828,7 @@ func (s *documentStore) close(uri lsp.DocumentURI) {
 	if doc := s.docs[uri]; doc != nil {
 		if path, ok := doc.filesystemPath(); ok && s.localByPath[filepath.Clean(path)] == uri {
 			delete(s.localByPath, filepath.Clean(path))
+			delete(s.canonByPath, filepath.Clean(path))
 		}
 	}
 	delete(s.docs, uri)

@@ -173,6 +173,8 @@ func codeActions(doc *document, params codeActionParams) []codeAction {
 	actions := migrationActions(doc, params)
 	if wants(params.Context.Only, lsp.CAKQuickFix) {
 		actions = append(actions, suggestedEditActions(doc, params)...)
+		actions = append(actions, repinActions(doc, params)...)
+		actions = append(actions, addUseActions(doc, params)...)
 	}
 	return actions
 }

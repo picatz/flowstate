@@ -141,6 +141,9 @@ func definitionAt(doc *document, pos lsp.Position) []lsp.Location {
 	if locations := useDefinition(doc, pos); locations != nil {
 		return locations
 	}
+	if locations := qualifiedDefinition(doc, pos); locations != nil {
+		return locations
+	}
 	from := doc.parsed.stepAt(pos)
 	if from == nil {
 		// Outside every step, the one place that reads a step is the workflow's

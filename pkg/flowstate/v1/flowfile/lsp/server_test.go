@@ -61,7 +61,6 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	assert.False(t, got.ServerCapabilities.RenameProvider)
 
 	// Everything not implemented must stay unadvertised.
-	assert.False(t, got.WorkspaceSymbolProvider)
 	require.NotNil(t, got.SignatureHelpProvider)
 	assert.Equal(t, []string{"(", ","}, got.SignatureHelpProvider.TriggerCharacters)
 	assert.Nil(t, got.CodeLensProvider)
@@ -83,6 +82,7 @@ var implementedCapabilities = map[string]string{
 	"DocumentHighlightProvider":  "textDocument/documentHighlight",
 	"RenameProvider":             "textDocument/rename",
 	"DocumentSymbolProvider":     "textDocument/documentSymbol",
+	"WorkspaceSymbolProvider":    "workspace/symbol",
 	"DocumentFormattingProvider": "textDocument/formatting",
 	"CodeActionProvider":         "textDocument/codeAction",
 	"SemanticTokensProvider":     "textDocument/semanticTokens/full",

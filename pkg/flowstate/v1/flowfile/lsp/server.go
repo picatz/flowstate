@@ -80,6 +80,40 @@ type FlowfileServer struct {
 	// property of the session, and a client that does not say so gets plain text.
 	snippets     atomic.Bool
 	shuttingDown atomic.Bool
+
+	// roots are the workspace folders the client opened, as filesystem paths. A
+	// request that has to find other files (a rename across importers, the
+	// workspace symbol list) reads only inside them; none known means none read.
+	roots atomic.Pointer[[]string]
+}
+
+// workspaceFolders is the part of initialize that names the folders the client
+// opened; go-lsp's InitializeParams predates `workspaceFolders`.
+type workspaceFolders struct {
+	RootURI          lsp.DocumentURI `json:"rootUri"`
+	WorkspaceFolders []struct {
+		URI lsp.DocumentURI `json:"uri"`
+	} `json:"workspaceFolders"`
+}
+
+// uris lists the folders named, the root first.
+func (f workspaceFolders) uris() []lsp.DocumentURI {
+	out := []lsp.DocumentURI{f.RootURI}
+	for _, folder := range f.WorkspaceFolders {
+		out = append(out, folder.URI)
+	}
+
+	return out
+}
+
+// workspace is what a request that reads beyond its own document may read.
+func (s *FlowfileServer) workspace() workspace {
+	w := workspace{open: s.docs.getByFilesystemPath}
+	if roots := s.roots.Load(); roots != nil {
+		w.roots = *roots
+	}
+
+	return w
 }
 
 // Handle implements [jsonrpc2.Handler].
@@ -164,6 +198,16 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			return nil, err
 		}
 		s.snippets.Store(params.Capabilities.TextDocument.Completion.CompletionItem.SnippetSupport)
+		var folders workspaceFolders
+		if err := decode(req, &folders); err == nil {
+			var roots []string
+			for _, uri := range folders.uris() {
+				if path, ok := (&document{uri: uri}).filesystemPath(); ok && !slices.Contains(roots, path) {
+					roots = append(roots, path)
+				}
+			}
+			s.roots.Store(&roots)
+		}
 		s.initialized.Store(true)
 		return &initializeResult{Capabilities: capabilities()}, nil
 
@@ -351,7 +395,10 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if !ok {
 			return nil, nil
 		}
-		rng, placeholder, ok := prepareRenameAt(doc, params.Position)
+		rng, placeholder, ok := prepareRenameQualified(doc, params.Position)
+		if !ok {
+			rng, placeholder, ok = prepareRenameAt(doc, params.Position)
+		}
 		if !ok {
 			return nil, nil
 		}
@@ -366,7 +413,10 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if !ok {
 			return nil, nil
 		}
-		edit, err := renameAt(doc, params.Position, params.NewName)
+		edit, handled, err := renameQualified(doc, s.workspace(), params.Position, params.NewName)
+		if !handled {
+			edit, err = renameAt(doc, params.Position, params.NewName)
+		}
 		if err != nil {
 			// A refusal the editor shows as the reason; -32803 is the
 			// protocol's RequestFailed.
@@ -384,6 +434,13 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			return []lsp.SymbolInformation{}, nil
 		}
 		return documentSymbols(doc), nil
+
+	case "workspace/symbol":
+		var params lsp.WorkspaceSymbolParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		return workspaceSymbols(s.workspace(), params.Query), nil
 
 	case "textDocument/formatting":
 		var params lsp.DocumentFormattingParams
@@ -561,6 +618,7 @@ func capabilities() serverCapabilities {
 		DocumentHighlightProvider:  true,
 		RenameProvider:             &renameOptions{PrepareProvider: true},
 		DocumentSymbolProvider:     true,
+		WorkspaceSymbolProvider:    true,
 		DocumentFormattingProvider: true,
 	}
 }
