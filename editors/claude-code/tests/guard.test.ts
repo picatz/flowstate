@@ -1,4 +1,18 @@
-import { DEFAULT_ADDRESS, analyzeCommand, askReason, findSecrets, secretsIn, tokenize } from '../hooks/guard'
+import {
+  DEFAULT_ADDRESS,
+  MAX_COMMAND,
+  MAX_SCAN,
+  UNCHECKED_BASH,
+  UNCHECKED_EDIT,
+  afterEdits,
+  analyzeCommand,
+  askReason,
+  denyReason,
+  findSecrets,
+  namesFlow,
+  secretsIn,
+  tokenize,
+} from '../hooks/guard'
 import { expect, mock, test } from 'claude-code/testing'
 
 const verbs = (command: string, binary?: string) => analyzeCommand(command, binary).actions.map(a => a.verb)
@@ -292,4 +306,258 @@ test('an earlier deny on a Flowfile keeps its own reason', async ($, on) => {
   const out = await $.tool.check(write('a.flow.yaml', 'password: hunter2hunter2'))
 
   expect(out.reason).toBe('rule says no')
+})
+
+// Bounds: input another party controls must cost time in proportion to its size, and a cap.
+const took = (run: () => unknown): number => {
+  const start = performance.now()
+  run()
+  return performance.now() - start
+}
+
+test('pathological secret text is bounded', () => {
+  const spaces = 'password: a' + ' '.repeat(40_000) + 'b'
+  expect(took(() => findSecrets(spaces))).toBeLessThan(500)
+  expect(findSecrets(spaces)).toEqual([])
+
+  const manyLines = ('password: a' + ' '.repeat(4000) + 'b\n').repeat(60)
+  expect(took(() => findSecrets(manyLines))).toBeLessThan(500)
+
+  const hashes = 'password: a ' + '# '.repeat(2000) + '\n'
+  expect(took(() => findSecrets(hashes.repeat(60)))).toBeLessThan(500)
+
+  const huge = 'a: ' + ' '.repeat(1_000_000)
+  expect(took(() => findSecrets(huge))).toBeLessThan(500)
+  expect(findSecrets(huge)).toHaveLength(1)
+  expect(took(() => secretsIn({ content: huge }))).toBeLessThan(500)
+})
+
+test('over the cap a Flowfile edit is denied as too large to scan; a long line only shows a token in its head', async ($, on) => {
+  decide(on)
+  const big = 'x: 1\n'.repeat(MAX_SCAN / 5 + 10)
+  const out = await $.tool.check(write('a.flow.yaml', big))
+  expect(out.decision).toBe('deny')
+  expect(out.reason).toContain('too large to scan')
+
+  const token = `ghp_${'Abcdefghijklmnopqrstuvwxyz0123456789'}`
+  expect(findSecrets(`x: ${token}${' '.repeat(5000)}`)).toHaveLength(1)
+  expect(findSecrets(`${' '.repeat(5000)}x: ${token}`)).toEqual([])
+  expect(findSecrets(`password: hunter2hunter2${' '.repeat(5000)}`)).toEqual([])
+  expect(findSecrets('x: 1\n'.repeat(1000))).toEqual([])
+})
+
+test('pathological commands are bounded', () => {
+  const rescan = 'echo $(x) ' + 'flow '.repeat(20_000)
+  expect(took(() => analyzeCommand(rescan))).toBeLessThan(500)
+  const long = 'echo $(x) ' + 'flow '.repeat(100_000)
+  expect(long.length).toBeGreaterThan(MAX_COMMAND)
+  expect(took(() => analyzeCommand(long))).toBeLessThan(500)
+  expect(analyzeCommand(long)).toEqual({ actions: [], uncertain: true })
+  expect(analyzeCommand('x'.repeat(MAX_COMMAND + 1))).toEqual({ actions: [], uncertain: false })
+  expect(took(() => analyzeCommand('env '.repeat(15_000) + 'flow run x'))).toBeLessThan(500)
+  expect(took(() => analyzeCommand('a=1 '.repeat(15_000) + 'flow run x'))).toBeLessThan(500)
+  expect(took(() => analyzeCommand('$a' + ' '.repeat(60_000) + 'b $(x) flow'))).toBeLessThan(500)
+  // Within the cap the real thing is still seen.
+  expect(verbs('echo $(x) ' + 'flow validate '.repeat(1000) + '\nflow run x')).toEqual(['flow run'])
+})
+
+test('a long command that names flow is asked about, unread', async ($, on) => {
+  decide(on)
+  mock.env(on, {})
+  const out = await $.tool.check(bash('echo ' + 'flow '.repeat(20_000)))
+  expect(out.decision).toBe('ask')
+  expect((await $.tool.check(bash('echo ' + 'y'.repeat(70_000)))).decision).toBe('allow')
+})
+
+test('the binary behind a wrapper is found', () => {
+  for (const [command, verb] of [
+    ['go run ./cmd/flow run x', 'flow run'],
+    ['nice -n 5 flow run x', 'flow run'],
+    ['sudo --user ci flow terminate wf', 'flow terminate'],
+    ['timeout -s KILL 30 flow run x', 'flow run'],
+    ['watch flow run x', 'flow run'],
+    ['find . -exec flow cancel {} \;', 'flow cancel'],
+    ['ssh h flow run x', 'flow run'],
+    ['docker exec c flow run x', 'flow run'],
+    ['npx flow run x', 'flow run'],
+    ['command -p flow run x', 'flow run'],
+    ['ssh h flow schedule delete nightly', 'flow schedule delete'],
+    ['ssh h bash -c "flow signal wf go"', 'flow signal'],
+    ['git flow run x', 'flow run'],
+  ]) {
+    expect(verbs(command)).toEqual([verb])
+  }
+  for (const quiet of [
+    'go run ./cmd/flow validate x',
+    'ssh h flow list',
+    'docker exec c flow run local x',
+    'git flow feature start',
+    'echo flow run x',
+    'grep -r "flow run" .',
+    'cat flow run',
+    'mkdir -p workflow run',
+  ]) {
+    expect(analyzeCommand(quiet).actions).toEqual([])
+  }
+  // The wrapper's environment reaches the verb.
+  expect(analyzeCommand('FLOWSTATE_ADDRESS=p:1 nice flow run x').actions[0].address).toBe('p:1')
+})
+
+test('a shell without -c, and interpreter code, ask only when the text names flow and a verb', () => {
+  for (const hidden of ['echo "flow run x" | sh', 'bash <<< "flow run x"', "python3 -c 'import os; os.system(\"flow run x\")'", `node -e "require('child_process').execSync('flow cancel wf')"`, `perl -e 'system("flow terminate wf")'`, `ruby -e 'system "flow run x"'`]) {
+    expect(analyzeCommand(hidden).uncertain).toBe(true)
+  }
+  for (const quiet of ['echo hi | sh', 'bash script.sh', 'python3 -c "print(1)"', 'node -e "1"', 'echo "flow list" | sh', 'python3 build.py']) {
+    expect(analyzeCommand(quiet).uncertain).toBe(false)
+  }
+})
+
+test('redirections do not hide the verb or split the command', () => {
+  expect(verbs('flow run x 2>&1 | tee out')).toEqual(['flow run'])
+  expect(verbs('flow 2>/dev/null run x')).toEqual(['flow run'])
+  expect(verbs('flow >out.txt run x')).toEqual(['flow run'])
+  expect(verbs('flow > out.txt run x')).toEqual(['flow run'])
+  expect(verbs('>out flow cancel wf')).toEqual(['flow cancel'])
+  expect(verbs('flow run x &> all.log')).toEqual(['flow run'])
+  expect(verbs('flow 2> err run x')).toEqual(['flow run'])
+  expect(tokenize('a 2>&1 | b').segments).toEqual([['a', '2>&1'], ['b']])
+  expect(tokenize('a & b').segments).toEqual([['a'], ['b']])
+  expect(verbs('flow validate x 2>&1')).toEqual([])
+})
+
+test('the address is the one the command gives flow, no more', () => {
+  const addr = (c: string) => analyzeCommand(c).actions.map(a => a.address)
+  // A prefix applies to its own command only.
+  expect(addr('FLOWSTATE_ADDRESS=x:1 flow run a; flow run b')).toEqual(['x:1', undefined])
+  expect(addr('FLOWSTATE_ADDRESS=x:1 true && flow run b')).toEqual([undefined])
+  expect(addr('env FLOWSTATE_ADDRESS=x:1 flow run a; flow run b')).toEqual(['x:1', undefined])
+  // `export` persists; a bare assignment is a shell variable flow never sees.
+  expect(addr('export FLOWSTATE_ADDRESS=x:2; flow run a; flow run b')).toEqual(['x:2', 'x:2'])
+  expect(addr('FLOWSTATE_ADDRESS=prod:1; flow run x')).toEqual([undefined])
+  expect(addr('FLOWSTATE_ADDRESS=prod:1\nflow run x')).toEqual([undefined])
+  // The last --address wins and `--` ends the options.
+  expect(addr('flow run --address a:1 --address b:2 x')).toEqual(['b:2'])
+  expect(addr('flow run --address=a:1 --address b:2 x')).toEqual(['b:2'])
+  expect(addr('flow run x -- --address evil:1')).toEqual([undefined])
+  expect(addr('flow --address a:1 run x')).toEqual(['a:1'])
+  expect(addr('bash -c "flow run x"')).toEqual([undefined])
+  expect(addr('FLOWSTATE_ADDRESS=x:3 bash -c "flow run x"')).toEqual(['x:3'])
+})
+
+test('--help exempts only a help request right after the verb', () => {
+  expect(verbs('flow run --help')).toEqual([])
+  expect(verbs('flow cancel -h')).toEqual([])
+  expect(verbs('flow run wf --help')).toEqual(['flow run'])
+  expect(verbs('flow run x -- --help')).toEqual(['flow run'])
+  expect(verbs('flow signal wf --name -h')).toEqual(['flow signal'])
+})
+
+test('credential keys cover the common spellings and keep the exemptions', () => {
+  for (const key of ['passwd', 'pwd', 'secret_key', 'secretKey', 'access_key', 'accessKey', 'private-key', 'privateKey', 'auth_token', 'authToken', 'apikey', 'api.key', 'credential', 'credentials', 'client_secret', 'clientSecret', 'clientsecret', 'aws_secret_access_key', 'awsSecretAccessKey', 'db.password']) {
+    expect(flagged(`${key}: abcdefgh1234`)).toEqual([`the key ${key} holding a literal value`])
+  }
+  for (const ok of ['secret_key: ${inputs.k}', 'credentials: GITHUB_CREDENTIALS', 'authToken: steps.a.outputs.t', 'pwd: 12345678', 'access_key: <your-key>', 'private_key_path: /etc/key.pem', 'secret_keys: abcdefghij']) {
+    expect(flagged(ok)).toEqual([])
+  }
+})
+
+test('a quoted value is a literal even with spaces; an unquoted one with spaces is prose', () => {
+  expect(flagged('password: "correct horse battery staple"')).toEqual(['the key password holding a literal value'])
+  expect(flagged("password: 'correct horse battery staple'")).toEqual(['the key password holding a literal value'])
+  expect(flagged('password: correct horse battery staple')).toEqual([])
+  expect(flagged('password: "short"')).toEqual([])
+  expect(flagged('password: "prefix ${secret(\'env:P\')} suffix"')).toEqual([])
+  expect(flagged('password: "A_CONSTANT_NAME"')).toEqual([])
+})
+
+test('block scalars and next-line values under a credential key are found', () => {
+  expect(flagged('private_key: |\n  line one of the key\n  line two')).toEqual(['the key private_key holding a literal value'])
+  expect(flagged('- token: >-\n    hunter2hunter2')).toEqual(['the key token holding a literal value'])
+  expect(flagged('secret: |+\n\n  hunter2hunter2\nnext: 1')).toEqual(['the key secret holding a literal value'])
+  expect(flagged('password:\n  hunter2hunter2')).toEqual(['the key password holding a literal value'])
+  expect(flagged('password:\n  "correct horse battery"')).toEqual(['the key password holding a literal value'])
+  expect(findSecrets('a: 1\nsecret: |\n  hunter2hunter2')[0].line).toBe(2)
+
+  for (const ok of [
+    'secret: |\nname: other',
+    'secret: |\n  ${secret(\'env:S\')}',
+    'secret: |\n# comment\nnext: hunter2hunter2',
+    'password:\n  value: ${secret(\'env:P\')}',
+    'password:\n  - one\n  - two',
+    'token:\n\nnext: hunter2hunter2',
+    'token:\n  nested:\n    other: 1',
+    'password:\nname: hunter2hunter2',
+  ]) {
+    expect(flagged(ok)).toEqual([])
+  }
+})
+
+test('inline maps are read', () => {
+  expect(flagged('with: {user: a, password: hunter2hunter2}')).toEqual(['the key password holding a literal value'])
+  expect(flagged('{"password": "hunter2hunter2"}')).toEqual(['the key password holding a literal value'])
+  expect(flagged('  "api_key": "abcdef123456",')).toEqual(['the key api_key holding a literal value'])
+  expect(flagged('with: {a: 1, token: "correct horse battery"}')).toEqual(['the key token holding a literal value'])
+  expect(flagged("with: {token: ${secret('env:T')}}")).toEqual([])
+  expect(flagged('with: {password: short, token: GITHUB_TOKEN, n: 12345678}')).toEqual([])
+  expect(flagged('with: {token_url: https://x.example/oauth2/token}')).toEqual([])
+  expect(flagged('with: {password: correct horse}')).toEqual([])
+  expect(flagged('with: {user: a, password: hunter2hunter2}').length).toBe(1)
+  expect(took(() => findSecrets('{,'.repeat(2000)))).toBeLessThan(500)
+})
+
+test('an edit is scanned as the file it leaves, not as the piece replaced', async ($, on) => {
+  decide(on)
+  const file = 'steps:\n  - with:\n      password: "x"\n'
+  on('fs.read', () => ({ value: file }))
+
+  // The new string alone is a bare value; in the file it is a password literal.
+  const edit = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: '"x"', new_string: '"hunter2hunter2"' } })
+  expect(edit.decision).toBe('deny')
+  expect(edit.reason).toContain('line 3')
+  expect(edit.reason).not.toContain('hunter2')
+
+  const multi = await $.tool.check({
+    tool: 'MultiEdit',
+    input: { file_path: 'a.flow.yaml', edits: [{ old_string: '"x"', new_string: 'hunter2hunter2' }, { old_string: 'steps', new_string: 'jobs' }] },
+  })
+  expect(multi.decision).toBe('deny')
+
+  const fine = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: '"x"', new_string: "${secret('env:P')}" } })
+  expect(fine.decision).toBe('allow')
+})
+
+test('an edit to a file that cannot be read falls back to the new text', async ($, on) => {
+  decide(on)
+  on('fs.read', () => ({ deny: 'unreadable' }))
+  const token = `ghp_${'Abcdefghijklmnopqrstuvwxyz0123456789'}`
+  const out = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: 'x', new_string: `t: ${token}` } })
+  expect(out.decision).toBe('deny')
+  const partial = await $.tool.check({ tool: 'Edit', input: { file_path: 'a.flow.yaml', old_string: 'x', new_string: '"hunter2hunter2"' } })
+  expect(partial.decision).toBe('allow')
+})
+
+test('afterEdits applies edits in order, by position, and declines what does not apply', () => {
+  expect(afterEdits('a b a', { old_string: 'a', new_string: 'c' })).toBe('c b a')
+  expect(afterEdits('a b a', { old_string: 'a', new_string: 'c', replace_all: true })).toBe('c b c')
+  expect(afterEdits('abc', { old_string: 'b', new_string: '$&$1' })).toBe('a$&$1c')
+  expect(afterEdits('abc', { edits: [{ old_string: 'a', new_string: 'x' }, { old_string: 'x', new_string: 'y' }] })).toBe('ybc')
+  expect(afterEdits('abc', { old_string: 'z', new_string: 'y' })).toBeUndefined()
+  expect(afterEdits('abc', { old_string: '', new_string: 'y' })).toBeUndefined()
+  expect(afterEdits('abc', { edits: [{ old_string: 'a', new_string: 'x' }, null] })).toBeUndefined()
+  expect(afterEdits('abc', null)).toBeUndefined()
+})
+
+// The `.catch` handlers answer with these when a guard throws; the engine
+// cannot be made to run them without rethrowing from `next`, so the pure parts
+// they use are proved here and the handlers hold nothing else.
+test('a guard that failed asks for a command naming flow and denies a Flowfile edit', () => {
+  expect(namesFlow('flow run x')).toBe(true)
+  expect(namesFlow('FOO=1 flowstate-cli run x', '/opt/flowstate-cli')).toBe(true)
+  expect(namesFlow('/opt/tool/flowstate-cli run x', '/opt/tool/flowstate-cli')).toBe(true)
+  expect(namesFlow('ls -la')).toBe(false)
+  expect(namesFlow(42)).toBe(false)
+  expect(namesFlow(undefined)).toBe(false)
+  expect(UNCHECKED_BASH).toContain('asks first')
+  expect(UNCHECKED_EDIT).toContain('not made')
+  expect(denyReason('a.flow.yaml', [{ line: 0, what: 'text too large to scan' }])).toContain('too large to scan')
 })

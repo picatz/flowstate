@@ -99,8 +99,10 @@ export const tokenize = (raw: string): Tokens => {
       i--
       continue
     }
+    // `2>&1`, `>&2`, and `&>file` redirect; the `&` there is not a separator.
+    const redirecting = c === '&' && (raw[i - 1] === '>' || raw[i - 1] === '<' || raw[i + 1] === '>')
     if (c === ' ' || c === '\t') endWord()
-    else if (';&|()\n'.includes(c)) endSegment()
+    else if (!redirecting && ';&|()\n'.includes(c)) endSegment()
     else (word += c), (inWord = true)
   }
   endSegment()
@@ -109,58 +111,86 @@ export const tokenize = (raw: string): Tokens => {
 
 const basename = (path: string): string => path.replace(/^.*[\\/]/, '')
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+/** A redirection operator with a word attached (`2>log`, `>>out`, `2>&1`) or standing alone (`>`, `<<<`, `&>`). */
+const REDIRECT = /^(?:\d*|&)[<>]/
+const REDIRECT_ALONE = /^(?:\d*|&)[<>]+&?$/
 /** Words that precede a command without being one. */
 const KEYWORDS = new Set(['{', '}', '!', 'if', 'then', 'else', 'elif', 'while', 'until', 'do', 'time', 'command', 'exec', 'nohup', 'builtin'])
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
+const INTERPRETER = /^(?:python[0-9.]*|node|perl|ruby)$/
+/** Commands whose arguments are text to show or search, never a command to run. */
+const DISPLAY = new Set(['echo', 'printf', 'cat', 'grep', 'egrep', 'fgrep', 'rg', 'man', 'which', 'whereis', 'type', 'ls', 'head', 'tail', 'less', 'more', 'wc'])
+
+/** Drops redirections so they cannot hide a verb: `flow 2>/dev/null run x`, `>out flow run x`. */
+const withoutRedirects = (words: string[]): string[] => {
+  const kept: string[] = []
+  for (let i = 0; i < words.length; i++) {
+    if (!REDIRECT.test(words[i])) kept.push(words[i])
+    else if (REDIRECT_ALONE.test(words[i])) i++
+  }
+  return kept
+}
+
+const setEnv = (env: Map<string, string>, assignment: string) => {
+  const eq = assignment.indexOf('=')
+  env.set(assignment.slice(0, eq), assignment.slice(eq + 1))
+}
 
 /**
  * Strips what runs a command without being it: leading `VAR=value`, shell
- * keywords, `env`, `sudo`, `timeout`. Assignments land in `env`.
+ * keywords, `env`, `sudo`, `timeout`. A prefix assignment lands in `env`, which
+ * is this command's alone; `export` also lands in `exported`, which later
+ * commands inherit. A bare `VAR=value` is a shell variable `flow` never sees,
+ * so it changes neither past the command it prefixes.
  */
-const unwrap = (words: string[], env: Map<string, string>): string[] => {
-  let rest = words
-  for (;;) {
-    const w = rest[0]
-    if (w === undefined) return rest
+const unwrap = (words: string[], env: Map<string, string>, exported: Map<string, string>): string[] => {
+  let i = 0
+  while (i < words.length) {
+    const w = words[i]
     if (ASSIGNMENT.test(w)) {
-      env.set(w.slice(0, w.indexOf('=')), w.slice(w.indexOf('=') + 1))
-      rest = rest.slice(1)
+      setEnv(env, w)
+      i++
     } else if (KEYWORDS.has(w)) {
-      rest = rest.slice(1)
+      i++
     } else if (w === 'export') {
-      // `export A=1` sets A for the commands after it.
-      for (const a of rest.slice(1)) if (ASSIGNMENT.test(a)) env.set(a.slice(0, a.indexOf('=')), a.slice(a.indexOf('=') + 1))
+      for (let j = i + 1; j < words.length; j++) {
+        if (ASSIGNMENT.test(words[j])) (setEnv(env, words[j]), setEnv(exported, words[j]))
+      }
       return []
     } else if (w === 'env' || w === 'sudo' || w === 'timeout') {
-      rest = rest.slice(1)
+      i++
       // Options, and for `timeout` its duration; `env -u NAME` and `sudo -u user` take a value.
-      while (rest[0] !== undefined && (rest[0].startsWith('-') || (w === 'timeout' && /^\d/.test(rest[0])))) {
-        const takesValue = ['-u', '-C', '-S', '-g', '-h', '-p'].includes(rest[0]) && w !== 'timeout'
-        rest = rest.slice(takesValue ? 2 : 1)
+      while (i < words.length && (words[i].startsWith('-') || (w === 'timeout' && /^\d/.test(words[i])))) {
+        const takesValue = w !== 'timeout' && ['-u', '-C', '-S', '-g', '-h', '-p'].includes(words[i])
+        i += takesValue ? 2 : 1
       }
     } else {
-      return rest
+      break
     }
   }
+  return i === 0 ? words : words.slice(i)
 }
 
-/** `--address` and `--address=` in an argument list. */
+/** The last `--address` in an argument list; `--` ends the options. */
 const addressFlag = (args: string[]): string | undefined => {
+  let address: string | undefined
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--address') return args[i + 1]
-    if (args[i].startsWith('--address=')) return args[i].slice('--address='.length)
+    if (args[i] === '--') break
+    if (args[i] === '--address') address = args[i + 1] ?? address
+    else if (args[i].startsWith('--address=')) address = args[i].slice('--address='.length)
   }
-  return undefined
+  return address
 }
 
 /** The server verb a `flow` argument list runs, if any. */
 const classify = (args: string[], env: Map<string, string>): ServerAction | undefined => {
-  // Global flags take no value, so skipping dashes finds the verb.
+  // Global flags take no value except `--address`, so skipping dashes finds the verb.
   let i = 0
-  while (args[i]?.startsWith('-')) i++
+  while (args[i]?.startsWith('-')) i += args[i] === '--address' ? 2 : 1
   const verb = args[i]
   const rest = args.slice(i + 1)
-  if (verb === undefined || rest.some(a => a === '-h' || a === '--help')) return undefined
+  // Only a bare `--help`/`-h` right after the verb is a help request; later it may be a value.
+  if (verb === undefined || rest[0] === '-h' || rest[0] === '--help') return undefined
 
   let name: string
   if (verb === 'schedule') {
@@ -177,12 +207,21 @@ const classify = (args: string[], env: Map<string, string>): ServerAction | unde
   const first = rest[verb === 'schedule' ? 1 : 0]
   return {
     verb: `flow ${name}`,
-    address: addressFlag(rest) ?? env.get('FLOWSTATE_ADDRESS'),
+    address: addressFlag(args) ?? env.get('FLOWSTATE_ADDRESS'),
     subject: first !== undefined && !first.startsWith('-') ? first : undefined,
   }
 }
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+/** The script a shell runs with `-c`: the word after the flag cluster that holds `c`. */
+const shellScript = (words: string[], from: number): string | undefined => {
+  for (let i = from + 1; i < words.length - 1; i++) if (/^-[A-Za-z]*c[A-Za-z]*$/.test(words[i])) return words[i + 1]
+  return undefined
+}
+
+/** A command longer than this is asked about, unread: the parse would spend more than the question is worth. */
+export const MAX_COMMAND = 64 * 1024
 
 /**
  * Finds the server-side `flow` verbs a Bash command runs. `flowBinary` is the
@@ -192,47 +231,90 @@ const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  */
 export const analyzeCommand = (command: string, flowBinary = 'flow'): Analysis => {
   const names = new Set(['flow', basename(flowBinary)])
+  if (command.length > MAX_COMMAND) {
+    return { actions: [], uncertain: [...names].some(n => command.includes(n)) }
+  }
   const actions: ServerAction[] = []
   let uncertain = false
-  const env = new Map<string, string>()
 
-  const walk = (text: string, depth: number) => {
+  const walk = (text: string, depth: number, base: Map<string, string>) => {
     const { segments, exact } = tokenize(text)
     if (!exact) uncertain = true
+    const exported = new Map(base)
+    const recurse = (script: string, env: Map<string, string>) => {
+      if (depth >= MAX_DEPTH) uncertain = true
+      else walk(script, depth + 1, env)
+    }
     for (const segment of segments) {
-      const words = unwrap(segment, env)
+      const env = new Map(exported)
+      const words = unwrap(withoutRedirects(segment), env, exported)
       if (words.length === 0) continue
       const head = basename(words[0])
       if (names.has(head)) {
         const action = classify(words.slice(1), env)
         if (action) actions.push(action)
-      } else if (SHELLS.has(head)) {
-        // `bash -c "flow run x"`: the script is the word after the flag cluster that holds `c`.
-        const flag = words.findIndex((w, i) => i > 0 && /^-[A-Za-z]*c[A-Za-z]*$/.test(w))
-        if (flag > 0 && words[flag + 1] !== undefined) {
-          if (depth >= MAX_DEPTH) uncertain = true
-          else walk(words[flag + 1], depth + 1)
+        continue
+      }
+      if (SHELLS.has(head)) {
+        const script = shellScript(words, 0)
+        // Without `-c` the script comes from a file or stdin (`echo "flow run x" | sh`).
+        if (script === undefined) uncertain = true
+        else recurse(script, env)
+        continue
+      }
+      if (head === 'eval') {
+        recurse(words.slice(1).join(' '), env)
+        continue
+      }
+      // The command comes from input or a variable, or from an interpreter's own code.
+      if (head === 'xargs' || words[0].includes('$')) uncertain = true
+      if (INTERPRETER.test(head) && words.some((w, i) => i > 0 && /^(?:-c|-e|-E|--eval)$/.test(w))) uncertain = true
+      if (DISPLAY.has(head)) continue
+
+      // The wrapper pass: the binary behind something this parser does not model
+      // (`go run ./cmd/flow`, `nice -n 5 flow`, `ssh h flow`, `find -exec flow`).
+      for (let i = 1; i < words.length; i++) {
+        if (names.has(basename(words[i]))) {
+          const action = classify(words.slice(i + 1), env)
+          if (action) actions.push(action)
+        } else if (SHELLS.has(basename(words[i]))) {
+          const script = shellScript(words, i)
+          if (script !== undefined) recurse(script, env)
         }
-      } else if (head === 'eval') {
-        if (depth >= MAX_DEPTH) uncertain = true
-        else walk(words.slice(1).join(' '), depth + 1)
-      } else if (head === 'xargs' || words[0].includes('$')) {
-        // The command comes from input or a variable; nothing here says what it is.
-        uncertain = true
       }
     }
   }
-  walk(command, 0)
+  walk(command, 0, new Map())
 
   if (!uncertain) return { actions, uncertain }
   // The parse is incomplete. Only a command that also names the binary beside a
   // gated verb is worth a question; `echo $(date)` is not.
-  const binary = [...names].map(escapeRe).join('|')
-  const verbs = [...SERVER_VERBS, 'schedule'].join('|')
-  const mentions = new RegExp(`(^|[^A-Za-z0-9_.-])(${binary})\\b[^\\n]*\\b(${verbs})\\b`).test(command)
+  return { actions, uncertain: namesVerb(command, names) }
+}
+
+/**
+ * Whether a line of the text names the binary and, later on that same line, a
+ * gated verb, or a variable standing in for the binary beside one. Each line
+ * is scanned once with two forward searches, so the work is linear.
+ */
+const namesVerb = (text: string, names: Set<string>): boolean => {
+  const binary = new RegExp(`(?:^|[^A-Za-z0-9_.-])(?:${[...names].map(escapeRe).join('|')})\\b`)
+  const verb = new RegExp(`\\b(?:${[...SERVER_VERBS, 'schedule'].join('|')})\\b`, 'g')
   // A variable standing for the binary (`$FLOW run x`) names no binary at all.
-  const variable = new RegExp(`\\$\\{?\\w+\\}?\\s+(${verbs})\\b`).test(command)
-  return { actions, uncertain: mentions || variable }
+  const variable = new RegExp(`\\$\\{?\\w+\\}?[ \\t]+(?:${[...SERVER_VERBS, 'schedule'].join('|')})\\b`)
+  for (let start = 0; start <= text.length; ) {
+    let end = text.indexOf('\n', start)
+    if (end < 0) end = text.length
+    const line = text.slice(start, end)
+    const m = binary.exec(line)
+    if (m) {
+      verb.lastIndex = m.index + m[0].length
+      if (verb.test(line)) return true
+    }
+    if (variable.test(line)) return true
+    start = end + 1
+  }
+  return false
 }
 
 /**
@@ -274,50 +356,120 @@ export const TOKEN_SHAPES: readonly { name: string; pattern: RegExp }[] = [
   { name: 'a private key', pattern: /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----/ },
 ]
 
-/** A key that names a credential: `password`, `db_password`, `client-secret`, `token`, or camelCase `apiKey`. */
-const CREDENTIAL_KEY_SEP = /(?:^|[_.-])(?:password|passwd|secret|token|api[_-]?key)$/i
-const CREDENTIAL_KEY_CAMEL = /[a-z0-9](?:Password|Secret|Token|ApiKey)$/
-const KEY_VALUE = /^\s*(?:-\s+)?["']?([A-Za-z0-9_.-]+)["']?\s*:\s+(\S.*?)\s*$/
+/** Most of a text the scan reads; a larger Flowfile edit is refused unread, since the work must be bounded where it is spent. */
+export const MAX_SCAN = 256 * 1024
+/** Most of one line the key scan reads; a longer line is searched for token shapes in its first part only. */
+const MAX_LINE = 4096
+/** Most body lines of a block scalar the scan reads. */
+const MAX_BODY = 64
+
+/** The finding for text over MAX_SCAN; line 0 marks it. */
+export const TOO_LARGE: SecretFinding = { line: 0, what: 'text too large to scan' }
+
+/** A key that names a credential: `password`, `db_password`, `client-secret`, `token`, `secret_key`, or camelCase `apiKey`. */
+const CREDENTIAL_KEY_SEP =
+  /(?:^|[_.-])(?:password|passwd|pwd|secret|secret[_.-]?key|access[_.-]?key|private[_.-]?key|auth[_.-]?token|token|api[_.-]?key|credentials?|client[_.-]?secret|aws[_.-]?secret[_.-]?access[_.-]?key)$/i
+const CREDENTIAL_KEY_CAMEL = /(?:^|[a-z0-9])(?:[Ss]ecret|[Aa]ccess|[Pp]rivate|[Aa]pi|[Cc]lient)(?:Key|Secret)$|[a-z0-9](?:Password|Passwd|Pwd|Secret|Token|Credentials?)$/
+const isCredentialKey = (key: string): boolean => CREDENTIAL_KEY_SEP.test(key) || CREDENTIAL_KEY_CAMEL.test(key)
+// No lazy quantifier before the end anchor: the value is trimmed by hand, so a long run of spaces costs one pass.
+const KEY_VALUE = /^(\s*)(?:-\s+)?["']?([A-Za-z0-9_.-]+)["']?\s*:\s+(\S.*)$/
+/** `{user: a, password: b}` and `{"password": "b"}`: a key after `{` or `,`, then a quoted value or one up to the next `,` or `}`. */
+const INLINE_PAIR = /[{,]\s*["']?([A-Za-z0-9_.-]+)["']?\s*:\s*("[^"]*"|'[^']*'|[^,}\s][^,}]*)/g
+const BLOCK_INDICATOR = /^[|>][+\-0-9]*(?:\s+#.*)?$/
 /** What a value that is not a credential looks like: a placeholder, a bare number, an env-style constant, a path into the run. */
 const PLACEHOLDER = /^(?:<.*>|\*+|x+|changeme|change-me|example|placeholder|todo|redacted|your[-_ ].*|true|false|null)$/i
 const NOT_A_VALUE = /^(?:\d+|[A-Z][A-Z0-9_]*|[A-Za-z_]\w*(?:\.\w+|\[\w+\])+)$/
 
-/** A value after the colon, unquoted and without a trailing comment; `undefined` for a block scalar, a flow collection, or an alias. */
-const scalar = (value: string): string | undefined => {
+/** A value after the colon without quotes or a trailing comment; `undefined` for a block scalar, a flow collection, or an alias. */
+const scalar = (value: string): { text: string; quoted: boolean } | undefined => {
   const q = value[0]
   if (q === '"' || q === "'") {
     const end = value.indexOf(q, 1)
-    return end > 0 ? value.slice(1, end) : undefined
+    return end > 0 ? { text: value.slice(1, end), quoted: true } : undefined
   }
   if ('|>{[&*!'.includes(q)) return undefined
-  return value.replace(/\s+#.*$/, '')
+  // A comment starts at a `#` after whitespace.
+  for (let i = value.indexOf('#'); i > 0; i = value.indexOf('#', i + 1)) {
+    if (value[i - 1] === ' ' || value[i - 1] === '\t') return { text: value.slice(0, i).trimEnd(), quoted: false }
+  }
+  return { text: value.trimEnd(), quoted: false }
 }
+
+/** Whether a value is a credential's literal: long enough, no reference, no placeholder; an unquoted one with whitespace is prose. */
+const isLiteral = (value: string, quoted: boolean): boolean =>
+  value.length >= 8 && (quoted || !/\s/.test(value)) && !value.includes('${') && !NOT_A_VALUE.test(value) && !PLACEHOLDER.test(value)
+
+const indentOf = (line: string): number => line.length - line.trimStart().length
 
 /** Fewer than four distinct characters is a placeholder (`ghp_xxxx...`), not a token. */
 const looksReal = (match: string): boolean => new Set(match.slice(-20)).size > 3
 
 /**
  * Looks for secrets in text about to be written to a Flowfile: the token
- * shapes in TOKEN_SHAPES, and a credential-named key holding a plain string.
- * A `${...}` expression is never a finding, so `${secret('env:TOKEN')}` passes.
+ * shapes in TOKEN_SHAPES, and a credential-named key holding a literal: a
+ * plain or quoted string, a block scalar, a value on the next line, or a pair in
+ * an inline map. A `${...}` expression is never a finding, so
+ * `${secret('env:TOKEN')}` passes. Text over MAX_SCAN is not read and yields
+ * TOO_LARGE; a line over 4 KiB is read for token shapes in its first 4 KiB.
  */
 export const findSecrets = (text: string): SecretFinding[] => {
+  if (text.length > MAX_SCAN) return [TOO_LARGE]
   const found: SecretFinding[] = []
-  text.split('\n').forEach((line, index) => {
-    const n = index + 1
+  const seen = new Set<string>()
+  const add = (line: number, what: string) => {
+    if (!seen.has(`${line}:${what}`) && seen.add(`${line}:${what}`)) found.push({ line, what })
+  }
+  const whole = text.split('\n')
+  const long = whole.map(l => l.length > MAX_LINE)
+  const lines = whole.map((l, i) => (long[i] ? l.slice(0, MAX_LINE) : l))
+  const keyFinding = (key: string) => `the key ${clean(key, 40)} holding a literal value`
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
     for (const { name, pattern } of TOKEN_SHAPES) {
       const m = pattern.exec(line)
-      if (m && looksReal(m[0])) found.push({ line: n, what: name })
+      if (m && looksReal(m[0])) add(i + 1, name)
     }
+    if (long[i]) continue
+
+    for (const pair of line.matchAll(INLINE_PAIR)) {
+      const value = scalar(pair[2])
+      if (isCredentialKey(pair[1]) && value !== undefined && isLiteral(value.text, value.quoted)) add(i + 1, keyFinding(pair[1]))
+    }
+
     const kv = KEY_VALUE.exec(line)
-    if (!kv || !(CREDENTIAL_KEY_SEP.test(kv[1]) || CREDENTIAL_KEY_CAMEL.test(kv[1]))) return
-    const value = scalar(kv[2])
-    if (value === undefined || value.length < 8 || /\s/.test(value) || value.includes('${') || NOT_A_VALUE.test(value) || PLACEHOLDER.test(value)) {
-      return
+    if (!kv || !isCredentialKey(kv[2])) continue
+    const raw = kv[3].trimEnd()
+    if (BLOCK_INDICATOR.test(raw)) {
+      // The indented lines below are the value.
+      const indent = kv[1].length
+      for (let j = i + 1; j < lines.length && j <= i + MAX_BODY; j++) {
+        const body = lines[j].trim()
+        if (body === '') continue
+        if (indentOf(lines[j]) <= indent) break
+        if (isLiteral(body, true)) add(i + 1, keyFinding(kv[2]))
+      }
+      continue
     }
-    found.push({ line: n, what: `the key ${clean(kv[1], 40)} holding a literal value` })
-  })
-  return found
+    const value = scalar(raw)
+    if (value !== undefined && isLiteral(value.text, value.quoted)) add(i + 1, keyFinding(kv[2]))
+  }
+
+  // `token:` alone, the string on the next line.
+  for (let i = 0; i + 1 < lines.length; i++) {
+    const m = long[i] ? null : /^(\s*)(?:-\s+)?["']?([A-Za-z0-9_.-]+)["']?\s*:\s*$/.exec(lines[i])
+    if (!m || !isCredentialKey(m[2])) continue
+    for (let j = i + 1; j < lines.length && j <= i + 2; j++) {
+      const next = lines[j].trim()
+      if (next === '' || next.startsWith('#')) continue
+      if (indentOf(lines[j]) > m[1].length && !next.startsWith('- ') && !KEY_VALUE.test(next) && !next.endsWith(':')) {
+        const value = scalar(next)
+        if (value !== undefined && isLiteral(value.text, value.quoted)) add(i + 1, keyFinding(m[2]))
+      }
+      break
+    }
+  }
+  return found.sort((a, b) => a.line - b.line)
 }
 
 /** The text an Edit, Write, or MultiEdit puts into a file; anything else yields none. */
@@ -329,19 +481,47 @@ export const writtenText = (input: unknown): string[] => {
   return texts.filter((t): t is string => typeof t === 'string')
 }
 
-/** Every apparent secret in what a tool call writes, de-duplicated, with lines relative to each piece of text. */
-export const secretsIn = (input: unknown): SecretFinding[] => {
+/**
+ * The file as an Edit or MultiEdit leaves it, from the file as it is now; `undefined`
+ * when an edit does not apply (its `old_string` is absent or empty), so the caller
+ * falls back to the text written. Replacement is by position, never by pattern.
+ */
+export const afterEdits = (original: string, input: unknown): string | undefined => {
+  if (typeof input !== 'object' || input === null) return undefined
+  const { old_string, new_string, replace_all, edits } = input as Record<string, unknown>
+  const list = Array.isArray(edits) ? edits : [{ old_string, new_string, replace_all }]
+  let text = original
+  for (const edit of list) {
+    const e = edit as { old_string?: unknown; new_string?: unknown; replace_all?: unknown } | null
+    if (typeof e?.old_string !== 'string' || typeof e.new_string !== 'string' || e.old_string === '') return undefined
+    const at = text.indexOf(e.old_string)
+    if (at < 0) return undefined
+    text = e.replace_all === true ? text.split(e.old_string).join(e.new_string) : text.slice(0, at) + e.new_string + text.slice(at + e.old_string.length)
+  }
+  return text
+}
+
+/**
+ * Every apparent secret in what a tool call writes, de-duplicated. With `current`,
+ * the file's text before an Edit or MultiEdit, the file as the edit leaves it is
+ * scanned and lines are the file's; else each piece written, with lines relative to it.
+ */
+export const secretsIn = (input: unknown, current?: string): SecretFinding[] => {
+  const after = current === undefined ? undefined : afterEdits(current, input)
+  const texts = after === undefined ? writtenText(input) : [after]
+  if (texts.reduce((n, t) => n + t.length, 0) > MAX_SCAN) return [TOO_LARGE]
   const seen = new Set<string>()
-  return writtenText(input)
-    .flatMap(findSecrets)
-    .filter(f => {
-      const key = `${f.line}:${f.what}`
-      return !seen.has(key) && seen.add(key)
-    })
+  return texts.flatMap(findSecrets).filter(f => {
+    const key = `${f.line}:${f.what}`
+    return !seen.has(key) && seen.add(key)
+  })
 }
 
 /** The refusal: where, what kind, the fix. It never repeats the matched text. */
 export const denyReason = (file: string, findings: SecretFinding[]): string => {
+  if (findings.some(f => f.line === 0)) {
+    return `Flowstate refused this edit to ${clean(file, 120)}: it is too large to scan for secrets (over ${MAX_SCAN / 1024} KiB), so it was not made. Split the Flowfile or make a smaller edit.`
+  }
   const listed = findings
     .slice(0, MAX_LISTED)
     .map(f => `line ${f.line}: ${f.what}`)
@@ -353,3 +533,10 @@ export const denyReason = (file: string, findings: SecretFinding[]): string => {
     'If this is a harmless look-alike, change its spelling so it no longer matches a credential.',
   ].join(' ')
 }
+
+/** Whether a Bash command that could not be checked should still ask: only text that names the binary. */
+export const namesFlow = (command: unknown, flowBinary = 'flow'): boolean =>
+  typeof command === 'string' && (/\bflow/.test(command) || command.includes(basename(flowBinary)))
+
+export const UNCHECKED_BASH = 'Flowstate could not check this flow command, so it asks first.'
+export const UNCHECKED_EDIT = 'Flowstate could not check this Flowfile edit for secrets, so it was not made. Try again.'

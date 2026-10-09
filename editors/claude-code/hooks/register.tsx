@@ -4,7 +4,7 @@ import type { Engine, Register } from 'claude-code'
 import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
-import { analyzeCommand, askReason, denyReason, secretsIn } from './guard'
+import { UNCHECKED_BASH, UNCHECKED_EDIT, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, runLine, toListing } from './runs'
 import type { Listing } from './runs'
@@ -158,26 +158,33 @@ export const register: Register = (on, options) => {
     // A guard that failed must not wave a flow command through; commands that never name flow are left alone.
     const decided = await next(e)
     const command = (e.input as { command?: unknown } | null)?.command
-    if (!guardsServer || decided.decision === 'deny' || typeof command !== 'string' || !/\bflow/.test(command)) {
-      return decided
-    }
-    return { ...decided, decision: 'ask', reason: 'Flowstate could not check this flow command, so it asks first.' }
+    if (!guardsServer || decided.decision === 'deny' || !namesFlow(command, flow)) return decided
+    return { ...decided, decision: 'ask', reason: UNCHECKED_BASH }
   })
 
   // Refuses a secret literal before it reaches a Flowfile, whatever the mode.
   for (const tool of ['Edit', 'Write', 'MultiEdit'] as const) {
-    on('tool.check', { tool }, async (_$, e, next) => {
+    on('tool.check', { tool }, async ($, e, next) => {
       const decided = await next(e)
       const path = (e.input as { file_path?: unknown } | null)?.file_path
       if (decided.decision === 'deny' || typeof path !== 'string' || !isFlowfile(path)) return decided
-      const findings = secretsIn(e.input)
+      // An edit replaces part of a line as often as a whole one, so scan the file as the edit leaves it.
+      let current: string | undefined
+      if (tool !== 'Write') {
+        try {
+          current = await $.fs.read(path)
+        } catch {
+          current = undefined
+        }
+      }
+      const findings = secretsIn(e.input, current)
       return findings.length === 0 ? decided : { ...decided, decision: 'deny', reason: denyReason(path, findings) }
     }).catch(async (_$, e, next) => {
       // Nothing has run yet, so a failed secret check refuses a Flowfile write rather than allowing it.
       const decided = await next(e)
       const path = (e.input as { file_path?: unknown } | null)?.file_path
       if (decided.decision === 'deny' || typeof path !== 'string' || !isFlowfile(path)) return decided
-      return { ...decided, decision: 'deny', reason: 'Flowstate could not check this Flowfile edit for secrets, so it was not made. Try again.' }
+      return { ...decided, decision: 'deny', reason: UNCHECKED_EDIT }
     })
   }
 
