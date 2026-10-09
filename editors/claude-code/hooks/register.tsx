@@ -719,18 +719,27 @@ export const register: Register = (on, options) => {
                         let cards: Cards | null = null
                         let lines = result.lines
                         if (result.kind === 'ok' && ran !== undefined) {
-                          const key = `${c.file}@${listed.stamp.get(c.file) ?? 0}`
+                          const stamp = listed.stamp.get(c.file) ?? 0
+                          const key = `${c.file}@${stamp}`
                           let declared = outSchemas.get(key)
-                          if (declared === undefined) {
-                            declared = await readSchema($, flow, c.file, 'outputs', parseOutputs)
-                            if (outSchemas.size >= 16) outSchemas.clear()
-                            outSchemas.set(key, declared)
-                          }
-                          const made = cardsOf(declared, ran.stdout, ran.isStdoutTruncated === true)
-                          if ('error' in made) lines = [`Outputs not shown (${made.error}). Read them from a terminal.`]
-                          else if (made.cards.length > 0) {
-                            cards = made
-                            lines = []
+                          const fresh = declared === undefined
+                          if (declared === undefined) declared = await readSchema($, flow, c.file, 'outputs', parseOutputs)
+                          // The schema must describe the file that ran: if it changed (or left the listing) since, an output sensitive then may not be now.
+                          const after = await listFlowfiles($)
+                          const same = after.files.includes(c.file) && (after.stamp.get(c.file) ?? 0) === stamp
+                          if (!same) {
+                            lines = ['Outputs not shown (Flowfile changed during the run). Read them from a terminal.']
+                          } else {
+                            if (fresh) {
+                              if (outSchemas.size >= 16) outSchemas.clear()
+                              outSchemas.set(key, declared)
+                            }
+                            const made = cardsOf(declared, ran.stdout, ran.isStdoutTruncated === true)
+                            if ('error' in made) lines = [`Outputs not shown (${made.error}). Read them from a terminal.`]
+                            else if (made.cards.length > 0) {
+                              cards = made
+                              lines = []
+                            }
                           }
                         }
                         await update($, runResult, () => ({ file: c.file, ...result, lines, cards }))

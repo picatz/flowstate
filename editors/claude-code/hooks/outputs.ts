@@ -107,7 +107,11 @@ const show = (v: unknown, depth: number, b: Budget): string => {
   }
   let s: string
   if (typeof v === 'string') {
-    if (v.startsWith(NUM)) s = clean(v.slice(NUM.length), MAX_RAW)
+    if (v.startsWith(NUM)) {
+      const tok = v.slice(NUM.length)
+      if (tok.length > MAX_RAW) b.cut = true
+      s = tok.slice(0, MAX_RAW)
+    }
     else {
       const c = clean(v, MAX_RAW)
       if (c !== v) b.cut = true

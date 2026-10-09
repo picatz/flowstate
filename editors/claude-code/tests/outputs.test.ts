@@ -152,14 +152,17 @@ const entry = (name: string) => ({ name, kind: 'file', size: 1, mtimeMs: 1, isLi
 const texts = async (ui: any) => (await ui.findAll({ type: 'Text' })).map((t: { text: string }) => t.text).join('\n')
 const INPUTS = JSON.stringify({ type: 'object', properties: {} })
 
-const session = async ($: any, on: any, outputs: { exitCode: number; stdout: string; stderr: string }, run = GOOD) => {
+/** `bump` names the call after which the Flowfile's modification time changes. */
+const session = async ($: any, on: any, outputs: { exitCode: number; stdout: string; stderr: string }, run = GOOD, bump = '') => {
   const seen: string[][] = []
+  let mtime = 1
   on('process.run', (_$: unknown, e: { argv: string[] }) => {
     seen.push(e.argv)
+    if ((bump === 'run' && e.argv[1] === 'run') || (bump === 'schema' && e.argv.includes('--schema=outputs'))) mtime++
     const reply = e.argv[1] === 'run' ? { exitCode: 0, stdout: run, stderr: '' } : e.argv.includes('--schema=outputs') ? outputs : e.argv[1] === 'compile' ? { exitCode: 0, stdout: INPUTS, stderr: '' } : { exitCode: 1, stdout: '', stderr: 'none' }
     return { value: { ...reply, isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('fs.list', () => ({ value: [entry('a.flow.yaml')] }))
+  on('fs.list', () => ({ value: [{ ...entry('a.flow.yaml'), mtimeMs: mtime }] }))
   on('ui.status', () => ({ value: undefined }))
   on('env.get', () => ({ value: undefined }))
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
@@ -203,4 +206,27 @@ test('when cards cannot be made nothing from the run document is shown, so a sen
   expect(all).toMatch(/Outputs not shown \(the run printed a document the cards cannot read\)/)
   expect(all).not.toMatch(/s3cret/)
   await ui.unmount()
+})
+
+for (const during of ['run', 'schema']) {
+  test(`a Flowfile that changes during the ${during} read shows no cards, no run document, and caches no schema`, async ($, on) => {
+    const { ui, seen, run } = await session($, on, ok(SCHEMA), GOOD, during)
+    await run()
+    const all = await texts(ui)
+    expect(all).toMatch(/Outputs not shown \(Flowfile changed during the run\)/)
+    expect(all).not.toMatch(/s3cret|"steps"|placed 3|hidden \(sensitive\)/)
+    expect(await ui.find({ type: 'Button', key: 'outputs-raw' })).toBeUndefined()
+    // Nothing was cached under a stamp that no longer matches: the next run reads the schema again.
+    await run()
+    expect(outputCompiles(seen).length).toBeGreaterThanOrEqual(2)
+    await ui.unmount()
+  })
+}
+
+test('an over-long numeric token is cut to the bound and marked, never altered silently', () => {
+  const c = cards(SCHEMA, RUN(`{"hosts_placed":${'9'.repeat(3000)},"targets":[${'1'.repeat(3000)}]}`))
+  expect(c.cards[3].raw).toHaveLength(MAX_RAW)
+  expect(c.cards[3].cut).toBe(true)
+  expect(c.cards[6].cut).toBe(true)
+  expect(cardLines(c).join('\n')).toMatch(/hosts_placed \(int\): 9+ \(cut or cleaned\)/)
 })
