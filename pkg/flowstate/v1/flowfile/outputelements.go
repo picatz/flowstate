@@ -84,6 +84,13 @@ func (o *enumOrigins) checkElements(e *expr.Expr, scope map[string]outputElement
 		}
 		o.checkElements(sel.GetOperand(), scope, report)
 	case *expr.Expr_CallExpr:
+		if operand, name, ok := optionalSelect(kind.CallExpr); ok {
+			if element, found := o.element(operand, scope, 0); found && !element.root && !element.list {
+				if message, missing := missingFieldMessage(element.message, name); missing {
+					report(message)
+				}
+			}
+		}
 		o.checkElements(kind.CallExpr.GetTarget(), scope, report)
 		for _, arg := range kind.CallExpr.GetArgs() {
 			o.checkElements(arg, scope, report)
@@ -149,14 +156,19 @@ func (o *enumOrigins) element(e *expr.Expr, scope map[string]outputElement, dept
 		if !ok || operand.list {
 			return outputElement{}, false
 		}
-		field := operand.message.Fields().ByName(protoreflect.Name(sel.GetField()))
-		if field == nil || field.IsMap() || !messageEncodedAsMap(field) {
-			return outputElement{}, false
-		}
 
-		return outputElement{message: field.Message(), list: field.IsList()}, true
+		return fieldElement(operand, sel.GetField())
 	case *expr.Expr_CallExpr:
 		call := kind.CallExpr
+		if operand, name, ok := optionalSelect(call); ok {
+			// `x.?field` continues the chain like `x.field`.
+			parent, found := o.element(operand, scope, depth+1)
+			if !found || parent.list {
+				return outputElement{}, false
+			}
+
+			return fieldElement(parent, name)
+		}
 		if call.GetFunction() != "_[_]" || len(call.GetArgs()) != 2 {
 			return outputElement{}, false
 		}
@@ -176,6 +188,30 @@ func (o *enumOrigins) element(e *expr.Expr, scope map[string]outputElement, dept
 	}
 
 	return outputElement{}, false
+}
+
+// fieldElement is the message a message-typed field of operand holds.
+func fieldElement(operand outputElement, name string) (outputElement, bool) {
+	field := operand.message.Fields().ByName(protoreflect.Name(name))
+	if field == nil || field.IsMap() || !messageEncodedAsMap(field) {
+		return outputElement{}, false
+	}
+
+	return outputElement{message: field.Message(), list: field.IsList()}, true
+}
+
+// optionalSelect is the operand and field name of `operand.?name`, which CEL
+// represents as the `_?._` call with the name as a string literal.
+func optionalSelect(call *expr.Expr_Call) (*expr.Expr, string, bool) {
+	if call.GetFunction() != "_?._" || len(call.GetArgs()) != 2 {
+		return nil, "", false
+	}
+	name, ok := call.GetArgs()[1].GetConstExpr().GetConstantKind().(*expr.Constant_StringValue)
+	if !ok {
+		return nil, "", false
+	}
+
+	return call.GetArgs()[0], name.StringValue, true
 }
 
 // messageEncodedAsMap reports that a message-typed field is stored as a map of its
