@@ -51,7 +51,7 @@ func readBoundedSource(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf(
 			"%s is not a regular file (%s); name a regular file instead",
-			path, info.Mode().Type())
+			path, fileKind(info.Mode()))
 	}
 
 	// maxBytes+1, so a file of exactly the limit is accepted and one byte more
@@ -68,4 +68,22 @@ func readBoundedSource(path string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// fileKind names the kind of a non-regular file for a diagnostic, since the
+// mode's own String form is a cryptic run of dashes.
+func fileKind(mode os.FileMode) string {
+	switch {
+	case mode&os.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&os.ModeSocket != 0:
+		return "socket"
+	case mode&os.ModeDevice != 0:
+		return "device"
+	case mode&os.ModeSymlink != 0:
+		return "symlink"
+	case mode.IsDir():
+		return "directory"
+	}
+	return "irregular file"
 }

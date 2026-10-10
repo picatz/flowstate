@@ -38,7 +38,7 @@ func TestNonRegularSourcesAreRefusedWithoutBlocking(t *testing.T) {
 			}()
 			select {
 			case err := <-done:
-				require.ErrorContains(t, err, "is not a regular file")
+				require.ErrorContains(t, err, dir+"/pipe.yaml is not a regular file (named pipe); name a regular file instead")
 			case <-ctx.Done():
 				t.Fatal("reading a FIFO source blocked")
 			}
