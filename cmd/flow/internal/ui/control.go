@@ -35,7 +35,7 @@ import (
 // that the other does not follow shows up as a test that disagrees with its
 // sibling rather than as a surface that quietly stopped escaping.
 func EscapeControl(s string) string {
-	if !strings.ContainsFunc(s, unicode.IsControl) {
+	if !strings.ContainsFunc(s, escaped) {
 		return s
 	}
 
@@ -43,7 +43,7 @@ func EscapeControl(s string) string {
 	b.Grow(len(s))
 
 	for _, r := range s {
-		if unicode.IsControl(r) {
+		if escaped(r) {
 			// Through strconv so the spelling is Go's own (\n, \t, \x1b)
 			// rather than a table this has to keep, with the surrounding
 			// quotes trimmed off because the rune is going inside a line.
@@ -56,6 +56,14 @@ func EscapeControl(s string) string {
 	}
 
 	return b.String()
+}
+
+// escaped reports whether a rune is written out rather than emitted: a control
+// character, or a bidirectional control such as U+202E, which is not a control
+// by Unicode's category yet reorders the text around it so a line reads as
+// something it is not.
+func escaped(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r)
 }
 
 // maxRenderedPhaseBytes bounds how much of a heartbeat's phase reaches a

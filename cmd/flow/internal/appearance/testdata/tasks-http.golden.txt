@@ -3,42 +3,50 @@ http
   Perform an HTTP request and return the response.
 
   inputs   url*                      string, a URI
+                                     Url is where the request goes, written as
+                                     an absolute URI.
            method                    string, 3 to 6 characters, matching
                                      ^(?i)(GET|POST|PUT|PATCH|DELETE)$
+                                     Method is the HTTP method, and is GET where
+                                     a step does not write one.
            headers                   map[string, string], may hold a secret
                                      reference
+                                     Request headers, by name.
            body                      string
+                                     A raw request body, sent as written.
            bearer                    any, may hold a secret reference
+                                     Bearer is the credential for an
+                                     Authorization header, and it is the first
+                                     task input built to take a secret
+                                     reference.
            credential                string, 1 to 128 characters, matching
                                      ^[a-z][a-z0-9-]*$, names a deployment
                                      credential target
+                                     Credential names an outbound federation
+                                     target configured by the deployment, such
+                                     as "aws-prod" or "partner-api".
            outputs                   map[string, any], evaluated by the task
+                                     Outputs selects what the step returns.
            query                     map[string, any]
+                                     Query parameters, escaped and appended to
+                                     the URL.
            json                      any, may hold a secret reference
+                                     A structured request body, serialized as
+                                     JSON and sent with `Content-Type:
+                                     application/json` unless `headers` sets
+                                     one.
            form                      map[string, any], may hold a secret
                                      reference
+                                     A form body, url-encoded with a matching
+                                     Content-Type.
            expect                    any, must be written as an expression,
                                      evaluated by the task
+                                     Which responses count as success, as a CEL
+                                     expression over the same `response` root
+                                     `outputs` sees.
            parse_json                bool
+                                     Parse the response body as JSON into the
+                                     `json` output.
            retry_on_unknown_outcome  bool
-  outputs  status_code               int, 100 to 599
-           headers                   map[string, string]
-           body                      string
-           json                      any
-
-* marks an input the task cannot run without.
-
-Evaluated by the task, not by the engine: expect, outputs
-The engine resolves an expression before it schedules the step, which is why an
-ordinary input cannot name something that does not exist yet. These the task
-evaluates itself, in its own scope, after it has run far enough to have one: it
-is how `http`'s `outputs` may name `status_code`.
-
-A step that uses it:
-  edition: v2026.4
-  name: example
-  steps:
-    - id: http
-      http:
-        url: https://example.com/
-$
+                                     Retry a non-idempotent request whose
+                                     outcome is unknown.

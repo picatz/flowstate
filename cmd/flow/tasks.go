@@ -9,11 +9,14 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/reflect/protoreflect"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/taskexample"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
+	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 )
 
 // `flow tasks` is an index and a detail view, not one page.
@@ -405,8 +408,8 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 	}
 
 	if err := writeFields(out, theme, width, []fieldGroup{
-		{label: "inputs", fields: inputs},
-		{label: "outputs", fields: outputs},
+		{label: "inputs", fields: inputs, prose: fieldProse(def.Inputs)},
+		{label: "outputs", fields: outputs, prose: fieldProse(def.Outputs)},
 	}); err != nil {
 		return fmt.Errorf("writing the task: %w", err)
 	}
@@ -706,6 +709,13 @@ func writeFields(w io.Writer, theme ui.Theme, width int, groups []fieldGroup) er
 				return err
 			}
 
+			// The sentence the schema's author wrote over the field, under the row
+			// it describes. Only the first sentence: the paragraph is in the
+			// generated reference, and a row that grows to hold it stops being a row.
+			if sentence := ui.EscapeControl(textbound.Cut(protodoc.FirstSentence(group.prose[field.Name]), maxFieldProseBytes)); sentence != "" {
+				lines = append(lines, strings.Split(wrap(sentence, textWidth), "\n")...)
+			}
+
 			for _, line := range lines[1:] {
 				if _, err := fmt.Fprintf(w, "%s%s\n", pad(offset), theme.Muted.Render(line)); err != nil {
 					return err
@@ -717,10 +727,39 @@ func writeFields(w io.Writer, theme ui.Theme, width int, groups []fieldGroup) er
 	return nil
 }
 
+// maxFieldProseBytes bounds the sentence printed under a field. A comment with
+// no sentence-ending period is one paragraph to FirstSentence, and a plugin's
+// descriptor may carry up to its size cap of it.
+const maxFieldProseBytes = 300
+
 // fieldGroup is one labelled list of a task's fields.
 type fieldGroup struct {
 	label  string
 	fields []v1.InputField
+
+	// prose is the comment written over each field, by name, for the fields that
+	// have one. Read off the descriptor here rather than carried on
+	// [v1.InputField], which protodoc's own tests keep from importing it.
+	prose map[string]string
+}
+
+// fieldProse reads the comment over each field of a message, by name, through
+// the one mechanism the editor's hover and the MCP schema read. A field nobody
+// described is absent.
+func fieldProse(md protoreflect.MessageDescriptor) map[string]string {
+	if md == nil {
+		return nil
+	}
+
+	prose := map[string]string{}
+	for i := range md.Fields().Len() {
+		fd := md.Fields().Get(i)
+		if comment, ok := protodoc.CommentOf(fd); ok {
+			prose[string(fd.Name())] = comment
+		}
+	}
+
+	return prose
 }
 
 // fieldName is how a field is written, with the marker a required one carries.
