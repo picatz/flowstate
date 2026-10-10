@@ -8,7 +8,7 @@ import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReas
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
-import { MAX_ENTRIES, factsFor, fingerprint, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { MAX_ENTRIES, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { Poller, isLive } from './poll'
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
@@ -793,6 +793,8 @@ export const register: Register = (on, options) => {
                   </Box>
                 ))}
                 {more > 0 && <Text dimColor>  and {more} more; `flow timeline` with the id above lists them all</Text>}
+                {detail?.leases.map(l => <Text>{'  '}<Text color={COLOR.active}>{leaseLine(l, polling)}</Text></Text>)}
+                {hiddenNote(detail?.hidden ?? 0) !== '' && <Text dimColor>  {hiddenNote(detail?.hidden ?? 0)}</Text>}
                 {detail?.truncated && <Text dimColor>  The server clipped this account; `flow timeline --help` says how to continue it (--run-id, --after-event-id).</Text>}
               </Box>
             )}

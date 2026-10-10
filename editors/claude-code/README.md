@@ -117,6 +117,27 @@ While a run is open in the pane and is running or waiting, the pane reads
   succeeded and the progress bar fills; a failed or cancelled run closes them as
   `closed`, never as success. A wait takes the run's close time as its end.
 
+## Steps the card shows
+
+The card lists the steps the workflow's author wrote, in the order they began
+(rows are ordered by their event id, so a reader that hands them back out of
+order does not reorder the card).
+
+- **Engine rows are hidden and counted.** `flowstate_debug`, `task capability
+  admission` and `run vars` are the engine's own; a dim `2 internal steps hidden`
+  stands for them, and they are in neither the step count nor the progress bar
+  (`4/4 steps`, not `5 of 6`). Only an exact label is hidden: a step of yours
+  that merely mentions one is a step.
+- **The debug lease is the debugger.** A timer row `debug lease <id> held by <who>` is
+  drawn as `◉ debugger <who> attached` while the run is live and `detached` once
+  the run is over or a row ended the lease. It is never a waiting step, so a completed
+  run no longer reads as waiting; the holder is cleaned and cut to 40
+  characters, and at most 5 leases are read.
+- **Plain labels.** The backticks the engine puts around ids are dropped from every label
+  shown (`orders > charge`); the graph overlay still matches on the engine's own label.
+- Loop iterations are not shown: a timeline row names no iteration (`orders[1]`), so
+  `orders > charge` is one row however many times it ran (`attempt N` counts retries).
+
 ## Run a Flowfile
 
 The pane's `Run a Flowfile` section runs a Flowfile on this machine from a form

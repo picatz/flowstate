@@ -76,7 +76,7 @@ test('a run of a different workflow gets no overlay, and the section says so', a
   await ui.press({ key: 'run:wf-1234567890abcdef' })
   const all = await texts(ui)
   expect(all).toMatch(/○ build/)
-  expect(all).not.toMatch(/✓ build/)
+  expect(all).not.toMatch(/✓ build · succeeded/)
   expect(all).toMatch(/is of other-flow, not deploy: no status is shown/)
   await ui.unmount()
 })

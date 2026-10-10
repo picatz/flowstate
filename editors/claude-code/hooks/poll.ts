@@ -97,9 +97,14 @@ export class Poller {
   }
 
   private schedule(gen: number): void {
-    this.cancel = this.deps.after(TICK_MS, () => {
-      void this.tick(gen)
-    })
+    try {
+      this.cancel = this.deps.after(TICK_MS, () => {
+        void this.tick(gen)
+      })
+    } catch {
+      // No timer to be had (the host refused it): there is no live refresh, and the pane is otherwise unaffected.
+      this.stop()
+    }
   }
 
   private async tick(gen: number): Promise<void> {
