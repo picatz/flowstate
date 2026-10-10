@@ -212,6 +212,10 @@ type PolicyTestRequest struct {
 	// ranges, link-local and metadata). Absent, a host that is itself an IP
 	// literal is checked as that address and any other host is not address-checked.
 	Ip string `protobuf:"bytes,3,opt,name=ip,proto3" json:"ip,omitempty"`
+	// Credentials says the egress request carries a credential, which is the
+	// fact the `credentials` variable holds for an egress rule on a worker.
+	// Absent, it is false.
+	Credentials bool `protobuf:"varint,8,opt,name=credentials,proto3" json:"credentials,omitempty"`
 	// Task is the qualified task name dispatched, such as `http` or `codex.exec`.
 	// Required for `task`.
 	Task string `protobuf:"bytes,4,opt,name=task,proto3" json:"task,omitempty"`
@@ -276,6 +280,13 @@ func (x *PolicyTestRequest) GetIp() string {
 	return ""
 }
 
+func (x *PolicyTestRequest) GetCredentials() bool {
+	if x != nil {
+		return x.Credentials
+	}
+	return false
+}
+
 func (x *PolicyTestRequest) GetTask() string {
 	if x != nil {
 		return x.Task
@@ -317,11 +328,12 @@ const file_flowstate_v1_policy_suite_proto_rawDesc = "" +
 	"\tprincipal\x18\x06 \x01(\v2\x17.flowstate.v1.PrincipalR\tprincipal\x129\n" +
 	"\arequest\x18\x03 \x01(\v2\x1f.flowstate.v1.PolicyTestRequestR\arequest\x12*\n" +
 	"\x06expect\x18\x04 \x01(\tB\x12\xbaH\x0fr\rR\x05allowR\x04denyR\x06expect\x12\x1c\n" +
-	"\x04rule\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04ruleJ\x04\b\x02\x10\x03R\bidentity\"\xd5\x02\n" +
+	"\x04rule\x18\x05 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x04ruleJ\x04\b\x02\x10\x03R\bidentity\"\xf7\x02\n" +
 	"\x11PolicyTestRequest\x12\x1a\n" +
 	"\x03url\x18\x01 \x01(\tB\b\xbaH\x05r\x03\x18\x80 R\x03url\x12\x1f\n" +
 	"\x06method\x18\x02 \x01(\tB\a\xbaH\x04r\x02\x18 R\x06method\x12\x17\n" +
-	"\x02ip\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x18@R\x02ip\x12\x1c\n" +
+	"\x02ip\x18\x03 \x01(\tB\a\xbaH\x04r\x02\x18@R\x02ip\x12 \n" +
+	"\vcredentials\x18\b \x01(\bR\vcredentials\x12\x1c\n" +
 	"\x04task\x18\x04 \x01(\tB\b\xbaH\x05r\x03\x18\x80\x02R\x04task\x12$\n" +
 	"\x04argv\x18\x05 \x03(\tB\x10\xbaH\r\x92\x01\n" +
 	"\x10\x80\x02\"\x05r\x03\x18\x80 R\x04argv\x12\x1a\n" +

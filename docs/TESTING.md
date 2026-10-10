@@ -1028,7 +1028,7 @@ and the address checks for an IP-literal host or a case's `ip:` are asked (an `i
 disagrees with an IP-literal host is refused, as is a policy that sets
 `proxy_from_environment`, which would resolve the host), and
 rules over the connection's `ip` and the control-plane reservation, which need a
-dial, are not, and an egress rule over `credentials` is judged with it false, because a case cannot yet say its request carries a credential. An `exec` case is resolved against the machine the suite runs on.
+dial, are not. An egress case says its request carries a credential with `credentials: true`; absent, a rule over `credentials` sees false. An `exec` case is resolved against the machine the suite runs on.
 Secret-access and role-assumption policy (`--auth-policy`) are not covered: their
 decision needs the server's trust state. See
 [`examples/policy-test`](../examples/policy-test).

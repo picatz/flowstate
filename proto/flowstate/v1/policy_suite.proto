@@ -100,6 +100,11 @@ message PolicyTestRequest {
   // literal is checked as that address and any other host is not address-checked.
   string ip = 3 [(buf.validate.field).string.max_len = 64];
 
+  // Credentials says the egress request carries a credential, which is the
+  // fact the `credentials` variable holds for an egress rule on a worker.
+  // Absent, it is false.
+  bool credentials = 8;
+
   // Task is the qualified task name dispatched, such as `http` or `codex.exec`.
   // Required for `task`.
   string task = 4 [(buf.validate.field).string.max_len = 256];

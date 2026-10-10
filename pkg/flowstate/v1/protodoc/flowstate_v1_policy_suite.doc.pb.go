@@ -103,6 +103,12 @@ func init() {
 				" literal is checked as that address and any other host is not address-checked.\n",
 		},
 		{
+			Name: "flowstate.v1.PolicyTestRequest.credentials",
+			Leading: " Credentials says the egress request carries a credential, which is the\n" +
+				" fact the `credentials` variable holds for an egress rule on a worker.\n" +
+				" Absent, it is false.\n",
+		},
+		{
 			Name: "flowstate.v1.PolicyTestRequest.task",
 			Leading: " Task is the qualified task name dispatched, such as `http` or `codex.exec`.\n" +
 				" Required for `task`.\n",

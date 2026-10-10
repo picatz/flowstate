@@ -221,19 +221,20 @@ func (c *Case) bind(surface string) error {
 	req := c.req
 
 	fields := map[string][]string{
-		SurfaceEgress: {"url", "method", "ip"},
+		SurfaceEgress: {"url", "method", "ip", "credentials"},
 		SurfaceTask:   {"task"},
 		SurfaceExec:   {"argv", "dir", "env"},
 	}
 
 	given := map[string]bool{
-		"url":    req.GetUrl() != "",
-		"method": req.GetMethod() != "",
-		"ip":     req.GetIp() != "",
-		"task":   req.GetTask() != "",
-		"argv":   len(req.GetArgv()) > 0,
-		"dir":    req.GetDir() != "",
-		"env":    len(req.GetEnv()) > 0,
+		"url":         req.GetUrl() != "",
+		"method":      req.GetMethod() != "",
+		"ip":          req.GetIp() != "",
+		"credentials": req.GetCredentials(),
+		"task":        req.GetTask() != "",
+		"argv":        len(req.GetArgv()) > 0,
+		"dir":         req.GetDir() != "",
+		"env":         len(req.GetEnv()) > 0,
 	}
 
 	for name, present := range given {
