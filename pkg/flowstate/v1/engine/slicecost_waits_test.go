@@ -2,6 +2,7 @@ package engine_test
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,14 @@ import (
 // runs to completion in one segment.
 
 const waitSteps = 64
+
+// rangeSliceExpr spends 100,000 cost units in `lists.range`, which CEL prices by
+// the elements it produces and which allocates them without evaluating anything
+// per element. [heavySliceExpr] spends its units in a comprehension instead,
+// and under -race that costs several times more wall time for the same units: a
+// quorum draining its deliveries without a yield then ran past the 15s deadlock
+// detector. Same threshold crossing, a fraction of the time.
+var rangeSliceExpr = "(" + strings.Repeat("lists.range(10000).size() + ", 9) + "lists.range(10000).size())"
 
 // waitFixtures builds each non-parking wait, deciding on the given expression.
 func waitFixtures(cost string) map[string]func(id string) *v1.Node {
@@ -103,7 +112,7 @@ func waitFixtures(cost string) map[string]func(id string) *v1.Node {
 func TestASegmentSuspendsOnTheCostOfAWaitThatDoesNotPark(t *testing.T) {
 	t.Parallel()
 
-	for name, build := range waitFixtures(heavySliceExpr) {
+	for name, build := range waitFixtures(rangeSliceExpr) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -182,7 +191,7 @@ func TestASegmentSuspendsOnTheCostOfALazilyResolvedOutput(t *testing.T) {
 	env := atABound(newWaitEnv(t))
 	env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
 
-	carried := carriedState(t, env, lazyOutputState(heavySliceExpr))
+	carried := carriedState(t, env, lazyOutputState(rangeSliceExpr))
 
 	require.NotEmpty(t, carried.GetFrames(), "the segment suspended without recording where to resume")
 	next := carried.GetFrames()[0].GetNextNode()
@@ -250,7 +259,7 @@ func quorumFixtures(cost string) map[string]*v1.RunState {
 func TestASegmentSuspendsOnTheCostOfQuorumExpressions(t *testing.T) {
 	t.Parallel()
 
-	for name, state := range quorumFixtures(heavySliceExpr) {
+	for name, state := range quorumFixtures(rangeSliceExpr) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
