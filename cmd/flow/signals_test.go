@@ -488,6 +488,34 @@ func TestSignalRefusesAMalformedPayloadBeforeSending(t *testing.T) {
 	require.Nil(t, fake.got, "a malformed payload was sent anyway")
 }
 
+// TestSignalPayloadSyntaxErrorNamesOnlyAPosition drives the real signal command
+// with a payload whose first bad character is the start of a secret: the error
+// must say where the document went wrong and nothing of what it said there.
+func TestSignalPayloadSyntaxErrorNamesOnlyAPosition(t *testing.T) {
+	for name, data := range map[string]string{
+		"bare value":    "{\"pin\": hunter2}",
+		"trailing text": "{\"a\": 1} hunter2",
+		"second line":   "{\n  \"pin\": hunter2\n}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeWorkflowService{}
+			serveFake(t, fake)
+			cmd, _ := signalCommand(t)
+			require.NoError(t, cmd.Flags().Set("data", data))
+
+			err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
+			require.Error(t, err)
+			require.NotContains(t, err.Error(), "invalid character", "the decoder's own message reached the user")
+			require.NotContains(t, err.Error(), "hunter2")
+			require.NotContains(t, err.Error(), "'h'", "the offending character was quoted")
+			require.ErrorContains(t, err, "invalid JSON syntax at line")
+			require.ErrorContains(t, err, "column")
+			require.ErrorContains(t, err, "byte offset")
+			require.Nil(t, fake.got, "a malformed payload was sent anyway")
+		})
+	}
+}
+
 // TestSignalRefusesAnInvalidNameBeforeSending checks the schema's own rules run
 // before the round trip.
 //

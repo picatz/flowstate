@@ -318,7 +318,15 @@ func parseSignalPayload(source, raw string) (*v1.Node_Outputs, error) {
 
 	var fields map[string]any
 	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
-		return nil, fmt.Errorf("%s: payload is not a JSON object: %w", source, err)
+		// A payload can carry a secret an approver was handed, and the decoder
+		// quotes the character it stopped at, so only the position is reported
+		// (see [redactedJSONError]). A well-formed document of the wrong kind
+		// is named by its own fixed phrase.
+		if _, wrongKind := errors.AsType[*json.UnmarshalTypeError](err); wrongKind {
+			return nil, fmt.Errorf("%s: payload is not a JSON object", source)
+		}
+
+		return nil, fmt.Errorf("%s: payload is not a JSON object: %w", source, redactedJSONError(raw, err))
 	}
 
 	outputs := &v1.Node_Outputs{NamedValues: make(map[string]*v1.Value, len(fields))}
