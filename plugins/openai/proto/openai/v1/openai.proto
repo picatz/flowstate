@@ -4,6 +4,7 @@ package openai.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/openai/gen/openai/v1;openaiv1";
 
+import "buf/validate/validate.proto";
 import "flowstate/decision/v1/decision.proto";
 import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
@@ -52,7 +53,7 @@ message DecideInputs {
   // Model is the OpenAI model identifier the request names, required and
   // never defaulted here. It is passed through unchanged; the API refuses one
   // it does not know or one that does not support decisions.
-  string model = 2;
+  string model = 2 [(buf.validate.field).required = true];
 
   // Evidence is the text the questions are about, sent as the request's
   // `input` and limited to 262,144 bytes. It is data to be judged, not

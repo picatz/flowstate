@@ -41,6 +41,12 @@ var dynamicValueMessages = []protoreflect.FullName{
 	"google.protobuf.Value",
 }
 
+// IsDynamicValueMessage reports a schema message that holds whatever an expression
+// produced, so a read through it says nothing about field names.
+func IsDynamicValueMessage(name protoreflect.FullName) bool {
+	return slices.Contains(dynamicValueMessages, name)
+}
+
 // FieldRules returns the protovalidate rules attached to a field, or nil.
 func FieldRules(fd protoreflect.FieldDescriptor) *validate.FieldRules {
 	if fd == nil {

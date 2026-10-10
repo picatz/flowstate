@@ -7,6 +7,7 @@
 package anthropicv1
 
 import (
+	_ "buf.build/gen/go/bufbuild/protovalidate/protocolbuffers/go/buf/validate"
 	v11 "github.com/picatz/flowstate/pkg/flowstate/decision/v1"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -211,10 +212,10 @@ var File_anthropic_v1_anthropic_proto protoreflect.FileDescriptor
 
 const file_anthropic_v1_anthropic_proto_rawDesc = "" +
 	"\n" +
-	"\x1canthropic/v1/anthropic.proto\x12\fanthropic.v1\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\x90\x02\n" +
+	"\x1canthropic/v1/anthropic.proto\x12\fanthropic.v1\x1a\x1bbuf/validate/validate.proto\x1a$flowstate/decision/v1/decision.proto\x1a\x19flowstate/v1/schema.proto\x1a\x18flowstate/v1/value.proto\"\x98\x02\n" +
 	"\fDecideInputs\x12;\n" +
-	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\r\x8a\xb5\x18\t\x1a\aapi_keyR\x06apiKey\x12\x14\n" +
-	"\x05model\x18\x02 \x01(\tR\x05model\x12\x1a\n" +
+	"\aapi_key\x18\x01 \x01(\v2\x13.flowstate.v1.ValueB\r\x8a\xb5\x18\t\x1a\aapi_keyR\x06apiKey\x12\x1c\n" +
+	"\x05model\x18\x02 \x01(\tB\x06\xbaH\x03\xc8\x01\x01R\x05model\x12\x1a\n" +
 	"\bevidence\x18\x03 \x01(\tR\bevidence\x12E\n" +
 	"\fquestion_set\x18\x04 \x01(\v2\".flowstate.decision.v1.QuestionSetR\vquestionSet\x12+\n" +
 	"\x11report_confidence\x18\x05 \x01(\bR\x10reportConfidence\x12\x1d\n" +
