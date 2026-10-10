@@ -700,9 +700,9 @@ func TestTasksEscapesControlCharactersInFieldProse(t *testing.T) {
 	t.Parallel()
 
 	rendered := renderProse(t, 120, []v1.InputField{{Name: "x", Type: "string"}},
-		map[string]string{"x": "Evil \x1b[2J bell \a and ‮gnp.exe."})
+		map[string]string{"x": "Evil \x1b[2J bell \a and \u202egnp.exe."})
 
-	for _, raw := range []string{"\x1b", "\a", "‮"} {
+	for _, raw := range []string{"\x1b", "\a", "\u202e"} {
 		assert.NotContains(t, rendered, raw, "raw %q reached the terminal", raw)
 	}
 	assert.Contains(t, rendered, `\x1b[2J`)

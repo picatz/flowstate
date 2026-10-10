@@ -3,28 +3,69 @@ http
   Perform an HTTP request and return the response.
 
   inputs   url*                      string, a URI
+                                     Url is where the request goes, written as
+                                     an absolute URI.
            method                    string, 3 to 6 characters, matching
                                      ^(?i)(GET|POST|PUT|PATCH|DELETE)$
+                                     Method is the HTTP method, and is GET where
+                                     a step does not write one.
            headers                   map[string, string], may hold a secret
                                      reference
+                                     Request headers, by name.
            body                      string
+                                     A raw request body, sent as written.
            bearer                    any, may hold a secret reference
+                                     Bearer is the credential for an
+                                     Authorization header, and it is the first
+                                     task input built to take a secret
+                                     reference.
            credential                string, 1 to 128 characters, matching
                                      ^[a-z][a-z0-9-]*$, names a deployment
                                      credential target
+                                     Credential names an outbound federation
+                                     target configured by the deployment, such
+                                     as "aws-prod" or "partner-api".
            outputs                   map[string, any], evaluated by the task
+                                     Outputs selects what the step returns.
            query                     map[string, any]
+                                     Query parameters, escaped and appended to
+                                     the URL.
            json                      any, may hold a secret reference
+                                     A structured request body, serialized as
+                                     JSON and sent with `Content-Type:
+                                     application/json` unless `headers` sets
+                                     one.
            form                      map[string, any], may hold a secret
                                      reference
+                                     A form body, url-encoded with a matching
+                                     Content-Type.
            expect                    any, must be written as an expression,
                                      evaluated by the task
+                                     Which responses count as success, as a CEL
+                                     expression over the same `response` root
+                                     `outputs` sees.
            parse_json                bool
+                                     Parse the response body as JSON into the
+                                     `json` output.
            retry_on_unknown_outcome  bool
+                                     Retry a non-idempotent request whose
+                                     outcome is unknown.
   outputs  status_code               int, 100 to 599
+                                     StatusCode is the status the response
+                                     carried.
            headers                   map[string, string]
+                                     Headers are the response's headers, one
+                                     value per name, read as
+                                     `${steps.<id>.headers['Content-Type']}`.
            body                      string
+                                     Response body, returned by default so a
+                                     step can be referenced as
+                                     ${steps.<id>.body}.
            json                      any
+                                     The response body parsed as JSON, present
+                                     when `parse_json` asked for it, so
+                                     ${steps.<id>.json.items[0].id} works
+                                     without a second step to parse it.
 
 * marks an input the task cannot run without.
 
