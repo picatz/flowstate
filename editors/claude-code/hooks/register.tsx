@@ -282,6 +282,8 @@ export const register: Register = (on, options) => {
       name: 'flowstate',
       description: 'Show the validation state of Flowfiles touched this session',
     })
+    // The one reason the server-action guard stays silent is this option; say so without naming any command.
+    if (!guardsServer) await Promise.resolve($.ui.toast('Flowstate: confirmation before server-changing flow verbs is off (guardServerActions=false).')).catch(() => undefined)
     return next(e)
   })
 

@@ -742,3 +742,28 @@ test('a long line of the binary name is answered fast, not scanned quadratically
   expect(out.uncertain).toBe(true)
   expect(analyzeCommand('$(x) ' + 'a '.repeat(8000)).uncertain).toBe(false)
 })
+
+test('the registered Bash check asks for the flow run commands seen in a live session', async ($, on) => {
+  decide(on)
+  mock.env(on, {})
+
+  for (const command of [
+    'flow run workflow.yaml --address 127.0.0.1:9233 --token-file /tmp/tok',
+    'cd /tmp/work && flow run workflow.yaml --address 127.0.0.1:9233 --token-file /tmp/tok',
+  ]) {
+    const out = await $.tool.check(bash(command))
+    expect(out.decision).toBe('ask')
+    expect(out.reason).toContain('flow run')
+    expect(out.reason).toContain('127.0.0.1:9233')
+  }
+})
+
+test('the registered Bash check tightens a settings allow rule to a question', async ($, on) => {
+  on('tool.check', () => ({ decision: 'allow', rule: 'Bash(flow:*)', reason: 'allowed by rule' }))
+  mock.env(on, {})
+
+  const out = await $.tool.check(bash('cd /tmp/work && flow run workflow.yaml --address 127.0.0.1:9233'))
+
+  expect(out.decision).toBe('ask')
+  expect(out.reason).toContain('127.0.0.1:9233')
+})
