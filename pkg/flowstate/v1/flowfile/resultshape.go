@@ -39,7 +39,7 @@ type resultShape struct {
 	loop  string
 	index int
 
-	// steps are the body's step ids, at any depth.
+	// steps are the ids of the nodes directly in the body.
 	steps map[string]*shapeStep
 }
 
@@ -68,11 +68,14 @@ func resultShapeOf(node *v1.Node, index int) *resultShape {
 	}
 
 	shape := &resultShape{loop: node.GetId(), index: index, steps: map[string]*shapeStep{}}
-	v1.WalkNodes(body, v1.Walk{Node: func(n *v1.Node) {
-		shape.steps[n.GetId()] = &shapeStep{}
-	}})
+	// Only the nodes directly in the body: both drivers narrow an iteration to them
+	// (onlyBodyOutputs, bodyOutputs), so a step nested in a block is not a key. A
+	// `parallel:` has no output under its own id (its branches merge into the
+	// enclosing scope), so it is not one either.
 	for _, n := range body {
-		shape.steps[n.GetId()] = closedOutputs(n)
+		if _, parallel := n.GetKind().(*v1.Node_Parallel); !parallel {
+			shape.steps[n.GetId()] = closedOutputs(n)
+		}
 	}
 
 	return shape

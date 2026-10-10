@@ -35,15 +35,29 @@ const maxMacroFrames = 256
 
 // macrosAround returns the comprehension macros whose arguments are open at offset
 // at of src, outermost first.
+//
+// One forward pass, skipping string literals with the lexer's own [stringEnd] (raw
+// and triple-quoted included), pairs every bracket with its partner, so a
+// delimiter inside a string is never mistaken for one.
 func macrosAround(src string, at int) []openMacro {
 	at = min(at, len(src))
-	type frame struct{ macro *openMacro }
+	type frame struct {
+		open  int
+		macro bool
+	}
 	var stack []frame
+	pairs := map[int]int{} // closer offset to opener offset
 
 	for i := 0; i < at; {
-		switch c := src[i]; c {
+		c := src[i]
+		switch c {
 		case '"', '\'':
-			i = stringEnd(src, i, false)
+			start := i
+			for start > 0 && isIdentPart(src[start-1]) {
+				start--
+			}
+			raw := strings.ContainsAny(src[start:i], "rR") && isStringPrefix(src[start:i])
+			i = stringEnd(src, i, raw)
 			if i > at {
 				return nil // the cursor is inside a string
 			}
@@ -53,14 +67,11 @@ func macrosAround(src string, at int) []openMacro {
 			if len(stack) == maxMacroFrames {
 				return nil
 			}
-			f := frame{}
-			if c == '(' {
-				f.macro = macroAt(src, i)
-			}
-			stack = append(stack, f)
+			stack = append(stack, frame{open: i, macro: c == '(' && macroName(src, i)})
 
 		case ')', ']', '}':
 			if len(stack) > 0 {
+				pairs[i] = stack[len(stack)-1].open
 				stack = stack[:len(stack)-1]
 			}
 		}
@@ -69,23 +80,28 @@ func macrosAround(src string, at int) []openMacro {
 
 	var open []openMacro
 	for _, f := range stack {
-		if f.macro != nil {
-			open = append(open, *f.macro)
+		if f.macro {
+			open = append(open, *macroAt(src, f.open, pairs))
 		}
 	}
 
 	return open
 }
 
+// macroName reports whether the parenthesis at open starts the arguments of a
+// comprehension macro whose first argument names a variable.
+func macroName(src string, open int) bool {
+	return macroAt(src, open, nil) != nil
+}
+
 // macroAt reads the parenthesis at open as the start of a comprehension macro's
 // arguments: `<receiver>.<macro>(<variable>,`.
-func macroAt(src string, open int) *openMacro {
-	end := open
-	start := end
+func macroAt(src string, open int, pairs map[int]int) *openMacro {
+	start := open
 	for start > 0 && isIdentPart(src[start-1]) {
 		start--
 	}
-	if start == end || start == 0 || src[start-1] != '.' || !bindsFirstArgument[src[start:end]] {
+	if start == open || start == 0 || src[start-1] != '.' || !bindsFirstArgument[src[start:open]] {
 		return nil
 	}
 	variable, ok := firstArgument(src, open)
@@ -93,14 +109,14 @@ func macroAt(src string, open int) *openMacro {
 		return nil
 	}
 
-	return &openMacro{variable: variable, receiver: receiverBefore(src, start-1)}
+	return &openMacro{variable: variable, receiver: receiverBefore(src, start-1, pairs)}
 }
 
 // receiverBefore is the chain of names, calls and indexes that ends just before the
 // dot at src[dot]: `steps.fan.results.filter(r, true)` before the `.map` that
 // follows it. It stops at anything an operand cannot contain, so `a in xs.map` is
-// `xs`.
-func receiverBefore(src string, dot int) string {
+// `xs`. A closing bracket is jumped to its opener by pairs.
+func receiverBefore(src string, dot int, pairs map[int]int) string {
 	j := dot
 	for j > 0 {
 		c := src[j-1]
@@ -109,8 +125,8 @@ func receiverBefore(src string, dot int) string {
 			j--
 
 		case c == ')' || c == ']':
-			opener := matchingOpener(src, j-1)
-			if opener < 0 {
+			opener, ok := pairs[j-1]
+			if !ok {
 				return strings.TrimSpace(src[j:dot])
 			}
 			j = opener
@@ -121,26 +137,6 @@ func receiverBefore(src string, dot int) string {
 	}
 
 	return strings.TrimSpace(src[:dot])
-}
-
-// matchingOpener is the offset of the bracket that closes at src[closer], or -1.
-// A string in between is skipped by quote, which is the approximation of a scan
-// that runs backwards.
-func matchingOpener(src string, closer int) int {
-	depth := 0
-	for i := closer; i >= 0; i-- {
-		switch src[i] {
-		case ')', ']', '}':
-			depth++
-		case '(', '[', '{':
-			depth--
-			if depth == 0 {
-				return i
-			}
-		}
-	}
-
-	return -1
 }
 
 // resultEntryFor is the entry the macro variable name is bound to at the cursor,

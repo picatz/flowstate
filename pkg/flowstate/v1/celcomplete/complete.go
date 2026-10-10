@@ -215,28 +215,31 @@ func Complete(text string, scope Scope) Result {
 
 	qualifier, member := word[:dot], word[dot+1:]
 
+	// A local that names its members (the variable of a macro over a loop's
+	// `results`) shadows a root of the same name, as a macro variable does in CEL,
+	// so it is asked first.
+	named := func(name string) (Candidate, bool) {
+		if local, ok := find(scope.Locals, name); ok && (len(local.Members) > 0 || local.MemberSource != nil) {
+			return local, true
+		}
+
+		return find(scope.Roots, name)
+	}
+
 	// A root, and then one of its members. Answered before the profile's
 	// namespaces below, so that a workflow whose author declared a var called
 	// `math` still completes their var: the rooted namespaces are the
 	// language's, and a function qualifier is only reached where no root
 	// claims the name.
-	if root, ok := find(scope.Roots, qualifier); ok {
+	if root, ok := named(qualifier); ok {
 		members, short := membersOf(root, member)
 
 		return carry(short, bound(member, members))
 	}
 	if head, rest, nested := strings.Cut(qualifier, "."); nested {
-		root, ok := find(scope.Roots, head)
-		if !ok {
-			// A local that names its members, such as the variable of a macro over
-			// a loop's `results`, reaches them the way a root does.
-			if local, found := find(scope.Locals, head); found && (len(local.Members) > 0 || local.MemberSource != nil) {
-				root, ok = local, true
-			}
-		}
-		if ok {
+		if root, ok := named(head); ok {
 			// One member deep. The root is asked for `rest` itself, which is
-			// the prefix of exactly the name being looked up — and a bounded
+			// the prefix of exactly the name being looked up, and a bounded
 			// source that keeps the alphabetically-first matches always keeps
 			// an exact one, because a string is a prefix of itself and sorts
 			// before every extension of it. So the lookup cannot be defeated
@@ -246,30 +249,24 @@ func Complete(text string, scope Scope) Result {
 			// A member that is not there and a member with nothing under it
 			// come to the same empty answer, which is the honest one: past a
 			// member is a value whose shape nothing here describes, and past
-			// the root is a name nothing produced. Guessing at either is how a
-			// surface starts offering references the engine rejects.
+			// the root is a name nothing produced.
 			inner, found := find(above, rest)
 			if !found {
-				// Whether the name is absent or merely past a cut is the
-				// difference between "no such step" and "ask again"; only the
-				// root can tell, and it just did.
 				return carry(short, Result{Prefix: member})
 			}
 
 			// The root's own truncation stops here, deliberately: the member
 			// asked for was found, so what else the root did or did not list
-			// says nothing about the names under *this* one. What matters is
-			// whether the level being listed is whole.
+			// says nothing about the names under *this* one.
 			members, innerShort := membersOf(inner, member)
 
 			return carry(innerShort, bound(member, members))
 		}
 	}
 
-	// A namespace the file itself binds, such as the alias of a module it uses,
-	// or a local that names its members. Any other local value's members are not
-	// known statically.
-	if local, ok := find(scope.Locals, qualifier); ok && (local.Kind == KindNamespace || len(local.Members) > 0 || local.MemberSource != nil) {
+	// A namespace the file itself binds, such as the alias of a module it uses.
+	// Any other local value's members are not known statically.
+	if local, ok := find(scope.Locals, qualifier); ok && local.Kind == KindNamespace {
 		members, short := membersOf(local, member)
 
 		return carry(short, bound(member, members))

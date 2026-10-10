@@ -59,17 +59,7 @@ steps:
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			wf, _, err := flowfile.Parse([]byte(source(test.body)))
-			require.NoError(t, err)
-
-			ds := flowfile.Validate(wf)
-			if test.want == "" {
-				assert.Empty(t, ds)
-
-				return
-			}
-			require.NotEmpty(t, ds)
-			assert.Contains(t, ds.Error(), test.want)
+			assertDiagnosis(t, source(test.body), test.want)
 		})
 	}
 }
@@ -112,17 +102,24 @@ steps:
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			wf, _, err := flowfile.Parse([]byte(source(test.body)))
-			require.NoError(t, err)
-
-			ds := flowfile.Validate(wf)
-			if test.want == "" {
-				assert.Empty(t, ds)
-
-				return
-			}
-			require.NotEmpty(t, ds)
-			assert.Contains(t, ds.Error(), test.want)
+			assertDiagnosis(t, source(test.body), test.want)
 		})
 	}
+}
+
+// assertDiagnosis validates source and holds it to want: no diagnostic when want is
+// empty, and one containing want otherwise.
+func assertDiagnosis(t *testing.T, source, want string) {
+	t.Helper()
+
+	wf, _, err := flowfile.Parse([]byte(source))
+	require.NoError(t, err)
+
+	got := flowfile.Validate(wf).Error()
+	if want == "" {
+		assert.Empty(t, got)
+
+		return
+	}
+	assert.Contains(t, got, want)
 }
