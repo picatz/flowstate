@@ -3,6 +3,8 @@ package flowstatev1
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/google/cel-go/cel"
@@ -358,25 +360,43 @@ func runFilterEnv() (*cel.Env, error) {
 	)
 }
 
-// checkStatusLiterals refuses a comparison against a status that does not exist.
+// checkStatusLiterals settles every status literal a filter compares, in place.
 //
-// CEL cannot catch this: `status == "FAILD"` is a perfectly well-typed comparison
-// of two strings, and it compiles, runs, and matches nothing. The listing then
-// comes back empty, which is indistinguishable from a listing that legitimately
-// has nothing in it — so the caller is told their filter is wrong, with the names
-// they could have meant.
+// CEL cannot catch a wrong one: `status == "FAILD"` is a perfectly well-typed
+// comparison of two strings, and it compiles, runs, and matches nothing. The
+// listing then comes back empty, which is indistinguishable from a listing that
+// legitimately has nothing in it — so the caller is told their filter is wrong,
+// with the names they could have meant.
+//
+// A literal that names a status by another spelling is not wrong, it is a
+// different spelling of the right answer, and is rewritten to the enum name here
+// (see [resolveStatusLiteral]) so the one evaluator compares exactly the names
+// [StatusName] binds. The rewrite happens on the checked AST before the program is
+// planned: no second evaluator, and every client — the CLI, the server's
+// ListRuns, the plugin — gets the same reading.
 //
 // Deliberately a check on *literals* and nothing cleverer. A filter comparing
 // `status` to something computed is not something this can decide, and refusing
 // what it cannot understand would be a false diagnostic, which the house rule
 // holds to be worse than a missing one.
-func checkStatusLiterals(ast *cel.Ast) error {
+func checkStatusLiterals(checked *cel.Ast) error {
 	valid := StatusNames()
+	factory := ast.NewExprFactory()
 
 	var bad []string
-	walkStatusComparisons(ast.NativeRep().Expr(), false, func(literal string) {
-		if !valid[literal] {
-			bad = append(bad, literal)
+	seen := map[string]bool{}
+	walkStatusComparisons(checked.NativeRep().Expr(), false, func(node ast.Expr, literal string) {
+		canonical, ok := resolveStatusLiteral(literal, valid)
+		if ok {
+			if canonical != literal {
+				node.SetKindCase(factory.NewLiteral(node.ID(), types.String(canonical)))
+			}
+
+			return
+		}
+		if !seen[literal] {
+			seen[literal] = true
+			bad = append(bad, statusSuggestion(literal, valid))
 		}
 	})
 
@@ -385,18 +405,114 @@ func checkStatusLiterals(ast *cel.Ast) error {
 	}
 
 	return fmt.Errorf(
-		"filter compares %s to %s, which is not a run status; the statuses are %s",
-		filterStatus, quoteAll(bad), strings.Join(sortedNames(valid), ", "))
+		"filter compares %s to %s, which is not a run status; the statuses are %s in any case, "+
+			"or %s",
+		filterStatus, strings.Join(bad, " and "), strings.Join(sortedNames(valid), ", "),
+		statusAliasList(valid))
 }
 
-// quoteAll renders the offending literals for a diagnostic.
-func quoteAll(names []string) string {
-	quoted := make([]string, 0, len(names))
-	for _, name := range names {
-		quoted = append(quoted, fmt.Sprintf("%q", name))
+// statusAliases are the display words a person reads in `flow get` and the
+// plugin pane for a status whose enum name reads differently. Only the ones with
+// exactly one meaning are here: `succeeded` is COMPLETED and nothing else, while
+// a word like `done` or `stopped` could be COMPLETED, CANCELED, or TERMINATED and
+// is left an error rather than guessed at. Keys are the normalised form (upper
+// case, spaces and hyphens as underscores); `timed out` needs no entry, because
+// that normalisation already turns it into TIMED_OUT.
+var statusAliases = map[string]string{
+	"SUCCEEDED": "COMPLETED",
+	"CANCELLED": "CANCELED",
+}
+
+// normalizeStatusWord folds a spelling to the form enum names and aliases are
+// keyed by.
+func normalizeStatusWord(word string) string {
+	word = strings.ToUpper(strings.TrimSpace(word))
+
+	return strings.NewReplacer(" ", "_", "-", "_").Replace(word)
+}
+
+// resolveStatusLiteral returns the enum name a status literal denotes: the name in
+// any case, or one of the display words in [statusAliases]. An alias whose target
+// is no longer in the schema's vocabulary resolves to nothing, so the table can
+// never invent a status the descriptor does not have.
+func resolveStatusLiteral(literal string, valid map[string]bool) (string, bool) {
+	word := normalizeStatusWord(literal)
+	if valid[word] {
+		return word, true
+	}
+	if target, ok := statusAliases[word]; ok && valid[target] {
+		return target, true
 	}
 
-	return strings.Join(quoted, " and ")
+	return "", false
+}
+
+// maxStatusSuggestLen bounds the edit-distance work a did-you-mean may spend on
+// one literal: a status literal is a short word, and a longer one is not a near
+// miss of any of them.
+const maxStatusSuggestLen = 32
+
+// statusSuggestion renders a rejected literal, with the status it most plausibly
+// meant when exactly one is within two edits.
+func statusSuggestion(literal string, valid map[string]bool) string {
+	if len(literal) > maxStatusSuggestLen {
+		// Echoed truncated: the diagnostic is bounded however long the caller's
+		// literal was.
+		return fmt.Sprintf("%q...", literal[:maxStatusSuggestLen])
+	}
+	quoted := fmt.Sprintf("%q", literal)
+
+	word := normalizeStatusWord(literal)
+	best, bestDistance, tied := "", 3, false
+	for _, name := range sortedNames(valid) {
+		switch d := editDistance(word, name); {
+		case d < bestDistance:
+			best, bestDistance, tied = name, d, false
+		case d == bestDistance:
+			tied = true
+		}
+	}
+	if best == "" || tied {
+		return quoted
+	}
+
+	return fmt.Sprintf("%s (did you mean %q?)", quoted, best)
+}
+
+// statusAliasList names the display words for the diagnostic, derived from the
+// table so the message cannot list one the resolver does not accept.
+func statusAliasList(valid map[string]bool) string {
+	var words []string
+	for _, alias := range slices.Sorted(maps.Keys(statusAliases)) {
+		if target := statusAliases[alias]; valid[target] {
+			words = append(words, fmt.Sprintf("%q for %s", strings.ToLower(alias), target))
+		}
+	}
+	words = append(words, `"timed out" for TIMED_OUT`)
+
+	return strings.Join(words, ", ")
+}
+
+// editDistance is the Levenshtein distance between two short words.
+func editDistance(a, b string) int {
+	prev := make([]int, len(b)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(a); i++ {
+		cur := make([]int, len(b)+1)
+		cur[0] = i
+		for j := 1; j <= len(b); j++ {
+			cost := 1
+			if a[i-1] == b[j-1] {
+				cost = 0
+			}
+			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
+		}
+		prev = cur
+	}
+
+	return prev[len(b)]
 }
 
 // walkStatusComparisons calls found for every string literal compared against the
@@ -427,7 +543,7 @@ func quoteAll(names []string) string {
 // side. A `status` compared to something computed, or tested against a list built
 // at evaluation time, is not something this can decide — and guessing would be the
 // same false diagnostic in a different costume.
-func walkStatusComparisons(e ast.Expr, shadowed bool, found func(string)) {
+func walkStatusComparisons(e ast.Expr, shadowed bool, found func(ast.Expr, string)) {
 	if e == nil {
 		return
 	}
@@ -440,8 +556,8 @@ func walkStatusComparisons(e ast.Expr, shadowed bool, found func(string)) {
 		if !shadowed && len(args) == 2 {
 			switch call.FunctionName() {
 			case operators.Equals, operators.NotEquals:
-				if literal, ok := statusComparison(args[0], args[1]); ok {
-					found(literal)
+				if node, literal, ok := statusComparison(args[0], args[1]); ok {
+					found(node, literal)
 				}
 			case operators.In:
 				// `status in ["FAILED", "FAILD"]`. Every element that is a string
@@ -450,7 +566,7 @@ func walkStatusComparisons(e ast.Expr, shadowed bool, found func(string)) {
 				if isStatusIdent(args[0]) && args[1] != nil && args[1].Kind() == ast.ListKind {
 					for _, element := range args[1].AsList().Elements() {
 						if literal, ok := stringLiteral(element); ok {
-							found(literal)
+							found(element, literal)
 						}
 					}
 				}
@@ -502,15 +618,19 @@ func walkStatusComparisons(e ast.Expr, shadowed bool, found func(string)) {
 
 // statusComparison reports the string literal a `status` comparison names, from
 // either side of the operator.
-func statusComparison(left, right ast.Expr) (string, bool) {
+func statusComparison(left, right ast.Expr) (ast.Expr, string, bool) {
 	if isStatusIdent(left) {
-		return stringLiteral(right)
+		literal, ok := stringLiteral(right)
+
+		return right, literal, ok
 	}
 	if isStatusIdent(right) {
-		return stringLiteral(left)
+		literal, ok := stringLiteral(left)
+
+		return left, literal, ok
 	}
 
-	return "", false
+	return nil, "", false
 }
 
 // isStatusIdent reports whether an expression is the bare `status` name.
