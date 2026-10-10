@@ -444,6 +444,13 @@ func (e *Evaluator) evalProgramWithCost(ctx context.Context, env *cel.Env, prg c
 	if details != nil && details.ActualCost() != nil {
 		cost = *details.ActualCost()
 	}
+	// An activation that evaluates stored expressions while CEL resolves a name
+	// ([StepsOutputActivation]) spent that work outside this program's own count.
+	// It is added here, once, for every caller that reports a cost, so no
+	// charged path has to know the activation can spend more than it was shown.
+	if lazy, ok := activation.(lazyCostTaker); ok {
+		cost += lazy.takeLazyCost()
+	}
 	if err != nil {
 		if text, detail := e.describeEvalFailure(ctx, env, parsedOf(), activation, err); text != "" {
 			return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w (%s)", err, text), Detail: detail}
@@ -451,6 +458,13 @@ func (e *Evaluator) evalProgramWithCost(ctx context.Context, env *cel.Env, prg c
 		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
 	}
 	return out, cost, nil
+}
+
+// lazyCostTaker is implemented by an activation that evaluates expressions of
+// its own while CEL resolves a name, and reports what they cost.
+type lazyCostTaker interface {
+	// takeLazyCost returns the cost spent since the last call and resets it.
+	takeLazyCost() uint64
 }
 
 // An ExpressionError reports that a CEL expression failed to compile or to

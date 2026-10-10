@@ -412,7 +412,7 @@ func payloadApproved(payload *Node_Outputs) (approved, isBool bool) {
 	return kind.BoolValue, true
 }
 
-// Take folds one delivery into the tally, in the order the driver took it.
+// TakeWithCost folds one delivery into the tally, in the order the driver took it.
 //
 // A delivery is checked for a veto first, then as an approval; see
 // [SignalQuorum] for the rules. A failure (an exclusion or veto expression that
@@ -422,13 +422,18 @@ func payloadApproved(payload *Node_Outputs) (approved, isBool bool) {
 // an approval on the strength of an expression that did not run.
 //
 // Taking a delivery after the wait has decided is a caller bug and is ignored.
-func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope *Scope, now time.Time) error {
+//
+// The cost is that of the `veto:` and `exclude:` expressions this delivery
+// evaluated, for the durable driver to charge: a delivery that decides nothing
+// parks nothing, so nothing else paces them (#2629). It is returned with an
+// error too.
+func (t *QuorumTally) TakeWithCost(ctx context.Context, delivery *SignalDelivery, scope *Scope, now time.Time) (spent uint64, err error) {
 	if t.decision != "" {
-		return nil
+		return spent, nil
 	}
 
 	if len(t.deliveries) >= MaxQuorumDeliveries {
-		return fmt.Errorf(
+		return 0, fmt.Errorf(
 			"quorum wait took %d deliveries without reaching a decision; a quorum wait examines at most %d, so a sender that keeps repeating or contradicting itself cannot hold a step open",
 			len(t.deliveries), MaxQuorumDeliveries)
 	}
@@ -461,19 +466,20 @@ func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope 
 		return bound, nil
 	}
 
-	vetoes, err := t.vetoes(ctx, delivery, scope, now, bind)
+	vetoes, cost, err := t.vetoes(ctx, delivery, scope, now, bind)
+	spent += cost
 	if err != nil {
-		return err
+		return spent, err
 	}
 	if vetoes {
 		t.vetoedBy = delivery
 		t.decision = QuorumVetoed
 
-		return nil
+		return spent, nil
 	}
 
 	if approved, isBool := payloadApproved(delivery.GetPayload()); !approved || !isBool {
-		return nil
+		return spent, nil
 	}
 
 	identity := delivery.GetSender().GetIdentity()
@@ -482,20 +488,21 @@ func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope 
 	distinct := quorumDistinct(t.quorum)
 	if distinct && identity.GetPrincipal().GetSubject() == "" {
 		// Nobody to be distinct from: see [SignalQuorum.distinct].
-		return nil
+		return spent, nil
 	}
 
-	excluded, err := t.excludes(ctx, identity, key, scope, now, bind)
+	excluded, cost, err := t.excludes(ctx, identity, key, scope, now, bind)
+	spent += cost
 	if err != nil {
-		return err
+		return spent, err
 	}
 	if excluded {
-		return nil
+		return spent, nil
 	}
 
 	if distinct {
 		if _, dup := t.counted[key]; dup {
-			return nil
+			return spent, nil
 		}
 		t.counted[key] = struct{}{}
 	}
@@ -505,7 +512,15 @@ func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope 
 		t.decision = QuorumApproved
 	}
 
-	return nil
+	return spent, nil
+}
+
+// Take is [QuorumTally.TakeWithCost] without the cost, for a driver that holds
+// no slice budget.
+func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope *Scope, now time.Time) error {
+	_, err := t.TakeWithCost(ctx, delivery, scope, now)
+
+	return err
 }
 
 // vetoes reports whether delivery ends the wait: the author's `veto:`
@@ -513,29 +528,29 @@ func (t *QuorumTally) Take(ctx context.Context, delivery *SignalDelivery, scope 
 func (t *QuorumTally) vetoes(
 	ctx context.Context, delivery *SignalDelivery, scope *Scope, now time.Time,
 	bind func() (map[string]ref.Val, error),
-) (bool, error) {
+) (bool, uint64, error) {
 	if t.quorum.GetVeto() == nil {
 		approved, isBool := payloadApproved(delivery.GetPayload())
 
-		return isBool && !approved, nil
+		return isBool && !approved, 0, nil
 	}
 
 	names, err := bind()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 
-	value, err := evalWaitExpr(ctx, t.quorum.GetVeto(), scope, now, names)
+	value, cost, err := evalWaitExpr(ctx, t.quorum.GetVeto(), scope, now, names)
 	if err != nil {
-		return false, fmt.Errorf("evaluating quorum veto: %w", err)
+		return false, cost, fmt.Errorf("evaluating quorum veto: %w", err)
 	}
 
 	veto, ok := value.Value().(bool)
 	if !ok {
-		return false, fmt.Errorf("quorum veto produced %s, but it must produce a boolean", value.Type())
+		return false, cost, fmt.Errorf("quorum veto produced %s, but it must produce a boolean", value.Type())
 	}
 
-	return veto, nil
+	return veto, cost, nil
 }
 
 // excludes reports whether an approving delivery's sender is one of the
@@ -549,36 +564,39 @@ func (t *QuorumTally) vetoes(
 func (t *QuorumTally) excludes(
 	ctx context.Context, identity *WorkloadIdentity, qualified string, scope *Scope, now time.Time,
 	bind func() (map[string]ref.Val, error),
-) (bool, error) {
+) (bool, uint64, error) {
+	var spent uint64
+
 	for i, expression := range t.quorum.GetExclude() {
 		names, err := bind()
 		if err != nil {
-			return false, err
+			return false, spent, err
 		}
 
-		value, err := evalWaitExpr(ctx, expression, scope, now, names)
+		value, cost, err := evalWaitExpr(ctx, expression, scope, now, names)
+		spent += cost
 		if err != nil {
-			return false, fmt.Errorf("evaluating quorum exclude[%d]: %w", i, err)
+			return false, spent, fmt.Errorf("evaluating quorum exclude[%d]: %w", i, err)
 		}
 
 		converted, err := cel.RefValueToValue(value)
 		if err != nil {
-			return false, fmt.Errorf("converting quorum exclude[%d]: %w", i, err)
+			return false, spent, fmt.Errorf("converting quorum exclude[%d]: %w", i, err)
 		}
 
 		subjects, err := excludedSubjects(converted)
 		if err != nil {
-			return false, fmt.Errorf("quorum exclude[%d] %w", i, err)
+			return false, spent, fmt.Errorf("quorum exclude[%d] %w", i, err)
 		}
 
 		if slices.ContainsFunc(subjects, func(subject string) bool {
 			return subject == identity.GetPrincipal().GetSubject() || subject == qualified
 		}) {
-			return true, nil
+			return true, spent, nil
 		}
 	}
 
-	return false, nil
+	return false, spent, nil
 }
 
 // excludedSubjects reads the strings an `exclude:` expression produced: one
@@ -729,25 +747,28 @@ const NowIdentifier = "now"
 // inside [ShapeSignalOutputs] — and is empty everywhere else. They join `now`
 // rather than replacing it, because every expression a wait holds sees the
 // clock and a shaping expression is no exception.
-func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bound map[string]ref.Val) (ref.Val, error) {
+//
+// The returned cost is the deterministic CEL cost of the evaluation, zero for a
+// literal, and it is reported with an error too: a failed evaluation spent its
+// units. Every caller hands it up so the durable driver can charge it to the
+// slice budget ([engine.executor.chargeWorkflowCost]); a wait that returns
+// without parking — a zero sleep, a past `wait_until:`, a zero signal timeout —
+// leaves no history event to pace an expensive expression otherwise (#2629).
+func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bound map[string]ref.Val) (ref.Val, uint64, error) {
 	switch kind := v.GetKind().(type) {
 	case *Value_Literal:
-		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
+		out, err := cel.ValueToRefValue(TypeAdapter, kind.Literal)
+
+		return out, 0, err
 	case *Value_Expr:
 		extra := make(map[string]ref.Val, len(bound)+1)
 		maps.Copy(extra, bound)
 		extra[NowIdentifier] = types.DefaultTypeAdapter.NativeToValue(now)
 
 		activation := scope.ActivationWith(ctx, extra)
-		// charge:exempt a wait expression is normally followed by the durable timer or
-		// signal park that consumes it, which a history event and a yield pace. Known
-		// gap: a zero or past duration, a past `wait_until:`, or a zero signal timeout
-		// returns without parking (engine waitFor schedules no timer when d <= 0), so
-		// an expensive expression there is bounded only by the step-count threshold and
-		// the per-evaluation cost limit, not charged to the slice budget (#1970, #2629).
-		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, activation)
+		return DefaultEvaluator().EvalParsedBaseWithCost(ctx, scope.GetProfile(), kind.Expr, activation)
 	default:
-		return nil, fmt.Errorf("unsupported value kind %T", kind)
+		return nil, 0, fmt.Errorf("unsupported value kind %T", kind)
 	}
 }
 
@@ -787,6 +808,14 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 // field the payload does not carry has to say so, at the step that would have
 // hidden it.
 func ShapeSignalOutputs(ctx context.Context, signal *Signal, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
+	out, _, err := ShapeSignalOutputsWithCost(ctx, signal, raw, scope, now)
+
+	return out, err
+}
+
+// ShapeSignalOutputsWithCost is [ShapeSignalOutputs] plus the deterministic CEL
+// cost of the shaping expressions, returned with an error too.
+func ShapeSignalOutputsWithCost(ctx context.Context, signal *Signal, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, uint64, error) {
 	return shapeWaitOutputs(ctx, signal.GetOutputs(), raw, scope, now)
 }
 
@@ -804,13 +833,21 @@ func ShapeSignalOutputs(ctx context.Context, signal *Signal, raw *Node_Outputs, 
 // [DeliveriesOutput], [CountOutput] and [TimedOutOutput] bound bare, over the
 // enclosing scope, plus [NowIdentifier].
 func ShapeSignalBatchOutputs(ctx context.Context, batch *SignalBatch, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
+	out, _, err := ShapeSignalBatchOutputsWithCost(ctx, batch, raw, scope, now)
+
+	return out, err
+}
+
+// ShapeSignalBatchOutputsWithCost is [ShapeSignalBatchOutputs] plus the
+// deterministic CEL cost of the shaping expressions, returned with an error too.
+func ShapeSignalBatchOutputsWithCost(ctx context.Context, batch *SignalBatch, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, uint64, error) {
 	return shapeWaitOutputs(ctx, batch.GetOutputs(), raw, scope, now)
 }
 
 // shapeWaitOutputs is the one evaluator behind both spellings' `outputs:`.
-func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, error) {
+func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_Outputs, scope *Scope, now time.Time) (*Node_Outputs, uint64, error) {
 	if len(shaping) == 0 {
-		return raw, nil
+		return raw, 0, nil
 	}
 
 	bound := make(map[string]ref.Val, len(raw.GetNamedValues()))
@@ -821,7 +858,7 @@ func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_
 		value := raw.GetNamedValues()[name]
 		converted, err := cel.ValueToRefValue(TypeAdapter, value.GetLiteral())
 		if err != nil {
-			return nil, fmt.Errorf("binding %q for outputs shaping: %w", name, err)
+			return nil, 0, fmt.Errorf("binding %q for outputs shaping: %w", name, err)
 		}
 		bound[name] = converted
 	}
@@ -833,21 +870,23 @@ func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_
 	// Continue-As-New, and evaluation order is observable through a cost limit
 	// shared by the whole set. A protobuf map has no order of its own, so
 	// without this two runs of one file could spend their budget differently.
+	var spent uint64
 	for _, name := range slices.Sorted(maps.Keys(shaping)) {
-		value, err := evalWaitExpr(ctx, shaping[name], scope, now, bound)
+		value, cost, err := evalWaitExpr(ctx, shaping[name], scope, now, bound)
+		spent += cost
 		if err != nil {
-			return nil, fmt.Errorf("evaluating outputs.%s: %w", name, err)
+			return nil, spent, fmt.Errorf("evaluating outputs.%s: %w", name, err)
 		}
 
 		literal, err := cel.RefValueToValue(value)
 		if err != nil {
-			return nil, fmt.Errorf("converting outputs.%s: %w", name, err)
+			return nil, spent, fmt.Errorf("converting outputs.%s: %w", name, err)
 		}
 
 		out.NamedValues[name] = &Value{Kind: &Value_Literal{Literal: literal}}
 	}
 
-	return out, nil
+	return out, spent, nil
 }
 
 // EvalWaitDeadline resolves a `wait_until` expression to the moment it names.
@@ -870,44 +909,54 @@ func shapeWaitOutputs(ctx context.Context, shaping map[string]*Value, raw *Node_
 // must use the workflow's own clock — reading the wall clock would make the same
 // history replay to a different answer.
 func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.Time) (time.Time, error) {
+	deadline, _, err := EvalWaitDeadlineWithCost(ctx, until, scope, now)
+
+	return deadline, err
+}
+
+// EvalWaitDeadlineWithCost is [EvalWaitDeadline] plus the deterministic CEL cost
+// of the expression, returned with an error too. A deadline already past parks
+// nothing, so this cost is what the durable driver charges to the slice budget
+// in its place (#2629).
+func EvalWaitDeadlineWithCost(ctx context.Context, until *Value, scope *Scope, now time.Time) (time.Time, uint64, error) {
 	if until == nil {
-		return time.Time{}, fmt.Errorf("wait_until has no expression")
+		return time.Time{}, 0, fmt.Errorf("wait_until has no expression")
 	}
 
-	value, err := evalWaitExpr(ctx, until, scope, now, nil)
+	value, cost, err := evalWaitExpr(ctx, until, scope, now, nil)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("evaluating wait_until: %w", err)
+		return time.Time{}, cost, fmt.Errorf("evaluating wait_until: %w", err)
 	}
 
 	switch resolved := value.Value().(type) {
 	case time.Time:
-		return resolved, nil
+		return resolved, cost, nil
 
 	case time.Duration:
 		// A relative wait spelled as a duration. `sleep:` says the same thing
 		// more plainly, but an expression that computes one is reasonable.
-		return now.Add(resolved), nil
+		return now.Add(resolved), cost, nil
 
 	case string:
 		parsed, err := time.Parse(time.RFC3339, resolved)
 		if err != nil {
-			return time.Time{}, fmt.Errorf(
+			return time.Time{}, cost, fmt.Errorf(
 				"wait_until produced %q, which is not an RFC 3339 time: %w", textbound.Truncate(resolved, maxErrorValueBytes), err)
 		}
-		return parsed, nil
+		return parsed, cost, nil
 
 	case int64:
-		return time.Unix(resolved, 0).UTC(), nil
+		return time.Unix(resolved, 0).UTC(), cost, nil
 
 	case bool:
 		// The mistake this is most likely to be, so it gets the answer rather
 		// than a type error: whatever the author meant, a boolean cannot say
 		// when to stop waiting.
-		return time.Time{}, fmt.Errorf(
+		return time.Time{}, cost, fmt.Errorf(
 			"wait_until produced a boolean, but it must produce a time; a condition over step outputs cannot change while the workload waits — use `sleep:` for a delay, or `wait_for_signal:` to wait for something outside the workload")
 
 	default:
-		return time.Time{}, fmt.Errorf(
+		return time.Time{}, cost, fmt.Errorf(
 			"wait_until produced %s, but it must produce a time (an RFC 3339 string, a timestamp, or Unix seconds)", value.Type())
 	}
 }
@@ -929,24 +978,34 @@ func EvalWaitDeadline(ctx context.Context, until *Value, scope *Scope, now time.
 // It returns an error for a wait that is not a sleep at all, because a caller
 // asking a signal how long it sleeps has confused two things.
 func EvalWaitDuration(ctx context.Context, wait *Wait, scope *Scope, now time.Time) (time.Duration, error) {
+	d, _, err := EvalWaitDurationWithCost(ctx, wait, scope, now)
+
+	return d, err
+}
+
+// EvalWaitDurationWithCost is [EvalWaitDuration] plus the deterministic CEL cost
+// of the expression, returned with an error too. A sleep that computes zero
+// schedules no timer, so this cost is what the durable driver charges to the
+// slice budget in its place (#2629).
+func EvalWaitDurationWithCost(ctx context.Context, wait *Wait, scope *Scope, now time.Time) (time.Duration, uint64, error) {
 	switch kind := wait.GetKind().(type) {
 	case *Wait_Duration:
-		return kind.Duration.AsDuration(), nil
+		return kind.Duration.AsDuration(), 0, nil
 
 	case *Wait_DurationExpr:
-		d, err := evalDuration(ctx, kind.DurationExpr, scope, now, "sleep")
+		d, cost, err := evalDuration(ctx, kind.DurationExpr, scope, now, "sleep")
 		if err != nil {
-			return 0, err
+			return 0, cost, err
 		}
 		if d < 0 {
-			return 0, fmt.Errorf(
+			return 0, cost, fmt.Errorf(
 				"sleep computed %s, and a wait cannot run backwards; guard the expression, as in ${until > now ? until - now : duration('0s')}", d)
 		}
 
-		return d, nil
+		return d, cost, nil
 
 	default:
-		return 0, fmt.Errorf("wait is not a sleep")
+		return 0, 0, fmt.Errorf("wait is not a sleep")
 	}
 }
 
@@ -969,24 +1028,34 @@ func EvalWaitDuration(ctx context.Context, wait *Wait, scope *Scope, now time.Ti
 // mistake while somebody can still fix it; the alternative is a workload that
 // looks like it is waiting patiently.
 func EvalWaitTimeout(ctx context.Context, wait *Wait, scope *Scope, now time.Time) (timeout time.Duration, bounded bool, err error) {
+	timeout, bounded, _, err = EvalWaitTimeoutWithCost(ctx, wait, scope, now)
+
+	return timeout, bounded, err
+}
+
+// EvalWaitTimeoutWithCost is [EvalWaitTimeout] plus the deterministic CEL cost
+// of the expression, returned with an error too. A zero timeout parks no timer,
+// so this cost is what the durable driver charges to the slice budget in its
+// place (#2629).
+func EvalWaitTimeoutWithCost(ctx context.Context, wait *Wait, scope *Scope, now time.Time) (timeout time.Duration, bounded bool, cost uint64, err error) {
 	if wait.GetTimeoutExpr() != nil {
-		d, err := evalDuration(ctx, wait.GetTimeoutExpr(), scope, now, "wait_for_signal timeout")
+		d, cost, err := evalDuration(ctx, wait.GetTimeoutExpr(), scope, now, "wait_for_signal timeout")
 		if err != nil {
-			return 0, false, err
+			return 0, false, cost, err
 		}
 		if d < 0 {
-			return 0, false, fmt.Errorf(
+			return 0, false, cost, fmt.Errorf(
 				"wait_for_signal timeout computed %s; a negative timeout is how this engine spells \"no timeout\", so it is refused rather than silently making the wait unbounded — guard the expression, as in ${deadline > now ? deadline - now : duration('0s')}", d)
 		}
 
-		return d, true, nil
+		return d, true, cost, nil
 	}
 
 	if literal := wait.GetTimeout(); literal != nil {
-		return literal.AsDuration(), true, nil
+		return literal.AsDuration(), true, 0, nil
 	}
 
-	return 0, false, nil
+	return 0, false, 0, nil
 }
 
 // evalDuration evaluates one expression and reads a duration out of what it
@@ -1004,31 +1073,31 @@ func EvalWaitTimeout(ctx context.Context, wait *Wait, scope *Scope, now time.Tim
 // nanoseconds, and CEL's own answer (nanoseconds, since that is what a duration
 // holds) is the one an author is least likely to mean. The message names both
 // spellings that are unambiguous.
-func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, label string) (time.Duration, error) {
-	value, err := evalWaitExpr(ctx, v, scope, now, nil)
+func evalDuration(ctx context.Context, v *Value, scope *Scope, now time.Time, label string) (time.Duration, uint64, error) {
+	value, cost, err := evalWaitExpr(ctx, v, scope, now, nil)
 	if err != nil {
-		return 0, fmt.Errorf("evaluating %s: %w", label, err)
+		return 0, cost, fmt.Errorf("evaluating %s: %w", label, err)
 	}
 
 	switch resolved := value.Value().(type) {
 	case time.Duration:
-		return resolved, nil
+		return resolved, cost, nil
 
 	case string:
 		parsed, err := ParseDuration(resolved)
 		if err != nil {
-			return 0, fmt.Errorf(
+			return 0, cost, fmt.Errorf(
 				"%s produced %q, which is not a duration; write it as 30s, 5m, 1h, or 7d", label, textbound.Truncate(resolved, maxErrorValueBytes))
 		}
 
-		return parsed, nil
+		return parsed, cost, nil
 
 	case int64:
-		return 0, fmt.Errorf(
+		return 0, cost, fmt.Errorf(
 			"%s produced the number %d, and a number does not say what unit it counts; write duration('30s'), or seconds(30), minutes(5), hours(2), days(7)", label, resolved)
 
 	default:
-		return 0, fmt.Errorf(
+		return 0, cost, fmt.Errorf(
 			"%s produced %s, but it must produce a duration — duration('720h'), days(30), or a string like 30s, 5m, 1h, 7d", label, value.Type())
 	}
 }

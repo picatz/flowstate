@@ -151,6 +151,21 @@ type StepsOutputActivation struct {
 	// stored expression needs it, so the common case — every output a literal —
 	// allocates nothing.
 	remaining *int
+
+	// lazyCost is the cost of the stored expressions this activation resolved
+	// itself, children included: a child's own total is folded in when its
+	// evaluation returns, so each level reports what ran beneath it. Read and
+	// cleared by [Evaluator] after the evaluation that owned this activation,
+	// which is what puts it in the cost the caller charges to the slice budget.
+	lazyCost uint64
+}
+
+// takeLazyCost implements lazyCostTaker.
+func (e *StepsOutputActivation) takeLazyCost() uint64 {
+	cost := e.lazyCost
+	e.lazyCost = 0
+
+	return cost
 }
 
 // evaluator returns the evaluator to use, defaulting to the shared one.
@@ -615,10 +630,13 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 			// which is what makes it a bound on the total.
 			remaining: e.remaining,
 		}
-		// charge:exempt a stored expression resolved lazily under an outer evaluation;
-		// bounded per resolution by maxActivationEvaluations and maxActivationDepth, and
-		// its own cost is not added to the workflow-slice budget (#1970, #2627).
-		return e.evaluator().EvalParsedBase(e.context(), e.Profile, v.GetExpr(), cel.Activation(child))
+		// The child's own lazy cost is folded into the cost returned here, so the
+		// total reaches the evaluation that owns this activation. Counted on error
+		// too: a failed resolution spent its units.
+		out, cost, err := e.evaluator().EvalParsedBaseWithCost(e.context(), e.Profile, v.GetExpr(), cel.Activation(child))
+		e.lazyCost += cost
+
+		return out, err
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
 

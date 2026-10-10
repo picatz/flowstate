@@ -82,14 +82,20 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// [v1.EvalWaitDuration]. The clock is `workflow.Now`, which replays to the
 		// instant it first returned, which is what makes an expression naming
 		// `now` safe in workflow code.
-		d, err := v1.EvalWaitDuration(evalContext(), wait, e.scope, workflow.Now(e.ctx))
+		d, cost, err := v1.EvalWaitDurationWithCost(evalContext(), wait, e.scope, workflow.Now(e.ctx))
+		// Charged before the error check, and charged here at all: a sleep that
+		// computes zero schedules no timer, so no history event paces the
+		// expression and a loop of them would otherwise spend unbounded CEL
+		// the slice budget never sees (#2629).
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
 		return e.waitFor(node, d)
 
 	case *v1.Wait_Until:
-		deadline, err := v1.EvalWaitDeadline(evalContext(), kind.Until, e.scope, workflow.Now(e.ctx))
+		deadline, cost, err := v1.EvalWaitDeadlineWithCost(evalContext(), kind.Until, e.scope, workflow.Now(e.ctx))
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -99,7 +105,8 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		return e.waitFor(node, deadline.Sub(workflow.Now(e.ctx)))
 
 	case *v1.Wait_Signal:
-		timeout, bounded, err := v1.EvalWaitTimeout(evalContext(), wait, e.scope, workflow.Now(e.ctx))
+		timeout, bounded, cost, err := v1.EvalWaitTimeoutWithCost(evalContext(), wait, e.scope, workflow.Now(e.ctx))
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -120,8 +127,9 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// clock a shaping expression sees is the moment the wait *ended*, which
 		// is the only reading of `now` that is true here. It replays to the same
 		// instant, so this is deterministic like every other read of it.
-		shaped, err := v1.ShapeSignalOutputs(
+		shaped, cost, err := v1.ShapeSignalOutputsWithCost(
 			evalContext(), kind.Signal, outputs, e.scope, workflow.Now(e.ctx))
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -136,7 +144,8 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// about what a written-but-zero `timeout:` means. That equivalence is
 		// why `timeout` stayed on [v1.Wait] rather than being restated on the
 		// new message.
-		timeout, bounded, err := v1.EvalWaitTimeout(evalContext(), wait, e.scope, workflow.Now(e.ctx))
+		timeout, bounded, cost, err := v1.EvalWaitTimeoutWithCost(evalContext(), wait, e.scope, workflow.Now(e.ctx))
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -157,8 +166,9 @@ func (e *executor) runWait(node *v1.Node, wait *v1.Wait) error {
 		// above — see [v1.ShapeSignalBatchOutputs], which is literally the same
 		// evaluator, so a driver cannot shape a batch differently from a single
 		// wait.
-		shaped, err := v1.ShapeSignalBatchOutputs(
+		shaped, cost, err := v1.ShapeSignalBatchOutputsWithCost(
 			evalContext(), kind.SignalBatch, outputs, e.scope, workflow.Now(e.ctx))
+		e.chargeWorkflowCost(cost)
 		if err != nil {
 			return nodeFailed(err)
 		}
@@ -278,7 +288,8 @@ func (e *executor) waitForSignal(node *v1.Node, signal *v1.Signal, timeout time.
 	// that fails to evaluate does, and the local driver fails at the same point:
 	// a gate that parks with no question would leave an approver looking at a
 	// blank where the decision was meant to be.
-	prompt, promptCut, err := v1.EvalSignalPrompt(evalContext(), signal, e.scope, workflow.Now(e.ctx))
+	prompt, promptCut, cost, err := v1.EvalSignalPromptWithCost(evalContext(), signal, e.scope, workflow.Now(e.ctx))
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, nodeFailed(err)
 	}
@@ -489,7 +500,8 @@ func (e *executor) waitForSignals(node *v1.Node, batch *v1.SignalBatch, timeout 
 	// wait announces itself. [v1.EvalSignalBatchPrompt] is [v1.EvalSignalPrompt]
 	// under another name for precisely this reason — the two must not be able
 	// to drift in what they refuse or how they bound.
-	prompt, promptCut, err := v1.EvalSignalBatchPrompt(evalContext(), batch, e.scope, workflow.Now(e.ctx))
+	prompt, promptCut, cost, err := v1.EvalSignalBatchPromptWithCost(evalContext(), batch, e.scope, workflow.Now(e.ctx))
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, nodeFailed(err)
 	}
@@ -617,7 +629,10 @@ func (e *executor) waitForQuorum(node *v1.Node, batch *v1.SignalBatch, timeout t
 	channel := workflow.GetSignalChannel(e.ctx, name)
 
 	take := func(delivery *v1.SignalDelivery) error {
-		return tally.Take(evalContext(), delivery, e.scope, workflow.Now(e.ctx))
+		cost, err := tally.TakeWithCost(evalContext(), delivery, e.scope, workflow.Now(e.ctx))
+		e.chargeWorkflowCost(cost)
+
+		return err
 	}
 
 	// Carried before the channel, for [executor.waitForSignals]'s reason: a
@@ -664,7 +679,8 @@ func (e *executor) waitForQuorum(node *v1.Node, batch *v1.SignalBatch, timeout t
 		deadline = timestamppb.New(workflow.Now(e.ctx).Add(timeout))
 	}
 
-	prompt, promptCut, err := v1.EvalSignalBatchPrompt(evalContext(), batch, e.scope, workflow.Now(e.ctx))
+	prompt, promptCut, cost, err := v1.EvalSignalBatchPromptWithCost(evalContext(), batch, e.scope, workflow.Now(e.ctx))
+	e.chargeWorkflowCost(cost)
 	if err != nil {
 		return nil, nodeFailed(err)
 	}

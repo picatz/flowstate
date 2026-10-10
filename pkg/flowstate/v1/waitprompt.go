@@ -96,6 +96,16 @@ const PromptWithheldSecret = "[prompt withheld: it names a secret]"
 // goes through. The wait's own result is deliberately absent: `payload`,
 // `sender` and `timed_out` do not exist yet when the question is asked.
 func EvalSignalPrompt(ctx context.Context, signal *Signal, scope *Scope, now time.Time) (prompt string, truncated bool, err error) {
+	prompt, truncated, _, err = EvalSignalPromptWithCost(ctx, signal, scope, now)
+
+	return prompt, truncated, err
+}
+
+// EvalSignalPromptWithCost is [EvalSignalPrompt] plus the deterministic CEL cost
+// of the expression, returned with an error too, for the durable driver to
+// charge: a zero `timeout:` ends the wait without parking, and nothing else then
+// paces the expression (#2629).
+func EvalSignalPromptWithCost(ctx context.Context, signal *Signal, scope *Scope, now time.Time) (prompt string, truncated bool, cost uint64, err error) {
 	return evalWaitPrompt(ctx, signal.GetPrompt(), scope, now, "wait_for_signal")
 }
 
@@ -108,13 +118,21 @@ func EvalSignalPrompt(ctx context.Context, signal *Signal, scope *Scope, now tim
 // in a diagnostic differs, because an author reading it needs to be told which
 // key they wrote.
 func EvalSignalBatchPrompt(ctx context.Context, batch *SignalBatch, scope *Scope, now time.Time) (prompt string, truncated bool, err error) {
+	prompt, truncated, _, err = EvalSignalBatchPromptWithCost(ctx, batch, scope, now)
+
+	return prompt, truncated, err
+}
+
+// EvalSignalBatchPromptWithCost is [EvalSignalPromptWithCost] for the batch
+// spelling, as [EvalSignalBatchPrompt] is for [EvalSignalPrompt].
+func EvalSignalBatchPromptWithCost(ctx context.Context, batch *SignalBatch, scope *Scope, now time.Time) (prompt string, truncated bool, cost uint64, err error) {
 	return evalWaitPrompt(ctx, batch.GetPrompt(), scope, now, "wait_for_signals")
 }
 
 // evalWaitPrompt is the one evaluator behind both spellings' `prompt:`.
-func evalWaitPrompt(ctx context.Context, value *Value, scope *Scope, now time.Time, key string) (prompt string, truncated bool, err error) {
+func evalWaitPrompt(ctx context.Context, value *Value, scope *Scope, now time.Time, key string) (prompt string, truncated bool, cost uint64, err error) {
 	if value == nil {
-		return "", false, nil
+		return "", false, 0, nil
 	}
 
 	// The fail-closed layer a specification built in process can still reach.
@@ -124,12 +142,12 @@ func evalWaitPrompt(ctx context.Context, value *Value, scope *Scope, now time.Ti
 	// marker rather than the secret, and rather than an error, per this file's
 	// doc.
 	if holdsReference(value) {
-		return PromptWithheldSecret, false, nil
+		return PromptWithheldSecret, false, 0, nil
 	}
 
-	evaluated, err := evalWaitExpr(ctx, value, scope, now, nil)
+	evaluated, cost, err := evalWaitExpr(ctx, value, scope, now, nil)
 	if err != nil {
-		return "", false, fmt.Errorf("evaluating %s prompt: %w", key, err)
+		return "", false, cost, fmt.Errorf("evaluating %s prompt: %w", key, err)
 	}
 
 	text, ok := evaluated.Value().(string)
@@ -138,14 +156,14 @@ func evalWaitPrompt(ctx context.Context, value *Value, scope *Scope, now time.Ti
 		// rendering a map or a number through whatever Go's default formatting
 		// happens to produce would put an author's mistake in front of an
 		// approver instead of in front of the author.
-		return "", false, fmt.Errorf(
+		return "", false, cost, fmt.Errorf(
 			"%s prompt produced %s, and a prompt is the sentence an approver reads, so it has to be a string",
 			key, evaluated.Type())
 	}
 
 	bounded, cut := boundPrompt(text)
 
-	return bounded, cut, nil
+	return bounded, cut, cost, nil
 }
 
 // boundPrompt cuts text to [MaxWaitPromptBytes] and reports whether it cut.
