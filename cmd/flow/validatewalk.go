@@ -314,7 +314,7 @@ func validatePluginRequirements(target validateTarget, catalog *v1.PluginCatalog
 		return nil
 	}
 
-	if err := v1.ResolvePlugins(wf, catalog); err != nil {
+	if err := v1.CheckPluginRequirements(wf, catalog); err != nil {
 		// Positioned at the `plugins:` block, which is what the requirement is a
 		// property of. The resolver names the plugin, the version the file asked
 		// for, and the version the deployment has — the triple an author acts on

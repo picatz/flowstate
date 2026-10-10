@@ -3,6 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sync"
+	"syscall"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
@@ -33,10 +39,12 @@ import (
 // Two decisions are worth reading before changing anything here, because both
 // are the shape #835 argued rather than a new one:
 //
-//   - It is opt-in from the command line and from nowhere else. Without
-//     --plugin-catalog (and without --plugin-dir) these verbs consult this
-//     build's own tasks, a step naming a plugin task still gets
-//     unknownTaskMessage's installation question, and nothing on disk is read.
+//   - It is opt-in from the command line, or from a plugins.lock.json that sits
+//     above the very file being checked ([discoverPluginLock], added for the
+//     shipped examples and trusted exactly as that file is). Without either,
+//     and without --plugin-dir, these verbs consult this build's own tasks, a
+//     step naming a plugin task still gets unknownTaskMessage's installation
+//     question, and nothing on disk is read.
 //   - A catalog that fails to *load* fails the command, naming the file, and
 //     nothing is validated, listed or rewritten. Carrying on with the registry
 //     there is would report every task the catalog was carrying as an unknown
@@ -92,17 +100,23 @@ func pluginCatalogPath(cmd *cobra.Command) string {
 // every task in it, returning the catalog so a `plugins:` requirement resolves
 // against the same document ([validatePluginRequirements]).
 //
-// It returns (nil, nil) when no catalog was named, which is every invocation in
-// the tree today.
+// It returns (nil, nil) when no catalog was named and none is discovered above
+// the anchors (the files the verb was asked about; none for a verb with no
+// file, and none for standard input).
 //
 // Registration is against [v1.DefaultRegistry] for the reason [startPlugins]
 // records: that is the registry every lookup consults, and a registry made for
 // the occasion would be a catalog that loaded, parsed, rebuilt every task, and
 // answered `unknown task`.
-func loadPluginCatalog(cmd *cobra.Command) (*v1.PluginCatalog, error) {
+func loadPluginCatalog(cmd *cobra.Command, anchors ...string) (*v1.PluginCatalog, error) {
 	path := pluginCatalogPath(cmd)
 	if path == "" {
-		return nil, nil
+		discovered, err := discoverPluginCatalogFor(cmd, anchors)
+		if err != nil || discovered == "" {
+			return nil, err
+		}
+
+		return registerPluginCatalog(discovered)
 	}
 
 	// An ambient search path loses to an explicit catalog, and says so once.
@@ -117,6 +131,15 @@ func loadPluginCatalog(cmd *cobra.Command) (*v1.PluginCatalog, error) {
 			pluginSearchPathEnv, pluginCatalogFlag, path)
 	}
 
+	return registerPluginCatalog(path)
+}
+
+// registerPluginCatalog reads one catalog document and registers its tasks. It
+// is the only loader: a catalog named with --plugin-catalog and one discovered
+// next to a Flowfile ([discoverPluginLock]) are read, bounded, rebuilt and
+// registered by this one function, so a discovered lock can be no more than a
+// named one is.
+func registerPluginCatalog(path string) (*v1.PluginCatalog, error) {
 	catalog, err := readPluginCatalog(path)
 	if err != nil {
 		return nil, err
@@ -242,6 +265,188 @@ func registerDeploymentCatalog(cmd *cobra.Command, client flowstatev1connect.Wor
 			return fmt.Errorf("registering the deployment's task %q: %w", def.Name, err)
 		}
 	}
+
+	return nil
+}
+
+// pluginLockName is the file [discoverPluginLock] looks for: what
+// `flow plugins --output json` writes and `make plugin-example-catalog-update`
+// keeps for the shipped examples.
+const pluginLockName = "plugins.lock.json"
+
+// maxPluginLockDepth bounds the upward walk, counted in directories visited
+// including the starting one. A path deeper than this is not a repository
+// layout anyone wrote; it is a loop or an attack, and an unbounded walk over a
+// path the caller did not choose is work spent where nothing limits it.
+const maxPluginLockDepth = 32
+
+// discoverPluginCatalogFor is the discovery half of [loadPluginCatalog]: it
+// answers "" (read nothing, today's behavior) unless nothing more explicit has
+// spoken. Order of authority:
+//
+//  1. --plugin-catalog, handled by the caller, always wins.
+//  2. Plugins launched by --plugin-dir (or $FLOWSTATE_PLUGIN_DIR) already form
+//     the registry, and a catalog-only definition must not replace a launched
+//     one, so discovery stands down.
+//  3. Otherwise the lock found upward from the files named, if any.
+func discoverPluginCatalogFor(cmd *cobra.Command, anchors []string) (string, error) {
+	if dirs, _ := cmd.Flags().GetStringArray("plugin-dir"); len(dirs) > 0 {
+		return "", nil
+	}
+
+	path, err := discoverPluginLock(anchors)
+	if err != nil || path == "" {
+		return "", err
+	}
+
+	if verbose, _ := cmd.Flags().GetBool("verbose"); verbose {
+		fmt.Fprintf(cmd.ErrOrStderr(), "plugin tasks checked against %s, found next to the files named.\n", path)
+	}
+
+	return path, nil
+}
+
+// discoverPluginLock finds the plugins.lock.json that governs the paths named,
+// the way `go` finds go.mod: the nearest one in the file's directory or an
+// ancestor. It returns "" when there is none.
+//
+// Trust. A discovered lock is exactly as trusted as the Flowfile beside it: it
+// decides which plugin task names, input shapes and outputs this process
+// believes in while it checks that file, the same authority the file already
+// has over its own steps. It starts no process and runs no plugin code; it is
+// read through [registerPluginCatalog], bounded and rebuilt like a named one.
+// What it must not do is quietly shrink the answer, so:
+//
+//   - A lock that is present but is a symbolic link, is not a regular file, or
+//     does not load is an error naming it. Never skipped, never searched past:
+//     carrying on to a parent would validate against a different document than
+//     the one next to the file.
+//   - Symbolic links are not followed, so a lock cannot point out of the tree.
+//   - The walk visits at most [maxPluginLockDepth] directories per path.
+//   - Paths whose nearest locks differ are refused rather than merged, because
+//     the registry is one per process; so is naming some files under a lock and
+//     some under none. Name --plugin-catalog to say which document you mean.
+//
+// "-" (standard input) has no location and contributes nothing.
+func discoverPluginLock(anchors []string) (string, error) {
+	var found, unlocked string
+
+	for _, anchor := range anchors {
+		if anchor == "" || anchor == "-" {
+			continue
+		}
+
+		lock, err := nearestPluginLock(anchor)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case lock == "":
+			unlocked = anchor
+		case found != "" && found != lock:
+			return "", newUsageError(fmt.Errorf(
+				"the files named are governed by different plugin locks (%s and %s) and one process "+
+					"can check against only one; run them separately or name the one you mean with --%s",
+				found, lock, pluginCatalogFlag))
+		default:
+			found = lock
+		}
+	}
+
+	if found != "" && unlocked != "" {
+		return "", newUsageError(fmt.Errorf(
+			"the files named are governed by %s but %s is under no plugin lock, and one process cannot "+
+				"check some files against a lock and others against none; run them separately or name "+
+				"the one you mean with --%s", found, unlocked, pluginCatalogFlag))
+	}
+
+	return found, nil
+}
+
+// nearestPluginLock walks up from one path, bounded by [maxPluginLockDepth].
+func nearestPluginLock(anchor string) (string, error) {
+	abs, err := filepath.Abs(anchor)
+	if err != nil {
+		return "", fmt.Errorf("resolving %s to look for %s: %w", anchor, pluginLockName, err)
+	}
+
+	dir := abs
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+		dir = filepath.Dir(abs)
+	}
+
+	for range maxPluginLockDepth {
+		candidate := filepath.Join(dir, pluginLockName)
+
+		info, err := os.Lstat(candidate)
+		switch {
+		case err == nil:
+			if info.Mode()&os.ModeSymlink != 0 {
+				return "", fmt.Errorf("%s is a symbolic link; a discovered plugin lock is not followed "+
+					"out of its directory, so name the real file with --%s", candidate, pluginCatalogFlag)
+			}
+			if !info.Mode().IsRegular() {
+				return "", fmt.Errorf("%s is not a regular file (%s)", candidate, info.Mode().Type())
+			}
+
+			return candidate, nil
+		case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+		default:
+			return "", fmt.Errorf("looking for %s: %w", candidate, err)
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", nil
+		}
+		dir = parent
+	}
+
+	return "", nil
+}
+
+// lockDiscovery is discovery for a long-lived process, `flow lsp`, which sees
+// documents one at a time instead of a command line: each file it is asked
+// about is looked up with [nearestPluginLock], and a lock is registered once
+// per (size, modification time), so a keystroke-rate caller does not re-read
+// an unchanged document and an edited lock is picked up without a restart.
+// Registration is the one loader, [registerPluginCatalog]. The registry is
+// the process's, so locks found for different documents accumulate; an
+// editor with two repositories open sees the union, which the one-shot verbs
+// refuse ([discoverPluginLock]) because they have a definite answer to give.
+type lockDiscovery struct {
+	mu   sync.Mutex
+	seen map[string]lockStamp
+}
+
+type lockStamp struct {
+	size int64
+	mod  time.Time
+}
+
+func (d *lockDiscovery) discover(docPath string) error {
+	lock, err := nearestPluginLock(docPath)
+	if err != nil || lock == "" {
+		return err
+	}
+	info, err := os.Lstat(lock)
+	if err != nil {
+		return err
+	}
+	stamp := lockStamp{size: info.Size(), mod: info.ModTime()}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.seen[lock] == stamp {
+		return nil
+	}
+	if _, err := registerPluginCatalog(lock); err != nil {
+		return err
+	}
+	if d.seen == nil {
+		d.seen = map[string]lockStamp{}
+	}
+	d.seen[lock] = stamp
 
 	return nil
 }

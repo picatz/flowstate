@@ -41,8 +41,8 @@ func runScheduleCreate(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := loadPluginCatalog(cmd); err != nil {
-		return fmt.Errorf("--%s names what this scheduled file is checked against, and it could not be read: %w", pluginCatalogFlag, err)
+	if _, err := loadPluginCatalog(cmd, args[0]); err != nil {
+		return fmt.Errorf("the plugin catalog (--%s, or the %s found next to this file) is what this scheduled file is checked against, and it could not be read: %w", pluginCatalogFlag, pluginLockName, err)
 	}
 
 	workflow, err := loadWorkflow(args[0])

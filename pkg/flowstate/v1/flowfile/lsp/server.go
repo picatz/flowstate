@@ -50,10 +50,23 @@ type FlowfileServer struct {
 	// which is the same answer `flow validate` gives in a process that launched
 	// nothing.
 	//
-	// The registry is read, never written. It is set before the first request
-	// and shared with whatever else reads it, so a server must not register into
-	// it.
+	// The server itself never writes the registry. Only the host does: at start-up,
+	// and through [FlowfileServer.PluginCatalog], which registers descriptors a
+	// plugin catalog carries and is safe for concurrent use.
 	Tasks *v1.Registry
+
+	// PluginCatalog, when set, is asked about the file behind each document as
+	// it is opened, before the document is built, so that a plugin catalog
+	// found next to the file (plugins.lock.json, as `flow validate` finds it)
+	// can teach [FlowfileServer.Tasks] the plugin tasks the file names. It is
+	// given the file's filesystem path and reads descriptors only; it launches
+	// nothing. A document with no filesystem path is not asked.
+	//
+	// A returned error is shown to the person as a window message and logged,
+	// and the document is built from what the registry already knows: a lock
+	// that is present but unreadable is reported, never silently ignored.
+	// The hook registers into the registry, which is safe for concurrent use.
+	PluginCatalog func(path string) error
 
 	docs documentStore
 
@@ -235,6 +248,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
+		s.discoverPluginCatalog(ctx, conn, params.TextDocument.URI)
 		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, s.tasks())
 		s.publish(ctx, conn, doc)
 		s.rememberInterface(doc)
@@ -1028,7 +1042,29 @@ func (s *FlowfileServer) notify(ctx context.Context, conn *jsonrpc2.Conn, params
 	}
 }
 
-// logger returns the configured logger, or the default one.
+// discoverPluginCatalog runs the [FlowfileServer.PluginCatalog] hook for one
+// document and says so loudly when it fails.
+func (s *FlowfileServer) discoverPluginCatalog(ctx context.Context, conn *jsonrpc2.Conn, uri lsp.DocumentURI) {
+	if s.PluginCatalog == nil {
+		return
+	}
+	path, ok := (&document{uri: uri}).filesystemPath()
+	if !ok {
+		return
+	}
+	err := s.PluginCatalog(path)
+	if err == nil {
+		return
+	}
+	s.logger().Error("plugin catalog next to a document could not be used", "uri", uri, "error", err)
+	if nerr := conn.Notify(ctx, "window/showMessage", lsp.ShowMessageParams{
+		Type:    lsp.MTWarning,
+		Message: "Plugin catalog not used, so plugin tasks may read as unknown: " + err.Error(),
+	}); nerr != nil {
+		s.logger().Warn("showing plugin catalog message failed", "error", nerr)
+	}
+}
+
 // tasks returns the registry this server answers from.
 //
 // The nil case is the zero value's, which is a usable server over the built-in

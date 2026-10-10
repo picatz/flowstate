@@ -138,8 +138,8 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	}
 	defer closePlugins()
 
-	if _, err := loadPluginCatalog(cmd); err != nil {
-		return fmt.Errorf("--%s names what this file is compiled against, and it could not be read: %w", pluginCatalogFlag, err)
+	if _, err := loadPluginCatalog(cmd, args...); err != nil {
+		return fmt.Errorf("the plugin catalog (--%s, or the %s found next to this file) is what it is compiled against, and it could not be read: %w", pluginCatalogFlag, pluginLockName, err)
 	}
 
 	path := args[0]

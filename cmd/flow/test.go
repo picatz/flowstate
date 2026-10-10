@@ -337,10 +337,10 @@ func runTest(cmd *cobra.Command, paths []string) error {
 	// tasks it carries exist for the compiler, and so that a stub naming one it
 	// does not carry is refused rather than made resolvable (#1294). Nothing is
 	// launched: stubbing needs the catalog's facts, never a plugin process.
-	catalog, err := loadPluginCatalog(cmd)
+	catalog, err := loadPluginCatalog(cmd, paths...)
 	if err != nil {
-		return fmt.Errorf("the catalog on --%s is what these suites' stubs are checked against, "+
-			"and it could not be read, so nothing was run: %w", pluginCatalogFlag, err)
+		return fmt.Errorf("the plugin catalog (--%s, or the %s found next to these suites) is what their stubs are checked against, "+
+			"and it could not be read, so nothing was run: %w", pluginCatalogFlag, pluginLockName, err)
 	}
 	// The root's own persistent -v/--verbose, reused rather than shadowed
 	// (#929 slice 2): under `flow test` it additionally means "show every
