@@ -12,7 +12,7 @@ types:
   ChannelId:
     description: A stable Slack conversation ID, never a channel name.
     type: string
-    must: this.matches("^[CDG][A-Z0-9]{8,}$")
+    must: this.matches("^[CDG][A-Z0-9]{8,254}$")
     example: C123APPROVAL
   MessageKey:
     description: A UUID chosen once for one logical message and reused unchanged only for it.
