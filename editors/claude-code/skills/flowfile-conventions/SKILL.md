@@ -67,9 +67,12 @@ This is the one place the rule is stated; the agents link here.
   or one the user said is on their own machine; any other address, or any
   doubt, is shared). Find a working target yourself, start runs, send
   signals, replay, and verify end to end, then report what you did. A probe
-  that fails against an unreachable or denied endpoint is yours to repoint: try
-  a public HTTPS endpoint that the egress policy allows, or stub the service
-  with a `flow test` stub or a local echo task. Do not ask the user for an
+  that fails against an unreachable or denied endpoint is yours to repoint only
+  when it is a data-free, non-mutating probe (a GET with no body, no secret or
+  credential header): try a public HTTPS endpoint that the egress policy
+  allows. Any request that carries a body, a secret-backed header or a
+  credential, or that mutates, is stubbed instead, with a `flow test` stub or a
+  local echo task; never aim it at an unrelated public service. Do not ask the user for an
   endpoint. Do not propose `--auth` or a server restart for a laptop dev
   server unless the task is about auth. "Without asking" means no extra
   question in chat: the host's permission prompt for `flow run` and similar
