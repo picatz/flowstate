@@ -1,8 +1,8 @@
 # A module that builds a record from parts: `Block` and `Message` are the shapes, and
 # `section`, `divider` and `message` are functions that return them. A record is a map
 # at run time, so a function that returns one is a map literal; the record's rules are
-# held where the value is bound (an output, an input, a call's argument), not where the
-# literal is written.
+# held where the value is bound (an output, or a callee's input at a `call:`) during the
+# run, not at `flow validate` and not where the literal is written.
 edition: v2026.4
 name: blocks
 types:

@@ -1737,13 +1737,15 @@ invariant 2 is one mechanism per concept, and a second step-sequence template be
 
 A record is a map at run time, so a function returns one with a map literal and names the
 record in `returns:`. The record's rules are held where the value is bound, not where the
-literal is written: an output, an input, a call's argument. A literal that omits a
+literal is written: an output (checked when the run completes) or the callee's input at a `call:` (checked when the call starts). A literal that omits a
 required field, adds one the record does not declare, or carries a value of the wrong
 type is refused with the path to it (`computed the field at .blocks[2].text must be at
 least 1 character(s) long`; `computed a field "oops" that Block does not declare; it
 declares "type", "text"`), on both drivers, and a type from a module (`blocks.Message`)
-holds the same way. The check is at bind time, not at the definition, because the compiler
-judges only what it can prove and a function's arguments are not known there.
+holds the same way. The check runs during the run, at those points, and not at `flow validate`:
+a function body or a literal that omits a required field validates, and fails when the value is
+bound, because the compiler judges only what it can prove and a function's arguments are not
+known at the definition.
 
 ```yaml
 use:
