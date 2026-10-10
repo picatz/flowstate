@@ -666,10 +666,14 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 				continue
 			}
 
-			if functionNamespaces[ref] || types.has(ref) {
-				// The profile's own functions and type values, which a var may
-				// absolutely use — the sentence below says so and this used to
-				// refuse them anyway.
+			if functionNamespaces[ref] {
+				// Only a namespace written as a value arrives here ([collectReferences]).
+				ds = append(ds, functionNamespaceValue("", field, ref))
+				continue
+			}
+			if types.has(ref) {
+				// The profile's own type values, which a var may absolutely use —
+				// the sentence below says so and this used to refuse them anyway.
 				continue
 			}
 
@@ -2081,7 +2085,7 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 		// is not a reference to anything. Left out of the free names here, a
 		// namespace that does arrive bare was written as a value ([functionNamespaces]).
 		qualifier := kind.CallExpr.GetTarget().GetIdentExpr().GetName()
-		if _, isBound := bound[qualifier]; isBound || !functionNamespaces[qualifier] {
+		if _, isBound := bound[qualifier]; isBound || !qualifies(kind.CallExpr.GetTarget(), kind.CallExpr.GetFunction()) {
 			collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, trigger, free, selected)
 		}
 		for _, arg := range kind.CallExpr.GetArgs() {

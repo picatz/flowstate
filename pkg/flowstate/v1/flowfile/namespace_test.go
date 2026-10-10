@@ -246,3 +246,26 @@ steps:
 		require.NotContains(t, got, "function namespace", with)
 	}
 }
+
+// TestANamespaceValueIsRefusedInVarsAndConcurrency covers the two positions that
+// used to exempt every namespace themselves, plus the valid call in each, and a
+// qualifier in front of a function it does not declare.
+func TestANamespaceValueIsRefusedInVarsAndConcurrency(t *testing.T) {
+	t.Parallel()
+
+	vars := func(expr string) string {
+		return "edition: v2026.4\nname: t\nvars:\n  x: ${" + expr +
+			"}\nsteps:\n  - id: s\n    log:\n      message: ${vars.x}\n"
+	}
+	key := func(expr string) string {
+		return "edition: v2026.4\nname: t\nconcurrency:\n  key: ${" + expr +
+			"}\n  on_conflict: reject\nsteps:\n  - id: s\n    log:\n      message: hi\n"
+	}
+	want := "`math` is a function namespace, not a value; call one of its functions, as `math.<function>(...)`"
+
+	for name, src := range map[string]func(string) string{"vars": vars, "concurrency key": key} {
+		require.Contains(t, diagnose(t, src("string(math)")), want, name)
+		require.Contains(t, diagnose(t, src("string(math.size())")), want, name+": math declares no size")
+		require.NotContains(t, diagnose(t, src("string(math.greatest(1, 2))")), "function namespace", name)
+	}
+}

@@ -250,7 +250,12 @@ func validateConcurrency(wf *v1.Workflow) Diagnostics {
 			continue
 		}
 
-		if functionNamespaces[ref] || types.has(ref) {
+		if functionNamespaces[ref] {
+			// Only a namespace written as a value arrives here ([collectReferences]).
+			ds = append(ds, functionNamespaceValue("", field, ref))
+			continue
+		}
+		if types.has(ref) {
 			continue
 		}
 

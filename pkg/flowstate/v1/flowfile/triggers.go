@@ -1759,21 +1759,30 @@ func unknownEventFields(field string, e *expr.Expr, bound map[string]struct{}) D
 		}
 	}
 
-	inner := bound
 	if c := e.GetComprehensionExpr(); c != nil {
-		inner = maps.Clone(bound)
+		// The range and the accumulator's start are evaluated outside the
+		// comprehension's own scope; the loop sees the iterators and the
+		// accumulator; the result sees only the accumulator.
+		loop, result := maps.Clone(bound), maps.Clone(bound)
 		for _, name := range []string{c.GetIterVar(), c.GetIterVar2(), c.GetAccuVar()} {
-			inner[name] = struct{}{}
+			loop[name] = struct{}{}
 		}
+		result[c.GetAccuVar()] = struct{}{}
+		for i, child := range children(e) {
+			scope := bound
+			switch i {
+			case 2, 3:
+				scope = loop
+			case 4:
+				scope = result
+			}
+			ds = append(ds, unknownEventFields(field, child, scope)...)
+		}
+
+		return ds
 	}
-	for i, child := range children(e) {
-		scope := inner
-		if e.GetComprehensionExpr() != nil && i < 2 {
-			// The range and the accumulator's start are evaluated outside the
-			// comprehension's own scope.
-			scope = bound
-		}
-		ds = append(ds, unknownEventFields(field, child, scope)...)
+	for _, child := range children(e) {
+		ds = append(ds, unknownEventFields(field, child, bound)...)
 	}
 
 	return ds
