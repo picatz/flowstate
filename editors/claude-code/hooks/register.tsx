@@ -23,7 +23,7 @@ import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
 import { GRAPH_TIMEOUT_MS, graphArgv, graphHead, graphOf, rowText, workflowName } from './graph'
 import { liveHead, liveRowText, overlayNotes, overlayStatus, sameWorkflow } from './graphstatus'
 import type { Parsed as GraphParsed } from './graph'
-import { COPY, RUN_HINT, relPath, sectionTitle } from './look'
+import { COPY, RUN_HINT, labelsFor, sectionTitle } from './look'
 import { cardLines, cardsOf, parseOutputs } from './outputs'
 import type { Cards, Declared } from './outputs'
 
@@ -642,6 +642,8 @@ export const register: Register = (on, options) => {
       )
     }
 
+    const labels = labelsFor(list.map(r => r.file))
+
     return (
       <Box flexDirection="column">
         {header('Runs', 'runs' in runs && runs.runs.length > 0 ? runs.runs.length : undefined, true)}
@@ -1050,14 +1052,14 @@ export const register: Register = (on, options) => {
         )}
         {header('Flowfiles', list.length > 0 ? list.length : undefined)}
         {list.length === 0 && <Text dimColor>  {COPY.flowfiles}</Text>}
-        {list.map(r => {
+        {list.map((r, i) => {
           const state = r.failure ? statusFor('unknown', 'could not check') : r.diagnostics.length === 0 ? statusFor('succeeded', 'valid') : statusFor('failed', 'invalid')
           const count = !r.failure && r.diagnostics.length > 0 ? ` (${r.diagnostics.length})` : ''
           return (
           <Box flexDirection="column">
             <Text>
               {'  '}
-              <Text color={COLOR[state.tone]}>{state.symbol}</Text> <Text bold>{relPath(r.file) || 'Flowfile'}</Text>{' '}
+              <Text color={COLOR[state.tone]}>{state.symbol}</Text> <Text bold>{labels[i] || 'Flowfile'}</Text>{' '}
               <Text dimColor>{state.word}{count}</Text>
             </Text>
             {r.failure && <Text dimColor>  {clean(r.failure, 120)}</Text>}

@@ -59,9 +59,37 @@ export const relPath = (file: unknown, cwd?: string): string => {
   }
   const parts = p.split('/').filter(s => s !== '' && s !== '.')
   p = parts.includes('..') ? base : parts.join('/')
+  return fit(p, base)
+}
+
+/** Cut an over-long path so its base name survives. */
+const fit = (p: string, base: string): string => {
   if (p.length <= MAX_PATH) return p
   if (base.length >= MAX_PATH - 2) return `…${base.slice(-(MAX_PATH - 1))}`
   return `${p.slice(0, Math.max(1, MAX_PATH - base.length - 2))}…/${base}`
+}
+
+const MAX_SEGMENTS = 3
+
+/**
+ * One label per file, in order: the base name when it is unique, else the
+ * shortest path suffix (up to the last three segments) that tells it from the
+ * others. Never absolute, cleaned and bounded like `relPath`; identical paths
+ * share a label, so the result is stable.
+ */
+export const labelsFor = (files: readonly unknown[]): string[] => {
+  const segs = files.map(f =>
+    slashes(clean(typeof f === 'string' ? f.slice(-1024) : f, 1024).trim())
+      .split('/')
+      .filter(s => s !== '' && s !== '.' && s !== '..')
+      .filter((s, n) => !(n === 0 && /^[A-Za-z]:$/.test(s))),
+  )
+  const tail = (i: number, k: number) => segs[i].slice(-k).join('/')
+  return segs.map((own, i) => {
+    let k = 1
+    while (k < MAX_SEGMENTS && k < own.length && segs.some((other, j) => other.join('/') !== own.join('/') && tail(j, k) === tail(i, k))) k++
+    return fit(tail(i, k), own[own.length - 1] ?? '')
+  })
 }
 
 /** One short line per empty state: what is missing, then the one next action. */
