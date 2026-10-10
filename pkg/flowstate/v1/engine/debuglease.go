@@ -975,8 +975,10 @@ const (
 	debugBacklogSummarySuffix = " pacing a backlog of asks"
 )
 
-// isSessionSeparator is what a session id may not contain; see
-// [v1.ParseTypedDebugAsk], which refuses such an id at ask time.
+// isSessionSeparator is what a session token in a lease summary may not
+// contain. Ask time does not refuse such an id (it is only length-bounded), so
+// the reader tolerates one: a summary whose session is not a single token is
+// not recognised and stays an ordinary timer row.
 func isSessionSeparator(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
 
 // ParseDebugBacklogSummary recognises the summary [debugBacklogSummary] writes
