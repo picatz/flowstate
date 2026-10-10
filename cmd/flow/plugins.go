@@ -705,7 +705,9 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 
 	if !flags.configured() {
 		if pinReport.active() {
-			return pinReport.write(surface, &v1.PluginCatalog{})
+			// An empty answer here would pass an empty pins file, or overwrite a
+			// real one through a redirect, on nothing but a forgotten flag.
+			return newUsageError(errors.New("--emit-pins and --diff-pins need a plugin directory: pass --plugin-dir or set FLOWSTATE_PLUGIN_DIR"))
 		}
 
 		// An empty answer with two meanings — nothing installed, or nowhere to

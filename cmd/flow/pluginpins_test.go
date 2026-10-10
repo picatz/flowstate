@@ -180,3 +180,14 @@ func TestPluginPinReportRefusesPinsAppliedToTheMeasurement(t *testing.T) {
 		assert.True(t, isUsageError(err))
 	}
 }
+
+func TestPluginPinReportNeedsAPluginDirectory(t *testing.T) {
+	t.Setenv("FLOWSTATE_PLUGIN_DIR", "")
+
+	for _, flag := range [][]string{{"--emit-pins"}, {"--diff-pins", "pins.yaml"}} {
+		cmd, _ := pinReportCommand(t, flag...)
+		err := runPlugins(cmd, nil)
+		require.ErrorContains(t, err, "need a plugin directory")
+		assert.True(t, isUsageError(err))
+	}
+}
