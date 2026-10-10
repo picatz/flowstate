@@ -177,8 +177,10 @@ Read the digest to pin from `flow plugins --plugin-dir DIR`, which prints it
 as `distribution_digest:` under each plugin (`flow plugins -o json` carries the
 same value as `distributionDigest`). It is the value the host measures at
 launch, and the worker's own "plugin ready" log record reports it as
-`distribution`. `flow plugins` launches each plugin without a pin to read it,
-so the printed value is what that launch measured, not an attestation. Where
+`distribution`. `flow plugins` launches each plugin with the pins you configure,
+so a pinned plugin whose binary does not match is refused rather than printed;
+the printed value is what that launch measured, not an attestation. A name with
+no pin, as in first adoption, launches unpinned. Where
 descriptor execution is unavailable (a non-Linux host, a Linux host without a
 usable `/proc`, or a script or other interpreter-run image) the host hashes
 the opened file but executes the path, so a replacement between the two could
