@@ -153,8 +153,9 @@ a server, which stays a deliberate action through the Bash guard.
 ## Graph
 
 The pane's `Graph` section draws one Flowfile's steps as text, for the file the
-`Run a Flowfile` Select has chosen (with none chosen it is an empty state naming
-the command). It is read only: it writes no file,
+`Run a Flowfile` Select has chosen. With none chosen it shows the only offered
+Flowfile, or, when several are offered, says to pick one. The Run form's own
+selection is unchanged: it still needs an explicit pick. It is read only: it writes no file,
 never passes `--live`, and contacts no server.
 
 - **One graph model.** `flow graph -o json --workflow=<name> -- <file>` (10 s)

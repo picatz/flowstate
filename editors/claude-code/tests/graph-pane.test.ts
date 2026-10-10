@@ -27,12 +27,14 @@ interface World {
   /** The Flowfile's text; 'deny' makes the read fail. */
   source?: string | 'deny'
   mtimeMs?: number
+  /** Listed Flowfile names; one deploy file by default. */
+  names?: string[]
 }
 const world: World = {}
 const limits: unknown[] = []
 
 const stub = (on: any, w: World, seen: string[][]) => {
-  Object.assign(world, { graph: GRAPH(), source: 'name: deploy\nsteps: []\n', mtimeMs: 1, ...w })
+  Object.assign(world, { graph: GRAPH(), source: 'name: deploy\nsteps: []\n', mtimeMs: 1, names: undefined, ...w })
   on('process.run', (_$: unknown, e: { argv: string[]; init?: { timeoutMs?: number }; timeoutMs?: number }) => {
     seen.push(e.argv)
     if (e.argv[1] === 'graph') {
@@ -42,7 +44,7 @@ const stub = (on: any, w: World, seen: string[][]) => {
     }
     return { value: { ...fail(`no ${e.argv[1]} stubbed`), isStdoutTruncated: false, isStderrTruncated: false } }
   })
-  on('fs.list', (_$: unknown, e: { path: string }) => ({ value: /workflows$/.test(e.path ?? '') ? [] : [entry('deploy.flow.yaml', 'file', world.mtimeMs)] }))
+  on('fs.list', (_$: unknown, e: { path: string }) => ({ value: /workflows$/.test(e.path ?? '') ? [] : (world.names ?? ['deploy.flow.yaml']).map(n => entry(n, 'file', world.mtimeMs)) }))
   on('fs.read', () => (world.source === 'deny' ? { deny: 'unreadable' } : { value: world.source }))
   on('ui.status', () => ({ value: undefined }))
   on('env.get', () => ({ value: undefined }))
@@ -58,11 +60,24 @@ const open = async ($: any, on: any, w: World = {}, pick = 'deploy.flow.yaml') =
   return { ui, seen }
 }
 
-test('with no Flowfile chosen the Graph section is an empty state naming the one command, and nothing runs', async ($, on) => {
+test('with no Flowfile chosen and exactly one on offer, the Graph shows that one without writing a pick', async ($, on) => {
   const { ui, seen } = await open($, on, {}, '')
   const all = await texts(ui)
-  expect(all).toMatch(/Graph/)
-  expect(all).toMatch(/flow graph -o json --workflow NAME -- FILE/)
+  expect(all).toMatch(/deploy\.flow\.yaml: 3 steps/)
+  expect(graphs(seen)).toHaveLength(1)
+  expect(graphs(seen)[0]).toEqual(['flow', 'graph', '-o', 'json', '--workflow=deploy', '--', 'deploy.flow.yaml'])
+  // The run form still needs an explicit pick: nothing was compiled for inputs.
+  expect(seen.filter(a => a[1] === 'compile')).toEqual([])
+  await ui.unmount()
+})
+
+test('with several Flowfiles and none chosen the Graph is a one-line invitation, and nothing runs', async ($, on) => {
+  const seen: string[][] = []
+  stub(on, { names: ['a.flow.yaml', 'b.flow.yaml'] }, seen)
+  const ui = await mount($)
+  const all = await texts(ui)
+  expect(all).toMatch(/Pick a Flowfile to see its steps\./)
+  expect(all).not.toMatch(/flow graph/)
   expect(await ui.find({ type: 'Button', text: /Refresh graph/ })).toBeUndefined()
   expect(graphs(seen)).toEqual([])
   await ui.unmount()
@@ -110,7 +125,7 @@ test('a timeout reads unreadable, and the rest of the pane (the run form, the Fl
   const all = await texts(ui)
   expect(all).toMatch(/Graph unavailable \(/)
   expect(all).toMatch(/Run a Flowfile/)
-  expect(all).toMatch(/No Flowfile edited yet this session/)
+  expect(all).toMatch(/Edit a Flowfile and it shows up here/)
   await ui.unmount()
 })
 

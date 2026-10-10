@@ -82,7 +82,7 @@ test('the pane shows a problem with its line', async ($, on) => {
   await $.tool.call({ tool: 'Write', file_path: 'a.flow.yaml', content: 'x' })
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
 
-  expect(await ui.find({ type: 'Text', text: /invalid a\.flow\.yaml/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /a\.flow\.yaml invalid \(1\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /4:5 unknown task/ })).toBeDefined()
   await ui.unmount()
 })
