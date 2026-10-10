@@ -600,12 +600,16 @@ scalar written `|` on a whole-value expression keeps the newline YAML appends, s
 `if: |` over `${...}` is a string and not a bool (#1445); the canonical spelling is
 `|-`, or the plain scalar. A fence inside a flow mapping, `log: {message: ${x}}`,
 ends the mapping at the fence's own `}` (#1466); write the block form. And a plain
-scalar holding `: ` — every ternary, `${a ? b : c}` — is a mapping key to YAML
-(#1683); quote the whole value, `'${a ? b : c}'`, as the table above and every
-example that writes a ternary do. The third is the only one that stops the file from
-parsing at all, and the compiler answers it in this language's voice with the
-quoting as a suggested edit, so `flow lint` and `flow fmt` reach the rest of the file
-once it is applied.
+scalar holding `: ` — every ternary, `${a ? b : c}`, and every string literal like
+`${"Status: " + x}` — is a mapping key to YAML (#1683); quote the whole value,
+`'${a ? b : c}'`, as the table above and every example that writes a ternary do. The
+third is the only one that stops the file from parsing at all, and the compiler
+answers it in this language's voice with the located line, the corrected line and the
+quoting as a suggested edit; `flow fix` applies it when quoting is the whole repair
+(each failing scalar quotes to exactly the text written, and the file then parses),
+and leaves the file alone otherwise. A YAML 1.1 word as a key (`n`, `y`, `no`, `on`)
+is an ordinary string key here; only `true`, `false` and `null` are not, and a loop's
+`init:` refuses those by name.
 
 **A long expression may take a line of its own.** `value: |` or `value: >` followed
 by a single `${...}` is that expression, typed as it is written — the newline the

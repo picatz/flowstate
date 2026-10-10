@@ -127,7 +127,7 @@ steps:
     http:
       url: https://example.com/
       outputs:
-        failure: ${{"kind": "network"}}
+        failure: '${{"kind": "network"}}'
   - id: react
     if: ${steps.fetch.failure.kind == "network"}
     log:

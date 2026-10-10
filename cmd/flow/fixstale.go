@@ -183,6 +183,14 @@ func findStalePins(files []string, outcomes map[string]fixOutcome) []stalePin {
 			continue
 		}
 		pins, err := flowfile.CallPins(data)
+		if err != nil && outcomes[caller].changed {
+			// A file this run repaired from YAML it could not parse (a plain
+			// scalar holding `: `) is still unparseable on disk under
+			// `--check`; its pins are the ones in the repaired bytes.
+			if fixed, fixErr := flowfile.Fix(data); fixErr == nil && fixed.Changed() {
+				pins, err = flowfile.CallPins(fixed.Source)
+			}
+		}
 		if err != nil {
 			out = append(out, stalePin{caller: caller, unreadable: err})
 			continue

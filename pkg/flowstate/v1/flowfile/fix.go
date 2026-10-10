@@ -231,14 +231,27 @@ func Fix(data []byte) (FixResult, error) {
 	// question, one answer, for the whole run.
 	modernize := modernizesEdition(data)
 
+	var repairs []FixChange
 	source := data
 	for round := 1; ; round++ {
 		result, err := fixOnce(source, modernize)
+		if err != nil && round == 1 {
+			// A document YAML refuses because a plain scalar holds a `: ` is
+			// repaired before any rule runs, since the rules read a parsed tree.
+			// The repair is all or nothing like every other: see
+			// [repairQuotedFences].
+			if repaired, changes, ok := repairQuotedFences(data); ok {
+				source, repairs = repaired, changes
+				out.Changes = slices.Clone(changes)
+				result, err = fixOnce(source, modernize)
+			}
+		}
 		if err != nil {
 			return FixResult{}, err
 		}
 		if round == 1 {
 			first = result
+			first.Changes = append(slices.Clone(repairs), first.Changes...)
 		}
 
 		out.Source = result.Source
