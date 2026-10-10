@@ -591,26 +591,33 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 
 			l.touch(id)
 
-			recorder := &mcpSessionRecorder{ResponseWriter: w}
+			// The slot is settled when the status is committed, which is before
+			// the client can read it, and not when the handler returns: a
+			// client that sees a DELETE succeed and immediately opens another
+			// session must not find the slot still held. finish covers a
+			// handler that wrote nothing.
+			recorder := &mcpSessionRecorder{ResponseWriter: w, onStatus: func(status int) {
+				switch {
+				// A DELETE the SDK accepted is the client saying the session
+				// is over.
+				case r.Method == http.MethodDelete && status >= 200 && status < 300:
+					l.release(id)
+
+				// The SDK does not know this session, so neither should this
+				// accounting. Without it, a slot outlives the session it
+				// counted: the SDK closes an idle session on its own clock,
+				// and a request naming that id afterwards would be refreshed
+				// by the touch above — held for another idle window,
+				// refreshable again, indefinitely. Slots that count nothing
+				// eventually refuse every real caller, which is this bound
+				// becoming the outage it exists to prevent. Reported by Codex
+				// on #807.
+				case status == http.StatusNotFound:
+					l.release(id)
+				}
+			}}
 			next.ServeHTTP(recorder, r)
-
-			switch {
-			// A DELETE the SDK accepted is the client saying the session is
-			// over.
-			case r.Method == http.MethodDelete && recorder.status >= 200 && recorder.status < 300:
-				l.release(id)
-
-			// The SDK does not know this session, so neither should this
-			// accounting. Without it, a slot outlives the session it counted:
-			// the SDK closes an idle session on its own clock, and a request
-			// naming that id afterwards would be refreshed by the touch above
-			// — held for another idle window, refreshable again, indefinitely.
-			// Slots that count nothing eventually refuse every real caller,
-			// which is this bound becoming the outage it exists to prevent.
-			// Reported by Codex on #807.
-			case recorder.status == http.StatusNotFound:
-				l.release(id)
-			}
+			recorder.finish()
 
 			return
 		}
@@ -625,12 +632,14 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 			return
 		}
 
-		recorder := &mcpSessionRecorder{ResponseWriter: w}
-		next.ServeHTTP(recorder, r)
 		// The reservation becomes a session when the response named one, and
 		// is simply given back when it did not — a POST that opened nothing
-		// must not hold a slot.
-		l.settle(recorder.Header().Get(mcpSessionHeader))
+		// must not hold a slot. It happens when the status is committed, so a
+		// client that has read the response can already use the session.
+		recorder := &mcpSessionRecorder{ResponseWriter: w}
+		recorder.onStatus = func(int) { l.settle(recorder.Header().Get(mcpSessionHeader)) }
+		next.ServeHTTP(recorder, r)
+		recorder.finish()
 	})
 }
 
@@ -742,20 +751,46 @@ func (l *mcpSessionLimiter) open() int {
 type mcpSessionRecorder struct {
 	http.ResponseWriter
 	status int
+	// onStatus, when set, runs once, as the status is committed and before it
+	// is passed to the underlying writer, or from finish when the handler
+	// never committed one.
+	onStatus func(status int)
+	fired    bool
 }
 
-// WriteHeader records the status on its way through.
+// commit records the status and runs onStatus the first time.
+func (r *mcpSessionRecorder) commit(status int) {
+	if r.status == 0 {
+		r.status = status
+	}
+	r.run()
+}
+
+func (r *mcpSessionRecorder) run() {
+	if r.fired || r.onStatus == nil {
+		return
+	}
+	r.fired = true
+	r.onStatus(r.status)
+}
+
+// finish runs onStatus for a handler that returned without committing a
+// status, so the accounting still settles.
+func (r *mcpSessionRecorder) finish() { r.run() }
+
+// WriteHeader records the status on its way through. An informational 1xx is
+// not the final status and settles nothing.
 func (r *mcpSessionRecorder) WriteHeader(status int) {
-	r.status = status
+	if status >= 200 {
+		r.commit(status)
+	}
 	r.ResponseWriter.WriteHeader(status)
 }
 
 // Write records the implicit 200 a handler that never called WriteHeader
 // produces, so a DELETE answered with a bare body is still read as success.
 func (r *mcpSessionRecorder) Write(b []byte) (int, error) {
-	if r.status == 0 {
-		r.status = http.StatusOK
-	}
+	r.commit(http.StatusOK)
 
 	return r.ResponseWriter.Write(b)
 }
@@ -765,6 +800,8 @@ func (r *mcpSessionRecorder) Write(b []byte) (int, error) {
 // arrive only when the handler returns; a wrapper that swallows Flush turns a
 // stream into a batch.
 func (r *mcpSessionRecorder) Flush() {
+	r.commit(http.StatusOK)
+
 	if f, ok := r.ResponseWriter.(http.Flusher); ok {
 		f.Flush()
 	}
