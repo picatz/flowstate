@@ -4,9 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"google.golang.org/protobuf/encoding/protojson"
@@ -153,15 +151,6 @@ func ParseTypedDebugAsk(payload *Node_Outputs) (*DebugAsk, bool, error) {
 		// long is not one the run will keep a receipt for.
 		return &DebugAsk{Session: truncateBytes(session, MaxDebugSessionIDBytes)}, true,
 			fmt.Errorf("a typed debug ask's session id may be %d bytes and its request id %d", MaxDebugSessionIDBytes, MaxDebugRequestIDBytes)
-	}
-
-	// A session id is one token. It is written into the lease timer's summary
-	// between fixed words, and the timeline reads it back from there, so text
-	// with whitespace or control characters (` held by ` among them) could make
-	// the summary parse as a different holder.
-	if strings.IndexFunc(session, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
-		return &DebugAsk{Session: truncateBytes(session, MaxDebugSessionIDBytes)}, true,
-			errors.New("a typed debug ask's session id may not contain whitespace or control characters")
 	}
 
 	ask := &DebugAsk{

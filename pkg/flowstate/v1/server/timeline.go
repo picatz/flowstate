@@ -217,124 +217,15 @@ func (s *FlowstateServer) getTimeline(
 	// that way needs to be told what it resolved to before they can resume.
 	out := &v1.GetTimelineResponse{RunId: execution.GetRunId()}
 
-	// What the walk carries about work still in flight, keyed by the event that
-	// scheduled it: the label written onto that scheduling, and the attempt the
-	// latest start reported. Temporal writes each once and the events that say
-	// how the work ended carry only a reference back, so this is the join.
-	//
-	// Both are dropped when that work ends, which is what bounds them: an
-	// entry lives from a scheduling to its own ending, so what is held is the
-	// work in flight rather than everything the run has ever done — and the
-	// engine already bounds that, at [v1.MaxAtomicBlockActivities], since work
-	// in flight at once is exactly what a suspension-opaque block's ceiling
-	// counts. Without the drop, a walk over a long history would instead
-	// accumulate a row per activity the run has *ever* scheduled, on the read
-	// path, charged to whoever asked.
-	inFlight := map[int64]*activityInFlight{}
-
-	// Schedulings seen per step label, for [v1.TimelineEntry.Occurrence]. Held
-	// for the whole walk since an ordinal counts every earlier scheduling, and
-	// bounded by [maxTimelineLabels].
-	occurrences := map[string]int32{}
-
 	history := temporal.GetWorkflowHistory(ctx, execution.GetWorkflowId(), execution.GetRunId(),
 		// Never a long poll. Waiting for a new event would turn a read into a
 		// held connection, on the one verb meant to be safe to point an agent
 		// at unattended.
 		false, enums.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
 
-	after := req.Msg.GetAfterEventId()
-	scanned := 0
-	assembled := 0
-	ended := false
-
-	// emit reports one row, or false when the answer is full.
-	emit := func(entry *v1.TimelineEntry) bool {
-		// The run reached its own ending, which is the claim [v1.GetTimelineResponse.Truncated]
-		// is checked against. Recorded from the walk rather than from what was
-		// reported, so a resumption that skips past the ending still knows the
-		// account is whole.
-		if entry.GetKind() == v1.TimelineEntry_KIND_RUN_ENDED ||
-			entry.GetKind() == v1.TimelineEntry_KIND_RUN_CONTINUED {
-			ended = true
-		}
-
-		// Skipped after the joins are made, never before: the scheduling a
-		// resumption walks past is what names the rows it will report.
-		if entry.GetEventId() <= after {
-			return true
-		}
-
-		// Counted as the answer is assembled rather than measured afterwards,
-		// because a response refused for being too large is a question nobody
-		// gets an answer to. Stopping short is a truncation, which this already
-		// has a way to report — and never on the first entry, or a single
-		// oversized row would make a run unreadable rather than clipped.
-		size := proto.Size(entry)
-		if !timelineFits(assembled, size, len(out.Entries)) || len(out.Entries) >= limit {
-			out.Truncated = true
-
-			return false
-		}
-		assembled += size
-
-		out.Entries = append(out.Entries, entry)
-
-		return true
-	}
-
-	var join leaseJoin
-
-	for history.HasNext() {
-		if scanned >= maxTimelineScan || len(out.Entries) >= limit {
-			out.Truncated = true
-			break
-		}
-
-		event, err := history.Next()
-		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("reading run history: %w", err))
-		}
-		scanned++
-
-		// Where this run sits in the chain, off the history's own first event.
-		// Both directions, because forward alone is a trap: omitting a run id
-		// resolves the latest segment, whose successor is by definition empty.
-		if started := event.GetWorkflowExecutionStartedEventAttributes(); started != nil {
-			out.PreviousRunId = started.GetContinuedExecutionRunId()
-			out.FirstRunId = started.GetFirstExecutionRunId()
-		}
-		if next := event.GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId(); next != "" {
-			out.NextRunId = next
-		}
-
-		entry := s.timelineEntryCounted(event, inFlight, occurrences)
-		if entry == nil {
-			continue
-		}
-
-		// Through the lease join, which may hold a row back or drop one, so
-		// what is reported can be more or fewer rows than the walk read.
-		stop := false
-		for _, row := range join.push(entry) {
-			if !emit(row) {
-				stop = true
-
-				break
-			}
-		}
-		if stop {
-			break
-		}
-	}
-
-	// A release still held back at the end of the history had no re-arm after
-	// it: it is a real end. Not flushed after a truncation, because the rows
-	// past the cut are unread and a resumption derives this one again.
-	if !out.Truncated {
-		if row := join.flush(); row != nil {
-			emit(row)
-		}
+	scanned, ended, err := s.walkTimeline(history, out, limit, req.Msg.GetAfterEventId(), maxTimelineBytes)
+	if err != nil {
+		return nil, err
 	}
 
 	// Whether the walk reached the end of what was there, checked two ways
@@ -689,7 +580,13 @@ func (s *FlowstateServer) timelineEntryCounted(
 // here is readable" — a much worse thing to say than "here is the row, and
 // there is more".
 func timelineFits(assembled, size, entries int) bool {
-	return entries == 0 || assembled+size <= maxTimelineBytes
+	return timelineFitsWithin(maxTimelineBytes, assembled, size, entries)
+}
+
+// timelineFitsWithin is [timelineFits] against a given budget, so a test can
+// reach the bound with a few rows.
+func timelineFitsWithin(budget, assembled, size, entries int) bool {
+	return entries == 0 || assembled+size <= budget
 }
 
 // refitTimeline reports how many of entries fit the answer's byte bound, by
@@ -856,6 +753,10 @@ func (s *FlowstateServer) summaryText(event *historypb.HistoryEvent) string {
 	return summary
 }
 
+// maxLeaseJoinBuffer bounds the rows held behind a withheld lease cancel. Past
+// it the cancel is reported as a real end, which is the safe direction.
+const maxLeaseJoinBuffer = 16
+
 // leaseJoin folds the lease timer's re-arming out of the account.
 //
 // The engine re-arms the lease timer on every wake (see the loop in
@@ -863,27 +764,35 @@ func (s *FlowstateServer) summaryText(event *historypb.HistoryEvent) string {
 // non-holder is recorded as a TimerCanceled followed at once by a new lease
 // TimerStarted for the same session. Reported as they are, those read as the
 // run resuming and being paused again when it never moved. The join holds a
-// cancel back until the next row decides it: a re-arm for the same session
-// (with at most debug signals and the session's pacing timers between) makes
-// both rows disappear into one continuous pause, and anything else makes the
-// held row a real end.
+// cancel back until a later row decides it: a re-arm for the same session
+// makes the cancel and the new start disappear into one continuous pause, and
+// anything else makes the held row a real end.
 //
-// One slot, so the state is bounded by construction: held is the session of the
-// open pause and pending is at most one withheld row.
+// Rows must reach the caller in event-id order, because a client resumes with
+// `after` set to the last id it read and the server skips everything at or
+// below it. So the debug signals and same-session pacing rows that arrive while
+// a cancel is held are buffered behind it, and are released after it (or, on a
+// re-arm, alone) in the order they were read. Nothing jumps ahead of an earlier
+// row, and none is lost or repeated.
+//
+// Bounded: at most one withheld row and [maxLeaseJoinBuffer] buffered rows.
 type leaseJoin struct {
-	held    string
-	pending *v1.TimelineEntry
+	held     string
+	pending  *v1.TimelineEntry
+	buffered []*v1.TimelineEntry
 }
 
-// flush releases the withheld row, which is then a real end.
-func (j *leaseJoin) flush() *v1.TimelineEntry {
-	row := j.pending
-	j.pending = nil
-	if row != nil {
-		j.held = ""
+// flush releases the withheld row, then what was buffered behind it, in order.
+// The withheld row is a real end.
+func (j *leaseJoin) flush() []*v1.TimelineEntry {
+	if j.pending == nil {
+		return nil
 	}
 
-	return row
+	out := append([]*v1.TimelineEntry{j.pending}, j.buffered...)
+	j.pending, j.buffered, j.held = nil, nil, ""
+
+	return out
 }
 
 // continues reports whether a row may sit inside an unbroken pause: a debug
@@ -905,51 +814,52 @@ func (j *leaseJoin) continues(entry *v1.TimelineEntry) bool {
 func (j *leaseJoin) push(entry *v1.TimelineEntry) []*v1.TimelineEntry {
 	switch {
 	case entry.GetKind() == v1.TimelineEntry_KIND_DEBUG_RESUMED && entry.GetEndReason() == endReasonReleased:
-		out := j.flushed()
+		out := j.flush()
 		j.pending = entry
 		j.held = entry.GetSessionId()
 
 		return out
 
 	case entry.GetKind() == v1.TimelineEntry_KIND_DEBUG_RESUMED:
-		out := append(j.flushed(), entry)
+		out := append(j.flush(), entry)
 		j.held = ""
 
 		return out
 
 	case entry.GetKind() == v1.TimelineEntry_KIND_DEBUG_PAUSED:
-		if entry.GetSessionId() == j.held && j.held != "" {
-			// The same hold, re-armed.
-			j.pending = nil
+		if j.pending != nil && entry.GetSessionId() == j.held {
+			// The same hold, re-armed: the cancel and this start are dropped
+			// and what arrived between them is reported.
+			out := j.buffered
+			j.pending, j.buffered = nil, nil
 
-			return nil
+			return out
 		}
-		out := append(j.flushed(), entry)
+		out := append(j.flush(), entry)
 		j.held = entry.GetSessionId()
 
 		return out
 
-	case j.continues(entry):
+	case j.pending != nil && j.continues(entry):
+		if len(j.buffered) < maxLeaseJoinBuffer {
+			j.buffered = append(j.buffered, entry)
+
+			return nil
+		}
+
+		// Too much to hold behind one cancel: it is reported as the end.
+		return append(j.flush(), entry)
+
+	case j.pending == nil && j.continues(entry):
 		return []*v1.TimelineEntry{entry}
 
 	default:
-		out := append(j.flushed(), entry)
-		// Any other row means the run moved on. A pause that ended while its
-		// backlog was being paced has no lease-timer close to report, so it
-		// is forgotten here rather than suppressing the next hold.
+		// Any other row means the run moved on.
+		out := append(j.flush(), entry)
 		j.held = ""
 
 		return out
 	}
-}
-
-// flushed is [leaseJoin.flush] as a slice.
-func (j *leaseJoin) flushed() []*v1.TimelineEntry {
-	if row := j.flush(); row != nil {
-		return []*v1.TimelineEntry{row}
-	}
-
-	return nil
 }
 
 // The two spellings of [v1.TimelineEntry.EndReason].
@@ -957,3 +867,131 @@ const (
 	endReasonReleased = "released"
 	endReasonLapsed   = "lapsed"
 )
+
+// historyIterator is the part of Temporal's history iterator the walk reads.
+type historyIterator interface {
+	HasNext() bool
+	Next() (*historypb.HistoryEvent, error)
+}
+
+// walkTimeline reads a history into out, resuming past `after` and stopping at
+// `limit` entries or the byte budget, and reports how many events it examined
+// and whether it saw the run's own ending.
+func (s *FlowstateServer) walkTimeline(
+	history historyIterator, out *v1.GetTimelineResponse, limit int, after int64, budget int,
+) (scanned int, ended bool, err error) {
+	// What the walk carries about work still in flight, keyed by the event that
+	// scheduled it: the label written onto that scheduling, and the attempt the
+	// latest start reported. Temporal writes each once and the events that say
+	// how the work ended carry only a reference back, so this is the join.
+	//
+	// Both are dropped when that work ends, which is what bounds them: an
+	// entry lives from a scheduling to its own ending, so what is held is the
+	// work in flight rather than everything the run has ever done — and the
+	// engine already bounds that, at [v1.MaxAtomicBlockActivities], since work
+	// in flight at once is exactly what a suspension-opaque block's ceiling
+	// counts. Without the drop, a walk over a long history would instead
+	// accumulate a row per activity the run has *ever* scheduled, on the read
+	// path, charged to whoever asked.
+	inFlight := map[int64]*activityInFlight{}
+
+	// Schedulings seen per step label, for [v1.TimelineEntry.Occurrence]. Held
+	// for the whole walk since an ordinal counts every earlier scheduling, and
+	// bounded by [maxTimelineLabels].
+	occurrences := map[string]int32{}
+
+	assembled := 0
+
+	// emit reports one row, or false when the answer is full.
+	emit := func(entry *v1.TimelineEntry) bool {
+		// The run reached its own ending, which is the claim [v1.GetTimelineResponse.Truncated]
+		// is checked against. Recorded from the walk rather than from what was
+		// reported, so a resumption that skips past the ending still knows the
+		// account is whole.
+		if entry.GetKind() == v1.TimelineEntry_KIND_RUN_ENDED ||
+			entry.GetKind() == v1.TimelineEntry_KIND_RUN_CONTINUED {
+			ended = true
+		}
+
+		// Skipped after the joins are made, never before: the scheduling a
+		// resumption walks past is what names the rows it will report.
+		if entry.GetEventId() <= after {
+			return true
+		}
+
+		// Counted as the answer is assembled rather than measured afterwards,
+		// because a response refused for being too large is a question nobody
+		// gets an answer to. Stopping short is a truncation, which this already
+		// has a way to report — and never on the first entry, or a single
+		// oversized row would make a run unreadable rather than clipped.
+		size := proto.Size(entry)
+		if !timelineFitsWithin(budget, assembled, size, len(out.Entries)) || len(out.Entries) >= limit {
+			out.Truncated = true
+
+			return false
+		}
+		assembled += size
+
+		out.Entries = append(out.Entries, entry)
+
+		return true
+	}
+
+	var join leaseJoin
+
+	for history.HasNext() {
+		if scanned >= maxTimelineScan || len(out.Entries) >= limit {
+			out.Truncated = true
+			break
+		}
+
+		event, err := history.Next()
+		if err != nil {
+			return 0, false, connect.NewError(connect.CodeInternal, fmt.Errorf("reading run history: %w", err))
+		}
+		scanned++
+
+		// Where this run sits in the chain, off the history's own first event.
+		// Both directions, because forward alone is a trap: omitting a run id
+		// resolves the latest segment, whose successor is by definition empty.
+		if started := event.GetWorkflowExecutionStartedEventAttributes(); started != nil {
+			out.PreviousRunId = started.GetContinuedExecutionRunId()
+			out.FirstRunId = started.GetFirstExecutionRunId()
+		}
+		if next := event.GetWorkflowExecutionContinuedAsNewEventAttributes().GetNewExecutionRunId(); next != "" {
+			out.NextRunId = next
+		}
+
+		entry := s.timelineEntryCounted(event, inFlight, occurrences)
+		if entry == nil {
+			continue
+		}
+
+		// Through the lease join, which may hold a row back or drop one, so
+		// what is reported can be more or fewer rows than the walk read.
+		stop := false
+		for _, row := range join.push(entry) {
+			if !emit(row) {
+				stop = true
+
+				break
+			}
+		}
+		if stop {
+			break
+		}
+	}
+
+	// A release still held back at the end of the history had no re-arm after
+	// it: it is a real end. Not flushed after a truncation, because the rows
+	// past the cut are unread and a resumption derives this one again.
+	if !out.Truncated {
+		for _, row := range join.flush() {
+			if !emit(row) {
+				break
+			}
+		}
+	}
+
+	return scanned, ended, nil
+}

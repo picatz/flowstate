@@ -27,38 +27,70 @@ func debugSignal(id int64) *historypb.HistoryEvent {
 	}
 }
 
-// joined walks events the way getTimeline does and describes what it reports.
-func joined(t *testing.T, events ...*historypb.HistoryEvent) []string {
-	t.Helper()
+type sliceHistory struct {
+	events []*historypb.HistoryEvent
+}
 
-	s := &FlowstateServer{dataConverter: converter.GetDefaultDataConverter()}
-	inFlight := map[int64]*activityInFlight{}
-	counts := map[string]int32{}
+func (h *sliceHistory) HasNext() bool { return len(h.events) > 0 }
 
-	var join leaseJoin
-	var rows []*v1.TimelineEntry
-	for _, event := range events {
-		if entry := s.timelineEntryCounted(event, inFlight, counts); entry != nil {
-			rows = append(rows, join.push(entry)...)
-		}
-	}
-	if row := join.flush(); row != nil {
-		rows = append(rows, row)
-	}
+func (h *sliceHistory) Next() (*historypb.HistoryEvent, error) {
+	event := h.events[0]
+	h.events = h.events[1:]
 
+	return event, nil
+}
+
+func describe(rows []*v1.TimelineEntry) []string {
 	var out []string
 	for _, row := range rows {
 		switch row.GetKind() {
 		case v1.TimelineEntry_KIND_DEBUG_PAUSED:
-			out = append(out, "paused:"+row.GetSessionId())
+			out = append(out, fmt.Sprintf("%d paused:%s", row.GetEventId(), row.GetSessionId()))
 		case v1.TimelineEntry_KIND_DEBUG_RESUMED:
-			out = append(out, "resumed:"+row.GetSessionId()+":"+row.GetEndReason())
+			out = append(out, fmt.Sprintf("%d resumed:%s:%s", row.GetEventId(), row.GetSessionId(), row.GetEndReason()))
 		default:
-			out = append(out, row.GetKind().String())
+			out = append(out, fmt.Sprintf("%d %s", row.GetEventId(), row.GetKind()))
 		}
 	}
 
 	return out
+}
+
+// walkAll reads the whole history in one answer through the real walk.
+func walkAll(t *testing.T, events []*historypb.HistoryEvent) []*v1.TimelineEntry {
+	t.Helper()
+
+	s := &FlowstateServer{dataConverter: converter.GetDefaultDataConverter()}
+	out := &v1.GetTimelineResponse{}
+	_, _, err := s.walkTimeline(&sliceHistory{events: events}, out, maxTimelineEntries, 0, maxTimelineBytes)
+	require.NoError(t, err)
+	require.False(t, out.GetTruncated())
+
+	return out.GetEntries()
+}
+
+// walkPaged reads the history a page at a time the way a client does, resuming
+// with `after` set to the last event id it read, and concatenates the pages.
+func walkPaged(t *testing.T, events []*historypb.HistoryEvent, limit, budget int) []*v1.TimelineEntry {
+	t.Helper()
+
+	s := &FlowstateServer{dataConverter: converter.GetDefaultDataConverter()}
+	var all []*v1.TimelineEntry
+	after := int64(0)
+	for range 1000 {
+		out := &v1.GetTimelineResponse{}
+		_, _, err := s.walkTimeline(&sliceHistory{events: events}, out, limit, after, budget)
+		require.NoError(t, err)
+		all = append(all, out.GetEntries()...)
+		if !out.GetTruncated() {
+			return all
+		}
+		require.NotEmpty(t, out.GetEntries(), "a page made no progress")
+		after = out.GetEntries()[len(out.GetEntries())-1].GetEventId()
+	}
+	t.Fatal("paging did not finish")
+
+	return nil
 }
 
 func TestTheLeaseJoinFoldsRearmingIntoOnePause(t *testing.T) {
@@ -66,7 +98,17 @@ func TestTheLeaseJoinFoldsRearmingIntoOnePause(t *testing.T) {
 
 	lease := leaseLabel("s1", "sre")
 	pacing := "debug lease s1 pacing a backlog of asks"
-	scheduled := func(id int64) *historypb.HistoryEvent { return scheduledEvent(t, id, "`deploy`") }
+	step := func(id int64) *historypb.HistoryEvent { return scheduledEvent(t, id, "`deploy`") }
+
+	overflow := []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5)}
+	wantOverflow := []string{"5 paused:s1", "6 resumed:s1:released"}
+	for i := range maxLeaseJoinBuffer + 2 {
+		id := int64(7 + i)
+		overflow = append(overflow, debugSignal(id))
+		wantOverflow = append(wantOverflow, fmt.Sprintf("%d KIND_SIGNAL_RECEIVED", id))
+	}
+	overflow = append(overflow, timerEvent(t, 100, lease))
+	wantOverflow = append(wantOverflow, "100 paused:s1")
 
 	for _, c := range []struct {
 		name   string
@@ -74,99 +116,109 @@ func TestTheLeaseJoinFoldsRearmingIntoOnePause(t *testing.T) {
 		want   []string
 	}{
 		{
-			name: "a renewal is one continuous pause",
-			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), debugSignal(6), timerCanceled(7, 5), timerEvent(t, 8, lease),
-			},
-			want: []string{"paused:s1", "KIND_SIGNAL_RECEIVED"},
+			name:   "a renewal is one continuous pause",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), debugSignal(6), timerCanceled(7, 5), timerEvent(t, 8, lease)},
+			want:   []string{"5 paused:s1", "6 KIND_SIGNAL_RECEIVED"},
 		},
 		{
-			name: "a resume ends the pause when the run moves on",
-			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), debugSignal(6), timerCanceled(7, 5), scheduled(8),
-			},
-			want: []string{"paused:s1", "KIND_SIGNAL_RECEIVED", "resumed:s1:released", "KIND_STEP_SCHEDULED"},
+			name:   "a signal after the cancel survives the fold, in order",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5), debugSignal(7), timerEvent(t, 9, lease)},
+			want:   []string{"5 paused:s1", "7 KIND_SIGNAL_RECEIVED"},
 		},
 		{
-			name: "a lapse is reported at once",
-			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), timerFired(6, 5), scheduled(7),
-			},
-			want: []string{"paused:s1", "resumed:s1:lapsed", "KIND_STEP_SCHEDULED"},
+			name:   "a signal after a real cancel comes after the resume",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5), debugSignal(7), step(8)},
+			want:   []string{"5 paused:s1", "6 resumed:s1:released", "7 KIND_SIGNAL_RECEIVED", "8 KIND_STEP_SCHEDULED"},
+		},
+		{
+			name:   "a resume ends the pause when the run moves on",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), debugSignal(6), timerCanceled(7, 5), step(8)},
+			want:   []string{"5 paused:s1", "6 KIND_SIGNAL_RECEIVED", "7 resumed:s1:released", "8 KIND_STEP_SCHEDULED"},
+		},
+		{
+			name:   "a lapse is reported at once",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerFired(6, 5), step(7)},
+			want:   []string{"5 paused:s1", "6 resumed:s1:lapsed", "7 KIND_STEP_SCHEDULED"},
 		},
 		{
 			name: "two holds of one session across a step stay two",
 			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), timerCanceled(6, 5), scheduled(7),
-				timerEvent(t, 8, lease), timerCanceled(9, 8), scheduled(10),
+				timerEvent(t, 5, lease), timerCanceled(6, 5), step(7),
+				timerEvent(t, 8, lease), timerCanceled(9, 8), step(10),
 			},
-			want: []string{"paused:s1", "resumed:s1:released", "KIND_STEP_SCHEDULED",
-				"paused:s1", "resumed:s1:released", "KIND_STEP_SCHEDULED"},
+			want: []string{"5 paused:s1", "6 resumed:s1:released", "7 KIND_STEP_SCHEDULED",
+				"8 paused:s1", "9 resumed:s1:released", "10 KIND_STEP_SCHEDULED"},
 		},
 		{
-			name: "a different session is a resume and a pause",
-			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, leaseLabel("s2", "other")),
-			},
-			want: []string{"paused:s1", "resumed:s1:released", "paused:s2"},
+			name:   "a different session is a resume and a pause",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, leaseLabel("s2", "other"))},
+			want:   []string{"5 paused:s1", "6 resumed:s1:released", "7 paused:s2"},
 		},
 		{
-			name: "a release at the end of history is a real end",
+			name:   "a release at the end of history is a real end",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5), debugSignal(7)},
+			want:   []string{"5 paused:s1", "6 resumed:s1:released", "7 KIND_SIGNAL_RECEIVED"},
+		},
+		{
+			name: "pacing rows after a cancel come after the resume when the run moves on",
 			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), timerCanceled(6, 5),
+				timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, pacing), timerFired(8, 7), step(9),
 			},
-			want: []string{"paused:s1", "resumed:s1:released"},
+			want: []string{"5 paused:s1", "6 resumed:s1:released", "7 KIND_TIMER_STARTED", "8 KIND_TIMER_FIRED", "9 KIND_STEP_SCHEDULED"},
 		},
 		{
 			name: "a lease replaced by its own pacing timer is not a resume",
 			events: []*historypb.HistoryEvent{
 				timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, pacing),
-				timerFired(8, 7), timerEvent(t, 9, lease), timerCanceled(10, 9), scheduled(11),
+				timerFired(8, 7), timerEvent(t, 9, lease), timerCanceled(10, 9), step(11),
 			},
-			want: []string{"paused:s1", "KIND_TIMER_STARTED", "KIND_TIMER_FIRED", "resumed:s1:released", "KIND_STEP_SCHEDULED"},
+			want: []string{"5 paused:s1", "7 KIND_TIMER_STARTED", "8 KIND_TIMER_FIRED", "10 resumed:s1:released", "11 KIND_STEP_SCHEDULED"},
 		},
 		{
-			name: "another session's pacing timer does not hold a pause together",
-			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, "debug lease s9 pacing a backlog of asks"),
-			},
-			want: []string{"paused:s1", "resumed:s1:released", "KIND_TIMER_STARTED"},
+			name:   "another session's pacing timer does not hold a pause together",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, "debug lease s9 pacing a backlog of asks")},
+			want:   []string{"5 paused:s1", "6 resumed:s1:released", "7 KIND_TIMER_STARTED"},
 		},
 		{
-			name: "an unrelated timer in between breaks the pair",
-			events: []*historypb.HistoryEvent{
-				timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, "`nap` · sleep"), timerEvent(t, 8, lease),
-			},
-			want: []string{"paused:s1", "resumed:s1:released", "KIND_TIMER_STARTED", "paused:s1"},
+			name:   "an unrelated timer in between breaks the pair",
+			events: []*historypb.HistoryEvent{timerEvent(t, 5, lease), timerCanceled(6, 5), timerEvent(t, 7, "`nap` · sleep"), timerEvent(t, 8, lease)},
+			want:   []string{"5 paused:s1", "6 resumed:s1:released", "7 KIND_TIMER_STARTED", "8 paused:s1"},
+		},
+		{
+			name:   "a buffer overflow reports the cancel as the end, in order",
+			events: overflow,
+			want:   wantOverflow,
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 
-			require.Equal(t, c.want, joined(t, c.events...))
+			whole := walkAll(t, c.events)
+			require.Equal(t, c.want, describe(whole))
+
+			// Every page size, and the byte budget, must walk to the same account:
+			// a page boundary can land inside a held-back cancel.
+			for _, limit := range []int{1, 2, 3} {
+				assert.Equal(t, c.want, describe(walkPaged(t, c.events, limit, maxTimelineBytes)), "limit %d", limit)
+			}
+			assert.Equal(t, c.want, describe(walkPaged(t, c.events, maxTimelineEntries, 100)), "byte budget")
 		})
 	}
 }
 
-// TestAHostileSessionIsRefusedAtAskTime covers the ask-time
-// half of the guard: a session id that could pose as part of the summary never
-// reaches a timer.
-func TestAHostileSessionIsRefusedAtAskTime(t *testing.T) {
+// TestTheParserRefusesASummaryWithoutASessionToken is the best-effort half of
+// session handling: a session id is caller-chosen, so what the parser promises
+// is only a whitespace-free token before the first " held by ".
+func TestTheParserRefusesASummaryWithoutASessionToken(t *testing.T) {
 	t.Parallel()
 
-	for _, session := range []string{"x held by https://iss#victim", "tab\there", "new\nline", "nul\x00"} {
-		payload := &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
-			v1.DebugSessionInput: v1.NewLiteral(session),
-			v1.DebugRequestInput: v1.NewLiteral("r1"), v1.DebugVerbInput: v1.NewLiteral(v1.DebugVerbPause),
-		}}
-		_, typed, err := v1.ParseTypedDebugAsk(payload)
-		assert.True(t, typed)
-		require.ErrorContains(t, err, "session id", "%q must be refused", session)
+	s := &FlowstateServer{dataConverter: converter.GetDefaultDataConverter()}
+	for _, label := range []string{
+		"debug lease  held by x expires",
+		"debug lease a\tb held by x expires",
+		"debug lease s\x00 held by x expires",
+	} {
+		entry := s.timelineEntry(timerEvent(t, 5, label), map[int64]*activityInFlight{})
+		assert.Equal(t, v1.TimelineEntry_KIND_TIMER_STARTED, entry.GetKind(), "%q", label)
 	}
-
-	_, _, err := v1.ParseTypedDebugAsk(&v1.Node_Outputs{NamedValues: map[string]*v1.Value{
-		v1.DebugSessionInput: v1.NewLiteral("run-1/debug/0"),
-		v1.DebugRequestInput: v1.NewLiteral("r1"), v1.DebugVerbInput: v1.NewLiteral(v1.DebugVerbPause),
-	}})
-	assert.NoError(t, err)
 }

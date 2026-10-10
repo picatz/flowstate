@@ -1461,7 +1461,10 @@ func init() {
 			Leading: " SessionId is the debug lease's session, on KIND_DEBUG_PAUSED and\n" +
 				" KIND_DEBUG_RESUMED rows and empty elsewhere. It is read from the lease\n" +
 				" timer's summary, the same text the timeline already reported as the step;\n" +
-				" no signal or activity payload is decoded to fill it.\n",
+				" no signal or activity payload is decoded to fill it. Best effort: session\n" +
+				" ids are chosen by the caller, so a hostile holder can make its own lease's\n" +
+				" fields misattribute (cosmetic, its own lease only); the full label stays in\n" +
+				" `step`.\n",
 		},
 		{
 			Name: "flowstate.v1.TimelineEntry.actor",
@@ -1469,7 +1472,8 @@ func init() {
 				" KIND_DEBUG_RESUMED rows and empty elsewhere. It is exactly the holder text\n" +
 				" the timeline already showed inside the lease timer's step label (an\n" +
 				" attested issuer and subject, cut to a bound), moved into a field of its own\n" +
-				" and cut again to a server-side bound. The sender of a debug ask is not\n" +
+				" and cut again to a server-side bound. Like `session_id` it is read from the\n" +
+				" label and is best effort. The sender of a debug ask is not\n" +
 				" reported here or anywhere on the timeline.\n",
 		},
 		{
@@ -1633,8 +1637,9 @@ func init() {
 				" ask or a resume by a non-holder cancels and restarts it. Those are not\n" +
 				" shown: a cancel followed by a lease (or backlog-pacing) timer for the\n" +
 				" same session, with only debug signals between, is one continuous pause.\n" +
-				" A pause that ends while its backlog is being paced has no lease-timer\n" +
-				" close and so no resumed row.\n",
+				" When the pause ended while a backlog of asks was being paced, the row is\n" +
+				" dated at the lease timer's cancel, which is when pacing began rather than\n" +
+				" when the hold was released; the pacing rows follow it in order.\n",
 		},
 	})
 }

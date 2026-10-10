@@ -430,8 +430,9 @@ const (
 	// ask or a resume by a non-holder cancels and restarts it. Those are not
 	// shown: a cancel followed by a lease (or backlog-pacing) timer for the
 	// same session, with only debug signals between, is one continuous pause.
-	// A pause that ends while its backlog is being paced has no lease-timer
-	// close and so no resumed row.
+	// When the pause ended while a backlog of asks was being paced, the row is
+	// dated at the lease timer's cancel, which is when pacing began rather than
+	// when the hold was released; the pacing rows follow it in order.
 	TimelineEntry_KIND_DEBUG_RESUMED TimelineEntry_Kind = 13
 )
 
@@ -2859,13 +2860,17 @@ type TimelineEntry struct {
 	// SessionId is the debug lease's session, on KIND_DEBUG_PAUSED and
 	// KIND_DEBUG_RESUMED rows and empty elsewhere. It is read from the lease
 	// timer's summary, the same text the timeline already reported as the step;
-	// no signal or activity payload is decoded to fill it.
+	// no signal or activity payload is decoded to fill it. Best effort: session
+	// ids are chosen by the caller, so a hostile holder can make its own lease's
+	// fields misattribute (cosmetic, its own lease only); the full label stays in
+	// `step`.
 	SessionId string `protobuf:"bytes,8,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// Actor is the holder of the debug lease, on KIND_DEBUG_PAUSED and
 	// KIND_DEBUG_RESUMED rows and empty elsewhere. It is exactly the holder text
 	// the timeline already showed inside the lease timer's step label (an
 	// attested issuer and subject, cut to a bound), moved into a field of its own
-	// and cut again to a server-side bound. The sender of a debug ask is not
+	// and cut again to a server-side bound. Like `session_id` it is read from the
+	// label and is best effort. The sender of a debug ask is not
 	// reported here or anywhere on the timeline.
 	Actor string `protobuf:"bytes,9,opt,name=actor,proto3" json:"actor,omitempty"`
 	// EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: "released"

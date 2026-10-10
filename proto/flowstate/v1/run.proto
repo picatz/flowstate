@@ -1378,8 +1378,9 @@ message TimelineEntry {
     // ask or a resume by a non-holder cancels and restarts it. Those are not
     // shown: a cancel followed by a lease (or backlog-pacing) timer for the
     // same session, with only debug signals between, is one continuous pause.
-    // A pause that ends while its backlog is being paced has no lease-timer
-    // close and so no resumed row.
+    // When the pause ended while a backlog of asks was being paced, the row is
+    // dated at the lease timer's cancel, which is when pacing began rather than
+    // when the hold was released; the pacing rows follow it in order.
     KIND_DEBUG_RESUMED = 13;
   }
 
@@ -1451,14 +1452,18 @@ message TimelineEntry {
   // SessionId is the debug lease's session, on KIND_DEBUG_PAUSED and
   // KIND_DEBUG_RESUMED rows and empty elsewhere. It is read from the lease
   // timer's summary, the same text the timeline already reported as the step;
-  // no signal or activity payload is decoded to fill it.
+  // no signal or activity payload is decoded to fill it. Best effort: session
+  // ids are chosen by the caller, so a hostile holder can make its own lease's
+  // fields misattribute (cosmetic, its own lease only); the full label stays in
+  // `step`.
   string session_id = 8;
 
   // Actor is the holder of the debug lease, on KIND_DEBUG_PAUSED and
   // KIND_DEBUG_RESUMED rows and empty elsewhere. It is exactly the holder text
   // the timeline already showed inside the lease timer's step label (an
   // attested issuer and subject, cut to a bound), moved into a field of its own
-  // and cut again to a server-side bound. The sender of a debug ask is not
+  // and cut again to a server-side bound. Like `session_id` it is read from the
+  // label and is best effort. The sender of a debug ask is not
   // reported here or anywhere on the timeline.
   string actor = 9;
 
