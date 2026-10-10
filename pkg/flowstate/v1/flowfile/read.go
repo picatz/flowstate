@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // Three readers in this package take a path chosen by something other than a
@@ -28,7 +29,9 @@ import (
 // implementation shape, kept local to where the cycle otherwise happens to
 // be. See CLAUDE.md, "Bound anything that consumes untrusted input".
 func readBoundedSource(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	// O_NONBLOCK so that opening a FIFO returns at once instead of waiting for a
+	// writer; the descriptor's kind is checked next, before any read.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -48,7 +51,7 @@ func readBoundedSource(path string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf(
 			"%s is not a regular file (%s); name a regular file instead",
-			path, info.Mode().Type())
+			path, fileKind(info.Mode()))
 	}
 
 	// maxBytes+1, so a file of exactly the limit is accepted and one byte more
@@ -65,4 +68,22 @@ func readBoundedSource(path string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// fileKind names the kind of a non-regular file for a diagnostic, since the
+// mode's own String form is a cryptic run of dashes.
+func fileKind(mode os.FileMode) string {
+	switch {
+	case mode&os.ModeNamedPipe != 0:
+		return "named pipe"
+	case mode&os.ModeSocket != 0:
+		return "socket"
+	case mode&os.ModeDevice != 0:
+		return "device"
+	case mode&os.ModeSymlink != 0:
+		return "symlink"
+	case mode.IsDir():
+		return "directory"
+	}
+	return "irregular file"
 }
