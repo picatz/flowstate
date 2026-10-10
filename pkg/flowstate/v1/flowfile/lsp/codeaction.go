@@ -175,6 +175,7 @@ func codeActions(doc *document, params codeActionParams) []codeAction {
 		actions = append(actions, suggestedEditActions(doc, params)...)
 		actions = append(actions, repinActions(doc, params)...)
 		actions = append(actions, addUseActions(doc, params)...)
+		actions = append(actions, extractTypeActions(doc, params)...)
 	}
 	return actions
 }
