@@ -106,7 +106,6 @@ export const parseTimeline = (stdout: string): Parsed => {
   const byName = new Map<string, Step & { began?: number }>()
   const executions: Execution[] = []
   const lastOf = new Map<string, Execution>()
-  const stepOfExec = new Map<Execution, string>()
   let runFailure = ''
   for (const r of rows) {
     if (r.kind === 'KIND_RUN_ENDED' || r.kind === 'KIND_RUN_CONTINUED' || r.step === '') {
@@ -123,7 +122,6 @@ export const parseTimeline = (stdout: string): Parsed => {
       const one = { label: r.full, status: known, attempt, cut: r.cut }
       executions.push(one)
       lastOf.set(r.full, one)
-      stepOfExec.set(one, r.step)
     } else {
       last.status = known
       last.attempt = Math.max(last.attempt, attempt)
@@ -139,20 +137,6 @@ export const parseTimeline = (stdout: string): Parsed => {
     else if (known.kind === 'succeeded') step.reason = ''
     if (known.kind !== 'running' && known.kind !== 'waiting' && step.began !== undefined && r.at !== undefined) {
       step.durationMs = r.at - step.began
-    }
-    // The signal won the race: the engine emits the signal row and never fires the wait's timer. With exactly one
-    // wait timer still open the signal can only have answered it; with none or several it is ambiguous, so they stay waiting.
-    if (r.kind === 'KIND_SIGNAL_RECEIVED') {
-      const open = executions.filter(e => !e.cut && WAIT_TIMER.test(e.label) && e.status.kind === 'waiting')
-      if (open.length === 1) {
-        const timer = open[0]
-        timer.status = statusFor('succeeded', 'answered')
-        const owner = byName.get(stepOfExec.get(timer) ?? '')
-        if (owner && owner.status.kind === 'waiting') {
-          owner.status = timer.status
-          if (owner.began !== undefined && r.at !== undefined) owner.durationMs = r.at - owner.began
-        }
-      }
     }
   }
 
@@ -195,5 +179,28 @@ export const factsFor = (
     failedStep: failed?.name,
     failure: failed?.reason || detail?.runFailure,
     elapsedMs: start !== undefined && end !== undefined ? end - start : undefined,
+  }
+}
+
+/**
+ * A run that COMPLETED cannot still be waiting at a gate, yet the engine leaves the
+ * `wait_for_signal` timer row open when the gate is released (no KIND_TIMER_FIRED).
+ * So on a completed run only, each open `· wait timeout` timer is shown as
+ * succeeded/`released`, on the executions (graph overlay) and the steps (card)
+ * alike. `released` claims neither the signal nor the timeout; no signal row is
+ * read, because it carries only a name and cannot say which gate it answered.
+ * Any other run status leaves the detail exactly as the timeline said.
+ *
+ * This is the fallback for histories already written; closing the timer row at
+ * the source is an engine-side fix and a separate change.
+ */
+export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Detail | undefined => {
+  if (detail === undefined || statusOf(runStatus).kind !== 'succeeded') return detail
+  const open = (label: string, status: Status) => status.kind === 'waiting' && WAIT_TIMER.test(label)
+  const released = statusFor('succeeded', 'released')
+  return {
+    ...detail,
+    executions: detail.executions.map(e => (!e.cut && open(e.label, e.status) ? { ...e, status: released } : e)),
+    steps: detail.steps.map(s => (open(s.name, s.status) ? { ...s, status: released } : s)),
   }
 }

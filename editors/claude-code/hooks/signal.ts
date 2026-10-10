@@ -140,8 +140,8 @@ export const confirmText = (id: string, name: string, address: string): string =
 /** An id the card already names above is never repeated whole in a sentence: any long quoted token is cut to its ends. */
 const shorten = (text: string): string => text.replace(/"([^"]{25,})"/g, (_m, id: string) => `"${middleTruncate(id, 16)}"`)
 
-/** The server refused because the run is over (`FailedPrecondition`: "that workload has already finished", "the execution ... has already finished"). */
-const FINISHED = /already (?:finished|completed|closed)|not running|no longer running/i
+/** The server's own phrase for a refusal where the run is over and nothing was delivered (lifecycle.go finishedRunError). A transport error never says it. */
+const FINISHED = /has already finished/i
 
 /** What a refusal says in one short line: the run is over, or a cause with the ids cut. */
 const refusalLine = (stderr: string): string => {

@@ -409,3 +409,10 @@ test('a signal that finds the run done says so plainly and the card re-reads the
   expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
   await ui.unmount()
 })
+
+test('a transport-style error is never the confident finished line', () => {
+  for (const cause of ['connection closed before the response', 'worker not running', 'the stream is no longer running', 'workflow execution already completed']) {
+    const out = outcomeOf({ exitCode: 1, stderr: `ERROR\nunavailable: ${cause}` }, 'wf-1', 'x')
+    expect(out.text).toBe(`Not sent: unavailable: ${cause}`)
+  }
+})
