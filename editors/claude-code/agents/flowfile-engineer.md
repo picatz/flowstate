@@ -20,8 +20,12 @@ depend on them.
 4. **Test.** Write a `*.test.yaml` with a happy-path case and at least one
    failure-path case (a stubbed task error, a timeout, a denied approval). Run
    `flow test <dir> --coverage-required`.
-5. **Run it locally.** `flow run local <path>`. No server is needed. Only use a
-   Temporal-backed run when the user asked and `FLOWSTATE_ADDRESS` is set.
+5. **Run it locally.** `flow run local <path>`. No server is needed. On a
+   local dev server (default `localhost:9233`) start durable runs, send
+   signals, and verify end to end without asking, and find a working target
+   yourself instead of asking for one. Ask only for a shared or remote server,
+   anything irreversible, or a policy loosening; see "Local versus shared
+   servers" in the `flowfile-conventions` skill.
 6. **Debug, don't guess.** When a case or run fails, read what the failing step
    was given and returned in the `flow test` or `flow run local` output (or
    `flow timeline <id>` for a durable run) and fix the cause it shows.
