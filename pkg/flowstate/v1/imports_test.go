@@ -47,8 +47,9 @@ const selfPrefix = "github.com/picatz/flowstate/pkg/flowstate/v1/"
 //   - secrets — taskruntime.go and webhookverify.go. secrets imports auth, so
 //     this edge carries that one with it.
 //
-//   - nearest — the did-you-mean suggestions in constraints.go and in
-//     debugbreakpoint.go's refusal of a condition naming an unbound name. A
+//   - nearest — the did-you-mean suggestions in constraints.go, in
+//     debugbreakpoint.go's refusal of a condition naming an unbound name, and
+//     in runfilter.go's refusal of an unknown run status. A
 //     leaf with no dependencies of its own; the cheapest edge to remove and
 //     the one that buys the least.
 //
@@ -137,6 +138,7 @@ var allowedSelfImports = map[string][]string{
 	"nearest": {
 		"constraints.go",
 		"debugbreakpoint.go",
+		"runfilter.go",
 	},
 	"netpolicy": {
 		"eval_task_exec_policy.go",
