@@ -96,7 +96,7 @@ test('a timeline that fails says so and leaves the list and the rest of the pane
 
   expect(await ui.find({ type: 'Text', text: /Timeline unavailable \(no Flowstate server answered at x\)/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: /running Deploy \(wf-1\)/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /No Flowfile edited yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Edit a Flowfile and it shows up here/ })).toBeDefined()
   await ui.unmount()
 })
 

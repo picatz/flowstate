@@ -84,7 +84,7 @@ const filled = async ($: any, on: any, w: World = {}) => {
 
 test('a directory with no Flowfile offers none, and a test suite or link is not a Flowfile', async ($, on) => {
   const { ui, seen } = await open($, on, { dirs: { '': [entry('notes.md'), entry('x.test.yaml'), entry('testdefaults.yaml'), entry('a.flow.yaml', 'other')] } }, '')
-  expect(await ui.find({ type: 'Text', text: /No Flowfile in this directory/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /No Flowfile here\. Try \/flowstate:new/ })).toBeDefined()
   expect(await ui.find({ type: 'Select' })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /Run locally/ })).toBeUndefined()
   expect(formCalls(seen)).toEqual([])

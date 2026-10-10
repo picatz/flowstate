@@ -60,7 +60,7 @@ test('a failing list says the runs are unavailable and shows why, and local use 
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
 
   expect(await ui.find({ type: 'Text', text: /Runs unavailable \(no Flowstate server answered/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /No Flowfile edited yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Edit a Flowfile and it shows up here/ })).toBeDefined()
   await ui.unmount()
 })
 

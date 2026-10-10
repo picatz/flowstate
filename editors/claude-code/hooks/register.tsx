@@ -23,6 +23,7 @@ import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
 import { GRAPH_TIMEOUT_MS, graphArgv, graphHead, graphOf, rowText, workflowName } from './graph'
 import { liveHead, liveRowText, overlayNotes, overlayStatus, sameWorkflow } from './graphstatus'
 import type { Parsed as GraphParsed } from './graph'
+import { COPY, RUN_HINT, relPath, sectionTitle } from './look'
 import { cardLines, cardsOf, parseOutputs } from './outputs'
 import type { Cards, Declared } from './outputs'
 
@@ -577,6 +578,8 @@ export const register: Register = (on, options) => {
     const offered = await listFlowfiles($)
     const chosen = await read($, runFile)
     const file = offered.files.includes(chosen) ? chosen : ''
+    // The Graph follows the pick, or the only Flowfile on offer when none is picked: a default for display, nothing written, and the run form still needs an explicit pick.
+    const graphFile = file !== '' ? file : offered.files.length === 1 ? offered.files[0] : ''
     let schema: InputsParsed | undefined
     if (file !== '') {
       const key = `${file}@${offered.stamp.get(file) ?? 0}`
@@ -589,12 +592,12 @@ export const register: Register = (on, options) => {
       }
     }
     let steps: GraphParsed | undefined
-    const graphKey = `${file}@${offered.stamp.get(file) ?? 0}`
+    const graphKey = `${graphFile}@${offered.stamp.get(graphFile) ?? 0}`
     await read($, graphSeq)
-    if (file !== '') {
+    if (graphFile !== '') {
       steps = graphs.get(graphKey)
       if (steps === undefined) {
-        steps = await readGraph($, flow, file)
+        steps = await readGraph($, flow, graphFile)
         if (graphs.size >= 16) graphs.clear()
         graphs.set(graphKey, steps)
       }
@@ -625,9 +628,23 @@ export const register: Register = (on, options) => {
     }
     const badge = (kind: string) => statusFor(kind === 'ok' ? 'succeeded' : kind === 'failed' ? 'failed' : kind === 'notrun' ? 'skipped' : 'unknown')
 
+    /** A section header: a bold blue title with a dim chip and a thin rule under it; sections after the first are set off by a blank line. */
+    const header = (name: string, detail?: string | number, first = false) => {
+      const s = sectionTitle(name, detail)
+      return (
+        <Box flexDirection="column" marginTop={first ? 0 : 1}>
+          <Text>
+            <Text bold color={COLOR[s.tone]}>{s.title}</Text>
+            {s.chip !== '' && <Text dimColor>  {s.chip}</Text>}
+          </Text>
+          <Text dimColor>{s.rule}</Text>
+        </Box>
+      )
+    }
+
     return (
       <Box flexDirection="column">
-        <Text bold>Runs</Text>
+        {header('Runs', 'runs' in runs && runs.runs.length > 0 ? runs.runs.length : undefined, true)}
         <Input
           key="filter"
           label="Filter"
@@ -645,9 +662,9 @@ export const register: Register = (on, options) => {
           </Box>
         )}
         {'offline' in runs ? (
-          <Text dimColor>  Runs unavailable ({runs.offline}). Local runs need no server; set FLOWSTATE_ADDRESS to list a server's.</Text>
+          <Text dimColor>  Runs unavailable ({runs.offline}). Set FLOWSTATE_ADDRESS to list a server's.</Text>
         ) : runs.runs.length === 0 ? (
-          <Text dimColor>  {expr === '' ? 'No runs yet.' : 'No runs match the filter.'}</Text>
+          <Text dimColor>  {expr === '' ? COPY.runs : COPY.runsFiltered}</Text>
         ) : (
           runs.runs.map(r => {
             const one = runRow(r)
@@ -798,9 +815,9 @@ export const register: Register = (on, options) => {
             </Button>
           </Box>
         )}
-        <Text bold>Run a Flowfile</Text>
-        <Text dimColor>  Runs here with `flow run local`, no server. A run executes the workflow's tasks, so it asks first.</Text>
-        {offered.files.length === 0 && <Text dimColor>  No Flowfile in this directory.</Text>}
+        {header('Run a Flowfile', offered.files.length > 0 ? offered.files.length : undefined)}
+        {offered.files.length > 0 && <Text dimColor>  {RUN_HINT}</Text>}
+        {offered.files.length === 0 && <Text dimColor>  {COPY.noFlowfile}</Text>}
         {offered.files.length > 0 && (
           <Select
             key="run-file"
@@ -1004,17 +1021,12 @@ export const register: Register = (on, options) => {
             )}
           </Box>
         )}
-        <Text bold>Graph</Text>
-        {steps === undefined && (
-          <Box flexDirection="column">
-            <Text dimColor>  The steps of one Flowfile, as `flow graph` declares them; nothing runs and no server is asked.</Text>
-            <Text dimColor>  Choose a Flowfile under "Run a Flowfile" above, or from a terminal: flow graph -o json --workflow NAME -- FILE</Text>
-          </Box>
-        )}
+        {header('Graph')}
+        {steps === undefined && <Text dimColor>  {COPY.graph}</Text>}
         {steps && 'unreadable' in steps && <Text dimColor>  Graph unavailable ({steps.unreadable}).</Text>}
         {steps && 'graph' in steps && (
           <Box flexDirection="column">
-            <Text>  {overlaid ? liveHead(steps.graph, overlaid, file, fromRun) : graphHead(steps.graph, file)}</Text>
+            <Text>  {overlaid ? liveHead(steps.graph, overlaid, graphFile, fromRun) : graphHead(steps.graph, graphFile)}</Text>
             {steps.graph.rows.length === 0 && <Text dimColor>  (no nodes)</Text>}
             {steps.graph.rows.map(r => (
               <Text dimColor={r.kind === 'workflow'}>  {overlaid ? liveRowText(r, overlaid) : rowText(r)}</Text>
@@ -1036,13 +1048,17 @@ export const register: Register = (on, options) => {
             Refresh graph
           </Button>
         )}
-        <Text bold>Flowfiles</Text>
-        {list.length === 0 && <Text dimColor>No Flowfile edited yet this session.</Text>}
-        {list.map(r => (
+        {header('Flowfiles', list.length > 0 ? list.length : undefined)}
+        {list.length === 0 && <Text dimColor>  {COPY.flowfiles}</Text>}
+        {list.map(r => {
+          const state = r.failure ? statusFor('unknown', 'could not check') : r.diagnostics.length === 0 ? statusFor('succeeded', 'valid') : statusFor('failed', 'invalid')
+          const count = !r.failure && r.diagnostics.length > 0 ? ` (${r.diagnostics.length})` : ''
+          return (
           <Box flexDirection="column">
-            <Text bold>
-              {r.failure ? 'could not check' : r.diagnostics.length === 0 ? 'valid' : 'invalid'}{' '}
-              {r.file}
+            <Text>
+              {'  '}
+              <Text color={COLOR[state.tone]}>{state.symbol}</Text> <Text bold>{relPath(r.file) || 'Flowfile'}</Text>{' '}
+              <Text dimColor>{state.word}{count}</Text>
             </Text>
             {r.failure && <Text dimColor>  {clean(r.failure, 120)}</Text>}
             {r.diagnostics.slice(0, 8).map(d => (
@@ -1053,7 +1069,8 @@ export const register: Register = (on, options) => {
               </Text>
             ))}
           </Box>
-        ))}
+          )
+        })}
       </Box>
     )
   })
