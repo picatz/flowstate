@@ -6,8 +6,10 @@ import (
 	"go/parser"
 	"go/token"
 	"maps"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -88,6 +90,8 @@ func Analyze(root, rootFn string) ([]Site, error) {
 	type parsed struct {
 		pkg, rel string
 		file     *ast.File
+		src      []byte
+		qual     string // the name this file imports the v1 package under
 	}
 	var files []parsed
 	for _, p := range []struct{ dir, pkg string }{{corePkg, "v1"}, {enginePkg, "engine"}} {
@@ -101,97 +105,190 @@ func Analyze(root, rootFn string) ([]Site, error) {
 			if strings.HasSuffix(m, "_test.go") {
 				continue
 			}
-			f, err := parser.ParseFile(fset, m, nil, parser.ParseComments)
+			src, err := os.ReadFile(m)
+			if err != nil {
+				return nil, err
+			}
+			f, err := parser.ParseFile(fset, m, src, parser.ParseComments)
 			if err != nil {
 				return nil, fmt.Errorf("parse %s: %w", m, err)
 			}
 			rel, _ := filepath.Rel(root, m)
-			files = append(files, parsed{p.pkg, filepath.ToSlash(rel), f})
+			pf := parsed{pkg: p.pkg, rel: filepath.ToSlash(rel), file: f, src: src}
+			for _, imp := range f.Imports {
+				path, _ := strconv.Unquote(imp.Path.Value)
+				if path != "github.com/picatz/flowstate/"+corePkg && !strings.HasSuffix(path, "/v1") {
+					continue
+				}
+				switch {
+				case imp.Name == nil:
+					pf.qual = "v1"
+				case imp.Name.Name == "." || imp.Name.Name == "_":
+					return nil, fmt.Errorf("%s imports the v1 package as %q; the check resolves package-qualified calls and cannot follow that", pf.rel, imp.Name.Name)
+				default:
+					pf.qual = imp.Name.Name
+				}
+			}
+			files = append(files, pf)
 		}
 	}
 
-	// Pass 1: declarations, and which Evaluator methods evaluate without
-	// returning a cost. The set is derived from the signatures, so a new
-	// uncharged entry point is a sink without anyone listing it here.
+	// A decl is one body to scan: a function, a method, or the initialisers of
+	// a package-level var (attributed to a synthetic node named for the var, so
+	// a reference to it is an edge).
+	type decl struct {
+		f      *fn
+		pf     parsed
+		recv   *ast.Field
+		params *ast.FieldList
+		body   []ast.Node
+	}
+	var decls []decl
+
+	// Pass 1: declarations, which Evaluator methods evaluate without returning
+	// a cost, and which struct fields hold an Evaluator. The uncharged set is
+	// derived from the signatures, so a new uncharged entry point is a sink
+	// without anyone listing it here.
+	evalFields := map[string]bool{"Eval": true}
 	for _, pf := range files {
 		for _, d := range pf.file.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil && fd.Recv == nil {
-				continue
-			}
-			f := &fn{pkg: pf.pkg, name: fd.Name.Name, callees: map[string]bool{}}
-			if fd.Recv != nil && len(fd.Recv.List) > 0 {
-				f.recv = typeName(fd.Recv.List[0].Type)
-			}
-			f.id = pf.pkg + "." + f.name
-			if f.recv != "" {
-				f.id = pf.pkg + "." + f.recv + "." + f.name
-				g.byName[f.name] = append(g.byName[f.name], f)
-			} else {
-				g.funcs[f.id] = f
-			}
-			g.fns[f.id] = f
-			if pf.pkg == "v1" && f.recv == "Evaluator" && fd.Name.IsExported() &&
-				strings.HasPrefix(f.name, "Eval") && !returnsUint64(fd) {
-				g.uncharge[f.name] = true
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if d.Body == nil {
+					continue
+				}
+				f := &fn{pkg: pf.pkg, name: d.Name.Name, callees: map[string]bool{}}
+				dc := decl{f: f, pf: pf, params: d.Type.Params, body: []ast.Node{d.Body}}
+				f.id = pf.pkg + "." + f.name
+				if d.Recv != nil && len(d.Recv.List) > 0 {
+					f.recv = typeName(d.Recv.List[0].Type)
+					f.id = pf.pkg + "." + f.recv + "." + f.name
+					dc.recv = d.Recv.List[0]
+					g.byName[f.name] = append(g.byName[f.name], f)
+				} else {
+					g.funcs[f.id] = f
+				}
+				g.fns[f.id] = f
+				if pf.pkg == "v1" && f.recv == "Evaluator" && d.Name.IsExported() &&
+					strings.HasPrefix(f.name, "Eval") && !returnsUint64(d) {
+					g.uncharge[f.name] = true
+				}
+				decls = append(decls, dc)
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch sp := spec.(type) {
+					case *ast.ValueSpec:
+						if d.Tok != token.VAR {
+							continue
+						}
+						for _, name := range sp.Names {
+							f := &fn{pkg: pf.pkg, name: name.Name, id: pf.pkg + "." + name.Name, callees: map[string]bool{}}
+							if _, taken := g.fns[f.id]; taken {
+								continue
+							}
+							g.funcs[f.id] = f
+							g.fns[f.id] = f
+							var body []ast.Node
+							for _, v := range sp.Values {
+								body = append(body, v)
+							}
+							decls = append(decls, decl{f: f, pf: pf, body: body})
+						}
+					case *ast.TypeSpec:
+						if st, ok := sp.Type.(*ast.StructType); ok {
+							for _, fld := range st.Fields.List {
+								if isEvaluatorType(fld.Type) {
+									for _, n := range fld.Names {
+										evalFields[n.Name] = true
+									}
+								}
+							}
+						}
+					}
+				}
 			}
 		}
 	}
 
 	// Pass 2: edges and sink calls.
-	for _, pf := range files {
-		comments := commentLines(fset, pf.file)
-		for _, d := range pf.file.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
-				continue
+	commentsOf := map[string]*lineComments{}
+	for _, dc := range decls {
+		f, pf := dc.f, dc.pf
+		lc := commentsOf[pf.rel]
+		if lc == nil {
+			lc = newLineComments(fset, pf.file, pf.src)
+			commentsOf[pf.rel] = lc
+		}
+		// Only the definitions of the uncharged entry points are exempt from
+		// being sinks; a wrapper that calls one is a sink itself.
+		definition := f.recv == "Evaluator" && g.uncharge[f.name]
+		locals := map[string]bool{}
+		if dc.recv != nil && isEvaluatorType(dc.recv.Type) {
+			for _, n := range dc.recv.Names {
+				locals[n.Name] = true
 			}
-			id := pf.pkg + "." + fd.Name.Name
-			if fd.Recv != nil && len(fd.Recv.List) > 0 {
-				id = pf.pkg + "." + typeName(fd.Recv.List[0].Type) + "." + fd.Name.Name
-			}
-			f := g.fns[id]
-			inEvaluator := f.recv == "Evaluator"
-			locals := map[string]bool{}
-			ast.Inspect(fd.Body, func(n ast.Node) bool {
-				switch x := n.(type) {
-				case *ast.AssignStmt:
-					for i, r := range x.Rhs {
-						if id, ok := lhsIdent(x.Lhs, i); ok && isEvaluator(r, locals) {
-							locals[id] = true
-						}
-					}
-				case *ast.ValueSpec:
-					for i, r := range x.Values {
-						if i < len(x.Names) && isEvaluator(r, locals) {
-							locals[x.Names[i].Name] = true
-						}
-					}
-				case *ast.Ident:
-					if t, ok := g.funcs[pf.pkg+"."+x.Name]; ok {
-						f.callees[t.id] = true
-					}
-				case *ast.SelectorExpr:
-					name := x.Sel.Name
-					if q, ok := x.X.(*ast.Ident); ok && q.Name == "v1" && pf.pkg == "engine" {
-						if t, ok := g.funcs["v1."+name]; ok {
-							f.callees[t.id] = true
-						}
-						return true
-					}
-					for _, t := range g.byName[name] {
-						f.callees[t.id] = true
-					}
-					if g.uncharge[name] && !inEvaluator && (!g.ambiguous(name) || isEvaluator(x.X, locals)) {
-						line := fset.Position(x.Sel.Pos()).Line
-						f.uncharge = append(f.uncharge, siteCall{
-							file: pf.rel, callee: name, line: line,
-							exempt: exemption(comments, line),
-						})
+		}
+		if dc.params != nil {
+			for _, fld := range dc.params.List {
+				if isEvaluatorType(fld.Type) {
+					for _, n := range fld.Names {
+						locals[n.Name] = true
 					}
 				}
-				return true
-			})
+			}
+		}
+		visit := func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.AssignStmt:
+				for i, r := range x.Rhs {
+					if id, ok := lhsIdent(x.Lhs, i); ok && isEvaluator(r, locals, evalFields) {
+						locals[id] = true
+					}
+				}
+			case *ast.ValueSpec:
+				for i, name := range x.Names {
+					if (x.Type != nil && isEvaluatorType(x.Type)) ||
+						(i < len(x.Values) && isEvaluator(x.Values[i], locals, evalFields)) {
+						locals[name.Name] = true
+					}
+				}
+			case *ast.FuncLit:
+				if x.Type.Params != nil {
+					for _, fld := range x.Type.Params.List {
+						if isEvaluatorType(fld.Type) {
+							for _, n := range fld.Names {
+								locals[n.Name] = true
+							}
+						}
+					}
+				}
+			case *ast.Ident:
+				if t, ok := g.funcs[pf.pkg+"."+x.Name]; ok {
+					f.callees[t.id] = true
+				}
+			case *ast.SelectorExpr:
+				name := x.Sel.Name
+				if q, ok := x.X.(*ast.Ident); ok && pf.pkg == "engine" && pf.qual != "" && q.Name == pf.qual {
+					if t, ok := g.funcs["v1."+name]; ok {
+						f.callees[t.id] = true
+					}
+					return true
+				}
+				for _, t := range g.byName[name] {
+					f.callees[t.id] = true
+				}
+				if g.uncharge[name] && !definition && (!g.ambiguous(name) || isEvaluator(x.X, locals, evalFields)) {
+					line := fset.Position(x.Sel.Pos()).Line
+					f.uncharge = append(f.uncharge, siteCall{
+						file: pf.rel, callee: name, line: line,
+						exempt: lc.exemption(line),
+					})
+				}
+			}
+			return true
+		}
+		for _, n := range dc.body {
+			ast.Inspect(n, visit)
 		}
 	}
 
@@ -242,17 +339,35 @@ func (g *graph) ambiguous(name string) bool {
 	return slices.ContainsFunc(g.byName[name], func(f *fn) bool { return f.recv != "Evaluator" })
 }
 
+// isEvaluatorType reports whether a declared type is Evaluator or *Evaluator,
+// bare or package-qualified.
+func isEvaluatorType(e ast.Expr) bool {
+	switch t := e.(type) {
+	case *ast.StarExpr:
+		return isEvaluatorType(t.X)
+	case *ast.Ident:
+		return t.Name == "Evaluator"
+	case *ast.SelectorExpr:
+		return t.Sel.Name == "Evaluator"
+	}
+	return false
+}
+
 // isEvaluator reports whether e is, syntactically, an *Evaluator: a call to
-// DefaultEvaluator or to a method named evaluator, a local assigned from one, or
-// a field named Eval (the injectable evaluator on the activation types).
-func isEvaluator(e ast.Expr, locals map[string]bool) bool {
+// DefaultEvaluator or to a method named evaluator, a parameter, receiver or
+// local declared or assigned as one, or a struct field declared with the type.
+func isEvaluator(e ast.Expr, locals, fields map[string]bool) bool {
 	switch t := e.(type) {
 	case *ast.ParenExpr:
-		return isEvaluator(t.X, locals)
+		return isEvaluator(t.X, locals, fields)
+	case *ast.StarExpr:
+		return isEvaluator(t.X, locals, fields)
+	case *ast.UnaryExpr:
+		return isEvaluator(t.X, locals, fields)
 	case *ast.Ident:
 		return locals[t.Name]
 	case *ast.SelectorExpr:
-		return t.Sel.Name == "Eval"
+		return fields[t.Sel.Name]
 	case *ast.CallExpr:
 		switch f := t.Fun.(type) {
 		case *ast.Ident:
@@ -281,6 +396,8 @@ func typeName(e ast.Expr) string {
 		return typeName(t.X)
 	case *ast.IndexExpr:
 		return typeName(t.X)
+	case *ast.IndexListExpr:
+		return typeName(t.X)
 	case *ast.Ident:
 		return t.Name
 	}
@@ -299,37 +416,70 @@ func returnsUint64(fd *ast.FuncDecl) bool {
 	return false
 }
 
-// commentLines maps a line to the text of the comment ending on it.
-func commentLines(fset *token.FileSet, f *ast.File) map[int]string {
-	out := map[int]string{}
-	for _, cg := range f.Comments {
-		for _, c := range cg.List {
-			out[fset.Position(c.End()).Line] += " " + c.Text
-		}
-	}
-	return out
+// lineComments indexes a file's comments by the line they end on.
+type lineComments struct {
+	byLine map[int]lineComment
 }
 
-// exemption returns the reason declared for a call on line: the marker comment
-// on the line itself or in the contiguous comment block directly above it, with
-// the block's remaining lines through the call joined on.
-func exemption(comments map[int]string, line int) string {
-	for l := line; l >= line-8; l-- {
-		text, ok := comments[l]
-		if !ok {
-			if l == line {
-				continue
+type lineComment struct {
+	text      string // comment text without its delimiters, trimmed
+	own       bool   // nothing but whitespace precedes it on its line
+	startLine int
+}
+
+func newLineComments(fset *token.FileSet, f *ast.File, src []byte) *lineComments {
+	lc := &lineComments{byLine: map[int]lineComment{}}
+	tf := fset.File(f.Pos())
+	for _, cg := range f.Comments {
+		for _, c := range cg.List {
+			start := fset.Position(c.Pos())
+			end := fset.Position(c.End())
+			prefix := src[tf.Offset(tf.LineStart(start.Line)):tf.Offset(c.Pos())]
+			text := strings.TrimPrefix(c.Text, "//")
+			if strings.HasPrefix(c.Text, "/*") {
+				text = strings.TrimSuffix(strings.TrimPrefix(c.Text, "/*"), "*/")
 			}
+			lc.byLine[end.Line] = lineComment{
+				text:      strings.TrimSpace(text),
+				own:       len(strings.TrimSpace(string(prefix))) == 0,
+				startLine: start.Line,
+			}
+		}
+	}
+	return lc
+}
+
+// exemption returns the reason declared for a call on line. The marker must
+// begin a comment, on the call's own line or in the block of comment-only lines
+// directly above it, and must carry a reason; the block's later lines through
+// the call are joined onto the reason. Prose that merely mentions the marker,
+// or a trailing comment on the previous statement, declares nothing.
+func (lc *lineComments) exemption(line int) string {
+	var reason []string
+	if c, ok := lc.byLine[line]; ok && !c.own {
+		if r, ok := markerReason(c.text); ok {
+			return r
+		}
+	}
+	for l := line - 1; l >= line-8; l-- {
+		c, ok := lc.byLine[l]
+		if !ok || !c.own {
 			return ""
 		}
-		if _, after, found := strings.Cut(text, exemptMarker); found {
-			parts := []string{after}
-			for k := l + 1; k <= line; k++ {
-				parts = append(parts, comments[k])
+		reason = append([]string{c.text}, reason...)
+		if r, ok := markerReason(c.text); ok {
+			reason[0] = r
+			if c, ok := lc.byLine[line]; ok && !c.own {
+				reason = append(reason, c.text)
 			}
-			reason := strings.ReplaceAll(strings.Join(parts, " "), "//", " ")
-			return strings.Join(strings.Fields(strings.TrimPrefix(strings.TrimSpace(reason), ":")), " ")
+			return strings.Join(strings.Fields(strings.Join(reason, " ")), " ")
 		}
 	}
 	return ""
+}
+
+func markerReason(text string) (string, bool) {
+	rest, ok := strings.CutPrefix(text, exemptMarker)
+	rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
+	return rest, ok && rest != ""
 }

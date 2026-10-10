@@ -40,11 +40,11 @@ func TestEveryWorkflowSideEvaluationIsChargedOrExempt(t *testing.T) {
 	}
 }
 
-// TestTheRepositoryExemptionsAreTheThreeAudited keeps the exemption list from
+// TestTheRepositoryExemptionsAreTheAudited keeps the exemption list from
 // growing unnoticed: each entry is a claim about pacing a reviewer accepted, so
 // adding one changes this table in the same diff. Removing one fails it too, so
 // the table cannot keep a stale entry.
-func TestTheRepositoryExemptionsAreTheThreeAudited(t *testing.T) {
+func TestTheRepositoryExemptionsAreTheAudited(t *testing.T) {
 	t.Parallel()
 
 	sites, err := Analyze(repoRoot(t), "Run")
@@ -56,9 +56,13 @@ func TestTheRepositoryExemptionsAreTheThreeAudited(t *testing.T) {
 		got = append(got, s.File)
 	}
 	assert.Equal(t, []string{
-		"pkg/flowstate/v1/eval.go",  // stored output expressions, bounded by their own counter
-		"pkg/flowstate/v1/nodes.go", // ResolveTaskInputs, paced by the activity that follows
-		"pkg/flowstate/v1/wait.go",  // wait expressions, paced by the park that follows
+		"pkg/flowstate/v1/eval.go",               // stored output expressions, bounded by their own counter
+		"pkg/flowstate/v1/eval_task_http.go",     // http task body, runs in the task's activity
+		"pkg/flowstate/v1/eval_task_http_run.go", // http task body: outputs block
+		"pkg/flowstate/v1/eval_task_http_run.go", // http task body: per-output expressions
+		"pkg/flowstate/v1/nodes.go",              // ResolveTaskInputs, paced by the activity that follows
+		"pkg/flowstate/v1/protoliterals.go",      // task input population, runs in the task's activity
+		"pkg/flowstate/v1/wait.go",               // wait expressions, paced by the park that follows
 	}, got)
 }
 
@@ -93,6 +97,90 @@ import v1 "example.com/v1"
 
 `+engineSrc)
 	return root
+}
+
+// fixtureFile is fixture with the whole engine file supplied, imports included.
+func fixtureFile(t *testing.T, engineFile, v1Src string) string {
+	t.Helper()
+	root := fixture(t, "", v1Src)
+	require.NoError(t, os.WriteFile(filepath.Join(root, enginePkg, "run.go"), []byte(engineFile), 0o600))
+	return root
+}
+
+// unlabelled analyses a fixture and returns what it would fail on.
+func unlabelled(t *testing.T, root string) []Site {
+	t.Helper()
+	sites, err := Analyze(root, "Run")
+	require.NoError(t, err)
+	return Unlabelled(sites)
+}
+
+func TestAnEvaluatorParameterOrFieldIsSeenForTheAmbiguousEvalName(t *testing.T) {
+	t.Parallel()
+
+	byParam := fixture(t, "func Run() { v1.Helper(nil) }\n",
+		"func Helper(ev *Evaluator) { ev.Eval() }\n")
+	assert.Len(t, unlabelled(t, byParam), 1, "a parameter typed *Evaluator")
+
+	byField := fixture(t, "func Run() { v1.Helper() }\n",
+		"type holder struct{ ev *Evaluator }\n\nfunc Helper() { h := holder{}; h.ev.Eval() }\n")
+	assert.Len(t, unlabelled(t, byField), 1, "a struct field typed *Evaluator")
+}
+
+func TestAWrapperMethodOnTheEvaluatorIsASink(t *testing.T) {
+	t.Parallel()
+
+	root := fixture(t, "func Run() { v1.Helper() }\n",
+		"func (e *Evaluator) Wrapper() { e.EvalParsedBase() }\n\nfunc Helper() { DefaultEvaluator().Wrapper() }\n")
+	got := unlabelled(t, root)
+	require.Len(t, got, 1)
+	assert.Equal(t, "EvalParsedBase", got[0].Callee)
+}
+
+func TestAPackageLevelFuncValueInitialiserIsScanned(t *testing.T) {
+	t.Parallel()
+
+	root := fixture(t, "func Run() { v1.Helper() }\n",
+		"var hook = func() { DefaultEvaluator().EvalParsedBase() }\n\nfunc Helper() { hook() }\n")
+	assert.Len(t, unlabelled(t, root), 1)
+}
+
+func TestAnAliasedV1ImportStillResolvesQualifiedCalls(t *testing.T) {
+	t.Parallel()
+
+	root := fixtureFile(t, "package engine\n\nimport core \"example.com/v1\"\n\nfunc Run() { core.Helper() }\n",
+		"func Helper() { DefaultEvaluator().EvalParsedBase() }\n")
+	assert.Len(t, unlabelled(t, root), 1)
+
+	dot := fixtureFile(t, "package engine\n\nimport . \"example.com/v1\"\n\nfunc Run() { Helper() }\n",
+		"func Helper() { DefaultEvaluator().EvalParsedBase() }\n")
+	_, err := Analyze(dot, "Run")
+	require.Error(t, err, "a dot import cannot be followed and must not pass silently")
+}
+
+func TestOnlyAMarkerThatBeginsACommentDeclaresAnExemption(t *testing.T) {
+	t.Parallel()
+
+	for name, body := range map[string]string{
+		"a trailing comment on the previous statement": "func Helper() {\n\tx := 1 // charge:exempt not for the next line\n\tDefaultEvaluator().EvalParsedBase()\n\t_ = x\n}\n",
+		"prose that mentions the marker":               "func Helper() {\n\t// the charge:exempt marker is described elsewhere\n\tDefaultEvaluator().EvalParsedBase()\n}\n",
+		"a marker with no reason":                      "func Helper() {\n\t// charge:exempt\n\tDefaultEvaluator().EvalParsedBase()\n}\n",
+	} {
+		root := fixture(t, "func Run() { v1.Helper() }\n", body)
+		assert.Len(t, unlabelled(t, root), 1, name)
+	}
+
+	trailing := fixture(t, "func Run() { v1.Helper() }\n",
+		"func Helper() {\n\tDefaultEvaluator().EvalParsedBase() // charge:exempt paced by a park\n}\n")
+	assert.Empty(t, unlabelled(t, trailing), "a marker trailing the call itself is the site's own")
+}
+
+func TestAGenericMethodWithTwoTypeParametersDoesNotPanic(t *testing.T) {
+	t.Parallel()
+
+	root := fixture(t, "func Run() { v1.Helper() }\n",
+		"type pair[A, B any] struct{}\n\nfunc (pair[A, B]) Method() { DefaultEvaluator().EvalParsedBase() }\n\nfunc Helper() { pair[int, int]{}.Method() }\n")
+	assert.Len(t, unlabelled(t, root), 1)
 }
 
 func TestAnUnchargedCallReachableFromRunIsReportedWithItsPath(t *testing.T) {

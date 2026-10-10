@@ -739,8 +739,12 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 		extra[NowIdentifier] = types.DefaultTypeAdapter.NativeToValue(now)
 
 		activation := scope.ActivationWith(ctx, extra)
-		// charge:exempt a wait expression is followed by the durable timer or signal
-		// park that consumes it, so a history event and a yield pace it (#1970).
+		// charge:exempt a wait expression is normally followed by the durable timer or
+		// signal park that consumes it, which a history event and a yield pace. Known
+		// gap: a zero or past duration, a past `wait_until:`, or a zero signal timeout
+		// returns without parking (engine waitFor schedules no timer when d <= 0), so
+		// an expensive expression there is bounded only by the step-count threshold and
+		// the per-evaluation cost limit, not charged to the slice budget (#1970).
 		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, activation)
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)

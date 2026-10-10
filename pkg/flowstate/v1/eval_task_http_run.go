@@ -1147,6 +1147,8 @@ func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, o
 			// rule this was breaking: "Retrying a POST that already took effect
 			// is worse than surfacing a failure that might have resolved on its
 			// own." `expect:`, one file over, has classified all along.
+			// charge:exempt task body: it runs inside the task's own activity, reached from
+			// the workflow side only as a registry function value that is never called there (#1970).
 			out, err := DefaultEvaluator().EvalParsed(ctx, env, outputsExpr, act)
 			if err != nil {
 				return nil, NewTaskError("http", ErrorKindExpression,
@@ -1177,6 +1179,8 @@ func httpAnswerFromResponse(ctx context.Context, taskInputs *Task_HTTP_Inputs, o
 			switch k := v.GetKind().(type) {
 			case *Value_Expr:
 				// Same path as the whole-block form above, for the same reason.
+				// charge:exempt task body: it runs inside the task's own activity, reached from
+				// the workflow side only as a registry function value that is never called there (#1970).
 				out, err := DefaultEvaluator().EvalParsed(ctx, env, k.Expr, act)
 				if err != nil {
 					return nil, NewTaskError("http", ErrorKindExpression,
