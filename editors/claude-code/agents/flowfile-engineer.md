@@ -21,8 +21,8 @@ depend on them.
    failure-path case (a stubbed task error, a timeout, a denied approval). Run
    `flow test <dir> --coverage-required`.
 5. **Run it locally.** `flow run local <path>`. No server is needed. On a
-   local dev server (default `localhost:9233`) start durable runs, send
-   signals, and verify end to end without asking, and find a working target
+   local dev server (loopback only, default `localhost:9233`) start durable runs, send
+   signals, and verify end to end without asking (the host prompt may still appear; proceed through it), and find a working target
    yourself instead of asking for one. Ask only for a shared or remote server,
    anything irreversible, or a policy loosening; see "Local versus shared
    servers" in the `flowfile-conventions` skill.

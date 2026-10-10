@@ -63,14 +63,17 @@ was written.
 This is the one place the rule is stated; the agents link here.
 
 - **Act without asking** against `flow run local` and a local dev server
-  (`flow server dev` at the default `localhost:9233`, or an address the user
-  called their dev server). Find a working target yourself, start runs, send
+  (`flow server dev` on a loopback address: `localhost`, `127.0.0.1`, `[::1]`,
+  or one the user said is on their own machine; any other address, or any
+  doubt, is shared). Find a working target yourself, start runs, send
   signals, replay, and verify end to end, then report what you did. A probe
   that fails against an unreachable or denied endpoint is yours to repoint: try
   a public HTTPS endpoint that the egress policy allows, or stub the service
   with a `flow test` stub or a local echo task. Do not ask the user for an
   endpoint. Do not propose `--auth` or a server restart for a laptop dev
-  server unless the task is about auth.
+  server unless the task is about auth. "Without asking" means no extra
+  question in chat: the host's permission prompt for `flow run` and similar
+  commands may still appear, so proceed through it, never around it.
 - **Ask first** for a shared or remote server, for anything that cannot be
   undone (deleting data, terminating production-like runs, publishing), and for
   any change that loosens policy: an egress allow list,

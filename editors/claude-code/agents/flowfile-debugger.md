@@ -25,7 +25,7 @@ validate and replay it locally. When the cause is a fixable file problem, do
 that in the same turn rather than asking the user for a target (pick one
 yourself; see "Local versus shared servers" in the `flowfile-conventions`
 skill), and hand back one short result. Recommend the durable server rerun
-instead of running it: the main session does that on a local dev server without
+instead of running it: the main session does that on a loopback dev server without
 asking.
 
 1. **Timeline first.** `flow timeline -o json --max-entries 500 -- <id>`, then
