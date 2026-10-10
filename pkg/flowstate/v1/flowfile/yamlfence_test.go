@@ -173,6 +173,7 @@ func TestAFenceInAFlowMappingNamesBlockStyle(t *testing.T) {
 			assert.Equal(t, 7, ds[0].Line)
 			assert.Equal(t, tt.col, ds[0].Column, "the fence, not the brace the parser stopped on")
 			assert.Contains(t, ds[0].Message, "flow-style mapping")
+			assert.Contains(t, ds[0].Message, "stopped at the `{` after it")
 			assert.Contains(t, ds[0].Message, "block style")
 			assert.NotContains(t, ds[0].Message, "must be specified", "goccy's sentence is replaced")
 		})

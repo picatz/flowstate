@@ -62,10 +62,10 @@ descend from are in Part I.
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
 | A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
 | A block scalar whose content is one expression | `\|-` (or a plain scalar), `value: \|-` then `${...}` on the next line | `\|` or `>`, which keep a trailing newline | the compiler forgives the newline, so the value is the expression either way, but the forgiveness is a compiler rule and not YAML's meaning: every other YAML reader gets `"2\n"`, and every shipped example writes `\|-`; `flow lint` names it (R12, #1466) |
-| An expression inside a mapping | block style, one `key: ${...}` per line | flow style, `{key: ${...}}` | the fence's own `}` ends the flow mapping, so the file does not parse; the parser's diagnostic names the block-style rewrite in place of YAML's sentence about a comma (#1466) |
+| An expression inside a mapping | block style, one `key: ${...}` per line | flow style, `{key: ${...}}` | YAML takes the `$` as the entry's value and stops at the fence's `{`, so the file does not parse; the parser's diagnostic names the block-style rewrite in place of YAML's sentence about a comma (#1466) |
 
-The last row is the one place where the canonical spelling is not yet the only legal
-one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:152`) documents the
+The `if:` / `items:` row (the fenced form over the bare one) is the one place where the
+canonical spelling is not yet the only legal one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:152`) documents the
 fence as optional for expression-typed fields, and it is: a step written
 `if: inputs.amount > 1`, with no fence anywhere, validates. Every `if:` in
 `examples/` that holds an expression writes the fence anyway, which is the corpus
@@ -623,7 +623,7 @@ readings catch a newcomer and a generating agent before the language does. A blo
 scalar written `|` on a whole-value expression keeps the newline YAML appends, so
 `if: |` over `${...}` is a string and not a bool (#1445); the canonical spelling is
 `|-`, or the plain scalar. A fence inside a flow mapping, `log: {message: ${x}}`,
-ends the mapping at the fence's own `}` (#1466); write the block form. And a plain
+does not parse, because YAML stops at the fence's `{` (#1466); write the block form. And a plain
 scalar holding `: ` — every ternary, `${a ? b : c}`, and every string literal like
 `${"Status: " + x}` — is a mapping key to YAML (#1683); quote the whole value,
 `'${a ? b : c}'`, as the table above and every example that writes a ternary do. The
