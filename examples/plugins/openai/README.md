@@ -8,15 +8,14 @@ answer is a typed step output like any other.
 What it is about is the gate. The Decisions API returns probabilities, so the
 file pages on-call only when the probability of `true` in the `urgent`
 answer's `distribution` is at least `page_threshold`, a number a person chose in
-the file, and only when `calibration == 1`, which is
-`CALIBRATION_MODEL_PROBABILITY`. It reads the distribution rather than the
+the file, and only when `calibration == CALIBRATION_MODEL_PROBABILITY`. It reads the distribution rather than the
 boolean because the boolean is only "at least one half". The team is taken from
 the `category` answer only when its confidence reaches `team_threshold`;
 otherwise the ticket is `unassigned`. An answer with no probability, from any
 provider, therefore queues the ticket for a person instead of paging on a
 number that means nothing.
 
-`flow test examples/plugins/openai/` runs the three cases with no plugin
+`flow test --plugin-catalog examples/plugins/plugins.lock.json examples/plugins/openai/` runs the three cases with no plugin
 process, no model and no network: a probably urgent ticket pages, an urgent one
 below the threshold is queued, and an answer with no probability is queued
 however it is phrased.

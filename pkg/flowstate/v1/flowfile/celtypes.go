@@ -66,6 +66,11 @@ import (
 // expression checked to; where the checker could not decide (a free type
 // parameter, `dyn`) the table says `dyn`.
 type typeTable struct {
+	// enumNames are the enum value names the file's tasks offer, kept only where
+	// declared functions are called: those expressions are checked as written,
+	// and a name is written there (see enumnames.go).
+	enumNames []string
+
 	// inputs are the declared inputs' types by name. A declaration with no type
 	// is absent rather than `dyn`: it promised nothing.
 	inputs map[string]*cel.Type
@@ -187,6 +192,12 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		// definition that did not check is absent, and a call to it was refused
 		// when the file compiled.
 		table.functions, _ = v1.NewFunctionSet(wf.GetProfile(), wf.GetDeclaredFunctions())
+		table.enumNames = v1.OutputEnumsOf(wf, nil).Names()
+		for _, declared := range wf.GetDeclaredFunctions() {
+			for _, parameter := range declared.GetParameters() {
+				table.enumNames = slices.DeleteFunc(table.enumNames, func(name string) bool { return name == parameter.GetName() })
+			}
+		}
 	}
 
 	seen := map[string]int{}

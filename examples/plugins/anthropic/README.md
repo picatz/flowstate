@@ -7,13 +7,13 @@ answer is a typed step output like any other.
 
 What it is about is the gate. A model's stated confidence is its own claim, not
 a probability, so the file pages on-call only when the model answered `urgent`,
-said how sure it was (`calibration == 2`, self-reported), and was at least as
+said how sure it was (`calibration == CALIBRATION_SELF_REPORTED`), and was at least as
 sure as `page_threshold`, a number a person chose in the file. An answer that
 carries no confidence, or one below the threshold, goes to a person. Swapping in
 a provider that reports none therefore queues every ticket for review instead of
 paging on a number that means nothing.
 
-`flow test examples/plugins/anthropic/` runs the three cases with no plugin
+`flow test --plugin-catalog examples/plugins/plugins.lock.json examples/plugins/anthropic/` runs the three cases with no plugin
 process, no model and no network: a confident urgent ticket pages, an urgent one
 below the threshold is queued, and an urgent one with no confidence is queued
 however it is answered.

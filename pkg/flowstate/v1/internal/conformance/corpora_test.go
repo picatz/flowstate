@@ -51,6 +51,7 @@ const standIn = "http://127.0.0.1:1"
 // update.
 func corpusSizes() map[string]int {
 	return map[string]int{
+		"EnumNameCases":                   len(EnumNameCases()),
 		"AsyncCases":                      len(AsyncCases(standIn)),
 		"AsyncUnwindCases":                len(AsyncUnwindCases(standIn)),
 		"AtomicBlockRefusalSubstrings":    len(AtomicBlockRefusalSubstrings()),
@@ -175,6 +176,7 @@ var unresolvedResults = map[string]account{
 	"FederatedCredentialTaskDef":     {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"DispatchAuditTaskDef":           {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"DispatchAuditTighteningTaskDef": {what: "a v1.TaskDef, which is a struct rather than a slice"},
+	"EnumNameTaskDef":                {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"ErrorKindTimeoutTaskDef":        {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginIdentityTaskDef":          {what: "a v1.TaskDef, which is a struct rather than a slice"},
 	"PluginTaskInputsTaskDef":        {what: "a v1.TaskDef, which is a struct rather than a slice"},

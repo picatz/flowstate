@@ -213,7 +213,7 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 		// it holds each call against its declared signature with the types the file
 		// states for the names the arguments read, and says the declared result type
 		// where the expansion could only say what its body happened to produce.
-		ds, typed := callContractErrors(env, table.functions, site, parsed)
+		ds, typed := callContractErrors(env, table.functions, table.enumNames, site, parsed)
 		if len(ds) > 0 {
 			return ds
 		}
@@ -237,12 +237,21 @@ func typeErrors(table *typeTable, site v1.ValueSite) Diagnostics {
 // Silent where it cannot run, for the reason [typeErrors] is silent when the
 // environment cannot be built: the expression already checked once, and a defect in
 // this build is not the author's to be told about.
-func callContractErrors(env *cel.Env, set *v1.FunctionSet, site v1.ValueSite, parsed *expr.ParsedExpr) (Diagnostics, *cel.Type) {
+func callContractErrors(env *cel.Env, set *v1.FunctionSet, enumNames []string, site v1.ValueSite, parsed *expr.ParsedExpr) (Diagnostics, *cel.Type) {
 	written, err := cel.AstToString(cel.ParsedExprToAst(parsed))
 	if err != nil {
 		return nil, nil
 	}
-	typed, err := env.Extend(set.Declarations()...)
+	declarations := set.Declarations()
+	for _, name := range enumNames {
+		// The text is the author's, enum names included; they are ints here.
+		declarations = append(declarations, cel.Variable(name, cel.IntType))
+	}
+	typed, err := env.Extend(declarations...)
+	if err != nil && len(enumNames) > 0 {
+		// A name the author also bound overlaps the one declared here; theirs wins.
+		typed, err = env.Extend(set.Declarations()...)
+	}
 	if err != nil {
 		return nil, nil
 	}

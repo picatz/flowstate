@@ -475,7 +475,7 @@ func run(suppliedBase string) error {
 	if p.examples {
 		g.leg("examples", p.reasons["examples"]+" changed",
 			command("go", "run", "./cmd/flow", "fix", "--check", "examples/"),
-			command("go", "run", "./cmd/flow", "test", "--coverage-required", "examples/"),
+			command("go", "run", "./cmd/flow", "test", "--coverage-required", "--plugin-catalog", "examples/plugins/plugins.lock.json", "examples/"),
 			command("go", "run", "./cmd/flow", "breaking", "--against", "origin/main", "examples/"),
 		)
 	} else {

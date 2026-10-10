@@ -602,6 +602,14 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 			Docs: nowDoc(),
 		})
 	}
+
+	// Last, so a name already bound here (and `now`) keeps its meaning.
+	taken := map[string]bool{}
+	for _, local := range scope.locals {
+		taken[local.Name] = true
+	}
+	scope.locals = append(scope.locals, enumValueCandidates(doc, pos, taken)...)
+
 	return scope
 }
 

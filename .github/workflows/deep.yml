@@ -379,7 +379,7 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
-          go run ./cmd/flow test --coverage-required examples/ 2>&1 | tee examples-flowtest.log
+          go run ./cmd/flow test --coverage-required --plugin-catalog examples/plugins/plugins.lock.json examples/ 2>&1 | tee examples-flowtest.log
 
       - name: File issues for failures
         env:
@@ -432,7 +432,7 @@ jobs:
           }
           file_failure "deep-tier: examples failure on the durable driver" "$DURABLE_OUTCOME" examples-durable.log "GOMEMLIMIT=2GiB go test -race -count=1 -timeout 1800s -run TestEveryExampleRunsDurably ./pkg/flowstate/v1/engine/"
           file_failure "deep-tier: examples failure on the local driver" "$LOCAL_OUTCOME" examples-local.log "GOMEMLIMIT=2GiB go test -race -count=1 -timeout 900s -run 'TestEveryOfflineExampleRuns|TestEveryNetworkedExampleRuns' ./pkg/flowstate/v1/"
-          file_failure "deep-tier: examples failure in flow test --coverage-required" "$FLOWTEST_CLI_OUTCOME" examples-flowtest.log "go run ./cmd/flow test --coverage-required examples/"
+          file_failure "deep-tier: examples failure in flow test --coverage-required" "$FLOWTEST_CLI_OUTCOME" examples-flowtest.log "go run ./cmd/flow test --coverage-required --plugin-catalog examples/plugins/plugins.lock.json examples/"
 
       - name: A failed leg fails the job
         if: steps.durable.outcome == 'failure' || steps.local.outcome == 'failure' || steps.flowtest-cli.outcome == 'failure'
@@ -577,7 +577,7 @@ jobs:
           set -o pipefail
           SEED0=$(( 1 + GITHUB_RUN_NUMBER * 1000000 ))
           echo "exploring seeds from ${SEED0}"
-          go run ./cmd/flow test --seeds 100 --seed0 "${SEED0}" examples/ 2>&1 | tee flowtest-seeded.log
+          go run ./cmd/flow test --seeds 100 --seed0 "${SEED0}" --plugin-catalog examples/plugins/plugins.lock.json examples/ 2>&1 | tee flowtest-seeded.log
 
       - name: The sweep must have explored something
         id: explored

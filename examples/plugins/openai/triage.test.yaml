@@ -60,8 +60,8 @@ tests:
       - task: openai.decide
         returns:
           answers:
-            - {name: category, choice: outage, calibration: 3, confidence: 0.0, distribution: {}}
-            - {name: urgent, predicate: true, calibration: 3, confidence: 0.0, distribution: {}}
+            - {name: category, choice: outage, calibration: 3, distribution: {}}
+            - {name: urgent, predicate: true, calibration: 3, distribution: {}}
     expect:
       ran: [decide, urgent, category, confident_and_urgent, team, review]
       skipped: [page]
