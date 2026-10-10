@@ -175,8 +175,8 @@ time rather than as a flag day for a whole fleet (`pkg/flowstate/v1/plugin/confi
 
 Read the digest to pin from `flow plugins --plugin-dir DIR`, which prints it
 as `distribution_digest:` under each plugin (`flow plugins -o json` carries the
-same value as `distribution_digest`). It is the value the host measures at
-launch, and the worker's own "loaded plugin" log line reports it as
+same value as `distributionDigest`). It is the value the host measures at
+launch, and the worker's own "plugin ready" log record reports it as
 `distribution`. `flow plugins` launches each plugin without a pin to read it,
 so the printed value is what that launch measured, not an attestation. Where
 descriptor execution is unavailable (a non-Linux host, a Linux host without a
