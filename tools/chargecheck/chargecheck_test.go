@@ -93,7 +93,7 @@ func (task) Eval() int { return 0 }
 `+v1Src)
 	write(enginePkg+"/run.go", `package engine
 
-import v1 "example.com/v1"
+import v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 
 `+engineSrc)
 	return root
@@ -148,11 +148,11 @@ func TestAPackageLevelFuncValueInitialiserIsScanned(t *testing.T) {
 func TestAnAliasedV1ImportStillResolvesQualifiedCalls(t *testing.T) {
 	t.Parallel()
 
-	root := fixtureFile(t, "package engine\n\nimport core \"example.com/v1\"\n\nfunc Run() { core.Helper() }\n",
+	root := fixtureFile(t, "package engine\n\nimport core \"github.com/picatz/flowstate/pkg/flowstate/v1\"\n\nfunc Run() { core.Helper() }\n",
 		"func Helper() { DefaultEvaluator().EvalParsedBase() }\n")
 	assert.Len(t, unlabelled(t, root), 1)
 
-	dot := fixtureFile(t, "package engine\n\nimport . \"example.com/v1\"\n\nfunc Run() { Helper() }\n",
+	dot := fixtureFile(t, "package engine\n\nimport . \"github.com/picatz/flowstate/pkg/flowstate/v1\"\n\nfunc Run() { Helper() }\n",
 		"func Helper() { DefaultEvaluator().EvalParsedBase() }\n")
 	_, err := Analyze(dot, "Run")
 	require.Error(t, err, "a dot import cannot be followed and must not pass silently")
@@ -256,4 +256,12 @@ func activitySide() { DefaultEvaluator().EvalParsedBase() }
 	sites, err := Analyze(root, "Run")
 	require.NoError(t, err)
 	assert.Empty(t, sites)
+}
+
+func TestAnotherV1ImportAfterTheFlowstateOneDoesNotHideItsQualifier(t *testing.T) {
+	t.Parallel()
+
+	root := fixtureFile(t, "package engine\n\nimport (\n\tv1 \"github.com/picatz/flowstate/pkg/flowstate/v1\"\n\tenumspb \"go.temporal.io/api/enums/v1\"\n)\n\nvar _ = enumspb.X\n\nfunc Run() { v1.Helper() }\n",
+		"func Helper() { DefaultEvaluator().EvalParsedBase() }\n")
+	assert.Len(t, unlabelled(t, root), 1)
 }

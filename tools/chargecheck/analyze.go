@@ -25,6 +25,10 @@ const exemptMarker = "charge:exempt"
 // workflow-side surface: the engine, and the v1 package whose functions it
 // calls. Code in other packages is outside this analysis, which is a stated
 // limit rather than a claim they are charged.
+// corePath is the import path of the v1 package. Other paths that end in /v1
+// (generated API packages) are not it.
+const corePath = "github.com/picatz/flowstate/" + corePkg
+
 const (
 	enginePkg = "pkg/flowstate/v1/engine"
 	corePkg   = "pkg/flowstate/v1"
@@ -117,7 +121,7 @@ func Analyze(root, rootFn string) ([]Site, error) {
 			pf := parsed{pkg: p.pkg, rel: filepath.ToSlash(rel), file: f, src: src}
 			for _, imp := range f.Imports {
 				path, _ := strconv.Unquote(imp.Path.Value)
-				if path != "github.com/picatz/flowstate/"+corePkg && !strings.HasSuffix(path, "/v1") {
+				if path != corePath {
 					continue
 				}
 				switch {

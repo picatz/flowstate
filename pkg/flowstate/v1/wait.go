@@ -744,7 +744,7 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 		// gap: a zero or past duration, a past `wait_until:`, or a zero signal timeout
 		// returns without parking (engine waitFor schedules no timer when d <= 0), so
 		// an expensive expression there is bounded only by the step-count threshold and
-		// the per-evaluation cost limit, not charged to the slice budget (#1970).
+		// the per-evaluation cost limit, not charged to the slice budget (#1970, #2629).
 		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, activation)
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)
