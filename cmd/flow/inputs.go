@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -409,7 +411,7 @@ func decodeInputJSON(raw string) (any, error) {
 
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
-		return nil, err
+		return nil, redactedJSONError(raw, err)
 	}
 
 	// A trailing token means the caller sent two documents where one was expected,
@@ -419,6 +421,47 @@ func decodeInputJSON(raw string) (any, error) {
 	}
 
 	return decoded, nil
+}
+
+// redactedJSONError replaces a decoder failure with one that says where the
+// document went wrong and nothing of what it said there.
+//
+// `encoding/json` names the offending character (`invalid character 'h' looking
+// for beginning of value`) and an [json.UnmarshalTypeError] can quote a value or
+// field, and in `{"pin": hunter2}` that character is the first rune of a secret.
+// Whether the input at that position is declared sensitive is not known here: the
+// document has not been matched to declarations yet, and a syntax error is
+// precisely the case where it cannot be. So the error is redacted for every
+// caller, and the position is what remains to find the mistake by.
+func redactedJSONError(raw string, err error) error {
+	const phrase = "invalid JSON syntax"
+
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+
+	switch {
+	case errors.As(err, &syntaxErr):
+		return fmt.Errorf("%s at %s", phrase, jsonPosition(raw, syntaxErr.Offset))
+	case errors.As(err, &typeErr):
+		return fmt.Errorf("%s at %s", phrase, jsonPosition(raw, typeErr.Offset))
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return fmt.Errorf("%s: the document ends before it is complete, at %s", phrase, jsonPosition(raw, int64(len(raw))))
+	default:
+		// Not a failure the decoder describes by quoting the document.
+		return errors.New(phrase)
+	}
+}
+
+// jsonPosition names a byte offset into raw as a line and column, counted from 1,
+// with the column in characters. The offset is the decoder's: the count of bytes
+// it had read when it failed, so it points at or just past the fault.
+func jsonPosition(raw string, offset int64) string {
+	end := int(min(max(offset, 0), int64(len(raw))))
+	before := raw[:end]
+	line := 1 + strings.Count(before, "\n")
+	column := 1 + utf8.RuneCountInString(before[strings.LastIndexByte(before, '\n')+1:])
+
+	return fmt.Sprintf("line %d, column %d (byte offset %d)", line, column, end)
 }
 
 // valueFromJSON turns a decoded JSON value into the [v1.Value] a run carries.
