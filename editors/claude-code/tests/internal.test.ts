@@ -61,6 +61,12 @@ test('the debugger reads attached while the run is live and detached once it is 
   expect(leaseLine(ended, true)).toBe('◉ debugger htt detached')
 })
 
+test("the engine's own lease summary ends with 'expires', which is not part of the holder", () => {
+  const [lease] = parsed([[1, 'TIMER_STARTED', 'debug lease 6f1c2a9e-3b0d held by https://issuer.example#htt expires', 2]]).leases
+  expect(lease.holder).toBe('https://issuer.example#htt')
+  expect(leaseLine(lease, true)).toBe('◉ debugger https://issuer.example#htt attached')
+})
+
 test('settling a completed run leaves the debugger out of the steps: only a gate timer is released, a sleep stays as the timeline said', () => {
   const rows = KENT.filter(r => r[0] !== 11)
   const d = settleWaits(parsed(rows), 'STATUS_COMPLETED')!

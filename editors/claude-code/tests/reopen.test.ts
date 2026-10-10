@@ -90,3 +90,16 @@ test('validateOnEdit off also stops the rebuild from running flow', { options: {
   await $.command.run({ command: 'flowstate', args: '' })
   expect(seen.filter(a => a[1] === 'validate')).toEqual([])
 })
+
+test('a full list still takes the files a rebuild just checked, dropping its oldest report', async ($, on) => {
+  const seen: string[][] = []
+  const statuses: string[] = []
+  world(on, ['fresh.flow.yaml'], seen, statuses)
+  on('tool.call', () => ({ result: 'ok' }))
+  for (let i = 0; i < 50; i++) await $.tool.call({ tool: 'Write', file_path: `/work/old${i}.flow.yaml`, content: 'x' })
+
+  await $.command.run({ command: 'flowstate', args: '' })
+  const all = await texts(await mount($))
+  expect(all).toMatch(/fresh\.flow\.yaml/)
+  expect(all).not.toMatch(/old0\.flow\.yaml/)
+})

@@ -255,14 +255,15 @@ const MAX_REBUILD = 5
  */
 const rebuildReports = async ($: Engine, flow: string): Promise<void> => {
   // An edit records the absolute path the tool was given; the listing is relative to the directory.
+  const same = (a: string, b: string) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`)
   const have = (await read($, reports)).map(r => r.file)
-  const named = (f: string) => have.some(h => h === f || h.endsWith(`/${f}`))
+  const named = (f: string) => have.some(h => same(h, f))
   const missing = (await listFlowfiles($)).files.filter(f => !named(f)).slice(0, MAX_REBUILD)
   if (missing.length === 0) return
   const fresh = await Promise.all(missing.map(f => validate($, flow, f)))
   await update($, reports, list => {
-    const named = new Set(list.map(r => r.file))
-    return [...fresh.filter(r => !named.has(r.file)), ...list].slice(-MAX_REPORTS)
+    // Appended before the cut, so a full list drops its oldest report rather than the files just checked.
+    return [...list, ...fresh.filter(r => !list.some(l => same(l.file, r.file)))].slice(-MAX_REPORTS)
   })
 }
 

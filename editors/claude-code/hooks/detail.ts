@@ -39,7 +39,7 @@ export const plainLabel = (label: string): string => label.replace(/`/g, '').rep
 
 /** The suffix the engine appends to a timer or compensation label. */
 const SUFFIX = /\s·\s(sleep|wait timeout|undo)$/
-const LEASE = /^debug lease\s+\S+\s+held by\s+(.*)$/
+const LEASE = /^debug lease\s+\S+\s+held by\s+(.*?)(?:\s+expires)?$/
 /** Leases kept; a card names the debugger once or twice, never a list. */
 const MAX_LEASES = 5
 
