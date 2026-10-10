@@ -12,7 +12,7 @@ import { MAX_ENTRIES, factsFor, parseTimeline, visibleSteps } from './detail'
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
-import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit, creditValidated } from './verify'
+import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, applyReport, applyEdit } from './verify'
 import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, applyRerun, rerunLine, rerunQuestion, summaryOf, unknownBand } from './testband'
 import type { Band } from './testband'
 import { NO_SEEN, seenFrom, statusText } from './statusline'
@@ -321,7 +321,7 @@ export const register: Register = (on, options) => {
       if (nudges) {
         const stored = await read($, reports).catch(() => [] as FileReport[])
         // The edit hook below may have credited this file from an older clean report before this one landed.
-        await update($, verify, s => (broken && s.validated ? { ...s, validated: false } : creditValidated(s, stored))).catch(() => undefined)
+        await update($, verify, s => applyReport(s, stored, broken)).catch(() => undefined)
       }
       await refreshStatus($, nudges, heard)
 
@@ -346,10 +346,9 @@ export const register: Register = (on, options) => {
         // A result for the old files must not stand as current.
         if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await setBand($, null).catch(() => undefined)
         if (nudges) {
-          await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
           // A validate that already passed (the hook above) is the check this edit owes.
           const known = isEnabled ? await read($, reports).catch(() => [] as FileReport[]) : []
-          await update($, verify, s => creditValidated(s, known)).catch(() => undefined)
+          await update($, verify, s => applyEdit(s, e.file_path, known)).catch(() => undefined)
           await refreshStatus($, nudges, heard)
         }
       }

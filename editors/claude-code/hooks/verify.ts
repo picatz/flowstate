@@ -8,6 +8,8 @@ import { clean } from './runs'
 export interface Verify {
   /** Flowfiles edited this turn, newest last; bounded. */
   edited: string[]
+  /** The exact paths behind `edited`, index for index, for matching reports; '' when too long to match exactly. */
+  raw: string[]
   /** A `flow validate` (or `flow test`) passed after the last edit. */
   validated: boolean
   /** A `flow test` passed after the last edit. */
@@ -16,11 +18,12 @@ export interface Verify {
   nudged: boolean
 }
 
-export const EMPTY: Verify = { edited: [], validated: false, tested: false, nudged: false }
+export const EMPTY: Verify = { edited: [], raw: [], validated: false, tested: false, nudged: false }
 
 /** A turn that edits more Flowfiles than this still nudges; the list keeps the newest. */
 export const MAX_EDITED = 20
 const MAX_PATH = 200
+const MAX_RAW = 4096
 const MAX_NAMED = 5
 
 /** A path as `edited` stores it. */
@@ -30,28 +33,45 @@ const shown = (path: string): string => clean(path, MAX_PATH).replaceAll('`', "'
 export const recordEdit = (state: Verify, path: unknown): Verify => {
   if (typeof path !== 'string' || !isFlowfile(path)) return state
   const name = shown(path)
+  const exact = path.length <= MAX_RAW ? path : ''
+  const same = (_: string, i: number) => state.raw[i] === exact && state.edited[i] === name
   return {
     ...state,
-    edited: [...state.edited.filter(p => p !== name), name].slice(-MAX_EDITED),
+    edited: [...state.edited.filter((p, i) => !same(p, i)), name].slice(-MAX_EDITED),
+    raw: [...state.raw.filter((p, i) => !same(p, i)), exact].slice(-MAX_EDITED),
     validated: false,
     tested: false,
   }
 }
 
+type Reports = readonly Pick<FileReport, 'file' | 'diagnostics' | 'failure'>[]
+
 /**
  * The mod's own validate-after-edit is a `flow validate`: when every edited
- * Flowfile has a report that is clean (no diagnostics, no failure), the
- * validate leg is met. A missing, failed or erroring report earns nothing, and
- * `tested` is never touched. Pure and idempotent, so it may run after either
- * the report or the edit is recorded.
+ * Flowfile has a clean report (no diagnostics, no failure), the validate leg
+ * is met. Matching is on the exact path; a report whose display form merely
+ * aliases an edited path (a long path cut short, a backtick) and is not clean
+ * also blocks the credit, and a path too long to match exactly never earns it.
+ * `tested` is never touched. Pure and idempotent.
  */
-export const creditValidated = (state: Verify, reports: readonly Pick<FileReport, 'file' | 'diagnostics' | 'failure'>[]): Verify => {
-  if (state.validated || state.edited.length === 0) return state
-  const clean = state.edited.every(path =>
-    reports.some(r => typeof r.file === 'string' && shown(r.file) === path && r.diagnostics.length === 0 && r.failure === undefined),
-  )
-  return clean ? { ...state, validated: true } : state
+export const creditValidated = (state: Verify, reports: Reports): Verify => {
+  if (state.validated || state.edited.length === 0 || state.raw.length !== state.edited.length) return state
+  const isClean = (r: Reports[number]) => r.diagnostics.length === 0 && r.failure === undefined
+  const ok = state.raw.every((path, i) => {
+    if (path === '') return false
+    const exact = reports.filter(r => r.file === path)
+    const alias = reports.filter(r => typeof r.file === 'string' && r.file !== path && shown(r.file) === state.edited[i])
+    return exact.length > 0 && exact.every(isClean) && alias.every(isClean)
+  })
+  return ok ? { ...state, validated: true } : state
 }
+
+/** The step after a validate result is stored: credit what is clean, and take back a credit the new result contradicts. */
+export const applyReport = (state: Verify, reports: Reports, broken: boolean): Verify =>
+  broken && state.validated ? { ...state, validated: false } : creditValidated(state, reports)
+
+/** The step after an edit is recorded: it owes a check, unless a clean report for every edited file is already held. */
+export const applyEdit = (state: Verify, path: unknown, reports: Reports): Verify => creditValidated(recordEdit(state, path), reports)
 
 /** Flags that make `flow validate` or `flow test` exit 0 having checked nothing (or never exit), with or without `=value`. */
 const NO_RUN = new Set(['-h', '--help', '--version', '--list', '--watch', '--dry-run'])

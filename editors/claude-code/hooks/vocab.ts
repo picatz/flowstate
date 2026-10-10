@@ -138,7 +138,7 @@ export const middleTruncate = (id: unknown, max = 24): string => {
 
 /** `a.flow.yaml`: a path's last component, cleaned; an overlong one keeps its tail (the extension) behind a leading `…`. */
 export const baseName = (path: unknown, max = 28): string => {
-  const name = clean(path, 512).replace(/^.*[\\/]/, '').replaceAll('`', "'")
+  const name = clean(typeof path === 'string' ? path.slice(-512) : path, 512).replace(/^.*[\\/]/, '').replaceAll('`', "'")
   const limit = Math.max(2, Math.trunc(max) || 28)
   return name.length <= limit ? name : `…${name.slice(-(limit - 1))}`
 }
