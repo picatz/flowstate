@@ -31,9 +31,9 @@ const waitSteps = 64
 
 // rangeSliceExpr spends 100,000 cost units in `lists.range`, which CEL prices by
 // the elements it produces and which allocates them without evaluating anything
-// per element. [heavySliceExpr] spends its units in a comprehension instead,
-// and under -race that costs several times more wall time for the same units: a
-// quorum draining its deliveries without a yield then ran past the 15s deadlock
+// per element. A comprehension spending the same units
+// (`lists.range(10000).map(i, i + 1).size()`) costs several times
+// more wall time for the same units under -race: a quorum draining its deliveries without a yield then ran past the 15s deadlock
 // detector. Same threshold crossing, a fraction of the time.
 var rangeSliceExpr = "(" + strings.Repeat("lists.range(10000).size() + ", 9) + "lists.range(10000).size())"
 

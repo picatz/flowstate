@@ -22,18 +22,6 @@ import (
 // The bound is only as good as its narrowest path, so each of these is charged
 // through [engine.executor.chargeWorkflowCost] and each is asserted here.
 
-// heavySliceExpr is an expression every existing bound admits — comfortably
-// inside [v1.DefaultCostLimit] — repeated enough times to pass
-// [v1.DefaultWorkflowSliceCost]. It is the at-the-bound expression the
-// conformance corpus's `heavy` was sized from; the corpus now uses fewer
-// elements so its durable run stays inside the race build's wait.
-//
-// Its 10,000 elements are the largest input the element bound admits, which is
-// why the environment below is built with [atABound]: see
-// [TestASegmentOfSkippedStepsSuspendsOnTheCostItSpent]'s fixture for the whole
-// reasoning.
-const heavySliceExpr = "lists.range(10000).map(i, i + 1).size()"
-
 // TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath is the claim, once per
 // path: a run whose only expensive work is a step's `vars:`, a `switch:`'s
 // subject, or a `for_each`'s `items:` still continues as new.
@@ -53,7 +41,7 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 		"a step's vars": func(id string) *v1.Node {
 			return &v1.Node{
 				Id:   id,
-				Vars: map[string]*v1.Value{"size": v1.NewExpr(heavySliceExpr)},
+				Vars: map[string]*v1.Value{"size": v1.NewExpr(rangeSliceExpr)},
 				Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(1))},
 			}
 		},
@@ -61,9 +49,9 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 			return &v1.Node{
 				Id: id,
 				Kind: &v1.Node_Switch{Switch: &v1.Switch{
-					Value: v1.NewExpr(heavySliceExpr),
+					Value: v1.NewExpr(rangeSliceExpr),
 					Cases: []*v1.Switch_Case{{
-						Values: []*v1.Value{v1.NewLiteral(int64(10000))},
+						Values: []*v1.Value{v1.NewLiteral(int64(100000))},
 						Steps:  []*v1.Node{{Id: id + "-arm", Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(1))}}},
 					}},
 				}},
@@ -73,7 +61,7 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 			return &v1.Node{
 				Id: id,
 				Kind: &v1.Node_Call{Call: &v1.Call{
-					Arguments: map[string]*v1.Value{"size": v1.NewExpr(heavySliceExpr)},
+					Arguments: map[string]*v1.Value{"size": v1.NewExpr(rangeSliceExpr)},
 					// A callee of one literal `value:` step, which is a call
 					// whose whole body writes no history and costs nothing:
 					// the arguments are then the only work the step does.
@@ -100,7 +88,7 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 						Name:    "callee-with-outputs",
 						Profile: v1.CurrentProfile,
 						DeclaredOutputs: []*v1.OutputDeclaration{
-							{Name: "size", Value: v1.NewExpr(heavySliceExpr)},
+							{Name: "size", Value: v1.NewExpr(rangeSliceExpr)},
 						},
 						Steps: []*v1.Node{{Id: "inner", Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(1))}}},
 					},
@@ -113,7 +101,7 @@ func TestASegmentSuspendsOnTheCostOfEachWorkflowSidePath(t *testing.T) {
 				Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{
 					// Expensive to produce and empty when produced, so the loop
 					// body cannot be what ends the segment.
-					Items:    v1.NewExpr("lists.range(10000).map(i, i + 1).filter(i, i < 0)"),
+					Items:    v1.NewExpr("lists.range(" + rangeSliceExpr + " - 100000)"),
 					Iterator: "item",
 					Body:     []*v1.Node{{Id: id + "-body", Kind: &v1.Node_Value{Value: v1.NewExpr("item")}}},
 				}},
