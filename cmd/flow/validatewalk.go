@@ -240,11 +240,14 @@ func readStdinBounded(stdin io.Reader) ([]byte, error) {
 // Flowfile test, and for the same reason: the bytes to validate already sit
 // in memory for stdin, so re-reading target.path (which is just "-" and
 // names nothing on disk) would validate the wrong thing.
-func validateWorkflowTarget(target validateTarget) (flowfile.Diagnostics, error) {
+//
+// modules is shared by every target of one invocation, so a directory of files
+// that use the same modules compiles each module once ([flowfile.ModuleCache]).
+func validateWorkflowTarget(modules *flowfile.ModuleCache, target validateTarget) (flowfile.Diagnostics, error) {
 	if target.data != nil {
 		return flowfile.ValidateSource(target.data)
 	}
-	return flowfile.ValidateSourceFile(target.path)
+	return modules.ValidateSourceFile(target.path)
 }
 
 // validatePluginRequirements checks a workflow's `plugins:` block against the

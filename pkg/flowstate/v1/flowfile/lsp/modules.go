@@ -58,6 +58,10 @@ type usedModule struct {
 
 	// written is the `path:` as the document wrote it.
 	written string
+
+	// pinned reports that the entry carries a `digest:`, so the module's bytes and
+	// not only what it declares decide whether the document compiles.
+	pinned bool
 }
 
 // usedModules lists the document's `use:` entries that resolve, at most
@@ -92,7 +96,8 @@ func usedModules(doc *document) []usedModule {
 				if located.Refusal != flowfile.CallTargetResolved {
 					continue
 				}
-				out = append(out, usedModule{alias: alias.key, path: located.Path, written: target})
+				pinned := slices.ContainsFunc(nestedEntries(alias), func(f *entry) bool { return f.key == "digest" })
+				out = append(out, usedModule{alias: alias.key, path: located.Path, written: target, pinned: pinned})
 			}
 		}
 	}

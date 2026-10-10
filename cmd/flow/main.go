@@ -2447,6 +2447,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	modules := flowfile.NewModuleCache(0, 0)
 	var failed bool
 
 	for _, target := range targets {
@@ -2465,7 +2466,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		diagnostics, err := validateWorkflowTarget(target)
+		diagnostics, err := validateWorkflowTarget(modules, target)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {
@@ -2543,6 +2544,7 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 		return err
 	}
 
+	modules := flowfile.NewModuleCache(0, 0)
 	reports := make([]*v1.DiagnosticReport, 0, len(targets))
 	for _, target := range targets {
 		path := target.path
@@ -2552,7 +2554,7 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 			continue
 		}
 
-		diagnostics, err := validateWorkflowTarget(target)
+		diagnostics, err := validateWorkflowTarget(modules, target)
 		if err != nil {
 			var parsed flowfile.Diagnostics
 			if !errors.As(err, &parsed) {

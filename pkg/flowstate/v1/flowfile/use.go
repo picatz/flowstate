@@ -1,6 +1,7 @@
 package flowfile
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -105,6 +106,15 @@ type moduleSession struct {
 	// ignorePins skips verifying `use:` digests, for [ParseAtWithoutModulePins]
 	// only. Shared by every module the compile reaches.
 	ignorePins bool
+
+	// cache, when set, holds the modules compiled before, for a validating entry
+	// point ([ModuleCache]). Nil compiles every module.
+	cache *ModuleCache
+
+	// deps records, in order, each module this file's `use:` entries loaded, which
+	// is what a cached copy of this file is later checked against. Not shared:
+	// each file has its own.
+	deps []moduleDep
 }
 
 func newModuleSession() *moduleSession {
@@ -115,6 +125,11 @@ func newModuleSession() *moduleSession {
 type loadedModule struct {
 	workflow *v1.Workflow
 	digest   string
+
+	// path is where the module resolved to, and iface is the digest of what it
+	// declares ([interfaceDigest]).
+	path  string
+	iface string
 }
 
 // A usedModule is one alias this file wrote.
@@ -310,6 +325,12 @@ func (c *compiler) useModule(e entry, parent string) {
 		return
 	}
 
+	dep := moduleDep{target: target, path: module.path, iface: module.iface}
+	if pin != nil {
+		dep.pinned = module.digest
+	}
+	c.session.deps = append(c.session.deps, dep)
+
 	c.carry(usedModule{alias: e.name, source: target, module: module.workflow}, module.digest, pathField.value, pathRef)
 }
 
@@ -389,10 +410,24 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 		return nil, false
 	}
 
-	module, positions, err := parse(data, resolved, ancestors, c.callBudget,
-		&moduleSession{depth: c.session.depth + 1, loaded: c.session.loaded, failed: c.session.failed, reads: c.session.reads, ignorePins: c.session.ignorePins})
+	// A module that compiled before, whose dependencies are what they were, is not
+	// compiled again; see [ModuleCache].
+	if loaded, ok := c.reuseModule(resolved, ancestors, digest); ok {
+		c.session.loaded[resolved] = loaded
+
+		return loaded, true
+	}
+
+	child := c.session.child()
+	c.session.cache.count(func(s *ModuleCacheStats) { s.Compiles++ })
+	module, positions, err := parse(data, resolved, ancestors, c.callBudget, child)
 	if err != nil {
-		return refuse("uses %q, which failed to compile; first problem: %s", target, firstProblem(err.Error()))
+		count := 1
+		if compiled, ok := errors.AsType[Diagnostics](err); ok {
+			count = len(compiled)
+		}
+
+		return refuse("uses %q, which has %d error%s; first: %s", target, count, plural(count), firstProblem(err.Error()))
 	}
 
 	switch {
@@ -404,11 +439,14 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 
 	if ds := ValidateModule(module); len(ds) > 0 {
 		positionDiagnostics(ds, positions)
-		return refuse("uses %q, which has %d problem%s; first: %s", target, len(ds), plural(len(ds)), firstProblem(ds.Error()))
+		return refuse("uses %q, which has %d error%s; first: %s", target, len(ds), plural(len(ds)), firstProblem(ds.Error()))
 	}
 
-	loaded := &loadedModule{workflow: module, digest: digest}
+	loaded := &loadedModule{workflow: module, digest: digest, path: resolved, iface: interfaceDigest(module)}
 	c.session.loaded[resolved] = loaded
+	if cache := c.session.cache; cache != nil && !c.session.ignorePins {
+		cache.store(cache.keyFor(resolved, digest, c.session.depth+1), loaded, child.deps)
+	}
 
 	return loaded, true
 }
