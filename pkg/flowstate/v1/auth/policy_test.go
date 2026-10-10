@@ -1408,13 +1408,49 @@ func TestValidateHTTPSURL(t *testing.T) {
 			wantAbsent: []string{"acct9", "s3cr3t"},
 		},
 		{
-			// The opaque URL the redaction deliberately leaves alone, so that
-			// `mailto:a@b` keeps its meaning. Asserted so the exemption is a
-			// decision on the record rather than an oversight; picatz/flowstate#2028
-			// holds the judgement about closing it.
-			name:    "an opaque URL keeps its at sign",
-			url:     "mailto:someone@example.com",
-			wantErr: `issuer "mailto:someone@example.com" must name a host`,
+			// An opaque URL has no credential to find, but this refusal is
+			// diagnostic quoting of a string already being rejected, so the
+			// leading `[^/?#]*@` is redacted (picatz/flowstate#2028, option 1):
+			// the mangling is the accepted cost, and is pinned here.
+			name:       "an opaque URL is redacted in the diagnostic",
+			url:        "mailto:someone@example.com",
+			wantErr:    `issuer "[redacted]@example.com" must name a host`,
+			wantAbsent: []string{"someone", "mailto"},
+		},
+		{
+			name:       "a scheme-less URL carrying credentials",
+			url:        "acct9:s3cr3t@issuer.example.com",
+			wantErr:    `issuer "[redacted]@issuer.example.com" must name a host`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			name:       "a scheme with no slashes carrying credentials",
+			url:        "https:acct9:s3cr3t@issuer.example.com",
+			wantErr:    `issuer "[redacted]@issuer.example.com" must name a host`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			name:       "a backslash delimiter carrying credentials",
+			url:        `https:\\acct9:s3cr3t@issuer.example.com`,
+			wantErr:    `must name a host`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			name:       "a scheme-less URL with an encoded at sign",
+			url:        "acct9:s3cr3t%40issuer.example.com",
+			wantErr:    `must name a host`,
+			wantAbsent: []string{"acct9", "s3cr3t"},
+		},
+		{
+			name:       "a scheme-less URL whose password holds a fragment delimiter",
+			url:        "acct9:s3c#r3t@issuer.example.com",
+			wantErr:    `must name a host`,
+			wantAbsent: []string{"acct9", "s3c", "r3t"},
+		},
+		{
+			name:    "a scheme-less URL with no at sign is quoted whole",
+			url:     "issuer.example.com",
+			wantErr: `issuer "issuer.example.com" must name a host`,
 		},
 		{
 			// A second `@` in the authority: the host is what follows the

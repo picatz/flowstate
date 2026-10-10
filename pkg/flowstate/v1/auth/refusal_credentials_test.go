@@ -30,6 +30,7 @@ func TestNewProtectedResourceRefusalsNeverQuoteCredentials(t *testing.T) {
 	}{
 		{"fragment after userinfo", "https://acct9:" + secret + "@host.example.com/mcp#x", "must not include a fragment"},
 		{"fragment after misread userinfo", "https://acct9:2024/" + secret + "@host.example.com/mcp#x", "must not include a fragment"},
+		{"fragment after scheme-less userinfo", "acct9:" + secret + "@host.example.com#x", "must not include a fragment"},
 		{"query", "https://acct9:2024?" + secret + "@host.example.com/mcp", "must not include credentials"},
 		{"trailing slash", "https://acct9:2024/" + secret + "@host.example.com/", "must not include credentials"},
 		{"brace", "https://acct9:2024/" + secret + "@host.example.com/{x}", "must not include credentials"},
