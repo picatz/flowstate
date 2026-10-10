@@ -1168,6 +1168,10 @@ func TestLintStaysSilentOnABlockScalarThatIsNotAWholeFence(t *testing.T) {
 		"folded strip":              ">-\n      ${1 + 1}",
 		"two fences":                "|\n      ${1}${2}",
 		"kept trailing blank lines": "|+\n      ${1 + 1}\n\n",
+		"keep with one newline":     "|+\n      ${1 + 1}",
+		"folded keep":               ">+\n      ${1 + 1}",
+		"keep before a next step":   "|+\n      ${1 + 1}\n  - id: b\n    value: 2",
+		"indent indicator + keep":   "|2+\n      ${1 + 1}",
 	} {
 		t.Run(name, func(t *testing.T) {
 			requireNoFindings(t, findingsFor(lintOf(t, blockScalarFile(value)), StyleBlockScalarFence))

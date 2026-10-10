@@ -234,7 +234,7 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 		// newline YAML itself appended is not mistaken for text the author wrote.
 		raw := blockText(node)
 		text := blockScalarText(raw)
-		if text != raw {
+		if text != raw && clipChomped(node) {
 			c.pos.recordBlockFence(path)
 		}
 		return c.scalarString(n, text, path, r, exprCtx)
@@ -287,6 +287,16 @@ func blockScalarText(text string) string {
 	}
 
 	return trimmed
+}
+
+// clipChomped reports whether a block scalar's header leaves chomping to its
+// default: no `-` and no `+`. An explicit indicator is the author's own choice
+// of newline, so it is never the spelling to suggest changing.
+func clipChomped(n *ast.LiteralNode) bool {
+	if n == nil || n.Start == nil {
+		return false
+	}
+	return !strings.ContainsAny(n.Start.Value, "-+")
 }
 
 // blockText returns the text of a block scalar, written with | or >.
