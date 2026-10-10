@@ -173,3 +173,90 @@ func TestAVirtualBoundKeepsTheParentsWallDeadline(t *testing.T) {
 	require.True(t, sawDeadline, "the parent's wall deadline was hidden from the task")
 	require.True(t, wall.Equal(deadline), "the task saw %s, not the parent's %s", deadline, wall)
 }
+
+// runChildTask runs one step under a 10s virtual timeout whose task derives a
+// child context with derive, optionally after ending the run, and returns what
+// the run reported.
+func runChildTask(t *testing.T, derive func(context.Context) (context.Context, context.CancelFunc), cancelRunFirst bool) error {
+	t.Helper()
+
+	runCtx, cancelRun := context.WithCancel(t.Context())
+	defer cancelRun()
+
+	registry := v1.NewRegistry()
+	require.NoError(t, registry.Register(v1.TaskDef{
+		Name:    "wait_in_child",
+		Summary: "test fixture that waits on a context derived from its own",
+		Fn: func(ctx context.Context, _ map[string]*v1.Value, _ *v1.Scope) (*v1.Node_Outputs, error) {
+			if cancelRunFirst {
+				// Waiting off the clock keeps virtual time from reaching the
+				// step's bound before the cancel is observed.
+				cancelRun()
+				<-ctx.Done()
+			}
+			child, cancel := derive(ctx)
+			defer cancel()
+
+			// Parked on the clock, as a task waiting on a stub's scripted
+			// delay is, so virtual time can reach the step's bound.
+			clock := v1.ClockFromContext(ctx)
+			timer := clock.After(time.Hour)
+			defer v1.DiscardTimer(clock, timer)
+			select {
+			case <-timer:
+				return &v1.Node_Outputs{}, nil
+			case <-child.Done():
+			}
+
+			return nil, child.Err()
+		},
+	}))
+
+	ctx := v1.NewContextWithRegistry(v1.NewContextWithClock(runCtx, v1.NewVirtualClock(clockTimeoutStart)), registry)
+	_, err := v1.Run(ctx, &v1.Workflow{
+		Name:    "clock-timeout-child",
+		Profile: v1.CurrentProfile,
+		Steps: []*v1.Node{{
+			Id:     "step",
+			Kind:   &v1.Node_Task{Task: &v1.Task{Name: "wait_in_child"}},
+			Policy: &v1.StepPolicy{Timeout: durationpb.New(10 * time.Second), Retry: &v1.RetryPolicy{MaxAttempts: 1}},
+		}},
+	})
+
+	return err
+}
+
+// TestAChildOfAVirtualBoundReadsAsADeadline: a task that derives its own
+// context from the step's, as any task calling out does, and returns that
+// child's error must classify as a timeout, as it does under the wall clock.
+func TestAChildOfAVirtualBoundReadsAsADeadline(t *testing.T) {
+	t.Parallel()
+
+	derive := map[string]func(context.Context) (context.Context, context.CancelFunc){
+		"cancel": context.WithCancel,
+		"timeout": func(ctx context.Context) (context.Context, context.CancelFunc) {
+			return context.WithTimeout(ctx, 24*time.Hour)
+		},
+	}
+	for name, derive := range derive {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			err := runChildTask(t, derive, false)
+
+			require.Error(t, err)
+			require.Equal(t, v1.ErrorKindTimeout, v1.ClassifyError(err))
+		})
+	}
+}
+
+// TestAChildOfAVirtualBoundDoesNotReadACancelAsADeadline is the negative
+// direction: when the run itself is canceled, the child is canceled, not late.
+func TestAChildOfAVirtualBoundDoesNotReadACancelAsADeadline(t *testing.T) {
+	t.Parallel()
+
+	err := runChildTask(t, context.WithCancel, true)
+
+	require.Error(t, err)
+	require.NotEqual(t, v1.ErrorKindTimeout, v1.ClassifyError(err))
+}

@@ -43,7 +43,8 @@ func withClockTimeout(parent context.Context, d time.Duration, cause error) (con
 	}
 
 	inner, cancelInner := context.WithCancelCause(parent)
-	ctx := &clockDeadlineContext{Context: inner, parent: parent}
+	ctx := &clockDeadlineContext{Context: inner, parent: parent, done: make(chan struct{})}
+	context.AfterFunc(inner, func() { close(ctx.done) })
 
 	participant.Enter()
 	exited := make(chan struct{})
@@ -83,17 +84,35 @@ func withClockTimeout(parent context.Context, d time.Duration, cause error) (con
 // clockDeadlineContext is the context [withClockTimeout] returns under a
 // virtual clock. Cause and Value resolve through the embedded cancellable
 // context, so [context.Cause] sees the cause the deadline carried.
+//
+// Done is its own channel, closed when the embedded context ends. Were it the
+// embedded context's, a child made by [context.WithCancel] would recognize the
+// cancellable context under this one and attach to it, bypassing Err: the
+// child would read [context.Canceled] where the wall clock reads a deadline.
+// With a Done it cannot match, the child watches this context and copies its
+// Err instead.
 type clockDeadlineContext struct {
 	context.Context
 	parent context.Context
+	done   chan struct{}
 	fired  atomic.Bool
 }
+
+// Done is closed once the deadline lapsed, the parent ended, or cancel ran.
+func (c *clockDeadlineContext) Done() <-chan struct{} { return c.done }
 
 // Err reports [context.DeadlineExceeded] once this context's own deadline
 // lapsed, the parent's error when the parent ended first (so a lapsed
 // schedule-to-close budget still reads as a deadline one level down), and
-// [context.Canceled] otherwise.
+// [context.Canceled] otherwise. It is nil until Done is closed, as the
+// [context.Context] contract requires; Done closes on its own goroutine, a
+// moment after the embedded context ends.
 func (c *clockDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+	default:
+		return nil
+	}
 	if c.fired.Load() {
 		return context.DeadlineExceeded
 	}
