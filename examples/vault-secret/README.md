@@ -63,7 +63,7 @@ $ flow worker \
 | `--secret-vault-addr` | `FLOWSTATE_SECRET_VAULT_ADDR` | The vault's address. Required; nothing else here does anything until this is set. `https` is required except to a loopback address. |
 | `--secret-vault-token-file` | `FLOWSTATE_SECRET_VAULT_TOKEN_FILE` | A file holding a static client token, re-read on every login. |
 | — | `FLOWSTATE_SECRET_VAULT_TOKEN` | A static token read directly, when no token file is configured. For a development vault or a test; a long-running worker should prefer the file form or Kubernetes auth. |
-| `--secret-vault-kubernetes-role` | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | The Vault role to authenticate as via the Kubernetes auth method. Configuring neither this nor a token refuses to start, and so does configuring this with `--secret-vault-token-file`; configured with `FLOWSTATE_SECRET_VAULT_TOKEN` instead, this wins and the token is ignored. |
+| `--secret-vault-kubernetes-role` | `FLOWSTATE_SECRET_VAULT_KUBERNETES_ROLE` | The Vault role to authenticate as via the Kubernetes auth method. Configuring neither this nor a token refuses to start, and so does configuring this with `--secret-vault-token-file` or `FLOWSTATE_SECRET_VAULT_TOKEN`. |
 | `--secret-vault-kubernetes-mount` | `FLOWSTATE_SECRET_VAULT_KUBERNETES_MOUNT` | Where the Kubernetes auth method is mounted, when it is not the default. |
 | `--secret-vault-mount` | `FLOWSTATE_SECRET_VAULT_MOUNT` | Where the KV v2 engine is mounted, when it is not `secret`. |
 | `--secret-vault-path-prefix` | `FLOWSTATE_SECRET_VAULT_PATH_PREFIX` | A path prefix inside the mount, above the namespace segment — useful for keeping Flowstate's secrets in one subtree of a mount other systems also use. |

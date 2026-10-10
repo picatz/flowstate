@@ -309,11 +309,19 @@ func registerVaultProvider(cmd *cobra.Command, registry *secrets.Registry) (bool
 	tokenFile, _ := cmd.Flags().GetString("secret-vault-token-file")
 	role, _ := cmd.Flags().GetString("secret-vault-kubernetes-role")
 
+	envToken := os.Getenv(secretVaultTokenEnv) != ""
+
 	switch {
 	case tokenFile != "" && role != "":
 		return false, fmt.Errorf(
 			"configure one Vault authentication method, not both --secret-vault-token-file and " +
 				"--secret-vault-kubernetes-role")
+	case role != "" && envToken:
+		// A static token beside a role used to be dropped without a word, leaving
+		// the operator believing the token authenticated the worker.
+		return false, fmt.Errorf(
+			"configure one Vault authentication method, not both $%s and "+
+				"--secret-vault-kubernetes-role", secretVaultTokenEnv)
 	case tokenFile != "":
 		opts = append(opts, vault.WithTokenFile(tokenFile))
 	case role != "":
@@ -321,7 +329,7 @@ func registerVaultProvider(cmd *cobra.Command, registry *secrets.Registry) (bool
 		if mount, _ := cmd.Flags().GetString("secret-vault-kubernetes-mount"); mount != "" {
 			opts = append(opts, vault.WithKubernetesAuthMount(mount))
 		}
-	case os.Getenv(secretVaultTokenEnv) != "":
+	case envToken:
 		opts = append(opts, vault.WithToken(os.Getenv(secretVaultTokenEnv)))
 	default:
 		return false, fmt.Errorf(
