@@ -122,6 +122,13 @@ func (m *moduleUnderTest) run(ctx context.Context, test *Test) *v1.TestCase {
 		return result
 	}
 
+	if len(test.Expect.Check) == 0 && typeValues(test.Expect.Types) == 0 {
+		// A type named with no values, or an empty claim list, asserts nothing;
+		// passing it would be a green that checked nothing.
+		result.Error = "claims nothing: state at least one `expect.check:` claim or one value under `expect.types.<Type>.admits:` / `refuses:`"
+		return result
+	}
+
 	failures := m.assertChecks(ctx, test.Expect.Check)
 	failures = append(failures, m.assertTypes(test.Expect.Types)...)
 	if len(failures) > maxModuleFailures {

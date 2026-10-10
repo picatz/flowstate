@@ -354,3 +354,23 @@ tests:
 	assert.False(t, c.GetPassed())
 	assert.NotEmpty(t, c.GetError()+moduleFailures(c))
 }
+
+// TestAnEmptyTypeClaimIsNoClaim: naming a type with no values, or with empty
+// lists, asserts nothing, so a case made only of that is refused at load rather
+// than passing.
+func TestAnEmptyTypeClaimIsNoClaim(t *testing.T) {
+	t.Parallel()
+
+	for name, expect := range map[string]string{
+		"no values":   "types: {Count: {}}",
+		"empty lists": "types: {Count: {admits: [], refuses: []}}",
+		"empty check": "check: []\n      types: {Count: {}}",
+	} {
+		dir := t.TempDir()
+		writeFile(t, dir+"/lib.yaml", moduleSource)
+		report := flowtest.RunFile(writeInline(t, dir, "tests:\n  - name: vacuous\n    workflow: ./lib.yaml\n    expect:\n      "+expect+"\n"))
+
+		assert.Contains(t, report.GetRefused(), "claims nothing", name)
+		assert.Empty(t, report.GetCases(), name)
+	}
+}

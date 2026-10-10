@@ -1384,7 +1384,7 @@ func (c *FailedClaim) UnmarshalYAML(unmarshal func(any) error) error {
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
 		e.Response == nil && e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
-		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0 && len(e.Types) == 0
+		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0 && typeValues(e.Types) == 0
 }
 
 // expectationProvenance is the writer of each field in an effective table
