@@ -715,7 +715,7 @@ loop's `as:` carries is typed just below.
 A `for_each` binds its `as:` name (`item` by default) with the element type of `items:`: over a
 `list(string)` input the item is a `string`, so `n.first_name` is refused where it is written, and
 over a `list(dyn)` it stays `dyn`. A loop's `results` is a list, so `steps.loop.results.first` is refused
-too. Over a `list(Order)` the item is an `Order`: `order.id` is typed at its leaf, `order.idd` is refused with the
+too, and so is a key an entry cannot have, as the next paragraphs say. Over a `list(Order)` the item is an `Order`: `order.id` is typed at its leaf, `order.idd` is refused with the
 fields the record declares, and an inner loop over `order.lines` binds a `Line` the same way. A `loop:`'s `state` is not typed yet.
 
 *Since written, a type of your own (slice 1):* **`types:` names a record.** A shape
@@ -4681,6 +4681,13 @@ any other step's, and their names are system-chosen, not the author's:
 - **`${steps.<id>.state}`** — the *final* value the carried state held when the loop
   stopped. Present only when the loop declared `as:`; a stateless loop reports
   `results` alone.
+
+The variable of a macro over `results` is therefore checked, not `dyn`. `steps.fan.results.filter(r, r.okk.value)`
+is refused where it is written, with the body's step ids and a did-you-mean, and so is `r.check.valu` when `check` is a
+task, `value:` or `call:` step, whose outputs the file can name: `step "check" has no output "valu"; it has "value"`.
+The same holds through an index (`steps.fan.results[0].check`) and through a `filter` before the next macro. A body
+step of any other kind (a nested loop, a `switch`) is judged by its id alone, and the editor offers the same keys
+after `r.` and on hover. The `as:` item is not a key of the entry (see the `item` note just below).
 
 A third name appears *inside* a `results` entry, only on a failure that was
 tolerated: **`item`**, the `as:` value the iteration ran with — a `for_each`'s

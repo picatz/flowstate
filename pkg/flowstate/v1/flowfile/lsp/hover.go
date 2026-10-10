@@ -406,6 +406,9 @@ func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor i
 	if h := hoverVarPath(doc, v, f, cursor); h != nil {
 		return h
 	}
+	if h := hoverResultEntry(doc, from, v, f, cursor); h != nil {
+		return h
+	}
 
 	ref := referenceAt(f.source, cursor)
 	if ref.empty() {

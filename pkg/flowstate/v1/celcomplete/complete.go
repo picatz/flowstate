@@ -226,7 +226,15 @@ func Complete(text string, scope Scope) Result {
 		return carry(short, bound(member, members))
 	}
 	if head, rest, nested := strings.Cut(qualifier, "."); nested {
-		if root, ok := find(scope.Roots, head); ok {
+		root, ok := find(scope.Roots, head)
+		if !ok {
+			// A local that names its members, such as the variable of a macro over
+			// a loop's `results`, reaches them the way a root does.
+			if local, found := find(scope.Locals, head); found && (len(local.Members) > 0 || local.MemberSource != nil) {
+				root, ok = local, true
+			}
+		}
+		if ok {
 			// One member deep. The root is asked for `rest` itself, which is
 			// the prefix of exactly the name being looked up — and a bounded
 			// source that keeps the alphabetically-first matches always keeps
@@ -258,9 +266,10 @@ func Complete(text string, scope Scope) Result {
 		}
 	}
 
-	// A namespace the file itself binds, such as the alias of a module it uses.
-	// Only a namespace: a local value's members are not known statically.
-	if local, ok := find(scope.Locals, qualifier); ok && local.Kind == KindNamespace {
+	// A namespace the file itself binds, such as the alias of a module it uses,
+	// or a local that names its members. Any other local value's members are not
+	// known statically.
+	if local, ok := find(scope.Locals, qualifier); ok && (local.Kind == KindNamespace || len(local.Members) > 0 || local.MemberSource != nil) {
 		members, short := membersOf(local, member)
 
 		return carry(short, bound(member, members))
