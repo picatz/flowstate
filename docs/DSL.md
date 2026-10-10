@@ -1726,19 +1726,28 @@ leave the rest unpinned.
   declarations and the `modules` provenance, and a run keeps its specification across
   every Continue-As-New. Editing a module changes what the next compile produces, never
   what a running one is. Nothing patches a run in place.
-- **`flow breaking` compares modules by path** and reports the edits an importer can
-  break: a declaration removed, a record field added as required or removed, a scalar's
-  rule tightened or its base changed, a function's parameters or result changed, an error
-  removed. It lists the importers among the paths given, read from source so that a file
-  which no longer compiles is still named. Adding a declaration, loosening a rule and
-  editing a body or a description pass. CI runs it over `examples/` against `origin/main`.
+- **`flow breaking` compares modules by path** and reports the interface edits an importer
+  can break: a type or error removed; a type that changed between record and scalar; a
+  scalar whose base changed or whose `must:` is different and not empty (the rule is
+  compared as compiled and not understood, so any different rule reads as tightened and
+  only removing it passes); a record field removed or made required or narrowed; a
+  function removed, given another parameter count, a parameter type its old type no longer
+  fits, or a result that no longer fits the old one. It lists the importers among the paths
+  given, read from source so that a file which no longer compiles is still named. Adding a
+  declaration, removing a scalar's rule, renaming a parameter, widening a parameter,
+  strengthening a result and editing a description pass. CI runs it over `examples/` against
+  `origin/main`.
+- **A function body is not an interface.** Bodies are inlined into every importer, and
+  `flow breaking` does not compare them, so an edit that keeps the signature but changes
+  what a function computes passes it. The one exception is a scalar's rule that calls the
+  function, which is compared as compiled and so reads as that rule changing. Interface checks
+  do not make a body edit behavior-safe; review it.
 - **Pins are the release gate.** An importer that pins keeps failing loudly rather than
-  quietly picking up the edit, until its author repins. An unpinned importer takes the edit
-  at its next compile, which is why `flow breaking` is the check to run before merging a
-  module change.
-- **Unlike a `call:`, a module is vocabulary and carries no behavior to version.** There
-  is nothing to migrate: widening a rule or adding a function is compatible, and narrowing
-  or removing one is a breaking change reported before it lands.
+  quietly picking up the edit, until its author repins. An unpinned importer takes the edit,
+  body changes included, at its next compile, so pin the modules whose behavior matters.
+- **No separate history to migrate.** A module is compile-time vocabulary: it has no runs
+  of its own, and a run that used it keeps the inlined copy it started with. That is not
+  "no behavior": a changed body changes what the next compile of each importer does.
 
 **In the editor.** Go to definition, hover, completion after `alias.`, rename across the
 importers, the add-`use:` and repin quick fixes and `workspace/symbol` follow a qualified

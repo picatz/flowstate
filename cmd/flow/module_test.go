@@ -98,7 +98,7 @@ func shippedModules(t *testing.T) (modules, misnamed []string) {
 	t.Helper()
 
 	err := filepath.WalkDir(filepath.Join("..", "..", "examples"), func(path string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() || filepath.Ext(path) != ".yaml" {
+		if err != nil || d.IsDir() || (filepath.Ext(path) != ".yaml" && filepath.Ext(path) != ".yml") {
 			return err
 		}
 		source, err := os.ReadFile(path)
