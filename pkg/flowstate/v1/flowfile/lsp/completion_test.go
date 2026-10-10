@@ -331,7 +331,7 @@ edition: v2026.4
 			src:  `|`,
 			exact: []string{
 				"edition", "name", "labels", "description", "use", "types", "errors", "functions", "inputs", "outputs", "vars",
-				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
+				"steps", "triggers", "signals", "debug", "concurrency", "step_defaults", "plugins",
 			},
 		},
 		{

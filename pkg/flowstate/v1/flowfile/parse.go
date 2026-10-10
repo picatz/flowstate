@@ -85,7 +85,7 @@ const stepsKey = "steps"
 // misspelled `timout:` that is silently ignored does nothing at run time and gives
 // the author no reason to doubt it, which is the worst of both outcomes.
 var (
-	workflowKeys = []string{"edition", "name", "labels", "description", "use", "types", "errors", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "plugins"}
+	workflowKeys = []string{"edition", "name", "labels", "description", "use", "types", "errors", "functions", "inputs", "outputs", "vars", "steps", "triggers", "signals", "debug", "concurrency", "step_defaults", "plugins"}
 
 	// The keys of one input declaration and of one output declaration. Both are
 	// mappings keyed by the name being declared, so these are the keys *under* a
@@ -1037,8 +1037,28 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 		workflow.Vars = c.vars(f.value, "vars", ref{path: "vars", label: "vars"})
 	}
 
+	// What every step that does work takes unless it states its own, read before the
+	// steps and applied to them once they are compiled. See flowfile/stepdefaults.go.
+	defaultsField, hasDefaults := fields.get("step_defaults")
+	if hasDefaults {
+		defaultsRef := ref{path: "step_defaults", label: "step_defaults"}
+		if _, hasSteps := fields.get(stepsKey); hasSteps {
+			workflow.StepDefaults = c.stepDefaults(defaultsField.value, "step_defaults", defaultsRef)
+		} else {
+			c.report(spanOfNode(defaultsField.key), defaultsRef,
+				"does nothing in a file with no `steps:`: a module declares types, functions and errors, "+
+					"and the steps that would take these defaults are in the file that uses it")
+		}
+	}
+
 	if f, found := fields.get(stepsKey); found {
 		workflow.Steps = c.steps(f.value, "steps", ref{path: "steps", label: "steps"})
+		for _, node := range applyStepDefaults(workflow.Steps, workflow.StepDefaults) {
+			c.report(spanOfNode(defaultsField.key), ref{step: node.GetId(), path: "step_defaults", label: "step_defaults"},
+				"gives step %q a total_timeout: of %s shorter than its timeout: of %s, so its whole budget expires "+
+					"inside its first attempt; state `timeout:` or `total_timeout:` on the step so the two agree",
+				node.GetId(), node.GetPolicy().GetTotalTimeout().AsDuration(), node.GetPolicy().GetTimeout().AsDuration())
+		}
 	}
 
 	// What the run answers with, read last for the reason it is *evaluated* last:

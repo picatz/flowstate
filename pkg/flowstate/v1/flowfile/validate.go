@@ -369,6 +369,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	ds = append(ds, validateDebug(wf)...)
 	ds = append(ds, validateReservedSignalNames(wf)...)
 	ds = append(ds, validateConcurrency(wf)...)
+	ds = append(ds, validateStepDefaults(wf)...)
 	ds = append(ds, validateWorkflowVars(wf)...)
 
 	// What is wrong with an expression regardless of what the file means — a

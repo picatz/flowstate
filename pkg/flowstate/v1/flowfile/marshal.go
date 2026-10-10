@@ -187,6 +187,17 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 		doc = append(doc, yaml.MapItem{Key: "vars", Value: vars})
 	}
 
+	// Above the steps it applies to: a bound every step reaches is read before the
+	// steps that take it. The steps below are written without the keys it supplies.
+	if defaults := wf.GetStepDefaults(); defaults != nil {
+		written, err := stepDefaultsToYAML(defaults)
+		if err != nil {
+			return nil, err
+		}
+		doc = append(doc, yaml.MapItem{Key: "step_defaults", Value: written})
+		wf = factorStepDefaults(wf)
+	}
+
 	// A workflow with no steps is not a usable one — [Validate] says so — but
 	// writing `steps: []` for it would be worse than leaving the key out: reading
 	// that back is an author asking for an empty list, which is a different

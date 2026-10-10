@@ -115,6 +115,7 @@ says otherwise.
 | [logging](logging) | `log:` — a message for a person to read, with `level:` and `fields:`, and no outputs | no |
 | [string-formatting](string-formatting) | `format()` from the profile, building a message from a var | no |
 | [conditional-and-retry](conditional-and-retry) | `if:`, `timeout:`, `retry:` and `continue_on_error:` per step, tolerating a step that really does fail | no |
+| [step-defaults](step-defaults) | `step_defaults:` — the `timeout:`, `total_timeout:` and `retry:` every step that does work takes unless it states its own, resolved into each step when the file compiles; the step wins per key and replaces a key whole | no |
 | [declared-errors](declared-errors) | `errors:` and `fail:` — a workflow names the ways it refuses (`InsufficientFunds`), raises one with a message built from its inputs, and the run fails with that name as its kind; the tests assert the refusal | no |
 | [failure-kinds](failure-kinds) | `continue_on_error:` and `retry:` naming failure kinds (`only:`) — a step tolerates and retries the failures it expects and nothing else; the tests assert both directions | no |
 | [webhook-routing](webhook-routing) | `switch:` dispatching a webhook's action field — literal cases, a shared list case, written-down ignoring with `steps: []`, and a `default:` whose run is recorded | no |

@@ -120,6 +120,10 @@ var dslKeys = map[string][]dslKey{
 		{name: "signals", detail: "map", docs: "Declares the named signals this workflow accepts and the authorization policy for each."},
 		{name: "debug", detail: "map", docs: "Controls who may open and operate a debug session for this workflow."},
 		{name: "concurrency", detail: "map", docs: "Controls how runs of this workflow share a concurrency key and what happens when another run already holds it."},
+		{name: "step_defaults", detail: "map", docs: "States once the `timeout:`, `total_timeout:` and `retry:` that every step that does work takes unless it states its own, so a file that bounds ten calls the same way says it once.\n\n" +
+			"Per key the step wins, and a key is replaced whole: a step's `retry:` is not merged with the default's, and a step that writes `retry:` with nothing under it takes the engine's own retry behaviour. " +
+			"It reaches task steps at any depth of a `for_each:`, `loop:`, `parallel:` or `switch:` body; a `call:` takes the callee file's own defaults. " +
+			"`continue_on_error:` is not a default: tolerating a failure is a decision about one step."},
 		{name: "plugins", detail: "map", docs: "Declares the plugins this workflow requires and the minimum semantic version accepted for each."},
 	},
 	"steps": {

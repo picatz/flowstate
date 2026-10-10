@@ -616,6 +616,23 @@ message Workflow {
     (google.api.field_behavior) = OPTIONAL,
     (buf.validate.field).repeated = {max_items: 64}
   ];
+
+  // StepDefaults is the `step_defaults:` block: the `timeout:`, `total_timeout:`
+  // and `retry:` a file states once for every step that does work and does not
+  // state its own.
+  //
+  // It is an authoring record, not a second place a driver looks. The compiler
+  // resolves it into each eligible step's [Node.policy] (a key the step states
+  // replaces the default's, whole), so a driver reads one policy per step and
+  // the two cannot differ on which applies. It is kept here so the factoring
+  // survives a round trip: without it `flow fmt` would write the resolved values
+  // back into every step and the block would not outlive its first format.
+  // A specification built without the compiler gets no defaults from this field.
+  //
+  // `continue_on_error` and `tolerated_kinds` are refused, because blanket
+  // tolerance is a decision about one step's failure. A workflow with no steps
+  // (a module) has nothing to default and is refused when it sets this.
+  StepPolicy step_defaults = 24 [(google.api.field_behavior) = OPTIONAL];
 }
 
 // Module records one file a workflow's declarations were carried from, mirroring
