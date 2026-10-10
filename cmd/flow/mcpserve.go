@@ -175,6 +175,14 @@ func addMCPServeFlags(cmd *cobra.Command) {
 	addTLSFlags(cmd)
 	addAuditRequiredFlag(cmd)
 
+	// The catalog and not --plugin-dir, on purpose: a catalog is a descriptor
+	// document that launches nothing, which is the only shape that fits a
+	// process facing the network. Executing plugin binaries from here is a
+	// separate decision (picatz/flowstate#1340). Flowfiles on this surface are
+	// only validated, compiled and rehearsed under stubs, never run, which is
+	// the property addPluginCatalogFlag requires of the verbs that take it.
+	addPluginCatalogFlag(cmd)
+
 	cmd.Flags().Int64("max-request-bytes", mcpServeDefaultMaxRequestBytes,
 		"largest request body this surface will read, in bytes. A request over the limit is "+
 			"refused with 413 rather than buffered")
@@ -795,6 +803,7 @@ func mcpServeTools(
 	testTimeout time.Duration,
 	recorder *audit.Recorder,
 	reportAuditFailure func(error),
+	pluginCatalog bool,
 ) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
 
@@ -814,6 +823,11 @@ func mcpServeTools(
 		flowmcp.Deps{
 			Audit:        recorder,
 			AuditFailure: reportAuditFailure,
+
+			// Words only: the catalog's tasks were registered by
+			// [loadPluginCatalog] before this server was built, and the tool
+			// descriptions say whether that happened.
+			PluginCatalog: pluginCatalog,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -1085,6 +1099,16 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
+	// Before the server is built, so the first request already sees the
+	// catalog's tasks. A catalog that cannot be read stops the command: serving
+	// without it would answer `no plugin task` for every task the operator
+	// said this deployment has.
+	pluginCatalog, err := loadPluginCatalog(cmd)
+	if err != nil {
+		return fmt.Errorf("--%s names the plugins this surface validates against, and it could not be read: %w",
+			pluginCatalogFlag, err)
+	}
+
 	recorder, err := startAudit(cmd.Context(), flags.auditRequired)
 	if err != nil {
 		return fmt.Errorf("configuring the audit trail: %w", err)
@@ -1097,7 +1121,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 
 	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
 		logger.Error("could not record MCP tool authorization decision", "error", err)
-	})
+	}, pluginCatalog != nil)
 	if err != nil {
 		return err
 	}
