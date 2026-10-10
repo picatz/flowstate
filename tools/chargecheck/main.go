@@ -5,7 +5,7 @@
 //	go run ./tools/chargecheck          # fail on an unlabelled uncharged site
 //	go run ./tools/chargecheck -sites   # list every uncharged site and its status
 //
-// The rule is mechanical. An [v1.Evaluator] entry point that returns a cost
+// The rule is mechanical. An v1.Evaluator entry point that returns a cost
 // (`...WithCost`) is the charged form: its caller owns adding the cost to the
 // budget. One that returns none (Eval, EvalParsed, EvalParsedBase, EvalString)
 // is uncharged, and a call to it from any function reachable from engine.Run

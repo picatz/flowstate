@@ -21,14 +21,14 @@ import (
 // answer is kept (invariant 2).
 const exemptMarker = "charge:exempt"
 
-// Package paths, relative to the repository root, that make up the
-// workflow-side surface: the engine, and the v1 package whose functions it
-// calls. Code in other packages is outside this analysis, which is a stated
-// limit rather than a claim they are charged.
 // corePath is the import path of the v1 package. Other paths that end in /v1
 // (generated API packages) are not it.
 const corePath = "github.com/picatz/flowstate/" + corePkg
 
+// Package paths, relative to the repository root, that make up the
+// workflow-side surface: the engine, and the v1 package whose functions it
+// calls. Code in other packages is outside this analysis, which is a stated
+// limit rather than a claim they are charged.
 const (
 	enginePkg = "pkg/flowstate/v1/engine"
 	corePkg   = "pkg/flowstate/v1"
