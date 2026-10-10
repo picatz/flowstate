@@ -84,6 +84,10 @@ type typeTable struct {
 	// workflow, by id, with the type each of their named outputs holds.
 	outputs map[string]*stepOutputs
 
+	// shapes are the entries of the `results` of the top-level `loop:` and
+	// `for_each` steps whose id is unique, by id. See [resultShape].
+	shapes map[string]*resultShape
+
 	// scopes are the `for_each` iterators each step is written inside, outermost
 	// first, by step id. A step is placed in the scope of every loop whose body
 	// holds it, never in the scope of its own `for_each:` (its `items:` is read
@@ -164,6 +168,7 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		records:    v1.TypesOf(wf),
 		values:     map[string]*valueStep{},
 		outputs:    map[string]*stepOutputs{},
+		shapes:     map[string]*resultShape{},
 		owner:      map[string]int{},
 		scopes:     map[string][]*loopBinding{},
 	}
@@ -194,6 +199,9 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 				table.bind(node.GetId(), each, index)
 			}
 		}})
+		if shape := resultShapeOf(top, index); shape != nil {
+			table.shapes[top.GetId()] = shape
+		}
 		if value, ok := top.GetKind().(*v1.Node_Value); ok {
 			table.values[top.GetId()] = &valueStep{value: value.Value, index: index}
 		} else if typed := typedOutputs(top); len(typed) > 0 {
@@ -204,6 +212,7 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		if count > 1 {
 			delete(table.values, id)
 			delete(table.outputs, id)
+			delete(table.shapes, id)
 			delete(table.scopes, id)
 		}
 	}

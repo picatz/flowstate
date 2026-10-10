@@ -374,6 +374,9 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		}
 		scope := referenceScope(doc, pos, bindsClock(key, path), current, earlier)
 		scope.locals = append(waitResultCandidates(path), scope.locals...)
+		if current != nil {
+			scope.locals = append(resultEntryLocals(doc, pos, current.id, inner), scope.locals...)
+		}
 		return completeInExpression(pos, inner, scope)
 	}
 
