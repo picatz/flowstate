@@ -1,0 +1,20 @@
+# A starter module: the failure kinds most workflows end up naming.
+#
+# An error is a kind a step raises with `fail:` and a caller reads back as
+# `failure.kind`. Declaring the common ones once keeps every workflow in a repository
+# spelling them the same way, so a dashboard or a rule written for one reads them all.
+# Through `use:` with the alias `errs` they are `errs.NotFound` and so on.
+edition: v2026.4
+name: errors
+description: Failure kinds shared across workflows.
+errors:
+  NotFound:
+    description: The thing asked about does not exist.
+  AlreadyExists:
+    description: The thing to create is already there.
+  InvalidArgument:
+    description: An input is well formed but not acceptable.
+  PermissionDenied:
+    description: The caller may not do this.
+  Unavailable:
+    description: A dependency did not answer; trying again later may work.

@@ -42,6 +42,7 @@ headings below, not this list.*
   - [`functions:`: a computation named once *(landed)*](#functions-a-computation-named-once-landed)
   - [A file with no steps is a module *(landed)*](#a-file-with-no-steps-is-a-module-landed)
   - [`use:`: a module imported by an alias *(landed)*](#use-a-module-imported-by-an-alias-landed)
+  - [Composition, end to end: choosing a mechanism and evolving it safely *(landed)*](#composition-end-to-end-choosing-a-mechanism-and-evolving-it-safely-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -1657,7 +1658,113 @@ steps:
 - **Not yet.** `flow test` function cases and an editor action that extracts a type into a
   module.
 
-See `examples/use-modules/`.
+See `examples/use-modules/`, and `examples/lib/` for modules to copy.
+
+### Composition, end to end: choosing a mechanism and evolving it safely *(landed)*
+
+The three sections above each record one mechanism. This one says how they fit, in the
+order an author meets them, and what makes changing a shared file safe. It adds no
+construct; every claim here is stated where it is decided, and linked from the list.
+
+**One mechanism per question.** Reach for the smallest one that answers it, and each
+lowers to something the runtime already had:
+
+| The question | The mechanism | What a run sees |
+| --- | --- | --- |
+| A value, computed once | `vars:` | the value |
+| A computation, used in several places | [`functions:`](#functions-a-computation-named-once-landed) | its body, inlined at each call |
+| A shape, or a scalar with a rule | `types:` (`fields:`, or `type:` and `must:` over `this`) | the base type and the plain rule |
+| A name for a way to fail | `errors:` and `fail:` | the error's name as the failure kind |
+| The same of any of these across files | [a module](#a-file-with-no-steps-is-a-module-landed) taken with [`use:`](#use-a-module-imported-by-an-alias-landed) | the same, under the qualified name |
+| A whole process with its own history | `call:` | a child run |
+
+The first four are one file's. A module is not a fifth kind of thing: it is those
+declarations in a file with no `steps:`, so a declaration moves into a module by moving,
+and nothing about how it is written changes except that its users now qualify it.
+
+**The canonical form.** A module declares and a workflow uses it, always through the
+alias. [`examples/lib/`](../examples/lib) ships three small modules to copy (`ids.yaml`,
+`numbers.yaml`, `errors.yaml`) and a workflow that takes them; `examples/use-modules/` is
+the shortest complete pair.
+
+```yaml
+use:
+  ids:
+    path: ./ids.yaml
+    digest: sha256:62d97e15d3e283bf1929a09499ce92ca51d0c9f850e696f11f16c618733d2763
+  numbers:
+    path: ./numbers.yaml
+inputs:
+  owner:
+    type: ids.Uuid                       # a constrained scalar, checked before the run starts
+    required: true
+  replicas:
+    type: numbers.Count
+    default: 2
+steps:
+  - id: sized
+    value: ${numbers.clamp(inputs.replicas, 1, 5)}   # a function, inlined here
+```
+
+A scalar type's `must:` is written once in the module and holds wherever the type is
+used; a use may add a `must:` of its own and both hold. An input, an output and a record
+field all take the type. A module is validated, formatted and linted like any other
+file, and `flow run` refuses it by name, so the examples corpus checks the module files
+it ships and never runs them.
+
+**Pins, and the one command that moves them.** `digest:` on a `use:` entry is the hash of
+the module bytes the author read. A changed module stops the file compiling with
+`module-pin-mismatch`, which prints the digest the module has now. The author reads the
+change, then runs `flow fix --repin <path>` to adopt it. The command never adds a pin to
+an entry that has none and never touches one that already matches. Pin the modules whose
+change should be a decision (a shared validation, an error name something matches on), and
+leave the rest unpinned.
+
+**Changing a module safely.**
+
+- **A run already started is untouched.** The compiled specification holds the inlined
+  declarations and the `modules` provenance, and a run keeps its specification across
+  every Continue-As-New. Editing a module changes what the next compile produces, never
+  what a running one is. Nothing patches a run in place.
+- **`flow breaking` compares modules by path** and reports the interface edits an importer
+  can break: a type or error removed; a type that changed between record and scalar; a
+  scalar whose base changed or whose `must:` is different and not empty (the rule is
+  compared as compiled and not understood, so any different rule reads as tightened and
+  only removing it passes); a record field removed or made required or narrowed; a
+  function removed, given another parameter count, a parameter type its old type no longer
+  fits, or a result that no longer fits the old one. It lists the importers among the paths
+  given, read from source so that a file which no longer compiles is still named. Adding a
+  declaration, removing a scalar's rule, renaming a parameter, widening a parameter,
+  strengthening a result and editing a description pass. CI runs it over `examples/` against
+  `origin/main`.
+- **A function body is not an interface.** Bodies are inlined into every importer, and
+  `flow breaking` does not compare them, so an edit that keeps the signature but changes
+  what a function computes passes it. The one exception is a scalar's rule that calls the
+  function, which is compared as compiled and so reads as that rule changing. Interface checks
+  do not make a body edit behavior-safe; review it.
+- **Pins are the release gate.** An importer that pins keeps failing loudly rather than
+  quietly picking up the edit, until its author repins. An unpinned importer takes the edit,
+  body changes included, at its next compile, so pin the modules whose behavior matters.
+- **No separate history to migrate.** A module is compile-time vocabulary: it has no runs
+  of its own, and a run that used it keeps the inlined copy it started with. That is not
+  "no behavior": a changed body changes what the next compile of each importer does.
+
+**In the editor.** Go to definition, hover, completion after `alias.`, rename across the
+importers, the add-`use:` and repin quick fixes and `workspace/symbol` follow a qualified
+name into the module; [Editors](EDITORS.md) has the table and rename's refusals. The
+language server and `flow validate` over a directory keep each clean module's compile and
+reuse it while its interface (the declarations, not its comments or layout) is unchanged.
+
+**Bounds.** Modules may use modules to a depth of 4, a file names at most 16, and one
+workflow's modules together are at most 64 (a module two files reach is compiled once). The
+declarations a file carries in stay within the bounds on types, functions and errors a
+workflow declares (64 each) and share its 100000-node expansion budget; going over is
+refused at the `use:` line with the counts. A cycle is refused where it closes.
+
+**Not offered.** Generics, private declarations, re-exports, a bare import, a remote or
+registry source (vendor the file, then pin it), a module that holds values or steps, and
+`flow test` cases for a module's own functions. A repeated sequence of steps is a
+`call:`, not a template.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*
 

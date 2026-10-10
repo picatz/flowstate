@@ -324,6 +324,7 @@ var examplesNeedingAFile = map[string]bool{
 	"debugging":                      true,
 	"enterprise-customer-onboarding": true,
 	"fan-out-calls":                  true,
+	"lib":                            true,
 	"pinned-call":                    true,
 	"progressive-rollout":            true,
 	"use-modules":                    true,
