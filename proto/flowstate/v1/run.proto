@@ -1366,13 +1366,20 @@ message TimelineEntry {
     // row as an unknown kind.
     KIND_DEBUG_PAUSED = 12;
 
-    // KIND_DEBUG_RESUMED is that lease ending, with `end_reason` saying how:
-    // "released" when the timer was cancelled (the holder let go, or the
-    // session ended) and "lapsed" when it fired (the lease ran out). It
-    // replaces the KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing
-    // event used to produce, and carries the same `session_id` and `actor` as
-    // the pause it closes. Only the lease timer's end becomes one: the cause
-    // beyond those two is not recorded in history.
+    // KIND_DEBUG_RESUMED is that hold ending, with `end_reason` saying how:
+    // "released" when the lease timer was cancelled and not re-armed (the hold
+    // ended before it expired: a resume, a detach, or the run ending) and
+    // "lapsed" when it fired (the lease ran out). It replaces the
+    // KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing event used to
+    // produce, and carries the same `session_id` and `actor` as the pause it
+    // closes.
+    //
+    // The engine re-arms the lease timer on every wake, so a renewal, a refused
+    // ask or a resume by a non-holder cancels and restarts it. Those are not
+    // shown: a cancel followed by a lease (or backlog-pacing) timer for the
+    // same session, with only debug signals between, is one continuous pause.
+    // A pause that ends while its backlog is being paced has no lease-timer
+    // close and so no resumed row.
     KIND_DEBUG_RESUMED = 13;
   }
 
@@ -1456,8 +1463,8 @@ message TimelineEntry {
   string actor = 9;
 
   // EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: "released"
-  // when the lease timer was cancelled, "lapsed" when it fired. Empty on every
-  // other row.
+  // when the hold ended before it expired (a resume, a detach, or the run
+  // ending), "lapsed" when the lease ran out. Empty on every other row.
   string end_reason = 10;
 
   // Occurrence is the 1-based ordinal of this execution among the

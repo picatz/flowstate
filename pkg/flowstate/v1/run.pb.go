@@ -418,13 +418,20 @@ const (
 	// Appended last, so an older client that does not know the value skips the
 	// row as an unknown kind.
 	TimelineEntry_KIND_DEBUG_PAUSED TimelineEntry_Kind = 12
-	// KIND_DEBUG_RESUMED is that lease ending, with `end_reason` saying how:
-	// "released" when the timer was cancelled (the holder let go, or the
-	// session ended) and "lapsed" when it fired (the lease ran out). It
-	// replaces the KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing
-	// event used to produce, and carries the same `session_id` and `actor` as
-	// the pause it closes. Only the lease timer's end becomes one: the cause
-	// beyond those two is not recorded in history.
+	// KIND_DEBUG_RESUMED is that hold ending, with `end_reason` saying how:
+	// "released" when the lease timer was cancelled and not re-armed (the hold
+	// ended before it expired: a resume, a detach, or the run ending) and
+	// "lapsed" when it fired (the lease ran out). It replaces the
+	// KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing event used to
+	// produce, and carries the same `session_id` and `actor` as the pause it
+	// closes.
+	//
+	// The engine re-arms the lease timer on every wake, so a renewal, a refused
+	// ask or a resume by a non-holder cancels and restarts it. Those are not
+	// shown: a cancel followed by a lease (or backlog-pacing) timer for the
+	// same session, with only debug signals between, is one continuous pause.
+	// A pause that ends while its backlog is being paced has no lease-timer
+	// close and so no resumed row.
 	TimelineEntry_KIND_DEBUG_RESUMED TimelineEntry_Kind = 13
 )
 
@@ -2862,8 +2869,8 @@ type TimelineEntry struct {
 	// reported here or anywhere on the timeline.
 	Actor string `protobuf:"bytes,9,opt,name=actor,proto3" json:"actor,omitempty"`
 	// EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: "released"
-	// when the lease timer was cancelled, "lapsed" when it fired. Empty on every
-	// other row.
+	// when the hold ended before it expired (a resume, a detach, or the run
+	// ending), "lapsed" when the lease ran out. Empty on every other row.
 	EndReason string `protobuf:"bytes,10,opt,name=end_reason,json=endReason,proto3" json:"end_reason,omitempty"`
 	// Occurrence is the 1-based ordinal of this execution among the
 	// KIND_STEP_SCHEDULED rows in this run's history that carry the same step

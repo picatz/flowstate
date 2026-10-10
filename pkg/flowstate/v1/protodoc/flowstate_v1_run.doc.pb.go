@@ -1475,8 +1475,8 @@ func init() {
 		{
 			Name: "flowstate.v1.TimelineEntry.end_reason",
 			Leading: " EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: \"released\"\n" +
-				" when the lease timer was cancelled, \"lapsed\" when it fired. Empty on every\n" +
-				" other row.\n",
+				" when the hold ended before it expired (a resume, a detach, or the run\n" +
+				" ending), \"lapsed\" when the lease ran out. Empty on every other row.\n",
 		},
 		{
 			Name: "flowstate.v1.TimelineEntry.occurrence",
@@ -1621,13 +1621,20 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.TimelineEntry.KIND_DEBUG_RESUMED",
-			Leading: " KIND_DEBUG_RESUMED is that lease ending, with `end_reason` saying how:\n" +
-				" \"released\" when the timer was cancelled (the holder let go, or the\n" +
-				" session ended) and \"lapsed\" when it fired (the lease ran out). It\n" +
-				" replaces the KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing\n" +
-				" event used to produce, and carries the same `session_id` and `actor` as\n" +
-				" the pause it closes. Only the lease timer's end becomes one: the cause\n" +
-				" beyond those two is not recorded in history.\n",
+			Leading: " KIND_DEBUG_RESUMED is that hold ending, with `end_reason` saying how:\n" +
+				" \"released\" when the lease timer was cancelled and not re-armed (the hold\n" +
+				" ended before it expired: a resume, a detach, or the run ending) and\n" +
+				" \"lapsed\" when it fired (the lease ran out). It replaces the\n" +
+				" KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing event used to\n" +
+				" produce, and carries the same `session_id` and `actor` as the pause it\n" +
+				" closes.\n" +
+				"\n" +
+				" The engine re-arms the lease timer on every wake, so a renewal, a refused\n" +
+				" ask or a resume by a non-holder cancels and restarts it. Those are not\n" +
+				" shown: a cancel followed by a lease (or backlog-pacing) timer for the\n" +
+				" same session, with only debug signals between, is one continuous pause.\n" +
+				" A pause that ends while its backlog is being paced has no lease-timer\n" +
+				" close and so no resumed row.\n",
 		},
 	})
 }

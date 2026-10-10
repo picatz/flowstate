@@ -1283,7 +1283,12 @@ shows each one and each lease:
 ```
 
 A lease is a `debug paused` row, and its end is `debug resumed (released)` when
-the holder let go or `debug resumed (lapsed)` when the lease ran out. `-o json`
+the hold ended before it expired (a resume, a detach, or the run ending) or
+`debug resumed (lapsed)` when the lease ran out. A renewal, a refused ask or a
+resume by someone who does not hold the run re-arms the lease timer in history;
+the timeline folds that into one continuous pause and shows neither a resume nor
+a second pause. A pause that ends while a backlog of asks is being paced has no
+resumed row. `-o json`
 carries `sessionId`, `actor` (the holder text the label already showed) and
 `endReason` on those rows. Pacing timers stay ordinary `waiting` rows, and a
 signal's payload and sender are still not on the timeline.

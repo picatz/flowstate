@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -58,12 +59,19 @@ func TestTheJSONTimelineCarriesTheDebugFields(t *testing.T) {
 	}
 	require.NoError(t, writeJSON(surface, FormatJSON, debugTimelineFixture()))
 
-	for _, want := range []string{
-		`"KIND_DEBUG_PAUSED"`, `"KIND_DEBUG_RESUMED"`, `"sessionId": "s1"`, `"actor": "sre"`,
-		`"endReason": "released"`, `"endReason": "lapsed"`, `"occurrence": 2`,
-	} {
-		assert.Contains(t, out.String(), want)
+	// protojson's whitespace is deliberately unstable, so the document is
+	// parsed rather than matched as text.
+	var doc struct {
+		Entries []map[string]any `json:"entries"`
 	}
+	require.NoError(t, json.Unmarshal(out.Bytes(), &doc))
+	require.Len(t, doc.Entries, 6)
+	assert.Equal(t, "KIND_DEBUG_PAUSED", doc.Entries[1]["kind"])
+	assert.Equal(t, "s1", doc.Entries[1]["sessionId"])
+	assert.Equal(t, "sre", doc.Entries[1]["actor"])
+	assert.Equal(t, "released", doc.Entries[2]["endReason"])
+	assert.Equal(t, "lapsed", doc.Entries[3]["endReason"])
+	assert.EqualValues(t, 2, doc.Entries[4]["occurrence"])
 
 	var back v1.GetTimelineResponse
 	require.NoError(t, protojson.Unmarshal(out.Bytes(), &back))
