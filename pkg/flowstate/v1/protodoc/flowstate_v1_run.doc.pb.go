@@ -1550,5 +1550,18 @@ func init() {
 			Leading: " KIND_RUN_ENDED is the workload finishing, whichever way. The run's status\n" +
 				" says which; this says when.\n",
 		},
+		{
+			Name: "flowstate.v1.TimelineEntry.KIND_TIMER_CANCELED",
+			Leading: " KIND_TIMER_CANCELED is a timer closing without elapsing, whether it was\n" +
+				" a wait's `timeout:`, a sleep, or a debug lease. It carries the label of\n" +
+				" the KIND_TIMER_STARTED row it closes, so a consumer that folds rows by\n" +
+				" step reads the timer as over rather than as waiting forever. The cause is\n" +
+				" not recorded: a signal may have won the wait, or the run may have been\n" +
+				" cancelled, and the run's own status is what says which. It is the\n" +
+				" opposite fact from KIND_TIMER_FIRED, which is a timer that elapsed.\n" +
+				"\n" +
+				" Appended last, so an older client that does not know the value skips the\n" +
+				" row as an unknown kind and is no worse off than before it existed.\n",
+		},
 	})
 }

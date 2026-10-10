@@ -83,6 +83,24 @@ func TestTheTimelineAccountsForARunThatActuallyRan(t *testing.T) {
 	assert.Contains(t, steps, "deploy-approved",
 		"the gate was answered and the account does not say so")
 
+	// The gate's timeout closes under the label it opened with, so a reader
+	// folding rows by step sees the wait end rather than hang on a run that
+	// succeeded. Not fired: nobody let the timeout lapse.
+	assert.NotContains(t, timelineKinds(finished), v1.TimelineEntry_KIND_TIMER_FIRED)
+	var opened, closed string
+	for _, entry := range finished.GetEntries() {
+		switch entry.GetKind() {
+		case v1.TimelineEntry_KIND_TIMER_STARTED:
+			opened = entry.GetStep()
+		case v1.TimelineEntry_KIND_TIMER_CANCELED:
+			closed = entry.GetStep()
+		default:
+		}
+	}
+	assert.NotEmpty(t, opened)
+	assert.Equal(t, opened, closed,
+		"the signal won and nothing closed the gate's timeout row under its own label")
+
 	// Ordered, which is the whole of what an account is. Positions rather than
 	// an exact sequence, because the events between them are not this test's
 	// subject.
@@ -100,6 +118,66 @@ func TestTheTimelineAccountsForARunThatActuallyRan(t *testing.T) {
 		assert.NotEqual(t, v1.TimelineEntry_KIND_UNSPECIFIED, entry.GetKind(),
 			"entry %d was reported without saying what it is", i)
 	}
+}
+
+// TestACancelledRunClosesItsGateTimerTheSameWay pins that KIND_TIMER_CANCELED
+// is only the fact that a timer closed without elapsing. Cancelling a run
+// cancels the open bounded gate's timer, so the row reads exactly as it does
+// when a signal won; the run's own status is what says why.
+func TestACancelledRunClosesItsGateTimerTheSameWay(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{
+		Workflow: gatedWorkflow(),
+	}))
+	require.NoError(t, err)
+
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	_, err = fixture.teamA.Cancel(t.Context(), connect.NewRequest(&v1.CancelRequest{
+		WorkflowId: workflowID,
+	}))
+	require.NoError(t, err)
+
+	var finished *v1.GetTimelineResponse
+	require.Eventually(t, func() bool {
+		resp, gerr := fixture.teamA.GetTimeline(t.Context(), connect.NewRequest(&v1.GetTimelineRequest{
+			WorkflowId: workflowID,
+		}))
+		if gerr != nil {
+			return false
+		}
+		finished = resp.Msg
+
+		return slices.Contains(timelineKinds(finished), v1.TimelineEntry_KIND_RUN_ENDED)
+	}, 60*time.Second, 200*time.Millisecond, "the cancelled run never reached an ending in its own account")
+
+	assert.NotContains(t, timelineKinds(finished), v1.TimelineEntry_KIND_TIMER_FIRED,
+		"nobody let the timeout lapse")
+	assert.NotContains(t, timelineSteps(finished), "deploy-approved",
+		"no signal arrived, and the account says one did")
+
+	var opened, closed string
+	for _, entry := range finished.GetEntries() {
+		switch entry.GetKind() {
+		case v1.TimelineEntry_KIND_TIMER_STARTED:
+			opened = entry.GetStep()
+		case v1.TimelineEntry_KIND_TIMER_CANCELED:
+			closed = entry.GetStep()
+		default:
+		}
+	}
+	assert.NotEmpty(t, opened)
+	assert.Equal(t, opened, closed,
+		"cancelling the run left the gate's timeout row open under its own label")
+
+	got, err := fixture.teamA.Get(t.Context(), connect.NewRequest(&v1.GetRequest{WorkflowId: workflowID}))
+	require.NoError(t, err)
+	assert.Equal(t, v1.RunResponse_STATUS_CANCELED, got.Msg.GetStatus(),
+		"the run's status, not the timer row, is what says why the timer closed")
 }
 
 // TestTheTimelineSaysWhenItIsNotTheWholeAccount is the bound, exercised rather

@@ -568,6 +568,8 @@ func timelineKindLabel(kind v1.TimelineEntry_Kind) string {
 		return "waited"
 	case v1.TimelineEntry_KIND_SIGNAL_RECEIVED:
 		return "signal"
+	case v1.TimelineEntry_KIND_TIMER_CANCELED:
+		return "canceled"
 	case v1.TimelineEntry_KIND_RUN_CONTINUED:
 		return "continued"
 	case v1.TimelineEntry_KIND_RUN_ENDED:
