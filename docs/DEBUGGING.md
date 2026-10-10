@@ -1277,9 +1277,30 @@ ordered in history with everything else the run hears, and `flow timeline`
 shows each one and each lease:
 
 ```text
-10:53:09Z  waiting  debug lease c9a7… held by https://flowstate.local/dev#sre@example.com expires …
-10:53:09Z  signal   flowstate_debug
+10:53:09Z  debug paused  debug lease c9a7… held by https://flowstate.local/dev#sre@example.com expires
+10:53:09Z  signal        flowstate_debug
+10:58:09Z  debug resumed (released)  debug lease c9a7… held by https://flowstate.local/dev#sre@example.com expires
 ```
+
+A lease is a `debug paused` row, and its end is `debug resumed (released)` when
+the hold ended before it expired (a resume, a detach, or the run ending) or
+`debug resumed (lapsed)` when the lease ran out. A renewal, a refused ask or a
+resume by someone who does not hold the run re-arms the lease timer in history;
+the timeline folds that into one continuous pause and shows neither a resume nor
+a second pause. When the pause ended while a backlog of asks was being paced,
+the resumed row is dated at the lease timer's cancel (when pacing began) and the
+pacing rows follow it in order. `-o json`
+carries `sessionId`, `actor` (the holder text the label already showed) and
+`endReason` on those rows. They are read from the lease timer's label and are
+best effort: session ids are caller-chosen, so a hostile holder can make its own
+lease's fields misattribute (cosmetic; the full label stays in `step`). Pacing timers stay ordinary `waiting` rows, and a
+signal's payload and sender are still not on the timeline.
+
+A step scheduled more than once in a run shows `#N` after its label from the
+second execution on (`occurrence` in `-o json`). It counts schedulings of that
+label in history order: it is not the loop index, is not stable under a
+concurrent `for_each` or `parallel`, and restarts after Continue-As-New. The
+debugger's `id[3]` address is the exact answer.
 
 The earlier untyped hold still works for a run whose workflow declares `debug:`:
 `flow signal <workflow-id> flowstate_debug --data '{"verb": "pause", "lease": "5m"}'`

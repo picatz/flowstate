@@ -183,3 +183,41 @@ func TestAnAskPutByGoesOnTheRunsOwnCarry(t *testing.T) {
 		[]string{v1.DebugSignal, "deploy-approved", v1.DebugSignal}, names,
 		"a put-by ask joins the back of the carry, in arrival order, disturbing nothing already on it")
 }
+
+// TestTheLeaseSummaryParserIsPinnedToTheWriter keeps the reader that
+// recognises a lease timer in history from drifting from [debugLeaseSummary],
+// and refuses every other label, the pacing timer's included.
+func TestTheLeaseSummaryParserIsPinnedToTheWriter(t *testing.T) {
+	t.Parallel()
+
+	lease := &v1.DebugSession{
+		SessionId:  "run-1/debug/0",
+		AttachedBy: &v1.WorkloadIdentity{Principal: &v1.Principal{Issuer: "https://issuer.example.com", Subject: "sre-1@example.com"}},
+	}
+
+	session, holder, ok := ParseDebugLeaseSummary(debugLeaseSummary(lease))
+	require.True(t, ok)
+	assert.Equal(t, "run-1/debug/0", session)
+	assert.Equal(t, "https://issuer.example.com#sre-1@example.com", holder)
+
+	// A holder is free text: one that contains the separator still parses at
+	// the first one, because a session id has no spaces.
+	session, holder, ok = ParseDebugLeaseSummary("debug lease s1 held by a held by b expires")
+	require.True(t, ok)
+	assert.Equal(t, "s1", session)
+	assert.Equal(t, "a held by b", holder)
+
+	for _, label := range []string{
+		"",
+		debugBacklogSummary(lease),
+		"debug lease s1 held by  expires",
+		"debug lease  held by x expires",
+		"debug lease s 1 held by x expires",
+		"debug lease s1 held by x",
+		"lease s1 held by x expires",
+		"`approve` · wait timeout",
+	} {
+		_, _, ok := ParseDebugLeaseSummary(label)
+		assert.False(t, ok, "%q must not be read as a lease", label)
+	}
+}

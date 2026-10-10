@@ -506,8 +506,8 @@ func renderTimeline(surface *ui.UI, resumed bool, msg *v1.GetTimelineResponse) {
 		// it is: a consumer parsing JSON is not a terminal interpreting bytes.
 		fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
 			formatRunTime(entry.GetTime().AsTime(), entry.GetTime() != nil),
-			timelineKindLabel(entry.GetKind()),
-			ui.EscapeControl(entry.GetStep()),
+			ui.EscapeControl(timelineEntryLabel(entry)),
+			ui.EscapeControl(timelineStepColumn(entry)),
 			ui.EscapeControl(timelineDetail(entry)),
 		)
 	}
@@ -570,6 +570,10 @@ func timelineKindLabel(kind v1.TimelineEntry_Kind) string {
 		return "signal"
 	case v1.TimelineEntry_KIND_TIMER_CANCELED:
 		return "canceled"
+	case v1.TimelineEntry_KIND_DEBUG_PAUSED:
+		return "debug paused"
+	case v1.TimelineEntry_KIND_DEBUG_RESUMED:
+		return "debug resumed"
 	case v1.TimelineEntry_KIND_RUN_CONTINUED:
 		return "continued"
 	case v1.TimelineEntry_KIND_RUN_ENDED:
@@ -577,6 +581,28 @@ func timelineKindLabel(kind v1.TimelineEntry_Kind) string {
 	default:
 		return "?"
 	}
+}
+
+// timelineEntryLabel is the kind's label refined by the entry: a resumed
+// debugger names how the pause ended.
+func timelineEntryLabel(entry *v1.TimelineEntry) string {
+	label := timelineKindLabel(entry.GetKind())
+	if entry.GetKind() == v1.TimelineEntry_KIND_DEBUG_RESUMED && entry.GetEndReason() != "" {
+		return label + " (" + entry.GetEndReason() + ")"
+	}
+
+	return label
+}
+
+// timelineStepColumn is the step, with its occurrence after it once the label
+// has been scheduled more than once. The first execution says nothing, for the
+// reason the first attempt does not.
+func timelineStepColumn(entry *v1.TimelineEntry) string {
+	if entry.GetOccurrence() > 1 {
+		return fmt.Sprintf("%s #%d", entry.GetStep(), entry.GetOccurrence())
+	}
+
+	return entry.GetStep()
 }
 
 // timelineDetail is the rightmost column: which try this row is about, and the

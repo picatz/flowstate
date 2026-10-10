@@ -3,7 +3,9 @@ package engine
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -915,8 +917,47 @@ func debugLeaseSummary(lease *v1.DebugSession) string {
 	holder := v1.QualifiedSubject(
 		lease.GetAttachedBy().GetPrincipal().GetIssuer(), lease.GetAttachedBy().GetPrincipal().GetSubject())
 
-	return fmt.Sprintf("debug lease %s held by %s expires",
+	return fmt.Sprintf(debugLeaseSummaryFormat,
 		lease.GetSessionId(), boundSummaryText(holder))
+}
+
+// debugLeaseSummaryFormat is the one spelling of the lease timer's summary,
+// shared by [debugLeaseSummary] and [ParseDebugLeaseSummary] so the reader that
+// recognises a lease in history cannot drift from the writer.
+const debugLeaseSummaryFormat = "debug lease %s held by %s expires"
+
+const (
+	debugLeaseSummaryPrefix = "debug lease "
+	debugLeaseSummaryMid    = " held by "
+	debugLeaseSummarySuffix = " expires"
+)
+
+// ParseDebugLeaseSummary recognises the summary [debugLeaseSummary] writes onto
+// a debug lease's expiry timer and returns the session id and the holder text
+// it names. ok is false for anything else, including the pacing timer's
+// summary, so a reader can tell a lease from every other timer by the label
+// alone without decoding any payload.
+//
+// The session id is the text before the first " held by ": a session id never
+// contains whitespace, whereas a holder is free text and may contain the
+// separator itself.
+func ParseDebugLeaseSummary(summary string) (sessionID, holder string, ok bool) {
+	rest, found := strings.CutPrefix(summary, debugLeaseSummaryPrefix)
+	if !found {
+		return "", "", false
+	}
+
+	rest, found = strings.CutSuffix(rest, debugLeaseSummarySuffix)
+	if !found {
+		return "", "", false
+	}
+
+	sessionID, holder, found = strings.Cut(rest, debugLeaseSummaryMid)
+	if !found || sessionID == "" || holder == "" || strings.IndexFunc(sessionID, isSessionSeparator) >= 0 {
+		return "", "", false
+	}
+
+	return sessionID, holder, true
 }
 
 // debugBacklogSummary is what the pacing timer says about itself in history.
@@ -926,7 +967,36 @@ func debugLeaseSummary(lease *v1.DebugSession) string {
 // fires, the other says it reads more asks. A history full of the second is a
 // flood being paced, which is a fact worth being able to see.
 func debugBacklogSummary(lease *v1.DebugSession) string {
-	return fmt.Sprintf("debug lease %s pacing a backlog of asks", lease.GetSessionId())
+	return fmt.Sprintf(debugBacklogSummaryFormat, lease.GetSessionId())
+}
+
+const (
+	debugBacklogSummaryFormat = "debug lease %s pacing a backlog of asks"
+	debugBacklogSummarySuffix = " pacing a backlog of asks"
+)
+
+// isSessionSeparator is what a session token in a lease summary may not
+// contain. Ask time does not refuse such an id (it is only length-bounded), so
+// the reader tolerates one: a summary whose session is not a single token is
+// not recognised and stays an ordinary timer row.
+func isSessionSeparator(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }
+
+// ParseDebugBacklogSummary recognises the summary [debugBacklogSummary] writes
+// onto the timer that paces a backlog of asks while a lease is held, and
+// returns the session it names. It is the same hold as the lease timer's, which
+// is why a reader treats one replacing the other as a continuation.
+func ParseDebugBacklogSummary(summary string) (sessionID string, ok bool) {
+	rest, found := strings.CutPrefix(summary, debugLeaseSummaryPrefix)
+	if !found {
+		return "", false
+	}
+
+	sessionID, found = strings.CutSuffix(rest, debugBacklogSummarySuffix)
+	if !found || sessionID == "" || strings.IndexFunc(sessionID, isSessionSeparator) >= 0 {
+		return "", false
+	}
+
+	return sessionID, true
 }
 
 // maxSummaryTextBytes bounds one caller-influenced value rendered into a

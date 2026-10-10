@@ -1349,6 +1349,39 @@ message TimelineEntry {
     // Appended last, so an older client that does not know the value skips the
     // row as an unknown kind and is no worse off than before it existed.
     KIND_TIMER_CANCELED = 11;
+
+    // KIND_DEBUG_PAUSED is a debugger taking the run: the lease timer an
+    // attached debug session holds, reported as what it means rather than as a
+    // timer. It replaces the KIND_TIMER_STARTED row that same history event
+    // used to produce, carrying `session_id` and `actor`. A pacing timer (the
+    // run reading a backlog of asks) is not a pause and stays an ordinary
+    // timer, as does any timer whose label is not a lease's.
+    //
+    // Derived from the timer's summary alone, the same label the timeline
+    // already showed. A summary that does not parse as a lease's falls back to
+    // KIND_TIMER_STARTED, so an unrecognised label is never mis-reported as a
+    // pause.
+    //
+    // Appended last, so an older client that does not know the value skips the
+    // row as an unknown kind.
+    KIND_DEBUG_PAUSED = 12;
+
+    // KIND_DEBUG_RESUMED is that hold ending, with `end_reason` saying how:
+    // "released" when the lease timer was cancelled and not re-armed (the hold
+    // ended before it expired: a resume, a detach, or the run ending) and
+    // "lapsed" when it fired (the lease ran out). It replaces the
+    // KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing event used to
+    // produce, and carries the same `session_id` and `actor` as the pause it
+    // closes.
+    //
+    // The engine re-arms the lease timer on every wake, so a renewal, a refused
+    // ask or a resume by a non-holder cancels and restarts it. Those are not
+    // shown: a cancel followed by a lease (or backlog-pacing) timer for the
+    // same session, with only debug signals between, is one continuous pause.
+    // When the pause ended while a backlog of asks was being paced, the row is
+    // dated at the lease timer's cancel, which is when pacing began rather than
+    // when the hold was released; the pacing rows follow it in order.
+    KIND_DEBUG_RESUMED = 13;
   }
 
   // EventId is the history event this entry is drawn from, monotonically
@@ -1415,4 +1448,43 @@ message TimelineEntry {
   // text, because a diagnosis silently shortened is one a reader may act on
   // believing they have all of it.
   string failure = 6;
+
+  // SessionId is the debug lease's session, on KIND_DEBUG_PAUSED and
+  // KIND_DEBUG_RESUMED rows and empty elsewhere. It is read from the lease
+  // timer's summary, the same text the timeline already reported as the step;
+  // no signal or activity payload is decoded to fill it. Best effort: session
+  // ids are chosen by the caller, so a hostile holder can make its own lease's
+  // fields misattribute (cosmetic, its own lease only); the full label stays in
+  // `step`.
+  string session_id = 8;
+
+  // Actor is the holder of the debug lease, on KIND_DEBUG_PAUSED and
+  // KIND_DEBUG_RESUMED rows and empty elsewhere. It is exactly the holder text
+  // the timeline already showed inside the lease timer's step label (an
+  // attested issuer and subject, cut to a bound), moved into a field of its own
+  // and cut again to a server-side bound. Like `session_id` it is read from the
+  // label and is best effort. The sender of a debug ask is not
+  // reported here or anywhere on the timeline.
+  string actor = 9;
+
+  // EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: "released"
+  // when the hold ended before it expired (a resume, a detach, or the run
+  // ending), "lapsed" when the lease ran out. Empty on every other row.
+  string end_reason = 10;
+
+  // Occurrence is the 1-based ordinal of this execution among the
+  // KIND_STEP_SCHEDULED rows in this run's history that carry the same step
+  // label, counted in history order. A scheduling, and the completion, failure,
+  // timeout or cancellation joined to it by `scheduled_event_id`, all carry the
+  // same number. Zero on rows that are not about a step's work.
+  //
+  // It is an ordinal of scheduling and not the loop index. Under a concurrent
+  // `for_each` or `parallel` the order in which iterations are scheduled need
+  // not be the order of their items, and the count restarts at 1 after
+  // Continue-As-New because it is derived from one segment's history. The
+  // debugger's `id[3]` address is the exact answer to which iteration this was;
+  // this number is a hint for reading a timeline where the same label appears
+  // more than once. Past a bound on distinct labels per request the number is
+  // left at zero rather than guessed.
+  int32 occurrence = 11;
 }
