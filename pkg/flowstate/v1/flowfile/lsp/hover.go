@@ -400,6 +400,10 @@ func stepDoc(step *parsedStep, def v1.TaskDef, taskKnown bool) string {
 // ls names which of a loop's own scopes the expression is evaluated in, and
 // loopScopeNone everywhere else — see [parsedStep.loopScopeOf].
 func hoverReference(doc *document, from *parsedStep, v *value, f fence, cursor int, clock, shaping bool, ls loopScope) *lsp.Hover {
+	// First: a macro variable shadows a root of the same name, as it does in CEL.
+	if h := hoverResultEntry(doc, from, v, f, cursor); h != nil {
+		return h
+	}
 	if h := hoverInputPath(doc, v, f, cursor); h != nil {
 		return h
 	}
