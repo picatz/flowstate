@@ -376,7 +376,8 @@ The rules, each of which fails closed:
 - A lock that is present but unusable (it does not parse, it is a symbolic link,
   it is not a regular file, it is over the size bound) fails the command naming it.
   It is never skipped and the search never continues past it to a parent.
-- Symbolic links are not followed and the walk stops after 32 directories.
+- A lock file that is itself a symbolic link is refused (a symlinked parent
+  directory is not detected), and the walk stops after 32 directories.
 - One invocation checks against one lock: files governed by different locks, or
   some under a lock and some under none, are refused. Name `--plugin-catalog` to
   say which. Standard input has no location and discovers nothing.

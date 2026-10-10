@@ -222,3 +222,16 @@ func TestValidateDiscoversAPluginLockNextToTheFile(t *testing.T) {
 	output, err = runFlowCapturing(t, bin, "validate", "--"+pluginCatalogFlag, catalog, file)
 	require.NoError(t, err, output)
 }
+
+func TestLockDiscoveryBoundsTheLocksItRegisters(t *testing.T) {
+	d := &lockDiscovery{}
+	for i := range maxDiscoveredLocks {
+		lock := writeLock(t, filepath.Join(t.TempDir(), "w"))
+		require.NoError(t, d.discover(filepath.Join(filepath.Dir(lock), "f.yaml")), "lock %d", i)
+	}
+
+	extra := writeLock(t, filepath.Join(t.TempDir(), "w"))
+	err := d.discover(filepath.Join(filepath.Dir(extra), "f.yaml"))
+	require.Error(t, err, "a lock past the cap was registered")
+	assert.Contains(t, err.Error(), extra)
+}

@@ -419,6 +419,11 @@ type lockDiscovery struct {
 	seen map[string]lockStamp
 }
 
+// maxDiscoveredLocks bounds how many distinct locks one server registers. Tasks
+// registered from a lock are never removed (the registry has no per-document
+// scope), so the union must not be unbounded.
+const maxDiscoveredLocks = 8
+
 type lockStamp struct {
 	size int64
 	mod  time.Time
@@ -439,6 +444,11 @@ func (d *lockDiscovery) discover(docPath string) error {
 	defer d.mu.Unlock()
 	if d.seen[lock] == stamp {
 		return nil
+	}
+	if _, known := d.seen[lock]; !known && len(d.seen) >= maxDiscoveredLocks {
+		return fmt.Errorf("%s is not used: this server has already registered %d plugin locks into its one "+
+			"registry, and registering more would grow it without bound; restart the server to start over",
+			lock, maxDiscoveredLocks)
 	}
 	if _, err := registerPluginCatalog(lock); err != nil {
 		return err

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,12 +42,11 @@ func TestThePluginCatalogHookIsAskedAboutFileDocumentsAndItsFailureIsShown(t *te
 		"the hook sees file documents only, once per open")
 	mu.Unlock()
 
-	require.Eventually(t, func() bool {
-		c.mu.Lock()
-		defer c.mu.Unlock()
-
-		return c.notified["window/showMessage"] == 1
-	}, 5*time.Second, 10*time.Millisecond, "a lock that could not be used was not shown to the person")
+	// The warning is sent before the document's diagnostics on one ordered
+	// stream, and open waits for those, so it has been received by now.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	require.Equal(t, 1, c.notified["window/showMessage"], "a lock that could not be used was not shown to the person")
 }
 
 func TestWithoutAPluginCatalogHookNothingIsAsked(t *testing.T) {
