@@ -14,6 +14,8 @@ import (
 	"github.com/goccy/go-yaml/ast"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
@@ -1676,6 +1678,8 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 
 	rooted, vars, inputs, run, trigger, bare, types := referencedIdentifiers(parsed)
 
+	eventDiags := unknownEventFields(field, parsed.GetExpr(), map[string]struct{}{})
+
 	unresolvable := make([]string, 0, len(rooted)+len(vars)+len(inputs)+len(run)+len(trigger)+len(bare))
 	for _, ref := range rooted {
 		unresolvable = append(unresolvable, v1.StepsRoot+"."+ref.ID)
@@ -1699,23 +1703,27 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 		unresolvable = append(unresolvable, v1.TriggerRoot+"."+ref)
 	}
 	for _, ref := range bare {
-		if ref == v1.EventRoot || functionNamespaces[ref] || types.has(ref) {
-			// The one name a trigger binds, the qualifier of a namespaced function
-			// from the profile — `regex.replace(...)` — and a type value — `int` —
-			// each of which cel-go parses as an identifier and none of which is a
-			// reference to anything.
+		if functionNamespaces[ref] {
+			// Only a namespace written as a value arrives here ([collectReferences]).
+			eventDiags = append(eventDiags, functionNamespaceValue("", field, ref))
+			continue
+		}
+		if ref == v1.EventRoot || types.has(ref) {
+			// The one name a trigger binds and a type value — `int` — each of which
+			// cel-go parses as an identifier and neither of which is a reference to
+			// anything.
 			continue
 		}
 		unresolvable = append(unresolvable, ref)
 	}
 
 	if len(unresolvable) == 0 {
-		return nil
+		return eventDiags
 	}
 
 	slices.Sort(unresolvable)
 
-	return Diagnostics{{
+	return append(eventDiags, Diagnostic{
 		Field: field,
 		Value: unresolvable[0],
 		Message: fmt.Sprintf(
@@ -1725,7 +1733,59 @@ func validateTriggerExpr(field, webhook, what string, value *v1.Value) Diagnosti
 			webhook, quotedNameList(unresolvable), what,
 			v1.EventRoot, v1.EventRoot, v1.EventHeadersField, v1.EventRoot, v1.EventBodyField, v1.InputsRoot),
 		Code: v1.DiagnosticCodeUnresolvedReference,
-	}}
+	})
+}
+
+// unknownEventFields reports each `event.<name>` in e whose name is not a field
+// of the delivery: `event` is closed at headers and body, so any other is a
+// mistake that otherwise surfaces only when a delivery arrives. A comprehension
+// that binds the name `event` shadows it, and what it selects is its own.
+func unknownEventFields(field string, e *expr.Expr, bound map[string]struct{}) Diagnostics {
+	var ds Diagnostics
+	fields := []string{v1.EventHeadersField, v1.EventBodyField}
+
+	if sel := e.GetSelectExpr(); sel != nil && sel.GetOperand().GetIdentExpr().GetName() == v1.EventRoot {
+		if _, shadowed := bound[v1.EventRoot]; !shadowed && !slices.Contains(fields, sel.GetField()) {
+			message := fmt.Sprintf("references unknown field %q of `%s`", sel.GetField(), v1.EventRoot)
+			if suggestion, ok := nearest.Name(sel.GetField(), fields); ok {
+				message += fmt.Sprintf("; did you mean %q?", suggestion)
+			} else {
+				message += fmt.Sprintf("; `%s` has %s", v1.EventRoot, strings.Join(fields, ", "))
+			}
+			ds = append(ds, Diagnostic{
+				Field: field, Value: v1.EventRoot + "." + sel.GetField(), Message: message,
+				Code: v1.DiagnosticCodeUnresolvedReference,
+			})
+		}
+	}
+
+	if c := e.GetComprehensionExpr(); c != nil {
+		// The range and the accumulator's start are evaluated outside the
+		// comprehension's own scope; the loop sees the iterators and the
+		// accumulator; the result sees only the accumulator.
+		loop, result := maps.Clone(bound), maps.Clone(bound)
+		for _, name := range []string{c.GetIterVar(), c.GetIterVar2(), c.GetAccuVar()} {
+			loop[name] = struct{}{}
+		}
+		result[c.GetAccuVar()] = struct{}{}
+		for i, child := range children(e) {
+			scope := bound
+			switch i {
+			case 2, 3:
+				scope = loop
+			case 4:
+				scope = result
+			}
+			ds = append(ds, unknownEventFields(field, child, scope)...)
+		}
+
+		return ds
+	}
+	for _, child := range children(e) {
+		ds = append(ds, unknownEventFields(field, child, bound)...)
+	}
+
+	return ds
 }
 
 // quotedNameList renders the names one diagnostic is about, quoted, so a reference

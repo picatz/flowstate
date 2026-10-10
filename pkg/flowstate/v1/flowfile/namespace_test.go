@@ -178,3 +178,94 @@ steps:
 	require.Contains(t, diagnose(t, src), `references unknown name "nonsense"`,
 		"exempting the profile's namespaces also exempted everything else")
 }
+
+// TestANamespaceIsRefusedAsAValue closes the other direction of the exemption: the
+// qualifier of a call is not a reference, but the same word written as a value is
+// a name that resolves to nothing, and used to fail only at run time.
+func TestANamespaceIsRefusedAsAValue(t *testing.T) {
+	t.Parallel()
+
+	using := func(expr string) string {
+		return "edition: v2026.4\nname: t\nsteps:\n  - id: s\n    log:\n      message: ${" +
+			expr + "}\n"
+	}
+
+	require.Contains(t, diagnose(t, using("string(math)")),
+		"`math` is a function namespace, not a value; call one of its functions, as `math.<function>(...)`")
+
+	// Valid uses of the same word stay valid: as a call qualifier, nested, and
+	// as an iterator a comprehension binds.
+	for _, expr := range []string{
+		"string(math.greatest(1, 2))",
+		"string(math.greatest(math.least(1, 2), 0))",
+		`[1, 2].map(math, string(math))[0]`,
+	} {
+		require.NotContains(t, diagnose(t, using(expr)), "function namespace", expr)
+	}
+}
+
+// TestAWebhookRefusesAnUnknownEventField pins the closed shape of `event` and
+// its negative direction: headers and body, however they are selected, pass.
+func TestAWebhookRefusesAnUnknownEventField(t *testing.T) {
+	t.Parallel()
+
+	using := func(with string) string {
+		return `edition: v2026.4
+name: t
+inputs:
+  order_id: { type: string, required: true }
+triggers:
+  - webhook: stripe
+    verify:
+      stripe: ${secret('env:STRIPE_WEBHOOK_SECRET')}
+    idempotency_key: ${event.body.id}
+    with:
+      order_id: ` + with + `
+steps:
+  - id: s
+    log:
+      message: ${inputs.order_id}
+`
+	}
+
+	require.Contains(t, diagnose(t, using("${event.nonsense}")),
+		"references unknown field \"nonsense\" of `event`; `event` has headers, body")
+	require.Contains(t, diagnose(t, using("${event.bdoy.id}")),
+		"references unknown field \"bdoy\" of `event`; did you mean \"body\"?")
+	require.Contains(t, diagnose(t, using("${string(math)}")),
+		"`math` is a function namespace, not a value")
+
+	for _, with := range []string{
+		"${event.body.order_id}",
+		`${event.headers["x"]}`,
+		"${has(event.body.order_id) ? event.body.order_id : ''}",
+		"${math.greatest(1, 2) > 1 ? 'a' : 'b'}",
+	} {
+		got := diagnose(t, using(with))
+		require.NotContains(t, got, "of `event`", with)
+		require.NotContains(t, got, "function namespace", with)
+	}
+}
+
+// TestANamespaceValueIsRefusedInVarsAndConcurrency covers the two positions that
+// used to exempt every namespace themselves, plus the valid call in each, and a
+// qualifier in front of a function it does not declare.
+func TestANamespaceValueIsRefusedInVarsAndConcurrency(t *testing.T) {
+	t.Parallel()
+
+	vars := func(expr string) string {
+		return "edition: v2026.4\nname: t\nvars:\n  x: ${" + expr +
+			"}\nsteps:\n  - id: s\n    log:\n      message: ${vars.x}\n"
+	}
+	key := func(expr string) string {
+		return "edition: v2026.4\nname: t\nconcurrency:\n  key: ${" + expr +
+			"}\n  on_conflict: reject\nsteps:\n  - id: s\n    log:\n      message: hi\n"
+	}
+	want := "`math` is a function namespace, not a value; call one of its functions, as `math.<function>(...)`"
+
+	for name, src := range map[string]func(string) string{"vars": vars, "concurrency key": key} {
+		require.Contains(t, diagnose(t, src("string(math)")), want, name)
+		require.Contains(t, diagnose(t, src("string(math.size())")), want, name+": math declares no size")
+		require.NotContains(t, diagnose(t, src("string(math.greatest(1, 2))")), "function namespace", name)
+	}
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
 // TestTheEnvironmentCacheIsBounded is the rule this file's own cache has to follow.
@@ -68,4 +69,29 @@ func TestTheUnknownFunctionAdviceNamesBothVenues(t *testing.T) {
 	assert.Contains(t, said, "flow tasks", "the terminal reader keeps their verb")
 	assert.Contains(t, said, "flowstate_get_catalog",
 		"and the reader with no terminal gets the tool that answers the same question")
+}
+
+// A comprehension's result sees the accumulator and nothing the loop bound, so an
+// iterator spelled `event` does not shadow the delivery there.
+func TestUnknownEventFieldsResultScopeIsTheAccumulators(t *testing.T) {
+	t.Parallel()
+
+	ident := func(name string) *expr.Expr {
+		return &expr.Expr{ExprKind: &expr.Expr_IdentExpr{IdentExpr: &expr.Expr_Ident{Name: name}}}
+	}
+	list := &expr.Expr{ExprKind: &expr.Expr_ListExpr{ListExpr: &expr.Expr_CreateList{}}}
+	build := func(loopStep, result *expr.Expr) *expr.Expr {
+		return &expr.Expr{ExprKind: &expr.Expr_ComprehensionExpr{ComprehensionExpr: &expr.Expr_Comprehension{
+			IterVar: "event", IterRange: list, AccuVar: "__result__", AccuInit: list,
+			LoopCondition: ident("__result__"), LoopStep: loopStep, Result: result,
+		}}}
+	}
+	selectNonsense := &expr.Expr{ExprKind: &expr.Expr_SelectExpr{SelectExpr: &expr.Expr_Select{
+		Operand: ident("event"), Field: "nonsense",
+	}}}
+
+	// In the result the iterator is out of scope, so this is the delivery.
+	require.Len(t, unknownEventFields("f", build(ident("__result__"), selectNonsense), map[string]struct{}{}), 1)
+	// In the loop step the iterator shadows it, so it is the iterator's own field.
+	require.Empty(t, unknownEventFields("f", build(selectNonsense, ident("__result__")), map[string]struct{}{}))
 }

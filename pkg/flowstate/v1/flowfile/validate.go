@@ -666,10 +666,14 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 				continue
 			}
 
-			if functionNamespaces[ref] || types.has(ref) {
-				// The profile's own functions and type values, which a var may
-				// absolutely use — the sentence below says so and this used to
-				// refuse them anyway.
+			if functionNamespaces[ref] {
+				// Only a namespace written as a value arrives here ([collectReferences]).
+				ds = append(ds, functionNamespaceValue("", field, ref))
+				continue
+			}
+			if types.has(ref) {
+				// The profile's own type values, which a var may absolutely use —
+				// the sentence below says so and this used to refuse them anyway.
 				continue
 			}
 
@@ -1696,16 +1700,6 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			// first one needed it rather than where the *category* does.
 			continue
 		}
-		if functionNamespaces[ref] {
-			// A namespaced function from the profile — `regex.replace(...)`,
-			// `math.greatest(...)`. cel-go parses the qualifier as an identifier, so
-			// it arrives here looking exactly like a name nobody bound, and every one
-			// of them was reported as an unknown step in every expression position in
-			// the language. A false diagnostic about a documented function, which is
-			// how a tool teaches people to stop reading it.
-			continue
-		}
-
 		// Everything else written bare is either the retired spelling of a
 		// reference or a name that means nothing, and the two want different
 		// answers: one is a migration someone can run, the other is a mistake.
@@ -1717,6 +1711,13 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 					ref, v1.StepsRoot, ref),
 				Code: v1.DiagnosticCodeRetiredKey,
 			})
+			continue
+		}
+		if functionNamespaces[ref] {
+			// Only a namespace written as a value reaches here: its call qualifiers
+			// never become free names ([collectReferences]), so `regex.replace(...)`
+			// is not this. A step spelled like one is the retired spelling above.
+			ds = append(ds, functionNamespaceValue(stepID, inputName, ref))
 			continue
 		}
 		if types.has(ref) {
@@ -2080,7 +2081,13 @@ func collectReferences(e *expr.Expr, bound map[string]struct{}, rooted map[stepR
 	case *expr.Expr_SelectExpr:
 		collectReferences(kind.SelectExpr.GetOperand(), bound, rooted, vars, inputs, run, trigger, free, selected)
 	case *expr.Expr_CallExpr:
-		collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, trigger, free, selected)
+		// The qualifier of a namespaced function — `math` in `math.greatest(a, b)` —
+		// is not a reference to anything. Left out of the free names here, a
+		// namespace that does arrive bare was written as a value ([functionNamespaces]).
+		qualifier := kind.CallExpr.GetTarget().GetIdentExpr().GetName()
+		if _, isBound := bound[qualifier]; isBound || !qualifies(kind.CallExpr.GetTarget(), kind.CallExpr.GetFunction()) {
+			collectReferences(kind.CallExpr.GetTarget(), bound, rooted, vars, inputs, run, trigger, free, selected)
+		}
 		for _, arg := range kind.CallExpr.GetArgs() {
 			collectReferences(arg, bound, rooted, vars, inputs, run, trigger, free, selected)
 		}
@@ -3705,6 +3712,16 @@ func nodeWithID(id string, wf *v1.Workflow) *v1.Node {
 	}
 
 	return walk(wf.GetSteps())
+}
+
+// functionNamespaceValue reports a function namespace written as a value —
+// `${string(math)}` — which resolves to nothing and otherwise fails at run time.
+func functionNamespaceValue(stepID, inputName, ref string) Diagnostic {
+	return Diagnostic{
+		Step: stepID, Field: inputName, Value: ref,
+		Message: fmt.Sprintf("`%s` is a function namespace, not a value; call one of its functions, as `%s.<function>(...)`", ref, ref),
+		Code:    v1.DiagnosticCodeUnresolvedReference,
+	}
 }
 
 // functionNamespaces are the qualifiers a profile's namespaced functions hang from.
