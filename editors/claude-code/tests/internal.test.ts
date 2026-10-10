@@ -118,7 +118,8 @@ test('a hostile lease label is cleaned and bounded, and leases are capped', () =
   expect(d.leases[0].holder.length).toBeLessThanOrEqual(40)
   expect(d.leases[0].holder).not.toMatch(/[\u001b‮]/)
   const many = parsed(Array.from({ length: 20 }, (_, i): Row => [i + 1, 'TIMER_STARTED', `debug lease ${i} held by u${i}`, i]))
-  expect(many.leases.length).toBe(5)
+  expect(many.leases.length).toBe(8)
+  expect(many.earlierLeases).toBe(12)
   expect(many.steps).toEqual([])
 })
 
