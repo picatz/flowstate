@@ -320,7 +320,15 @@ passes through before the task that raised it; for a failure that comes back
 through a `call:`, it is the `call:` step. A name that is neither declared nor
 built in fails the case with the names it could have been.
 [`examples/declared-errors`](../examples/declared-errors/workflow.test.yaml)
-uses it.
+uses this form.
+
+Either form is also satisfied by the harness's own refusal of a task the case
+never stubbed: the run did fail, in that step, with `InvalidInput`. That case,
+when it has no `faults:`, carries a warning (`--fail-on-warning` makes it fatal); a case that means a
+workflow failure should stub the task so the failure is the workflow's own. A
+`${secret(...)}` the case does not bind is refused the same way, deliberately
+(`examples/http-secret` asserts it), and on a stubbed task the run fails on it
+carries no warning.
 
 An `expect:` with nothing in it is refused, because a case that asserts nothing
 passes whatever the run did.
