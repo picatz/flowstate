@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -109,7 +110,9 @@ func collectValidateTargets(paths []string, stdin io.Reader) ([]validateTarget, 
 		// "open <path>: ..." wording `loadWorkflow` already uses for `flow run
 		// local`, one spelling for file-not-found across the verbs that take a
 		// path, per #394.
-		f, err := os.Open(path)
+		//
+		// O_NONBLOCK so a named pipe given as the path does not block the open.
+		f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
@@ -119,6 +122,12 @@ func collectValidateTargets(paths []string, stdin io.Reader) ([]validateTarget, 
 			return nil, fmt.Errorf("%s: %w", path, err)
 		}
 		if !info.IsDir() {
+			// Same refusal the directory walk gives a non-regular file.
+			rf, err := flowfile.OpenRegular(path)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", path, err)
+			}
+			rf.Close()
 			out = append(out, validateTarget{path: path, isTest: isTestFilePath(path)})
 			continue
 		}

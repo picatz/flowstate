@@ -3,7 +3,8 @@ package flowtest
 import (
 	"fmt"
 	"io"
-	"os"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Every file this package reads is somebody else's: a `*.test.yaml` and its
@@ -37,25 +38,14 @@ import (
 // The returned error is unwrapped prose rather than a wrapped [os.PathError],
 // because both callers report it against a fixture path they name themselves.
 func readBounded(path string, limit int64, what string) ([]byte, error) {
-	file, err := os.Open(path)
+	// flowfile.OpenRegular is the one non-blocking open-and-classify mechanism
+	// (O_NONBLOCK, fstat on the descriptor): a plain os.Open of a named pipe
+	// waits for a writer forever.
+	file, err := flowfile.OpenRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-
-	// Asked of the descriptor rather than of the path, so what is described is
-	// what will be read: there is no second lookup for a replacement to land in
-	// between.
-	info, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf(
-			"the %s %s is not a regular file (%s); a fixture is read as bytes, and a device, "+
-				"pipe or directory has no size a bound could be checked against",
-			what, path, info.Mode().Type())
-	}
 
 	// limit+1, so a file of exactly limit bytes is accepted and one byte more is
 	// visibly too large rather than quietly cut short. Nothing here trusts
