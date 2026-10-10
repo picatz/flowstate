@@ -1920,23 +1920,17 @@ const urlCredentialsMarker = "[redacted]"
 // a search for `//` finds no authority in the first and an empty one in the
 // second, leaving the credential in the sentence (Codex, Copilot).
 //
-// An *opaque* URL — a scheme with no slash after it, `mailto:a@b` — is left
-// alone, because there its `@` belongs to the path and url.Parse agrees there
-// is no userinfo.
+// An *opaque* URL — a scheme with no slash after it, `mailto:a@b` — has an
+// `@` that belongs to the path, and url.Parse agrees there is no userinfo. A
+// well-formed caller (malformed false) gets it back whole.
 //
-// That exemption is a class rather than a single shape: anything with no slash
-// after the scheme is returned whole, so a leading space, a backslash
-// delimiter, a percent-encoded one (`https:%2f%2f…`) and a scheme-less
-// `acct9:s3cr3t@host` all keep whatever they hold. Not "anything url.Parse
-// reads as having no authority", which is a wider set and would contradict the
-// paragraph above: `https:/…` and `https:///…` have no authority by that test
-// either, and they are redacted. None of them breaks the rule
-// above — url.Parse finds no userinfo in any of them either, so this and it
-// still agree — but a person reading a refusal about one does see the text they
-// typed. Widening the rule to cover them means guessing which `@` is a
-// credential and which is a mail address, which is the judgement
-// picatz/flowstate#2028 holds rather than one to make here
-// (flowstate-reviewer).
+// A malformed caller does not, which is picatz/flowstate#2028's option 1: a
+// string with no slash after the scheme is searched from its first byte, cut at
+// the last `@`, and everything before the cut is replaced. That covers the scheme-less `acct9:s3cr3t@host` (which url.Parse
+// reads as scheme `acct9`), `https:acct9:s3cr3t@host` and the backslash form
+// `https:\\acct9:s3cr3t@host`. The cost is accepted because every string that
+// reaches it is already being refused: `mailto:a@b` is quoted as `[redacted]@b`
+// in a diagnostic, never in any value the package keeps or sends.
 //
 // Textual, and not [url.URL.Redacted], for two reasons. Redacted hides the
 // password and keeps the username, which is the right trade where the repo
@@ -2000,6 +1994,23 @@ func urlWithoutCredentials(rawURL string, malformed bool) string {
 		slashes++
 	}
 	if slashes == 0 {
+		if !malformed {
+			return rawURL
+		}
+
+		// Diagnostic quoting only: the string is being refused, so a leading
+		// `[^/?#]*@` is read as userinfo even though url.Parse sees an opaque
+		// URL. Taken from the start of rawURL, not after the scheme-shaped
+		// prefix, because `acct9:s3cr3t@host` parses as scheme `acct9` and the
+		// username would otherwise survive. See picatz/flowstate#2028.
+		//
+		// The whole string, as the slashed branch searches the whole remainder:
+		// a password holding `#` or `?` (`acct9:s3c#r3t@host`) would otherwise
+		// end the region before its `@`.
+		if at := lastUserinfoDelimiter(rawURL); at >= 0 {
+			return urlCredentialsMarker + rawURL[at:]
+		}
+
 		return rawURL
 	}
 	prefix, rest = prefix+rest[:slashes], rest[slashes:]
