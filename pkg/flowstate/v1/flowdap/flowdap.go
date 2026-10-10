@@ -112,6 +112,7 @@ type capabilities struct {
 	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
 	SupportsStepBack                  bool              `json:"supportsStepBack"`
 	SupportsGotoTargetsRequest        bool              `json:"supportsGotoTargetsRequest"`
+	SupportsExceptionInfoRequest      bool              `json:"supportsExceptionInfoRequest"`
 	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
 }
 
@@ -176,6 +177,18 @@ type stackFrame struct {
 
 type gotoTargetsBody struct {
 	Targets []gotoTarget `json:"targets"`
+}
+
+// exceptionInfoBody answers exceptionInfo: why the held step failed.
+type exceptionInfoBody struct {
+	ExceptionID string           `json:"exceptionId"`
+	Description string           `json:"description"`
+	BreakMode   string           `json:"breakMode"`
+	Details     exceptionDetails `json:"details"`
+}
+
+type exceptionDetails struct {
+	Message string `json:"message"`
 }
 
 type stackTraceBody struct {

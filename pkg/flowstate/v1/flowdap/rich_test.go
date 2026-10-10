@@ -142,6 +142,7 @@ func TestAnEditorGetsTheWholeDebugger(t *testing.T) {
 		assert.Equal(t, true, caps[name], "a local session does %s, so the adapter must say so", name)
 	}
 	assert.NotEmpty(t, caps["exceptionBreakpointFilters"])
+	assert.Equal(t, true, caps["supportsExceptionInfoRequest"])
 	assert.NotEqual(t, true, caps["supportsStepBack"], "nothing here can step back")
 	c.await("event", "initialized")
 
@@ -240,6 +241,15 @@ func TestAnEditorGetsTheWholeDebugger(t *testing.T) {
 	failed := c.await("event", "stopped")
 	assert.Equal(t, "exception", body(failed)["reason"])
 	assert.NotEmpty(t, body(failed)["text"])
+	c.send(30, "exceptionInfo", map[string]any{"threadId": 1})
+	info := body(c.await("response", "exceptionInfo"))
+	assert.Equal(t, "boom", info["exceptionId"])
+	assert.Equal(t, "step failed", info["description"])
+	assert.Equal(t, "unhandled", info["breakMode"])
+	assert.Equal(t, body(failed)["text"], info["details"].(map[string]any)["message"],
+		"exceptionInfo must say what the stopped event's text says")
+	c.send(31, "exceptionInfo", map[string]any{"threadId": 2})
+	assert.Equal(t, false, c.await("response", "exceptionInfo")["success"], "only the run's thread has an exception")
 	c.send(19, "evaluate", map[string]any{"expression": "steps.boom.error", "frameId": 1})
 	assert.Equal(t, true, c.await("response", "evaluate")["success"])
 
@@ -251,6 +261,8 @@ func TestAnEditorGetsTheWholeDebugger(t *testing.T) {
 	c.await("response", "continue")
 	exited := c.await("event", "exited")
 	assert.EqualValues(t, 1, body(exited)["exitCode"])
+	c.send(32, "exceptionInfo", map[string]any{"threadId": 1})
+	assert.Equal(t, false, c.await("response", "exceptionInfo")["success"], "a finished run holds no exception")
 	select {
 	case err := <-finished:
 		require.Error(t, err)

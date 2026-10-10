@@ -527,6 +527,9 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	case "stackTrace":
 		s.reply(request, s.stackTrace(request.Arguments))
 
+	case "exceptionInfo":
+		s.exceptionInfo(request)
+
 	case "scopes":
 		s.reply(request, s.scopeList(ctx, request.Arguments))
 
@@ -663,6 +666,7 @@ func (s *Server) capabilitiesBody() capabilities {
 		SupportsGotoTargetsRequest:        (caps.GetReverse() || caps.GetHistory()) && s.canTravel(),
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
+	body.SupportsExceptionInfoRequest = caps.GetFailureBreakpoints()
 	if body.SupportsCompletionsRequest {
 		body.CompletionTriggerCharacters = []string{"."}
 	}
@@ -1419,6 +1423,47 @@ func (s *Server) currentStop() (*v1.DebugSnapshot, uint64) {
 	defer s.mu.Unlock()
 
 	return s.held, s.revision
+}
+
+// exceptionInfo answers why the held step failed from the held snapshot's
+// failure, which the backend already rendered, redacted and bounded; nothing is
+// re-evaluated. It fails closed: a run that is not held at a failure stop, or
+// whose stop has since moved on, has no exception to describe.
+func (s *Server) exceptionInfo(request inbound) {
+	var asked struct {
+		ThreadID int `json:"threadId"`
+	}
+	if len(request.Arguments) != 0 {
+		if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.ThreadID != runThreadID {
+			s.fail(request, "flowdap: exceptionInfo names the run's thread")
+
+			return
+		}
+	}
+
+	s.mu.Lock()
+	held, mode := s.held, s.failureMode
+	s.mu.Unlock()
+	if held == nil || held.GetReason() != v1.DebugStopReason_DEBUG_STOP_REASON_FAILURE {
+		s.fail(request, "flowdap: the run is not stopped at a step failure")
+
+		return
+	}
+
+	address := held.GetOccurrence().GetAddress()
+	if address == "" {
+		address = strings.Join(held.GetOccurrence().GetSite().GetPath(), "/")
+	}
+	breakMode := "unhandled"
+	if mode == v1.DebugFailureMode_DEBUG_FAILURE_MODE_ALL {
+		breakMode = "always"
+	}
+	s.reply(request, exceptionInfoBody{
+		ExceptionID: address,
+		Description: "step failed",
+		BreakMode:   breakMode,
+		Details:     exceptionDetails{Message: held.GetFailure()},
+	})
 }
 
 func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {
