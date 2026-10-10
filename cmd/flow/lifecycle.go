@@ -472,7 +472,8 @@ flow list --all --filter 'starter == "https://issuer.example#alice"'`,
 			"name, empty for older runs), `labels` (a map of the workflow's declared labels), "+
 			"`starter` (issuer#subject of whoever submitted it), and `worker_version` (the "+
 			"Temporal Worker Deployment version the run is pinned to, empty where versioning "+
-			`is off); for example status == "FAILED"`)
+			`is off); for example status == "FAILED". A status is matched in any case, or by an accepted `+
+			`alias: "succeeded" is COMPLETED, "timed out" is TIMED_OUT, "cancelled" is CANCELED`)
 	listCmd.Flags().String("page-token", "",
 		"continue a previous listing from where it stopped; opaque, and accepted only by "+
 			"the server that issued it, with the same `--filter` and `--page-size`, within a day")
