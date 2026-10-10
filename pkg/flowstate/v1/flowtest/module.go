@@ -60,6 +60,10 @@ type moduleUnderTest struct {
 	spec      *v1.Workflow
 	libs      []string
 	functions *v1.FunctionSet
+	// imported are the qualified names of functions the module takes from its own
+	// `use:`. They are in functions so the module's bodies expand, and a claim may
+	// not call them directly: they are not the module's to test.
+	imported map[string]bool
 	// types are the module's own scalar types by declared name. A carried
 	// declaration (`alias.Name`, a type a module reached through another) is not
 	// the module's to test and is not listed.
@@ -79,13 +83,16 @@ func newModuleUnderTest(spec *v1.Workflow) *moduleUnderTest {
 	}
 	m.libs = libs
 
-	var declared []*v1.FunctionDeclaration
+	// Every declaration, imported ones included, as the compiler builds the set: a
+	// body here may call `ids.isUuid`, and leaving it out would make the module's
+	// own function an unchecked name.
+	m.imported = map[string]bool{}
 	for _, f := range spec.GetDeclaredFunctions() {
-		if !v1.IsCarried(f.GetName()) {
-			declared = append(declared, f)
+		if v1.IsCarried(f.GetName()) {
+			m.imported[f.GetName()] = true
 		}
 	}
-	set, errs := v1.NewFunctionSet(profile, declared)
+	set, errs := v1.NewFunctionSet(profile, spec.GetDeclaredFunctions())
 	if len(errs) > 0 {
 		m.err = fmt.Errorf("the module's functions do not check: %w", errs[0])
 		return m
@@ -104,7 +111,7 @@ func newModuleUnderTest(spec *v1.Workflow) *moduleUnderTest {
 // run produces one module case's verdict. The caller owns everything that is the
 // suite's and not the case's: placing failures in the file, the redaction posture,
 // the budget on warnings, and the fail-fast decision.
-func (m *moduleUnderTest) run(ctx context.Context, test *Test) *v1.TestCase {
+func (m *moduleUnderTest) run(ctx context.Context, test *Test, vars fileVars) *v1.TestCase {
 	started := time.Now()
 	result := &v1.TestCase{Name: test.Name}
 	defer func() { result.Duration = durationpb.New(time.Since(started)) }()
@@ -129,7 +136,12 @@ func (m *moduleUnderTest) run(ctx context.Context, test *Test) *v1.TestCase {
 		return result
 	}
 
-	failures := m.assertChecks(ctx, test.Expect.Check)
+	if name := emptyTypeClaim(test.Expect.Types); name != "" {
+		result.Error = fmt.Sprintf("expect.types.%s names no value to admit or refuse", name)
+		return result
+	}
+
+	failures := m.assertChecks(ctx, test.Expect.Check, vars)
 	failures = append(failures, m.assertTypes(test.Expect.Types)...)
 	if len(failures) > maxModuleFailures {
 		more := len(failures) - maxModuleFailures
@@ -150,7 +162,8 @@ func refuseNonModuleClaims(test *Test) error {
 		for i := range v.NumField() {
 			field := v.Type().Field(i)
 			if field.IsExported() && !allowed[field.Name] && !v.Field(i).IsZero() {
-				unsupported = append(unsupported, prefix+strings.ToLower(field.Name))
+				key, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+				unsupported = append(unsupported, prefix+cmp.Or(key, strings.ToLower(field.Name)))
 			}
 		}
 	}
@@ -176,22 +189,34 @@ func typeValues(types map[string]TypeClaim) int {
 }
 
 // assertChecks evaluates each claim with the module's functions inlined.
-func (m *moduleUnderTest) assertChecks(ctx context.Context, claims []CheckClaim) []*v1.Diagnostic {
+func (m *moduleUnderTest) assertChecks(ctx context.Context, claims []CheckClaim, vars fileVars) []*v1.Diagnostic {
 	ev := v1.DefaultEvaluator()
+	// The file's vars bind as they do for any check (postRunExtras).
+	activation := map[string]any{"vars": map[string]any{}}
+	if len(vars.values) > 0 {
+		activation["vars"] = vars.values
+	}
 	var failures []*v1.Diagnostic
 	for i, claim := range claims {
 		field := fmt.Sprintf("expect.check[%d]", i)
 
+		if name, ok := m.importedCall(ev, claim.That); ok {
+			failures = append(failures, &v1.Diagnostic{Field: field,
+				Message: fmt.Sprintf("check calls %s, which the module imports; a module's cases call its own functions, "+
+					"so test %s in the module that declares it: %s", name, name, claim.That)})
+			continue
+		}
 		expanded, _, err := m.functions.ExpandText(claim.That)
 		if err != nil {
 			failures = append(failures, &v1.Diagnostic{Field: field,
 				Message: fmt.Sprintf("check could not call the module's functions: %s\n           %s", claim.That, err)})
 			continue
 		}
-		out, err := ev.EvalString(ctx, expanded, m.libs, map[string]any{})
+		out, err := ev.EvalString(ctx, expanded, m.libs, activation)
 		if err != nil {
 			failures = append(failures, &v1.Diagnostic{Field: field,
-				Message: fmt.Sprintf("check errored: %s\n           %s", claim.That, err)})
+				Message: fmt.Sprintf("check errored: %s\n           %s", claim.That,
+					checkErrorText(ev, m.libs, err, claim.That, vars.withheld, sensitiveInputs{}))})
 			continue
 		}
 		held, ok := out.Value().(bool)
@@ -208,8 +233,11 @@ func (m *moduleUnderTest) assertChecks(ctx context.Context, claims []CheckClaim)
 		if claim.Because != "" {
 			message += "\n           because: " + claim.Because
 		}
-		if got, ok := m.comparedValue(ctx, ev, claim.That); ok {
-			message += "\n           " + got
+		// Not for a claim reading a var the file withholds: the value would derive from it.
+		if _, reads := claimReadsWithheld(ev, m.libs, claim.That, vars.withheld); !reads {
+			if got, ok := m.comparedValue(ctx, ev, claim.That, activation); ok {
+				message += "\n           " + got
+			}
 		}
 		failures = append(failures, &v1.Diagnostic{Field: field, Message: message})
 	}
@@ -220,7 +248,7 @@ func (m *moduleUnderTest) assertChecks(ctx context.Context, claims []CheckClaim)
 // comparedValue says what the left side of a failed `==` or `!=` claim came to,
 // which for `clamp(40, 1, 5) == 4` is the fact the author needs: the function
 // answered 5. A claim of any other shape has no single value to name.
-func (m *moduleUnderTest) comparedValue(ctx context.Context, ev *v1.Evaluator, claim string) (string, bool) {
+func (m *moduleUnderTest) comparedValue(ctx context.Context, ev *v1.Evaluator, claim string, activation map[string]any) (string, bool) {
 	env, err := ev.Env(m.libs...)
 	if err != nil {
 		return "", false
@@ -246,7 +274,7 @@ func (m *moduleUnderTest) comparedValue(ctx context.Context, ev *v1.Evaluator, c
 	if err != nil {
 		return "", false
 	}
-	out, err := ev.EvalString(ctx, expanded, m.libs, map[string]any{})
+	out, err := ev.EvalString(ctx, expanded, m.libs, activation)
 	if err != nil {
 		return "", false
 	}
@@ -327,4 +355,48 @@ func (m *moduleUnderTest) admits(declared *v1.TypeDeclaration, value any) error 
 	_, err := v1.BindRunInputs(probe, map[string]*v1.Value{name: v1.NewValue(value)})
 
 	return err
+}
+
+// emptyTypeClaim is the first type (by name) a case names with no value to admit
+// or refuse, or "".
+func emptyTypeClaim(types map[string]TypeClaim) string {
+	for _, name := range slices.Sorted(maps.Keys(types)) {
+		if claim := types[name]; len(claim.Admits)+len(claim.Refuses) == 0 {
+			return name
+		}
+	}
+
+	return ""
+}
+
+// importedCall names the first call in claim to a function the module imports
+// through its own `use:` (`ids.isUuid(x)`), which a case against this module does
+// not test.
+func (m *moduleUnderTest) importedCall(ev *v1.Evaluator, claim string) (string, bool) {
+	if len(m.imported) == 0 {
+		return "", false
+	}
+	env, err := ev.Env(m.libs...)
+	if err != nil {
+		return "", false
+	}
+	parsed, issues := env.Parse(claim)
+	if issues != nil && issues.Err() != nil {
+		return "", false
+	}
+	found := ""
+	celast.PreOrderVisit(parsed.NativeRep().Expr(), celast.NewExprVisitor(func(e celast.Expr) {
+		if found != "" || e.Kind() != celast.CallKind {
+			return
+		}
+		call := e.AsCall()
+		if !call.IsMemberFunction() || call.Target().Kind() != celast.IdentKind {
+			return
+		}
+		if name := v1.QualifiedName(call.Target().AsIdent(), call.FunctionName()); m.imported[name] {
+			found = name
+		}
+	}))
+
+	return found, found != ""
 }

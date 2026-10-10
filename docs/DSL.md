@@ -1740,7 +1740,10 @@ tests:
 - **One evaluator.** A claim's function calls are inlined by the same function set the
   compiler uses, and the claim is evaluated by the engine's evaluator like any `check:`.
   A function that errors fails the case as an errored check; a claim comparing with `==`
-  or `!=` that does not hold prints what the left side came to.
+  or `!=` that does not hold prints what the left side came to. The suite's `vars` are
+  readable as `vars.<name>`, as in any check. A module's own function may call one it
+  imports with `use:`; a claim may not call the imported name directly, since that
+  function is tested in the module that declares it.
 - **A type is judged as an input is.** Each value is bound as an input declared with the
   type's base and rule, the shape an import of the type lowers to, so a value a case sees
   admitted is admitted wherever the type is used. `refuses:` is the direction that proves

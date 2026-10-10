@@ -374,3 +374,158 @@ func TestAnEmptyTypeClaimIsNoClaim(t *testing.T) {
 		assert.Empty(t, report.GetCases(), name)
 	}
 }
+
+// TestAModuleFunctionMayCallAnImportedOneAndAClaimMayNot: a module whose own
+// function calls a function it imports through `use:` is testable through that
+// function, while a claim calling the imported name directly is refused because
+// the imported function is tested where it is declared.
+func TestAModuleFunctionMayCallAnImportedOneAndAClaimMayNot(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/ids.yaml", moduleSource)
+	writeFile(t, dir+"/wrapper.yaml", `edition: v2026.4
+name: wrapper
+use:
+  ids:
+    path: ./ids.yaml
+functions:
+  ok:
+    params:
+      text: string
+    returns: bool
+    body: ${ids.isSlug(text)}
+`)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: own function through an import
+    workflow: ./wrapper.yaml
+    expect:
+      check:
+        - ok("a-b")
+        - '!ok("A")'
+  - name: direct call to the import
+    workflow: ./wrapper.yaml
+    expect:
+      check:
+        - ids.isSlug("a")
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	assert.True(t, report.GetCases()[0].GetPassed(), "%s %s", report.GetCases()[0].GetError(), moduleFailures(report.GetCases()[0]))
+	second := report.GetCases()[1]
+	assert.False(t, second.GetPassed())
+	assert.Contains(t, moduleFailures(second), "check calls ids.isSlug, which the module imports")
+}
+
+// TestAnEmptyClaimBesideAFullOneIsRefused: one type with values does not excuse
+// another named with none, at load and in a suite built in Go.
+func TestAnEmptyClaimBesideAFullOneIsRefused(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/lib.yaml", moduleSource)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: half empty
+    workflow: ./lib.yaml
+    expect:
+      types:
+        Count: {admits: [1]}
+        Slug: {}
+`))
+	assert.Contains(t, report.GetRefused(), "expect.types.Slug names no value to admit or refuse")
+
+	built := &flowtest.File{Tests: []flowtest.Test{{
+		Name:     "built in Go",
+		Workflow: "./lib.yaml",
+		Expect: flowtest.Expectation{Types: map[string]flowtest.TypeClaim{
+			"Count": {Admits: []any{1}},
+			"Slug":  {},
+		}},
+	}}}
+	result := flowtest.Run(t.Context(), built, dir, flowtest.RunOptions{})
+	require.Len(t, result.Report.GetCases(), 1)
+	assert.False(t, result.Report.GetCases()[0].GetPassed())
+	assert.Contains(t, result.Report.GetCases()[0].GetError(), "expect.types.Slug names no value to admit or refuse")
+}
+
+// TestAModuleClaimReadsTheSuitesVars: `vars.` binds in a module claim as in any
+// check, including in the left-side witness of a failed comparison.
+func TestAModuleClaimReadsTheSuitesVars(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/lib.yaml", moduleSource)
+	report := flowtest.RunFile(writeInline(t, dir, `
+vars:
+  slug: checkout-api
+tests:
+  - name: reads a var
+    workflow: ./lib.yaml
+    expect:
+      check:
+        - isSlug(vars.slug)
+  - name: witness reads a var
+    workflow: ./lib.yaml
+    expect:
+      check:
+        - isSlug(vars.slug) == false
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 2)
+	assert.True(t, report.GetCases()[0].GetPassed(), "%s %s", report.GetCases()[0].GetError(), moduleFailures(report.GetCases()[0]))
+	assert.False(t, report.GetCases()[1].GetPassed())
+	assert.Contains(t, moduleFailures(report.GetCases()[1]), "isSlug(vars.slug) = true")
+}
+
+// TestAModuleCaseNamesUnsupportedFieldsByTheirYAMLKeys: the remedy points at the
+// keys the author wrote, not at Go identifiers.
+func TestAModuleCaseNamesUnsupportedFieldsByTheirYAMLKeys(t *testing.T) {
+	t.Parallel()
+
+	c := onlyCase(t, runModuleSuite(t, `
+  - name: keys
+    started_at: "2026-01-01T00:00:00Z"
+    expect:
+      idempotency_key: x
+      error_contains: y
+      check: ['isSlug("a")']
+`))
+
+	assert.False(t, c.GetPassed())
+	assert.Contains(t, c.GetError(), "expect.error_contains, expect.idempotency_key, started_at")
+}
+
+// TestATableRowsEmptyTypeClaimInheritsTheEntrys: a row naming a type with no
+// value states nothing, so the entry's claim still holds and its false claim
+// still fails the row.
+func TestATableRowsEmptyTypeClaimInheritsTheEntrys(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	writeFile(t, dir+"/lib.yaml", moduleSource)
+	report := flowtest.RunFile(writeInline(t, dir, `
+tests:
+  - name: entry
+    workflow: ./lib.yaml
+    expect:
+      types:
+        Count:
+          refuses: [5]
+    cases:
+      - name: row
+        expect:
+          types:
+            Count: {}
+`))
+
+	require.Empty(t, report.GetRefused())
+	require.Len(t, report.GetCases(), 1)
+	c := report.GetCases()[0]
+	assert.Equal(t, "entry/row", c.GetName())
+	assert.False(t, c.GetPassed(), "the entry's false claim must not be erased by an empty row")
+	assert.Contains(t, moduleFailures(c), "type Count must refuse int 5, but admitted it")
+}

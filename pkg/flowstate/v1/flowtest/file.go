@@ -1300,8 +1300,9 @@ type Expectation struct {
 	// type's declared name: values the type must admit and values it must refuse.
 	// Only meaningful when the case's `workflow:` is a module (a file with no
 	// steps), where it and `check:` are the whole of what a case can say. See
-	// [TypeClaim]. Merges by override like the other maps: a row that states any
-	// replaces its entry's.
+	// [TypeClaim]. Merges by override like the other maps: a row that states
+	// any value replaces its entry's whole map, and one that names only empty
+	// claims states nothing and inherits.
 	Types map[string]TypeClaim `yaml:"types"`
 }
 
@@ -1743,6 +1744,12 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			p.report(r.in(source.path.field("expect").field("check")),
 				"test %q declares %d checks, more than the limit of %d",
 				test.Name, len(test.Expect.Check), MaxChecksPerTest)
+
+			continue
+		}
+		if name := emptyTypeClaim(test.Expect.Types); name != "" && typeValues(test.Expect.Types) > 0 {
+			p.report(r.in(source.path.field("expect").field("types").field(name)),
+				"test %q expect.types.%s names no value to admit or refuse; list the values, or remove the type", test.Name, name)
 
 			continue
 		}

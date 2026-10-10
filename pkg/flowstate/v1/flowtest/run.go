@@ -437,7 +437,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 				// inputs to fuzz. The case is judged against the declarations
 				// and reported through the same seam any other case is.
 				caseCtx, cancel := caseContextWithin(ctx, caseTimeout)
-				result := module.run(caseCtx, &test)
+				result := module.run(caseCtx, &test, fileVars{values: file.Vars, withheld: file.varsWithheld})
 				cancel()
 				posture := casePosture(&test, fileVars{values: file.Vars, withheld: file.varsWithheld})
 				suite = widenedBy(suite, posture)

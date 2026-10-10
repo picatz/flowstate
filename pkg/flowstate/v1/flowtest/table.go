@@ -342,11 +342,12 @@ func mergeExpectation(entry, row Expectation) Expectation {
 		merged.Invocations = entry.Invocations
 		merged.fromEntry.invocations = len(entry.Invocations) > 0
 	}
-	// A map naming no type asserts nothing, so like `invocations` an empty one
-	// is no statement and cannot erase the entry's claims.
-	if len(merged.Types) == 0 {
+	// Counted by values, not by entries: a type named with no value to admit or
+	// refuse asserts nothing, so like an empty `invocations` it is no statement
+	// and cannot erase the entry's claims.
+	if typeValues(merged.Types) == 0 {
 		merged.Types = entry.Types
-		merged.fromEntry.types = len(entry.Types) > 0
+		merged.fromEntry.types = typeValues(entry.Types) > 0
 	}
 	// Check is the one accumulating field: the entry's claims and the row's
 	// all hold, entry first (see the field's own doc for why predicates
