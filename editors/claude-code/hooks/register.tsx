@@ -254,8 +254,8 @@ const MAX_REBUILD = 5
  * report an edit wrote while this ran is never overwritten.
  */
 const rebuildReports = async ($: Engine, flow: string): Promise<void> => {
-  // An edit records the absolute path the tool was given; the listing is relative to the directory.
-  const same = (a: string, b: string) => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`)
+  // An edit records the absolute path; the listing is relative. Two relative paths are the same file only if equal.
+  const same = (a: string, b: string) => a === b || (a.startsWith('/') && !b.startsWith('/') && a.endsWith(`/${b}`)) || (b.startsWith('/') && !a.startsWith('/') && b.endsWith(`/${a}`))
   const have = (await read($, reports)).map(r => r.file)
   const named = (f: string) => have.some(h => same(h, f))
   const missing = (await listFlowfiles($)).files.filter(f => !named(f)).slice(0, MAX_REBUILD)
