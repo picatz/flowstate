@@ -18,7 +18,7 @@ and [STYLE.md, the decided spellings](https://github.com/picatz/flowstate/blob/m
 | A shape (record) or a scalar with a rule | `types:` (`fields:`, or `type:` and `must:` over `this`) | the base type and plain rule |
 | A name for a way to fail | `errors:` and `fail:` | the error name |
 | Any of the last three across files | a module, imported with `use:` | the same, inlined |
-| A whole process with its own history | `call:` | a child run |
+| An isolated reusable process (own inputs and outputs) | `call:` | a step that runs the callee inside the caller's run and history |
 
 A function sees only its parameters, may call another but not itself, and is
 callable in any expression, `must:`, and `allow:`.
