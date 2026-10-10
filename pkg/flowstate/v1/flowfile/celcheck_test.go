@@ -142,6 +142,42 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 			says: `no function called "rnge"; did you mean lists.range?`,
 		},
 		{
+			// "values" used to be answered with the unrelated near miss "value".
+			name: "map values has an idiom, not a near miss",
+			expr: "size({'a': 1}.values())",
+			says: "`m.transformList(k, v, v)`",
+		},
+		{
+			name: "map keys",
+			expr: "size(keys({'a': 1}))",
+			says: "`m.transformList(k, v, k)`",
+		},
+		{
+			name: "map get",
+			expr: "{'a': 1}.get('a')",
+			says: "`m[?k].orValue(default)`",
+		},
+		{
+			name: "max names the macro",
+			expr: "max(1, 2)",
+			says: "`math.greatest(a, b)`",
+		},
+		{
+			name: "min names the macro",
+			expr: "[1, 2].min()",
+			says: "`math.least(a, b)`",
+		},
+		{
+			name: "list contains names the operator",
+			expr: "[1, 2].contains(1)",
+			says: "`x in xs`",
+		},
+		{
+			name: "list indexOf keeps the plain overload message",
+			expr: "[1, 2].indexOf(1)",
+			says: "no matching overload for 'indexOf'",
+		},
+		{
 			name: "the referral names the listing that prints functions",
 			expr: `nosuchfunc(1)`,
 			says: "listed by `flow tasks --expressions`",

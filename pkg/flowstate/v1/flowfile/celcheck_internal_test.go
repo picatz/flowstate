@@ -95,3 +95,22 @@ func TestUnknownEventFieldsResultScopeIsTheAccumulators(t *testing.T) {
 	// In the loop step the iterator shadows it, so it is the iterator's own field.
 	require.Empty(t, unknownEventFields("f", build(selectNonsense, ident("__result__")), map[string]struct{}{}))
 }
+
+// The membership advice is for a list only: a string's `indexOf` is real, so a
+// string overload miss keeps cel-go's own sentence, and an unrelated unknown
+// function still gets the catalog referral rather than an idiom.
+func TestIdiomAdviceIsScopedToWhatItAnswers(t *testing.T) {
+	t.Parallel()
+
+	const onString = "found no matching overload for 'indexOf' applied to 'string.(int)'"
+	assert.Equal(t, onString, forAnAuthor(onString))
+
+	said := forAnAuthor("undeclared reference to 'nosuchfunc' (in container '')")
+	assert.NotContains(t, said, "orValue")
+	assert.Contains(t, said, "flow tasks")
+
+	const indexOnList = "found no matching overload for 'indexOf' applied to 'list(int).(int)'"
+	assert.Equal(t, indexOnList, forAnAuthor(indexOnList), "a position is not a membership test")
+
+	assert.Contains(t, forAnAuthor("found no matching overload for 'contains' applied to 'list(int).(int)'"), "`x in xs`")
+}

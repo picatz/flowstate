@@ -439,7 +439,7 @@ spellings deal with absence:
 | `m.?key.orValue(d)` | `d` | `null` |
 | `m.?key.hasValue()` | `false` | `true` |
 
-`.?` also works on lists (`xs[?5].orValue(0)`) and on steps
+`.?` also works on lists (`xs[?5].orValue(0)`), `m[?k].orValue(d)` reads a map by a computed key the same way, and on steps
 (`steps.?maybe.value.orValue(0)`).
 
 Choose the spelling by the question. To read with a default, use

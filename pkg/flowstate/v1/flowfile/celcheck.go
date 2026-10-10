@@ -591,6 +591,23 @@ var unknownFunction = regexp.MustCompile(`^undeclared reference to '([^']+)'`)
 // rewrite.
 var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'string' applied to '\((map|list|null_type)`)
 
+// missingIdiom is what to write for the calls other languages' standard
+// libraries taught authors to expect and this profile deliberately lacks. The
+// target is a macro or an operator where the near-miss lookup cannot reach it
+// (macros are left out of that table, and `max` is not a segment of any
+// function), so the spelling is stated rather than searched for.
+var missingIdiom = map[string]string{
+	"keys":   "`m.transformList(k, v, k)` lists a map's keys",
+	"values": "`m.transformList(k, v, v)` lists a map's values",
+	"get":    "`m[?k].orValue(default)` reads a key that may be absent (`m.?name` when the name is literal)",
+	"max":    "`math.greatest(a, b)` or `math.greatest(list)`",
+	"min":    "`math.least(a, b)` or `math.least(list)`",
+}
+
+// listMembership matches a list asked what a string is asked: `contains` and
+// exists on strings only; `indexOf` returns a position, which membership is not.
+var listMembership = regexp.MustCompile(`^found no matching overload for 'contains' applied to 'list\(`)
+
 // forAnAuthor turns one of cel-go's sentences into one written for the person who
 // typed the expression.
 //
@@ -615,6 +632,9 @@ func forAnAuthor(message string) string {
 		// the one the author wanted is usually the one whose last segment
 		// they typed: `range` is `lists.range` (#1759). A lookup over the
 		// profile's own table, not a search the author does.
+		if idiom, ok := missingIdiom[match[1]]; ok {
+			return fmt.Sprintf("no function called %q; %s", match[1], idiom)
+		}
 		if suggestion, ok := suggestFunction(match[1]); ok {
 			return fmt.Sprintf(
 				"no function called %q; did you mean %s? The functions this profile provides are "+
@@ -626,6 +646,11 @@ func forAnAuthor(message string) string {
 			"no function called %q; the functions this profile provides are listed by "+
 				"`flow tasks --expressions`, and by the GetCatalog RPC (`flowstate_get_catalog` over MCP)",
 			match[1])
+	}
+
+	if listMembership.MatchString(message) {
+		return message + "; `contains` is a string function, and a list is asked " +
+			"`x in xs` for membership"
 	}
 
 	if match := stringOfAStructure.FindStringSubmatch(message); match != nil {
