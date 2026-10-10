@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
-
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 )
 
 // tasksCommand builds a command carrying the flags `flow tasks` declares.
@@ -638,3 +638,53 @@ func TestTasksExpressionsIsItsOwnPage(t *testing.T) {
 // task reference generator (docs/reference/tasks.md) started needing the
 // same worked example `flow tasks <name>` already built. See that package's
 // doc comment for why the two share one source rather than two.
+
+// TestTasksShowsTheSentenceWrittenOverAField pins that the schema's own prose
+// reaches the terminal: a built-in's from the compiled-in comments, read through
+// the one mechanism the editor's hover reads. Expectations are derived from
+// protodoc so a reworded comment does not break it, and the `log` message is
+// named by hand so a build where every comment had gone missing fails here.
+func TestTasksShowsTheSentenceWrittenOverAField(t *testing.T) {
+	t.Parallel()
+
+	def, ok := v1.DefaultRegistry().Lookup("log")
+	require.True(t, ok)
+
+	rendered := collapse(stripANSI(renderTasksAt(t, 200, func(surface *ui.UI) error {
+		return writeTask(surface, def, nil)
+	})))
+
+	var described int
+	for _, field := range v1.Inputs(def) {
+		if field.Description == "" {
+			continue
+		}
+		described++
+
+		assert.Contains(t, rendered, collapse(protodoc.FirstSentence(field.Description)),
+			"`flow tasks log` does not carry the sentence written over %q", field.Name)
+	}
+
+	assert.NotZero(t, described, "no `log` input carries prose, so nothing here was exercised")
+}
+
+// TestTasksPrintsNothingForAFieldWithoutProse is the other direction: a field
+// nobody described renders exactly as it did, with no blank continuation line.
+func TestTasksPrintsNothingForAFieldWithoutProse(t *testing.T) {
+	t.Parallel()
+
+	fields := []v1.InputField{
+		{Name: "url", Type: "string", Required: true},
+		{Name: "method", Type: "string", Description: "HTTP method to use. Defaults to GET."},
+	}
+
+	var out strings.Builder
+	surface := ui.ForCapabilities(&out, &out, ui.Capabilities{Width: 120}, ui.Capabilities{Width: 120})
+	require.NoError(t, writeFields(&out, surface.Theme, 120, []fieldGroup{{label: "inputs", fields: fields}}))
+
+	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
+	require.Len(t, lines, 3, "one row for the bare field, a row and a sentence for the other:\n%s", out.String())
+	assert.Contains(t, lines[0], "url*")
+	assert.Equal(t, "HTTP method to use.", strings.TrimSpace(lines[2]),
+		"only the first sentence belongs under the row")
+}

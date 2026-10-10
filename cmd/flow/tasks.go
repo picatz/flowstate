@@ -14,6 +14,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 )
 
 // `flow tasks` is an index and a detail view, not one page.
@@ -704,6 +705,13 @@ func writeFields(w io.Writer, theme ui.Theme, width int, groups []fieldGroup) er
 				theme.Strong.Render(name), pad(names-lipgloss.Width(name)+gutter),
 				theme.Muted.Render(lines[0])); err != nil {
 				return err
+			}
+
+			// The sentence the schema's author wrote over the field, under the row
+			// it describes. Only the first sentence: the paragraph is in the
+			// generated reference, and a row that grows to hold it stops being a row.
+			if sentence := protodoc.FirstSentence(field.Description); sentence != "" {
+				lines = append(lines, strings.Split(wrap(sentence, textWidth), "\n")...)
 			}
 
 			for _, line := range lines[1:] {

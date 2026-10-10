@@ -9,6 +9,8 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/descriptorpb"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/protodoc"
 )
 
 // Reading a task's shape out of its schema, in one place.
@@ -365,6 +367,15 @@ type InputField struct {
 	//
 	// Empty for a field the schema bounds no further, which is most of them.
 	Constraints []string
+
+	// Description is the comment written over the field in its schema, as
+	// [protodoc.CommentOf] reads it: a built-in's from the compiled-in
+	// comments, a plugin's from the source info its manifest descriptor carries.
+	//
+	// Empty for a field nobody described, and a renderer shows nothing for it
+	// rather than a gap. Not part of [TaskField], so the machine catalog is
+	// unchanged.
+	Description string
 }
 
 // Inputs describes what a task accepts, required fields first.
@@ -471,12 +482,14 @@ func describeFields(md protoreflect.MessageDescriptor, deferred []string, notes 
 	for i := range fields.Len() {
 		fd := fields.Get(i)
 		name := string(fd.Name())
+		description, _ := protodoc.CommentOf(fd)
 		out = append(out, InputField{
 			Name:        name,
 			Type:        InputTypeName(fd),
 			Required:    RequiredInput(fd),
 			Deferred:    slices.Contains(deferred, name),
 			Constraints: append(FieldConstraints(fd), notes[name]...),
+			Description: description,
 		})
 	}
 
