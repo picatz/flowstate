@@ -1338,12 +1338,13 @@ message TimelineEntry {
     // says which; this says when.
     KIND_RUN_ENDED = 10;
 
-    // KIND_TIMER_CANCELED is a wait closing without elapsing: the `timeout:`
-    // bound on a `wait_for_signal:` whose signal arrived first. It carries the
-    // label of the KIND_TIMER_STARTED row it closes, so a consumer that folds
-    // rows by step reads the gate as answered rather than as waiting forever on
-    // a run that went on to succeed. It is the opposite fact from
-    // KIND_TIMER_FIRED, which is a gate nobody answered.
+    // KIND_TIMER_CANCELED is a timer closing without elapsing, whether it was
+    // a wait's `timeout:`, a sleep, or a debug lease. It carries the label of
+    // the KIND_TIMER_STARTED row it closes, so a consumer that folds rows by
+    // step reads the timer as over rather than as waiting forever. The cause is
+    // not recorded: a signal may have won the wait, or the run may have been
+    // cancelled, and the run's own status is what says which. It is the
+    // opposite fact from KIND_TIMER_FIRED, which is a timer that elapsed.
     //
     // Appended last, so an older client that does not know the value skips the
     // row as an unknown kind and is no worse off than before it existed.

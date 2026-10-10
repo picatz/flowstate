@@ -88,7 +88,7 @@ const BY_NAME: Record<string, [StatusKind, string?]> = {
   step_canceled: ['cancelled'],
   timer_started: ['waiting'],
   timer_fired: ['succeeded'],
-  timer_canceled: ['succeeded'],
+  timer_canceled: ['cancelled'],
   signal_received: ['succeeded'],
 }
 
