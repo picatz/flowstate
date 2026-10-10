@@ -575,3 +575,82 @@ steps:
 	assert.Contains(t, err.Error(), `the record User has no field "emial"`)
 	assert.Contains(t, err.Error(), `Did you mean "email"?`)
 }
+
+// A function with no parameters binds nothing, so its expansion has no bind to
+// carry the call's place in the tree; the call must still be written back.
+const noParamFile = `edition: v2026.4
+name: divider
+functions:
+  divider:
+    returns: string
+    body: ${"---"}
+  banner:
+    returns: string
+    body: ${divider() + "!"}
+  shout:
+    params:
+      text: string
+    returns: string
+    body: ${text.upperAscii() + divider()}
+  isEmpty:
+    returns: bool
+    body: ${size("") == 0}
+inputs:
+  title:
+    type: string
+    required: true
+    must: isEmpty() || this != divider()
+steps:
+  - id: a
+    value: ${divider()}
+  - id: b
+    if: ${divider() == "---" && isEmpty()}
+    value: ${banner() + shout(inputs.title)}
+  - id: c
+    value: ${[divider(), shout(divider())].join(",")}
+  - id: d
+    value: ${"before " + divider() + " after"}
+outputs:
+  result:
+    value: ${steps.a.value + divider()}
+`
+
+func TestAZeroParameterFunctionCallWritesBackAsWritten(t *testing.T) {
+	t.Parallel()
+
+	wf, _, err := flowfile.Parse([]byte(noParamFile))
+	require.NoError(t, err)
+	require.Empty(t, flowfile.Validate(wf))
+	require.NoError(t, v1.Validate(wf))
+
+	// The run still sees the body and no call.
+	called := calledNames(wf)
+	assert.False(t, called["divider"], "a call to divider survived compilation")
+	assert.False(t, called["isEmpty"], "a call to isEmpty survived compilation")
+
+	written, err := flowfile.Marshal(wf)
+	require.NoError(t, err)
+	assert.Equal(t, noParamFile, string(written), "a zero-parameter call is written as the author wrote it, not as its body")
+
+	formatted, err := flowfile.Format([]byte(noParamFile), wf)
+	require.NoError(t, err)
+	assert.Equal(t, noParamFile, string(formatted))
+
+	again, _, err := flowfile.Parse(written)
+	require.NoError(t, err)
+	assert.True(t, proto.Equal(wf, again), "the written file compiles to a different workflow")
+}
+
+func TestAnEmptyParamsMappingFormatsLikeNoParamsKey(t *testing.T) {
+	t.Parallel()
+
+	explicit := strings.Replace(noParamFile, "  divider:\n    returns", "  divider:\n    params: {}\n    returns", 1)
+	require.NotEqual(t, noParamFile, explicit)
+
+	wf, _, err := flowfile.Parse([]byte(explicit))
+	require.NoError(t, err)
+
+	formatted, err := flowfile.Format([]byte(explicit), wf)
+	require.NoError(t, err)
+	assert.Equal(t, noParamFile, string(formatted), "the call stays and the empty mapping is the same as no key")
+}

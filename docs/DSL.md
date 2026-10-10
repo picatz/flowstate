@@ -1438,6 +1438,9 @@ steps:
   with the definitions and every call as the author wrote it, `slug(inputs.title)` and
   not its expansion, by recording each expansion as the macro call it came from, the
   way `cel.bind(...)` and `xs.map(x, ...)` already write back.
+  A function with no parameters (no `params:` key, or `params: {}`) is written back the
+  same way, `divider()` and not its body. A `body:` that is a map or list literal is
+  quoted (`body: '${{"a": 1}}'`), or YAML reads the braces as its own mapping.
 - **Callable in every `must:`.** An input's, an output's, a record field's and a record
   type's rule calls a declared function the way an expression does: `must: isUuid(this)`,
   `this` an argument like any name, a body still seeing only its parameters. The compiler
@@ -1658,8 +1661,9 @@ steps:
   use), offers a `use:` for an unresolved qualified name that a module beside the file
   declares, offers the `module-pin-mismatch` repin (the rewrite `flow fix --repin` makes),
   and lists module declarations for `workspace/symbol`.
-- **Not yet.** `flow test` function cases and an editor action that extracts a type into a
-  module.
+- **Extract type.** The editor offers an action that declares a rule several inputs,
+  outputs or fields spell out inline once under `types:` and uses it by name; it is
+  offered only when the edited file compiles to the same specification.
 
 See `examples/use-modules/`, and `examples/lib/` for modules to copy.
 
@@ -1679,7 +1683,7 @@ lowers to something the runtime already had:
 | A shape, or a scalar with a rule | `types:` (`fields:`, or `type:` and `must:` over `this`) | the base type and the plain rule |
 | A name for a way to fail | `errors:` and `fail:` | the error's name as the failure kind |
 | The same of any of these across files | [a module](#a-file-with-no-steps-is-a-module-landed) taken with [`use:`](#use-a-module-imported-by-an-alias-landed) | the same, under the qualified name |
-| A whole process with its own history | `call:` | a child run |
+| A whole process, a unit with a contract | `call:` | the callee's steps, inside the caller's history |
 
 The first four are one file's. A module is not a fifth kind of thing: it is those
 declarations in a file with no `steps:`, so a declaration moves into a module by moving,
@@ -1811,8 +1815,8 @@ workflow declares (64 each) and share its 100000-node expansion budget; going ov
 refused at the `use:` line with the counts. A cycle is refused where it closes.
 
 **Not offered.** Generics, private declarations, re-exports, a bare import, a remote or
-registry source (vendor the file, then pin it), a module that holds values or steps, and
-`flow test` cases for a module's own functions. A repeated sequence of steps is a
+registry source (vendor the file, then pin it), and a module that holds values or steps.
+A repeated sequence of steps is a
 `call:`, not a template.
 
 ### `vars:`, and the shadowing rule that ships with it *(landed)*

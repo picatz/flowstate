@@ -266,6 +266,16 @@ func (o *functionOptimizer) Optimize(ctx *cel.OptimizerContext, tree *commonast.
 		} else {
 			replacement = bindInOrder(ctx, match.ID(), names, call.Args(), replacement)
 		}
+		if len(params) == 0 {
+			// No bind wraps the body, so nothing carries the call's id and UpdateExpr
+			// would clear a macro call recorded before it: the body would replace the
+			// call and `flow fmt` would write the body back. Record it once the body
+			// is in place.
+			recorded := ctx.NewCall(call.FunctionName())
+			ctx.UpdateExpr(match, replacement)
+			ctx.SetMacroCall(match.ID(), recorded)
+			continue
+		}
 		ctx.SetMacroCall(match.ID(), ctx.NewCall(call.FunctionName(), call.Args()...))
 		ctx.UpdateExpr(match, replacement)
 	}
