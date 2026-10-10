@@ -739,6 +739,8 @@ func evalWaitExpr(ctx context.Context, v *Value, scope *Scope, now time.Time, bo
 		extra[NowIdentifier] = types.DefaultTypeAdapter.NativeToValue(now)
 
 		activation := scope.ActivationWith(ctx, extra)
+		// charge:exempt a wait expression is followed by the durable timer or signal
+		// park that consumes it, so a history event and a yield pace it (#1970).
 		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, activation)
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)

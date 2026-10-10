@@ -784,14 +784,12 @@ func (e *executor) chargeValueCost(cost uint64) {
 // a `call:`'s arguments and its callee's declared `outputs:`, and a loop's
 // `initial:` and `update:`.
 //
-// Those are the paths audited so far that a loop can repeat without scheduling
-// anything, which is what the budget is for. The list is *not* claimed to be
-// exhaustive, and three review rounds of #1962 each found another member of it
-// — a claim of completeness in prose is not something a reader or a reviewer
-// can check. #1970 is the mechanism that would make it checkable; until then,
-// a path that evaluates CEL in workflow code and is absent here is a hole in
-// the bound rather than a decision, unless it says otherwise where it is
-// written.
+// Those are the paths that a loop can repeat without scheduling anything, which
+// is what the budget is for. The list is not what holds the bound: `go test
+// ./tools/chargecheck` walks everything reachable from [Run] and fails on a CEL
+// evaluation that returns no cost and carries no `charge:exempt <reason>` at the
+// call, so a path absent here is either charged or says why it is not where it
+// is written.
 //
 // [v1.ResolveTaskInputs] and `wait.go`'s own expressions do say otherwise: each
 // is immediately followed by the activity, durable timer, or signal park that

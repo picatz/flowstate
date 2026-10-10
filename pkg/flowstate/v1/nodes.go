@@ -554,6 +554,8 @@ func ResolveTaskInputs(ctx context.Context, task *Task, scope *Scope) (*Task, er
 			continue
 		}
 
+		// charge:exempt task inputs are consumed by the activity scheduled immediately
+		// after, so a history event and a yield pace them (#1970).
 		out, err := ev.EvalParsedBase(ctx, scope.GetProfile(), v.GetExpr(), scope.Activation(ctx))
 		if err != nil {
 			return nil, fmt.Errorf("input %q: %w", name, err)
