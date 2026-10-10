@@ -1585,7 +1585,9 @@ steps:
   file that uses it means. Two modules may declare the same bare name; they are
   `a.Id` and `b.Id`. A file's own types, functions and errors stay bare and may not contain
   a dot. An alias is a lowerCamel word of at most 32 letters and digits, and may not be a
-  root (`inputs`, `steps`, `vars`, ...), a CEL literal or type, the namespace of a built-in
+  root (`inputs`, `steps`, `vars`, ...), a name an expression binds bare (`item`, `state`,
+  `error`, `failure`, `payload`, `deliveries`, `count`, `decision`, `approvals`, `event`, `response`, `this`,
+  `sender`), a CEL literal or type, the namespace of a built-in
   library (`math`), or the id of a step or the name of an input, var, output or function
   of the file that uses it.
 - **Resolved like `call:`.** The path is relative to the file that writes it, never

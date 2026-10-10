@@ -487,7 +487,7 @@ func TestModuleNames(t *testing.T) {
 
 	assert.NoError(t, v1.ValidModuleAlias("ids"))
 	assert.NoError(t, v1.ValidModuleAlias("billing2"))
-	for _, bad := range []string{"", "Ids", "a_b", "inputs", "math", "9a"} {
+	for _, bad := range []string{"", "Ids", "a_b", "inputs", "math", "9a", "run", "outputs", "item", "state", "error", "failure", "payload", "event", "response", "this", "sender", "deliveries", "count", "decision", "approvals"} {
 		assert.Error(t, v1.ValidModuleAlias(bad), bad)
 	}
 }

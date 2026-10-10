@@ -96,6 +96,14 @@ var reservedModuleAliases = sync.OnceValue(func() map[string]bool {
 		words[root] = true
 	}
 	words[OutputsRoot] = true
+	// The names bound bare, each in the one place it is in scope: a loop's current
+	// item and carried state, a step's tolerated failure, a wait's payload and result, a
+	// trigger's event, an http task's response, a constraint's value and a signal
+	// policy's sender. An alias spelled like one would make `item.x` mean two things.
+	for _, word := range []string{DefaultIterator, LoopStateField, StepErrorOutput, StepFailureOutput, PayloadOutput, SenderOutput, // "sender" is also a signal policy's caller: the same word, a different binding.
+		DeliveriesOutput, CountOutput, DecisionOutput, ApprovalsOutput, EventRoot, ResponseRoot, "this"} {
+		words[word] = true
+	}
 	for _, word := range CELUnusableStepIDs() {
 		words[word] = true
 	}
@@ -128,7 +136,7 @@ func ValidModuleAlias(alias string) error {
 	case !moduleAliasPattern.MatchString(alias):
 		return fmt.Errorf("%q is not a module alias; write a lowerCamel word such as `ids` or `billing`, up to 32 letters and digits, with no underscore", alias)
 	case reservedModuleAliases()[alias]:
-		return fmt.Errorf("%q is a word the language already uses (a root such as `inputs` and `steps`, a CEL literal or type, or the namespace of a built-in library); choose another alias", alias)
+		return fmt.Errorf("%q is a word the language already uses (a root such as `inputs` and `steps`, a name an expression binds such as `item` and `failure`, a CEL literal or type, or the namespace of a built-in library); choose another alias", alias)
 	}
 
 	return nil
