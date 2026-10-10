@@ -1340,8 +1340,8 @@ One honesty note belongs here: cel-go's `OptionalTypes` option cannot be subset,
 and the `optional` library has been in the profile since profiles existed — so
 the rest of its surface (`optional.of`, `optional.ofNonZeroValue`,
 `optional.none`, `hasValue()`, `value()`, `or()`, `optMap`, `optFlatMap`, and
-the `[?key]` / `{?key: v}` syntax) *parses and evaluates* today and always has.
-v2026.3 documents the read side; the rest stays reachable-but-undocumented
+the `{?key: v}` syntax and `[?key]` beyond a read with a default) *parses and evaluates* today and always has.
+v2026.3 documents the read side, including `m[?k].orValue(d)` for a computed key; the rest stays reachable-but-undocumented
 rather than refused (*since written:* `hasValue()` is now the documented way to ask
 whether a field was sent, per [STYLE.md](STYLE.md#the-decided-spellings), and
 `examples/optional-dispatch` uses it), because a validate-level refusal would break the profile's
