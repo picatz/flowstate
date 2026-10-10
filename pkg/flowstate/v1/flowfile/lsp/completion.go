@@ -307,6 +307,11 @@ var dslKeys = map[string][]dslKey{
 	"default": {
 		{name: "steps", detail: "list", docs: "The body to run when no case matches. `steps: []` is legal: deliberately handling nothing else, written down."},
 	},
+	"step_defaults": {
+		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
+		{name: "total_timeout", detail: "duration", docs: "Bounds the step across *every* attempt and every wait between them, written as `30s`, `5m`, or `1h`: the wall-clock budget for the whole retried step, where `timeout:` bounds one attempt inside it."},
+		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
+	},
 	"retry": {
 		{name: "attempts", detail: "int", docs: "Total attempts including the first, so `1` disables retrying."},
 		{name: "interval", detail: "duration", docs: "The delay before the second attempt."},
@@ -413,6 +418,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		// The keys under a task's own name are its inputs, which come from its
 		// schema rather than from this package's table.
 		return list(inputCandidates(word, replace, current, doc.tasks))
+	case endsWith(path, "step_defaults"):
+		return list(dslCandidates("step_defaults", word, replace))
 	case endsWith(path, "retry"):
 		return list(dslCandidates("retry", word, replace))
 	case endsWith(path, "for_each"):

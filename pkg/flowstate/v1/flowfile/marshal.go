@@ -3,6 +3,7 @@ package flowfile
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -190,6 +191,14 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	// Above the steps it applies to: a bound every step reaches is read before the
 	// steps that take it. The steps below are written without the keys it supplies.
 	if defaults := wf.GetStepDefaults(); defaults != nil {
+		// Held to the rules the parser holds the block to, so Marshal never writes a
+		// file that reads back as an error.
+		if len(wf.GetSteps()) == 0 {
+			return nil, errors.New("`step_defaults:` has no steps to default, so the parser would reject the marshalled file")
+		}
+		if ds := validateStepDefaults(wf); len(ds) > 0 {
+			return nil, fmt.Errorf("`step_defaults:` %s, so the parser would reject the marshalled file", ds[0].Message)
+		}
 		written, err := stepDefaultsToYAML(defaults)
 		if err != nil {
 			return nil, err

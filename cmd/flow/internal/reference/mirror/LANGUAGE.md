@@ -91,6 +91,7 @@ The top-level keys:
 | `inputs` | no | The run's typed arguments. [Inputs](#inputs) |
 | `outputs` | no | The run's result. [Outputs](#outputs) |
 | `vars` | no | Named constants, read as `vars.<name>`. [Vars](#vars) |
+| `step_defaults` | no | `timeout`, `total_timeout` and `retry` stated once for every task step that does not write its own. [Retries and timeouts](#retries-and-timeouts) |
 | `steps` | yes | What the workflow does, 1 to 100 steps. [Steps](#steps) |
 | `triggers` | no | How runs may start besides `flow run`: a schedule, webhooks, and rules for manual starts. [Triggers](#starting-runs-triggers) |
 | `concurrency` | no | At most one run per key. [One run at a time](#one-run-at-a-time-concurrency) |

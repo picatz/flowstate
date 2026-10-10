@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -200,6 +201,46 @@ func TestStepDefaultsOnAHandBuiltSpecAreHeldToTheGrammar(t *testing.T) {
 	diagnostics := flowfile.Validate(wf)
 	require.NotEmpty(t, diagnostics)
 	assert.Contains(t, diagnostics[0].Message, "continue_on_error")
+}
+
+// Marshal holds a hand-built block to the parser's rules rather than writing a
+// file that reads back as an error.
+func TestMarshalRefusesStepDefaultsTheParserWould(t *testing.T) {
+	t.Parallel()
+
+	build := func(defaults *v1.StepPolicy, steps bool) *v1.Workflow {
+		wf := &v1.Workflow{Name: "x", StepDefaults: defaults}
+		if steps {
+			wf.Steps = []*v1.Node{{Id: "a", Kind: &v1.Node_Task{Task: &v1.Task{
+				Name: "log", Inputs: map[string]*v1.Value{"message": v1.NewLiteral("hi")},
+			}}}}
+		}
+		return wf
+	}
+	second := &v1.StepPolicy{Timeout: durationpb.New(time.Second)}
+
+	for name, test := range map[string]struct {
+		wf   *v1.Workflow
+		want string
+	}{
+		"an empty policy":     {build(&v1.StepPolicy{}, true), "declares nothing"},
+		"no steps to default": {build(second, false), "no steps"},
+		"continue_on_error":   {build(&v1.StepPolicy{ContinueOnError: true}, true), "continue_on_error"},
+		"a total shorter than timeout": {build(&v1.StepPolicy{
+			Timeout: durationpb.New(time.Minute), TotalTimeout: durationpb.New(time.Second),
+		}, true), "shorter than"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := flowfile.Marshal(test.wf)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.want)
+		})
+	}
+
+	_, err := flowfile.Marshal(build(second, true))
+	require.NoError(t, err)
 }
 
 // A call is another file: its steps take that file's defaults, not the caller's.

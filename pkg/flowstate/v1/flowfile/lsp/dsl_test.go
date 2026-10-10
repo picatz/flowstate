@@ -1366,6 +1366,9 @@ concurrency:
   key: ${"all-keys"}
 step_defaults:
   timeout: 30s
+  total_timeout: 5m
+  retry:
+    attempts: 3
 plugins: {}
 vars:
   region: eu-west-1

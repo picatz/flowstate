@@ -416,6 +416,28 @@ edition: v2026.4
 			notWant: []string{"timeout", "retry"},
 		},
 		{
+			name: "step_defaults offers exactly the policy keys",
+			src: `name: c
+step_defaults:
+  |
+steps: []
+edition: v2026.4
+`,
+			exact: []string{"timeout", "total_timeout", "retry"},
+		},
+		{
+			name: "step_defaults retry offers the retry keys",
+			src: `name: c
+step_defaults:
+  retry:
+    |
+steps: []
+edition: v2026.4
+`,
+			want:    []string{"attempts", "interval", "backoff", "max_interval", "only"},
+			notWant: []string{"timeout"},
+		},
+		{
 			// A task step's own kind key is the task name, which is not in
 			// nonTaskKindKeys, so timeout:/retry: stay on the menu — the
 			// unconditional case the withholding above must not over-reach into.
