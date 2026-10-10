@@ -20,6 +20,8 @@ import type { Seen } from './statusline'
 import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from './vocab'
 import { MAX_SCAN, MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
 import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
+import { GRAPH_TIMEOUT_MS, graphArgv, graphHead, graphOf, rowText, workflowName } from './graph'
+import type { Parsed as GraphParsed } from './graph'
 import { cardLines, cardsOf, parseOutputs } from './outputs'
 import type { Cards, Declared } from './outputs'
 
@@ -52,6 +54,8 @@ const NO_RUN_RESULT: { file: string; kind: '' | Result['kind']; text: string; li
 const runResult = atom({ plugin: 'flowstate', key: 'runResult' } as const, NO_RUN_RESULT)
 /** The output cards show the raw values (sensitive ones still hidden) instead of the labelled cards. */
 const outputsRaw = atom({ plugin: 'flowstate', key: 'outputsRaw' } as const, false)
+/** Bumped by the Graph section's Refresh so the pane draws again after the cached read is dropped. */
+const graphSeq = atom({ plugin: 'flowstate', key: 'graphSeq' } as const, 0)
 const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
@@ -201,6 +205,25 @@ const readSchema = async <T,>($: Engine, flow: string, file: string, which: 'inp
 }
 const readInputs = ($: Engine, flow: string, file: string): Promise<InputsParsed> => readSchema($, flow, file, 'inputs', parseInputs)
 
+/**
+ * One Flowfile's steps, from `flow graph -o json --workflow <name> -- <file>`:
+ * read only, bounded, no server (`--live` is never passed). The name is the
+ * file's own top-level `name:`; the CLI checks it. A failure to answer is a
+ * state of the section (one reason line), never an error.
+ */
+const readGraph = async ($: Engine, flow: string, file: string): Promise<GraphParsed> => {
+  try {
+    const name = workflowName(await $.fs.read(file))
+    if (name === undefined) return { unreadable: 'the file has no plain top-level name:' }
+    const argv = graphArgv(flow, file, name)
+    if (argv === undefined) return { unreadable: 'the file or workflow name is not one the view sends' }
+    const ran = await $.process.run(argv, { timeoutMs: GRAPH_TIMEOUT_MS })
+    return graphOf(ran)
+  } catch (err) {
+    return graphOf(undefined, err)
+  }
+}
+
 /** The first Flowfile in the session's working directory, if it has one and can be listed. */
 const findInCwd = async ($: Engine): Promise<string | undefined> => {
   try {
@@ -249,6 +272,8 @@ export const register: Register = (on, options) => {
   const schemas = new Map<string, InputsParsed>()
   /** The same for the declared outputs, read once after a confirmed run succeeds. */
   const outSchemas = new Map<string, Declared>()
+  /** Graphs by file and modification time; a failed read is kept too, so a broken file is not re-read on every redraw. */
+  const graphs = new Map<string, GraphParsed>()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -560,6 +585,17 @@ export const register: Register = (on, options) => {
         // A failed read is kept too (until the file changes or is picked again), so a broken file is not recompiled on every redraw.
         if (schemas.size >= 16) schemas.clear()
         schemas.set(key, schema)
+      }
+    }
+    let steps: GraphParsed | undefined
+    const graphKey = `${file}@${offered.stamp.get(file) ?? 0}`
+    await read($, graphSeq)
+    if (file !== '') {
+      steps = graphs.get(graphKey)
+      if (steps === undefined) {
+        steps = await readGraph($, flow, file)
+        if (graphs.size >= 16) graphs.clear()
+        graphs.set(graphKey, steps)
       }
     }
     const fields: Field[] = schema && 'fields' in schema ? schema.fields : []
@@ -960,6 +996,34 @@ export const register: Register = (on, options) => {
               </Box>
             )}
           </Box>
+        )}
+        <Text bold>Graph</Text>
+        {steps === undefined && (
+          <Box flexDirection="column">
+            <Text dimColor>  The steps of one Flowfile, as `flow graph` declares them; nothing runs and no server is asked.</Text>
+            <Text dimColor>  Choose a Flowfile under "Run a Flowfile" above, or from a terminal: flow graph -o json --workflow NAME -- FILE</Text>
+          </Box>
+        )}
+        {steps && 'unreadable' in steps && <Text dimColor>  Graph unavailable ({steps.unreadable}).</Text>}
+        {steps && 'graph' in steps && (
+          <Box flexDirection="column">
+            <Text>  {graphHead(steps.graph, file)}</Text>
+            {steps.graph.rows.length === 0 && <Text dimColor>  (no nodes)</Text>}
+            {steps.graph.rows.map(r => (
+              <Text dimColor={r.kind === 'workflow'}>  {rowText(r)}</Text>
+            ))}
+            {steps.graph.notes.map(n => (
+              <Text dimColor>  note: {n}</Text>
+            ))}
+          </Box>
+        )}
+        {steps !== undefined && (
+          <Button key="refresh-graph" label="Refresh graph" plain onPress={async () => {
+            graphs.delete(graphKey)
+            await update($, graphSeq, n => n + 1)
+          }}>
+            Refresh graph
+          </Button>
         )}
         <Text bold>Flowfiles</Text>
         {list.length === 0 && <Text dimColor>No Flowfile edited yet this session.</Text>}
