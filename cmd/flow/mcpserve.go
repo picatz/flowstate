@@ -865,6 +865,29 @@ func mcpServeTools(
 	return srv, nil
 }
 
+// mcpServeToolsFromFlags is the load-then-build step of [runMCPServe]: it reads
+// --plugin-catalog into the registry and then builds the server whose
+// descriptions say so, as one unit so a test drives the same wiring the command
+// runs. Loading comes first so the first request already sees the catalog's
+// tasks. A catalog that cannot be read stops the command before anything is
+// bound: serving without it would answer `no plugin task` for every task the
+// operator said this deployment has.
+func mcpServeToolsFromFlags(
+	cmd *cobra.Command,
+	guard *mcpServeRegistryGuard,
+	testTimeout time.Duration,
+	recorder *audit.Recorder,
+	reportAuditFailure func(error),
+) (*mcp.Server, error) {
+	pluginCatalog, err := loadPluginCatalog(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("--%s names the plugins this surface validates against, and it could not be read: %w",
+			pluginCatalogFlag, err)
+	}
+
+	return mcpServeTools(guard, testTimeout, recorder, reportAuditFailure, pluginCatalog != nil)
+}
+
 // mcpServeRegistryGuard serializes this surface's tools against the one piece
 // of process-wide state a caller can make them mutate: [v1.DefaultRegistry].
 //
@@ -1099,16 +1122,6 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 
-	// Before the server is built, so the first request already sees the
-	// catalog's tasks. A catalog that cannot be read stops the command: serving
-	// without it would answer `no plugin task` for every task the operator
-	// said this deployment has.
-	pluginCatalog, err := loadPluginCatalog(cmd)
-	if err != nil {
-		return fmt.Errorf("--%s names the plugins this surface validates against, and it could not be read: %w",
-			pluginCatalogFlag, err)
-	}
-
 	recorder, err := startAudit(cmd.Context(), flags.auditRequired)
 	if err != nil {
 		return fmt.Errorf("configuring the audit trail: %w", err)
@@ -1119,9 +1132,9 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 	// HTTP server has drained, so the batch includes in-flight decisions.
 	defer flushAudit()
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
+	tools, err := mcpServeToolsFromFlags(cmd, newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
 		logger.Error("could not record MCP tool authorization decision", "error", err)
-	}, pluginCatalog != nil)
+	})
 	if err != nil {
 		return err
 	}

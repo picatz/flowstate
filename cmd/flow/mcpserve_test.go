@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -110,7 +111,7 @@ func newMCPServeFixtureForIssuer(
 ) *mcpServeFixture {
 	t.Helper()
 
-	return newMCPServeFixtureWithPlugins(t, issuer, maxSessions, maxRequestBytes, testTimeout, false)
+	return newMCPServeFixtureWithPlugins(t, issuer, maxSessions, maxRequestBytes, testTimeout, "")
 }
 
 // newMCPServeFixtureWithPlugins is the one that actually wires it. pluginCatalog
@@ -122,7 +123,7 @@ func newMCPServeFixtureWithPlugins(
 	maxSessions int,
 	maxRequestBytes int64,
 	testTimeout time.Duration,
-	pluginCatalog bool,
+	pluginCatalogPath string,
 ) *mcpServeFixture {
 	t.Helper()
 
@@ -153,7 +154,14 @@ func newMCPServeFixtureWithPlugins(
 	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(auditSink))
 	require.NoError(t, err)
 
-	tools, err := mcpServeTools(guard, testTimeout, recorder, nil, pluginCatalog)
+	// Through the step runMCPServe runs, with a command carrying the flag, so a
+	// catalog discarded on the way to the server is a failure here.
+	serveCmd := &cobra.Command{Use: "serve"}
+	addPluginCatalogFlag(serveCmd)
+	if pluginCatalogPath != "" {
+		require.NoError(t, serveCmd.Flags().Set(pluginCatalogFlag, pluginCatalogPath))
+	}
+	tools, err := mcpServeToolsFromFlags(serveCmd, guard, testTimeout, recorder, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
@@ -1655,20 +1663,12 @@ func TestMCPServeValidatesAPluginTaskGivenAPluginCatalog(t *testing.T) {
 	})
 
 	t.Run("with a catalog the plugin task is known", func(t *testing.T) {
-		cmd := &cobra.Command{Use: "serve"}
-		addPluginCatalogFlag(cmd)
-		require.NoError(t, cmd.Flags().Set(pluginCatalogFlag, catalog))
-
-		// The call runMCPServe makes, against the registry it serves from.
-		loaded, err := loadPluginCatalog(cmd)
-		require.NoError(t, err)
-		require.NotNil(t, loaded)
 		t.Cleanup(func() { v1.DefaultRegistry().Unregister(task) })
 
 		issuer := authtest.NewIssuer()
 		t.Cleanup(func() { _ = issuer.Close() })
 		fixture := newMCPServeFixtureWithPlugins(t, issuer, mcpServeDefaultMaxSessions,
-			mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout, loaded != nil)
+			mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout, catalog)
 		session := fixture.connect(t, fixture.goodToken("agent"))
 
 		require.NotContains(t, validateOverMCP(t, session), "no plugin task",
@@ -1691,4 +1691,32 @@ func TestMCPServeValidatesAPluginTaskGivenAPluginCatalog(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestMCPServeRefusesAnUnusablePluginCatalogBeforeServing: the step that builds
+// the served tools fails on a catalog it cannot read or that is over the file
+// bound, so nothing is bound without the plugins the operator named.
+func TestMCPServeRefusesAnUnusablePluginCatalogBeforeServing(t *testing.T) {
+	// Not parallel: it shares the process-wide registry with the test above.
+	oversize := filepath.Join(t.TempDir(), "big.json")
+	f, err := os.Create(oversize)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(maxPluginCatalogBytes+1))
+	require.NoError(t, f.Close())
+
+	for name, path := range map[string]string{
+		"missing":  filepath.Join(t.TempDir(), "absent.json"),
+		"oversize": oversize,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "serve"}
+			addPluginCatalogFlag(cmd)
+			require.NoError(t, cmd.Flags().Set(pluginCatalogFlag, path))
+
+			tools, err := mcpServeToolsFromFlags(cmd, newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
+			require.Error(t, err)
+			require.Nil(t, tools)
+			require.Contains(t, err.Error(), "--"+pluginCatalogFlag)
+		})
+	}
 }
