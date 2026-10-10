@@ -1439,8 +1439,9 @@ steps:
   not its expansion, by recording each expansion as the macro call it came from, the
   way `cel.bind(...)` and `xs.map(x, ...)` already write back.
   A function with no parameters (no `params:` key, or `params: {}`) is written back the
-  same way, `divider()` and not its body. A `body:` that is a map or list literal is
-  quoted (`body: '${{"a": 1}}'`), or YAML reads the braces as its own mapping.
+  same way, `divider()` and not its body. A `body:` holding `": "`, as a map
+  literal does, is quoted whole (`body: '${{"a": 1}}'`), or YAML reads it as a mapping key;
+  a list literal such as `${[1, 2]}` and any value without a colon need no quotes.
 - **Callable in every `must:`.** An input's, an output's, a record field's and a record
   type's rule calls a declared function the way an expression does: `must: isUuid(this)`,
   `this` an argument like any name, a body still seeing only its parameters. The compiler
