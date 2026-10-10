@@ -139,11 +139,18 @@ order does not reorder the card).
   stands for them, and they are in neither the step count nor the progress bar
   (`4/4 steps`, not `5 of 6`). Only an exact label is hidden: a step of yours
   that merely mentions one is a step.
-- **The debug lease is the debugger.** A timer row `debug lease <id> held by <who>` is
-  drawn as `◉ debugger <who> attached` while the run is live and `detached` once
-  the run is over or a row ended the lease. It is never a waiting step, so a completed
-  run no longer reads as waiting; the holder is cleaned and cut to 40
-  characters, and at most 5 leases are read.
+- **A debugger hold is the debugger.** `KIND_DEBUG_PAUSED` and `KIND_DEBUG_RESUMED` rows
+  (an older server sends the lease as a timer row `debug lease <id> held by <who>`, which
+  reads the same) are never steps. A hold still open reads `◉ debugger <who> attached`
+  while the run is live and `detached` once it is over. An ended one is a dim line,
+  `◉ debugger <who> paused 3s · resumed` (`· lease lapsed` when the lease ran out), newest
+  last; the card names at most 3 and says `and N earlier` for the rest. A run that never
+  had a debugger gets no row. A resume closes the newest open hold of its session, and
+  one with nothing to close is ignored. Holder and session are cleaned and cut to 40
+  characters, and at most 8 holds are kept (the newest; older ones are only counted).
+- **`×N` is a count of schedulings.** A step the run scheduled more than once shows a dim
+  `×3` after its name, from the engine's `occurrence`; a step that ran once shows nothing.
+  It is the number of times that label was scheduled in the read history, not a loop index.
 - **Plain labels.** The backticks the engine puts around ids are dropped from every label
   shown (`orders > charge`); the graph overlay still matches on the engine's own label.
 - **The debug story.** For a run whose timeline shows a debug lease, the card also reads
@@ -154,13 +161,14 @@ order does not reorder the card).
   waiting observations, and a failure stop's redacted sentence. Everything is cleaned and
   bounded (256 KiB document, 80-character address, 120-character notes); a read that fails
   (no session is left, no server) or prints something else adds no line. **What does not
-  exist:** the timeline has no row for a breakpoint hit or a resume, and the snapshot is
-  the current state with no history of earlier pauses, so a pause that was resumed cannot be
-  shown (`... · resumed`), and the inspected value at a pause (`amount=900`) is not in the
-  snapshot (`flow debug history --inspect` evaluates an expression the caller chooses, and
-  the pane does not run it). Those lines are not invented.
-- Loop iterations are not shown: a timeline row names no iteration (`orders[1]`), so
-  `orders > charge` is one row however many times it ran (`attempt N` counts retries).
+  exist:** the timeline names a hold and how it ended but not which step a breakpoint hit
+  or why, and the snapshot is the current state with no history of earlier stops, so a
+  past stop's location and the inspected value at a pause (`amount=900`) are not shown
+  (`flow debug history --inspect` evaluates an expression the caller chooses, and the pane
+  does not run it). Those lines are not invented.
+- Loop iterations are not numbered: a timeline row names no iteration (`orders[1]`), so
+  `orders > charge` is one row however many times it ran, with a dim `×N` for the number
+  of times it was scheduled (`attempt N` counts retries).
 
 ## Run a Flowfile
 

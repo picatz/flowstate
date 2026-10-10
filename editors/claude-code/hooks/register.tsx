@@ -8,7 +8,7 @@ import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReas
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
-import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { PaneNotes } from './panenotes'
 import { Poller, isLive } from './poll'
 import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
@@ -826,7 +826,7 @@ export const register: Register = (on, options) => {
                   <Box flexDirection="column">
                     <Text>
                       {'  '}
-                      <Text color={COLOR[s.status.tone]}>{s.status.symbol}</Text> {s.name}{' '}
+                      <Text color={COLOR[s.status.tone]}>{s.status.symbol}</Text> {s.name}{s.ran > 1 && <Text dimColor> ×{s.ran}</Text>}{' '}
                       <Text dimColor>
                         {s.status.word}
                         {stepElapsed(s, now) !== undefined ? `  ${duration(stepElapsed(s, now))}` : ''}
@@ -837,7 +837,7 @@ export const register: Register = (on, options) => {
                   </Box>
                 ))}
                 {more > 0 && <Text dimColor>  and {more} more; `flow timeline` with the id above lists them all</Text>}
-                {detail?.leases.map(l => <Text>{'  '}<Text color={COLOR.active}>{leaseLine(l, polling)}</Text></Text>)}
+                {pauseLines(detail, polling).map(l => <Text color={l.dim ? undefined : COLOR.active} dimColor={l.dim}>{'  '}{l.text}</Text>)}
                 {debugLines.map(l => <Text color={l.startsWith('◉') ? COLOR.active : undefined} dimColor={!l.startsWith('◉')}>{'  '}{l}</Text>)}
                 {hiddenNote(detail?.hidden ?? 0) !== '' &&<Text dimColor>  {hiddenNote(detail?.hidden ?? 0)}</Text>}
                 {detail?.truncated && <Text dimColor>  The server clipped this account; `flow timeline --help` says how to continue it (--run-id, --after-event-id).</Text>}

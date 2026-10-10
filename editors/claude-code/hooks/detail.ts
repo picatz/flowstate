@@ -1,5 +1,5 @@
 import { clean } from './runs'
-import { statusFor, statusOf } from './vocab'
+import { duration, statusFor, statusOf } from './vocab'
 import type { RunFacts, Status } from './vocab'
 
 /** A card lists this many steps; the rest is "and N more", one `flow timeline` away. */
@@ -18,17 +18,22 @@ export interface Step {
   durationMs?: number
   /** The failure sentence of the latest failed attempt, cleaned. */
   reason: string
+  /** Schedulings seen (the highest `occurrence` of its rows): a count of executions of this label, not a loop index. */
+  ran: number
   /** When the step's first row happened: a waiting step's elapsed time is counted from here, locally, between reads. */
   startedMs?: number
 }
 
-/** A debug session the timeline shows as a timer row `debug lease <id> held by <who>`: the debugger, never a step of the workflow. */
+/** A debugger hold: `KIND_DEBUG_PAUSED`/`KIND_DEBUG_RESUMED` rows, or on an older server the timer row `debug lease <id> held by <who>`; the debugger, never a step of the workflow. */
 export interface Lease {
   holder: string
+  session?: string
   startedMs?: number
   endedMs?: number
   /** No row has ended it yet. */
   open: boolean
+  /** How a closed hold ended: `released` before it expired, `lapsed` when it ran out; empty when no row says. */
+  endReason?: 'released' | 'lapsed'
 }
 
 /** Rows the engine adds for itself; they are not steps an author wrote, so they are counted and not listed. */
@@ -40,8 +45,10 @@ export const plainLabel = (label: string): string => label.replace(/`/g, '').rep
 /** The suffix the engine appends to a timer or compensation label. */
 const SUFFIX = /\s·\s(sleep|wait timeout|undo)$/
 const LEASE = /^debug lease\s+\S+\s+held by\s+(.*?)(?:\s+expires)?$/
-/** Leases kept; a card names the debugger once or twice, never a list. */
-const MAX_LEASES = 5
+/** Ended holds a card names; the rest are `and N earlier`. */
+const MAX_PAST_LINES = 3
+/** Holds kept, the newest; older ones are only counted (`earlierLeases`). */
+const MAX_LEASES = 8
 
 /**
  * One execution of a step as the timeline shows it, unfolded: a retry attempt
@@ -71,6 +78,8 @@ export interface Detail {
   hidden: number
   /** Debug sessions the rows show, as the debugger and not as steps. */
   leases: Lease[]
+  /** Holds read but not kept, the oldest. */
+  earlierLeases: number
   /** A run-level failure (a row with no step), cleaned. */
   runFailure: string
   /** The server clipped the account: there are more rows than were read. */
@@ -93,6 +102,10 @@ interface Raw {
   cut: boolean
   at?: number
   attempt: number
+  occurrence: number
+  session: string
+  actor: string
+  endReason: string
   failure: string
   /** The row's event id, to keep declared order; infinite when the row has none. */
   id: number
@@ -114,7 +127,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
   if (typeof doc !== 'object' || doc === null || !Array.isArray(doc.entries)) {
     // protojson leaves `entries` out of an empty account.
-    if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) return { detail: { executions: [], steps: [], hidden: 0, leases: [], runFailure: '', truncated: doc.truncated === true } }
+    if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) return { detail: { executions: [], steps: [], hidden: 0, leases: [], earlierLeases: 0, runFailure: '', truncated: doc.truncated === true } }
     return { error: 'flow printed something that is not a timeline' }
   }
 
@@ -128,6 +141,10 @@ export const parseTimeline = (stdout: string): Parsed => {
       cut: typeof e.step === 'string' && e.step.length >= MAX_LABEL,
       at: toMs(e.time),
       attempt: Number.isFinite(e.attempt) ? e.attempt : 0,
+      occurrence: Number.isSafeInteger(e.occurrence) && e.occurrence > 0 ? e.occurrence : 0,
+      session: plainLabel(clean(e.sessionId, 40)),
+      actor: plainLabel(clean(e.actor, 40)),
+      endReason: clean(e.endReason, 16),
       failure: clean(e.failure, MAX_REASON),
       id: typeof e.eventId === 'string' && /^\d{1,15}$/.test(e.eventId) ? Number(e.eventId) : Number.POSITIVE_INFINITY,
     })
@@ -138,10 +155,34 @@ export const parseTimeline = (stdout: string): Parsed => {
   const byName = new Map<string, Step & { began?: number }>()
   const executions: Execution[] = []
   const lastOf = new Map<string, Execution>()
-  const leases = new Map<string, Lease>()
+  const leases: Lease[] = []
+  const timers = new Map<string, Lease>()
+  let earlierLeases = 0
+  const addLease = (l: Lease) => {
+    leases.push(l)
+    if (leases.length > MAX_LEASES) {
+      leases.shift()
+      earlierLeases++
+    }
+  }
   const hiddenLabels = new Set<string>()
   let runFailure = ''
   for (const r of rows) {
+    if (r.kind === 'KIND_DEBUG_PAUSED') {
+      // A second pause for a session already held is a repeat, not another hold.
+      if (!leases.some(l => l.open && l.session === r.session)) addLease({ holder: r.actor || LEASE.exec(plainLabel(r.step))?.[1].slice(0, 40) || '', session: r.session, startedMs: r.at, open: true })
+      continue
+    }
+    if (r.kind === 'KIND_DEBUG_RESUMED') {
+      // It closes the newest open hold of its session; one with nothing to close (older rows were clipped) says nothing.
+      const held = leases.findLast(l => l.open && l.session === r.session)
+      if (held) {
+        held.open = false
+        held.endReason = r.endReason === 'lapsed' ? 'lapsed' : 'released'
+        if (r.at !== undefined) held.endedMs = r.at
+      }
+      continue
+    }
     if (r.kind === 'KIND_RUN_ENDED' || r.kind === 'KIND_RUN_CONTINUED' || r.step === '') {
       if (r.failure !== '' && r.step === '') runFailure = r.failure
       continue
@@ -165,13 +206,16 @@ export const parseTimeline = (stdout: string): Parsed => {
     const lease = LEASE.exec(plain)
     if (lease !== null) {
       // The debugger's own timer: it neither counts as a step nor reads as waiting.
-      if (leases.size < MAX_LEASES || leases.has(plain)) {
-        const held = leases.get(plain) ?? { holder: clean(lease[1], 40), startedMs: r.at, open: true }
-        if (known.kind !== 'waiting') {
-          held.open = false
-          if (r.at !== undefined) held.endedMs = r.at
-        }
-        leases.set(plain, held)
+      let held = timers.get(plain)
+      if (!held) {
+        held = { holder: clean(lease[1], 40), startedMs: r.at, open: true }
+        timers.set(plain, held)
+        addLease(held)
+      }
+      if (known.kind !== 'waiting') {
+        held.open = false
+        held.endReason = r.kind === 'KIND_TIMER_FIRED' ? 'lapsed' : 'released'
+        if (r.at !== undefined) held.endedMs = r.at
       }
       continue
     }
@@ -181,11 +225,12 @@ export const parseTimeline = (stdout: string): Parsed => {
     }
     let step = byName.get(r.step)
     if (!step) {
-      step = { name: plainLabel(r.full).slice(0, 60), status: known, attempts: 0, reason: '', began: r.at, startedMs: r.at }
+      step = { name: plainLabel(r.full).slice(0, 60), status: known, attempts: 0, ran: 0, reason: '', began: r.at, startedMs: r.at }
       byName.set(r.step, step)
     }
     step.status = known
     step.attempts = Math.max(step.attempts, r.attempt, 1)
+    step.ran = Math.max(step.ran, r.occurrence)
     if (r.failure !== '') step.reason = r.failure
     else if (known.kind === 'succeeded') step.reason = ''
     if (known.kind !== 'running' && known.kind !== 'waiting' && step.began !== undefined && r.at !== undefined) {
@@ -194,7 +239,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
 
   const steps = [...byName.values()].map(({ began: _began, ...step }) => step)
-  return { detail: { executions, steps, hidden: hiddenLabels.size, leases: [...leases.values()], runFailure, truncated: doc.truncated === true || doc.entries.length > MAX_ENTRIES } }
+  return { detail: { executions, steps, hidden: hiddenLabels.size, leases, earlierLeases, runFailure, truncated: doc.truncated === true || doc.entries.length > MAX_ENTRIES } }
 }
 
 /**
@@ -242,6 +287,28 @@ export const factsFor = (
 export const leaseLine = (lease: Lease, runLive: boolean): string => {
   const who = lease.holder === '' ? '' : ` ${lease.holder}`
   return `◉ debugger${who} ${runLive && lease.open ? 'attached' : 'detached'}`
+}
+
+/**
+ * The holds a card draws after the steps, oldest first. A hold still open is one `leaseLine`; ended
+ * ones are one dim line each, `◉ debugger htt paused 3s · resumed` (`· lease lapsed` when it ran out),
+ * the newest MAX_PAST_LINES after `and N earlier`. Nothing for a run that never had a debugger.
+ */
+export const pauseLines = (detail: Detail | undefined, runLive: boolean): { text: string; dim: boolean }[] => {
+  const all = detail?.leases ?? []
+  const past = all.filter(l => !l.open)
+  const out: { text: string; dim: boolean }[] = []
+  const earlier = (detail?.earlierLeases ?? 0) + Math.max(0, past.length - MAX_PAST_LINES)
+  if (earlier > 0) out.push({ text: `and ${earlier} earlier`, dim: true })
+  const shown = new Set(past.slice(-MAX_PAST_LINES))
+  for (const l of all) {
+    if (l.open) out.push({ text: leaseLine(l, runLive), dim: false })
+    else if (shown.has(l)) {
+      const took = duration(l.startedMs !== undefined && l.endedMs !== undefined ? l.endedMs - l.startedMs : undefined)
+      out.push({ text: `◉ debugger${l.holder === '' ? '' : ` ${l.holder}`} paused${took === '' ? '' : ` ${took}`} · ${l.endReason === 'lapsed' ? 'lease lapsed' : 'resumed'}`, dim: true })
+    }
+  }
+  return out
 }
 
 /** The dim note under the step list: how many engine-internal rows were left out. */
@@ -306,4 +373,4 @@ export const stepElapsed = (s: Step, now: number): number | undefined => {
 
 /** What changed in a read, for the poller's backoff: status, and each step's name, status and attempts. Times are left out, they always move. */
 export const fingerprint = (status: unknown, detail: Detail | undefined): string =>
-  `${clean(status, 40)}|${(detail?.steps ?? []).map(s => `${s.name}:${s.status.kind}:${s.attempts}`).join(',')}|${detail?.truncated === true}`
+  `${clean(status, 40)}|${(detail?.steps ?? []).map(s => `${s.name}:${s.status.kind}:${s.attempts}:${s.ran}`).join(',')}|${(detail?.leases ?? []).map(l => (l.open ? 'o' : (l.endReason ?? 'c'))).join(',')}:${detail?.earlierLeases ?? 0}|${detail?.truncated === true}`
