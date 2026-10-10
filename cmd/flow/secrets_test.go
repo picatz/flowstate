@@ -289,6 +289,41 @@ func TestSecretRegistryVaultRequiresExactlyOneAuthMethod(t *testing.T) {
 		require.ErrorContains(t, err, "not both")
 	})
 
+	t.Run("both a static token in the environment and a kubernetes role is an error", func(t *testing.T) {
+		root := newRootCommand()
+		local, _, err := root.Find([]string{"run", "local"})
+		require.NoError(t, err)
+
+		const token = "s.secret-env-token"
+		t.Setenv("FLOWSTATE_SECRET_VAULT_TOKEN", token)
+		require.NoError(t, local.Flags().Set("secret-vault-addr", "https://vault.example.com:8200"))
+		require.NoError(t, local.Flags().Set("secret-vault-kubernetes-role", "flowstate-worker"))
+
+		_, _, closeProviders, err := secretRegistry(local)
+		defer closeProviders()
+		require.ErrorContains(t, err, "not both")
+		require.ErrorContains(t, err, "FLOWSTATE_SECRET_VAULT_TOKEN")
+		require.ErrorContains(t, err, "--secret-vault-kubernetes-role")
+		require.NotContains(t, err.Error(), token)
+	})
+
+	t.Run("a token file wins over nothing and an env token beside a file still registers", func(t *testing.T) {
+		root := newRootCommand()
+		local, _, err := root.Find([]string{"run", "local"})
+		require.NoError(t, err)
+
+		tokenFile := filepath.Join(t.TempDir(), "token")
+		require.NoError(t, os.WriteFile(tokenFile, []byte("s.example-token\n"), 0o600))
+		t.Setenv("FLOWSTATE_SECRET_VAULT_TOKEN", "s.other")
+		require.NoError(t, local.Flags().Set("secret-vault-addr", "https://vault.example.com:8200"))
+		require.NoError(t, local.Flags().Set("secret-vault-token-file", tokenFile))
+
+		registry, _, closeProviders, err := secretRegistry(local)
+		require.NoError(t, err)
+		defer closeProviders()
+		require.Equal(t, []string{"vault"}, registry.Schemes())
+	})
+
 	t.Run("a static token from a file registers the scheme", func(t *testing.T) {
 		root := newRootCommand()
 		local, _, err := root.Find([]string{"run", "local"})

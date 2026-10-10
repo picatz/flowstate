@@ -69,6 +69,14 @@ func TestParseIdentitySigner(t *testing.T) {
 		})
 	}
 
+	t.Run("an env token beside a kubernetes role", func(t *testing.T) {
+		t.Setenv(secretVaultTokenEnv, "hvs.SECRET")
+
+		_, err := parseIdentitySigner("vault-transit://vault.example.com/key?kubernetes_role=r", nil)
+		require.ErrorContains(t, err, "not both")
+		require.NotContains(t, err.Error(), "hvs.SECRET")
+	})
+
 	t.Run("no way to authenticate", func(t *testing.T) {
 		t.Setenv(secretVaultTokenEnv, "")
 
