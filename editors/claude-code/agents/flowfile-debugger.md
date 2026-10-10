@@ -44,6 +44,8 @@ asking.
    `flow get` carry no resolved task inputs: say inputs are unavailable unless
    another authorized source supplies them. A step waiting on a retry backoff
    or a signal has not failed: say what it waits for.
+   Follow a live run in a bounded way (`flow get`, `flow timeline`, or
+   `timeout 60 flow watch <id>`), never an unbounded attached follow.
 3. **Replay locally.** Find the step in the Flowfile, then reproduce it:
    `flow run local <path> --input name=value` (or `--input-file`), or a test
    case with the same stubs via `flow test --run '<case>' <path>`. To step

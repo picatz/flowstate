@@ -49,6 +49,22 @@ test('server verbs are found, local verbs and reads never are', () => {
   }
 })
 
+test('a cd then detached or plain flow run with a long scratch path, address, and token file asks naming flow run and the address', () => {
+  const dir = '/private/tmp/claude-501/-Users-picat-Documents-GitHub-flowstate/0a1b2c3d-4e5f-6789-abcd-ef0123456789/scratchpad/demo'
+  for (const detach of ['', '--detach ']) {
+    const command = `cd ${dir} && flow run ${detach}workflow.yaml --address 127.0.0.1:9233 --token-file ${dir}/../private/token.txt`
+    const found = analyzeCommand(command)
+    expect(found.actions.map(a => a.verb)).toEqual(['flow run'])
+    expect(found.actions[0].address).toBe('127.0.0.1:9233')
+    expect(found.uncertain).toBe(false)
+    const reason = askReason(found, undefined)
+    expect(reason).toContain('flow run')
+    expect(reason).toContain('127.0.0.1:9233')
+  }
+  expect(verbs('flow run --detach x.flow.yaml')).toEqual(['flow run'])
+  expect(verbs('flow run local --detach x.flow.yaml')).toEqual([])
+})
+
 test('separators, env prefixes, wrappers, and quoted arguments are followed', () => {
   expect(verbs('flow validate x.yaml && flow run x.yaml; flow list')).toEqual(['flow run'])
   expect(verbs('cd d\nflow cancel wf-1 | tee out')).toEqual(['flow cancel'])
