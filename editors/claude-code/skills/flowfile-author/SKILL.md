@@ -18,6 +18,8 @@ specification. The grammar moves between editions, so do not write from memory.
    same from a shell.
 4. `flow fmt <path>` puts the file in canonical form and `flow lint <path>`
    suggests idiomatic spellings.
+   Before repeating an expression, constant, shape, or block, read the
+   `flowfile-compose` skill; `flow audit <path>` counts what a file repeats.
 5. Add a `*.test.yaml` beside it (see the `flowfile-test` skill) before calling
    the work done.
 
