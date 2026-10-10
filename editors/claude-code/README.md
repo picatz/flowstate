@@ -169,8 +169,32 @@ never passes `--live`, and contacts no server.
   `WAITS`) order nothing and are not drawn; no dependency order is derived. If the
   document states no nesting the rows stay in node order and a note says so. A node
   in a containment cycle is listed unnested, once, and the graph is marked partial.
-- **No status.** `○` means not run: the graph is what the file declares, and no
-  run is overlaid in this slice, so no row carries a success, failure or colour.
+- **No status without a run.** With no run open, `○` means not run: the graph is
+  what the file declares and no row carries a success, failure or colour.
+- **Live status from the open run.** When a run is open in the Runs detail card,
+  its name equals the graph's workflow name, and its timeline was read, matched
+  rows show `✓ build · succeeded` (symbol and word, `hooks/graphstatus.ts`, pure
+  and tested) and the headline says `status from run <short id>`. It reuses the
+  timeline the card already read and starts nothing. With no server (local-only
+  session) there is no open run, so every row keeps `○`. A run of a different
+  workflow gets no overlay and the section says so. `○` under an overlay means
+  "no status from that run", not "did not run".
+  - **Exact matches, top-level steps only.** Measured against a dev server: a
+    timeline step is the engine's label, the step ids in backticks joined by
+    ` > ` (`` `process` > `label` ``), with a ` · sleep` / ` · wait timeout` /
+    ` · undo` suffix on timers and compensations; the graph `address` is finer
+    (`process[0]/label`, `checks#1/check_quota`, `decision?0/deploy`). The label
+    names no iteration, branch or arm, and loop/parallel/switch containers have
+    no timeline row, so nested steps cannot be tied to an address and keep `○`
+    (counted in a note). A top-level step matches only when its address is its
+    bare id and a timeline step is exactly that id in backticks. Timers
+    (`settle · sleep`, `approval · wait timeout`), engine steps (`task capability
+    admission`, `run vars`) and compensations are not mapped and are reported as
+    "N timeline steps not in this graph's top-level steps".
+  - **Never a guess.** Two graph rows with one address get no status; several
+    timeline steps for one address aggregate (any failed is `✗`, else any running,
+    else any waiting, else all agreeing, else `? mixed`) and the count is said; a
+    clipped timeline adds a note that an unmarked step may not have been read.
 - **Bounded.** Output over 256 KiB is not parsed; at most 200 nodes and 400 edges
   are read, labels are cut to 60 characters and details to 80, and every string is
   cleaned of control, escape and bidi characters. A cut says so in a note.
@@ -182,7 +206,7 @@ never passes `--live`, and contacts no server.
   and the Flowfiles list are unaffected. The read, a failure included, is cached
   per file and modification time; `Refresh graph` drops it and reads again.
 - **Plain text is the same facts.** The drawn rows are the lines `graphLines`
-  returns, character for character.
+  returns (`liveLines` under an overlay), character for character.
 
 ## Output cards
 

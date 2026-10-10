@@ -21,6 +21,7 @@ import { COLOR, duration, middleTruncate, progressBar, runRow, statusFor, status
 import { MAX_SCAN, MAX_VALUE, RUN_TIMEOUT_MS, candidates, checkForm, cleanLines, confirmLines, parseInputs, resultOf, runArgv, submission, unknownResult, valueOf } from './form'
 import type { Field, Pair, Parsed as InputsParsed, Result } from './form'
 import { GRAPH_TIMEOUT_MS, graphArgv, graphHead, graphOf, rowText, workflowName } from './graph'
+import { liveHead, liveRowText, overlayNotes, overlayStatus, sameWorkflow } from './graphstatus'
 import type { Parsed as GraphParsed } from './graph'
 import { cardLines, cardsOf, parseOutputs } from './outputs'
 import type { Cards, Declared } from './outputs'
@@ -598,6 +599,12 @@ export const register: Register = (on, options) => {
         graphs.set(graphKey, steps)
       }
     }
+    // Live status on the graph: only from the run already open above (its timeline is already read; nothing new is started),
+    // and only when that run is of this graph's workflow. A different name is said, never overlaid.
+    const withRun = steps && 'graph' in steps && id !== '' && detail !== undefined ? steps.graph : undefined
+    const overlaid = withRun !== undefined && sameWorkflow(withRun, known?.name) ? overlayStatus(withRun, detail!.steps) : undefined
+    const otherRun = withRun !== undefined && overlaid === undefined
+    const fromRun = middleTruncate(id, 16)
     const fields: Field[] = schema && 'fields' in schema ? schema.fields : []
     const typed = await read($, runValues)
     const checked = checkForm(fields, typed)
@@ -1007,14 +1014,18 @@ export const register: Register = (on, options) => {
         {steps && 'unreadable' in steps && <Text dimColor>  Graph unavailable ({steps.unreadable}).</Text>}
         {steps && 'graph' in steps && (
           <Box flexDirection="column">
-            <Text>  {graphHead(steps.graph, file)}</Text>
+            <Text>  {overlaid ? liveHead(steps.graph, overlaid, file, fromRun) : graphHead(steps.graph, file)}</Text>
             {steps.graph.rows.length === 0 && <Text dimColor>  (no nodes)</Text>}
             {steps.graph.rows.map(r => (
-              <Text dimColor={r.kind === 'workflow'}>  {rowText(r)}</Text>
+              <Text dimColor={r.kind === 'workflow'}>  {overlaid ? liveRowText(r, overlaid) : rowText(r)}</Text>
             ))}
             {steps.graph.notes.map(n => (
               <Text dimColor>  note: {n}</Text>
             ))}
+            {overlaid && overlayNotes(overlaid, detail?.truncated === true).map(n => (
+              <Text dimColor>  note: {n}</Text>
+            ))}
+            {otherRun && <Text dimColor>  note: the open run {fromRun} is of {clean(known?.name) || 'a workflow with no name'}, not {steps.graph.workflow || 'this one'}: no status is shown</Text>}
           </Box>
         )}
         {steps !== undefined && (
