@@ -71,11 +71,13 @@ func resultShapeOf(node *v1.Node, index int) *resultShape {
 	// Only the nodes directly in the body: both drivers narrow an iteration to them
 	// (onlyBodyOutputs, bodyOutputs), so a step nested in a block is not a key. A
 	// `parallel:` has no output under its own id (its branches merge into the
-	// enclosing scope), so it is not one either.
+	// enclosing scope), so it is not one either, unless it tolerates failure: a failed
+	// one records its failure under its own id like any step, and stays open.
 	for _, n := range body {
-		if _, parallel := n.GetKind().(*v1.Node_Parallel); !parallel {
-			shape.steps[n.GetId()] = closedOutputs(n)
+		if _, parallel := n.GetKind().(*v1.Node_Parallel); parallel && !n.GetPolicy().GetContinueOnError() {
+			continue
 		}
+		shape.steps[n.GetId()] = closedOutputs(n)
 	}
 
 	return shape

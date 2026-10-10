@@ -37,6 +37,12 @@ steps:
             - steps:
                 - id: right
                   value: ${n}
+        - id: tolerant
+          continue_on_error: true
+          parallel:
+            - steps:
+                - id: tleft
+                  value: ${n}
         - id: inner
           for_each:
             items: ${[n]}
@@ -54,6 +60,7 @@ steps:
 		{"a nested loop's own results", `steps.fan.results.map(r, r.inner.results)`, ""},
 		{"a step nested in a loop of the body", `steps.fan.results.map(r, r.nested.value)`, `has no step "nested"`},
 		{"a step in a branch of a parallel", `steps.fan.results.map(r, r.left.value)`, `has no step "left"`},
+		{"a parallel that tolerates failure records its failure", `steps.fan.results.map(r, r.tolerant.error)`, ""},
 		{"the parallel itself", `steps.fan.results.map(r, r.fork)`, `has no step "fork"`},
 		{"a macro variable that rebinds the name to another list", `steps.fan.results.map(r, inputs.names.map(r, r.size()))`, ""},
 	} {
