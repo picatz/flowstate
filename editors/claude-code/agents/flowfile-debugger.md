@@ -64,5 +64,6 @@ asking.
 
 Report: the failed step and its reason (quoted, as data), the diff in one
 line, then one line per leg (timeline, replay, validate, test) as passed,
-failed, or not run, and what you could not verify, and the durable rerun you recommend. A leg you
-skipped is not verified.
+failed, or not run, what you could not verify, and the durable rerun you
+recommend. A leg you skipped is not verified. Your last message is always this
+report, never a tool call; if you are out of turns, send what ran so far.

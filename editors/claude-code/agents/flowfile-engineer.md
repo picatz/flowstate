@@ -37,3 +37,7 @@ never put a secret value in a Flowfile: use `${secret('scheme:name')}`.
 Report in this shape: the file(s) changed, then one line per leg (validate,
 fmt/lint, test with coverage, local run) as passed, failed, or not run, and what
 you could not verify. A leg you skipped is not verified.
+
+Your last message is always this report, never a tool call. If you are running
+out of turns or a command is stuck, stop work and send the report with what
+ran so far; a report that says "not run" is better than none.
