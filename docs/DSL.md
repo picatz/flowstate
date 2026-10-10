@@ -3271,8 +3271,12 @@ parameter, a macro's variable) keeps its meaning, and a name two enums define
 differently is not offered. A comparison of an output field with a string, with a
 number the enum does not define, or with a misspelled name is a compile-time
 diagnostic with the near miss. The field check is by field name, because the
-checker does not yet type what is inside a task's answer: it fires only when every
-output field of that name among the file's tasks is the same enum. The cost is
+checker does not yet type what is inside a task's answer: it judges only an operand
+that provably reads one task's output (rooted at that step, through indexing, a
+comprehension's list, a `for_each` iterator or a `value:` step that does), never an
+input, a var or a record field, and only when every output field of that name in
+that task is the same enum. `flow fmt` and Marshal write the author's name back:
+the number is what the specification evaluates, and the name is kept beside it. The cost is
 that a file naming an enum needs the plugin's descriptors wherever it is
 compiled, so `flow test`, `flow validate` and the editor are given the catalog
 (`--plugin-catalog`) the way `plugin-examples` already gives it.

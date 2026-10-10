@@ -50,13 +50,24 @@ type OutputEnums struct {
 	// A name some output field holds as anything else, or two enums share, is
 	// absent: the name alone cannot say what a read of it is.
 	fields map[string]protoreflect.EnumDescriptor
+
+	// limit is how many message types one task's outputs are followed through, and
+	// truncated records that some task's outputs held more. Names stay usable then,
+	// but what is known about a field is incomplete, so no field is judged.
+	limit     int
+	truncated bool
 }
 
 // OutputEnumsOf collects the enum values the outputs of wf's own task steps (and
 // their `undo:` tasks) can hold, from tasks' descriptors; nil means
 // [DefaultRegistry]. A `call:`'s callee is its own file and keeps its own names.
 func OutputEnumsOf(wf *Workflow, tasks *Registry) *OutputEnums {
+	return outputEnumsOf(wf, tasks, maxEnumWalkMessages)
+}
+
+func outputEnumsOf(wf *Workflow, tasks *Registry, limit int) *OutputEnums {
 	enums := &OutputEnums{
+		limit:     limit,
 		values:    map[string]OutputEnumValue{},
 		ambiguous: map[string]bool{},
 		fields:    map[string]protoreflect.EnumDescriptor{},
@@ -88,11 +99,16 @@ func OutputEnumsOf(wf *Workflow, tasks *Registry) *OutputEnums {
 }
 
 func (e *OutputEnums) addMessage(message protoreflect.MessageDescriptor, mixed map[string]bool, visited map[protoreflect.FullName]bool) {
-	if visited[message.FullName()] || len(visited) >= maxEnumWalkMessages ||
+	if visited[message.FullName()] ||
 		slices.Contains(dynamicValueMessages, message.FullName()) || message.ParentFile().Package() == "google.protobuf" {
 		// A message that holds whatever an expression produced, and a well-known
 		// type, say nothing about the enums a task answers with (`NULL_VALUE` is
 		// how a null is spelled inside them).
+		return
+	}
+	if len(visited) >= e.limit {
+		e.truncated = true
+
 		return
 	}
 	visited[message.FullName()] = true
@@ -134,6 +150,10 @@ func (e *OutputEnums) addEnum(enum protoreflect.EnumDescriptor) {
 	for i := range values.Len() {
 		value := values.Get(i)
 		name := string(value.Name())
+		if IsDeclarationRoot(name) || name == NowIdentifier {
+			// The language's own names are never an enum value's.
+			continue
+		}
 		entry := OutputEnumValue{Name: name, Number: int64(value.Number()), Enum: enum}
 
 		if prior, ok := e.values[name]; ok && (prior.Number != entry.Number || prior.Enum.FullName() != enum.FullName()) {
@@ -171,7 +191,7 @@ func (e *OutputEnums) Names() []string {
 // FieldEnum is the enum every output field called field holds, false when no
 // output has one of that name or the name is not one enum throughout.
 func (e *OutputEnums) FieldEnum(field string) (protoreflect.EnumDescriptor, bool) {
-	if e == nil {
+	if e == nil || e.truncated {
 		return nil, false
 	}
 	enum, ok := e.fields[field]

@@ -13,7 +13,7 @@ carries no confidence, or one below the threshold, goes to a person. Swapping in
 a provider that reports none therefore queues every ticket for review instead of
 paging on a number that means nothing.
 
-`flow test examples/plugins/anthropic/` runs the three cases with no plugin
+`flow test --plugin-catalog examples/plugins/plugins.lock.json examples/plugins/anthropic/` runs the three cases with no plugin
 process, no model and no network: a confident urgent ticket pages, an urgent one
 below the threshold is queued, and an urgent one with no confidence is queued
 however it is answered.

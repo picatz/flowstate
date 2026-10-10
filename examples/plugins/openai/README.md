@@ -15,7 +15,7 @@ otherwise the ticket is `unassigned`. An answer with no probability, from any
 provider, therefore queues the ticket for a person instead of paging on a
 number that means nothing.
 
-`flow test examples/plugins/openai/` runs the three cases with no plugin
+`flow test --plugin-catalog examples/plugins/plugins.lock.json examples/plugins/openai/` runs the three cases with no plugin
 process, no model and no network: a probably urgent ticket pages, an urgent one
 below the threshold is queued, and an answer with no probability is queued
 however it is phrased.

@@ -15,7 +15,13 @@ import (
 // same descriptors the compiler resolves the names against, so an offered name
 // is one the file compiles with. Nothing when the document names no task with an
 // enum in its outputs.
-func enumValueCandidates(doc *document, pos lsp.Position) []celcomplete.Candidate {
+//
+// Read from [v1.DefaultRegistry] and not the document's own: the compiler lowers a
+// name against the default registry (as every other check of a file does), so a
+// name only an injected registry holds would be offered and then refused. A name
+// something else already holds here (a local, a root, `now`) is not offered; taken
+// is the names this position binds.
+func enumValueCandidates(doc *document, pos lsp.Position, taken map[string]bool) []celcomplete.Candidate {
 	wf := compiledWorkflow(doc)
 	if wf == nil {
 		// Completing inside a fence that does not parse yet: the declarations are
@@ -23,10 +29,13 @@ func enumValueCandidates(doc *document, pos lsp.Position) []celcomplete.Candidat
 		wf = compiledText(doc, withoutFenceAt(doc, pos))
 	}
 
-	enums := v1.OutputEnumsOf(wf, doc.tasks)
+	enums := v1.OutputEnumsOf(wf, nil)
 	names := enums.Names()
 	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {
+		if taken[name] || v1.IsDeclarationRoot(name) || name == v1.NowIdentifier {
+			continue
+		}
 		value, _ := enums.Value(name)
 		out = append(out, celcomplete.Candidate{
 			Name:   name,
