@@ -54,9 +54,10 @@ probability and never invents one:
 A gate such as `answer.calibration == CALIBRATION_MODEL_PROBABILITY &&
 answer.confidence >= 0.9` therefore denies on this provider, which is the
 point: swapping providers cannot silently weaken it. The output encoding spells
-an enum as its number (`2` is `CALIBRATION_SELF_REPORTED`, `3` is
-`CALIBRATION_NONE`) and an absent `confidence` as `0`, so test `calibration`
-before trusting a confidence; the example does.
+an enum as its number and an absent `confidence` as `0`, so test `calibration`
+before trusting a confidence; the example does. A Flowfile writes the enum by
+name (`calibration == CALIBRATION_SELF_REPORTED`) and the compiler lowers it to
+the number, given the plugin's catalog.
 
 ## Failure handling
 

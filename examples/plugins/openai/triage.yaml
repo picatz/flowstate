@@ -63,11 +63,11 @@ steps:
   # page anyone by being sure, and swapping one in queues every ticket for a
   # person instead of silently passing.
   - id: confident_and_urgent
-    value: ${steps.urgent.value.calibration == 1 && steps.urgent.value.distribution["true"] >= vars.page_threshold}
+    value: ${steps.urgent.value.calibration == CALIBRATION_MODEL_PROBABILITY && steps.urgent.value.distribution["true"] >= vars.page_threshold}
   # The same discipline for the team: an answer the model was not sure of is
   # not assigned on its say-so.
   - id: team
-    value: '${(steps.category.value.calibration == 1 && steps.category.value.confidence >= vars.team_threshold) ? steps.category.value.choice : "unassigned"}'
+    value: '${(steps.category.value.calibration == CALIBRATION_MODEL_PROBABILITY && steps.category.value.confidence >= vars.team_threshold) ? steps.category.value.choice : "unassigned"}'
   - id: page
     if: ${steps.confident_and_urgent.value}
     log:

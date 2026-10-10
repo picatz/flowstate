@@ -56,14 +56,16 @@ steps:
     value: ${steps.decide.answers.filter(a, a.name == "urgent")[0]}
   - id: category
     value: ${steps.decide.answers.filter(a, a.name == "category")[0].choice}
-  # The gate. Calibration 2 is CALIBRATION_SELF_REPORTED, the only value that
-  # carries a number from this provider; 3 is CALIBRATION_NONE, where the
-  # confidence field reads 0 because there is none. A model that did not report
+  # The gate. CALIBRATION_SELF_REPORTED is the only value that carries a
+  # number from this provider; under CALIBRATION_NONE the confidence field reads
+  # 0 because there is none. A model that did not report
   # a confidence therefore cannot page anyone by being confident, and swapping
   # in a provider that reports none sends every ticket to a person instead of
   # silently passing.
   - id: confident_and_urgent
-    value: ${steps.urgent.value.predicate && steps.urgent.value.calibration == 2 && steps.urgent.value.confidence >= vars.page_threshold}
+    value: |-
+      ${steps.urgent.value.predicate && steps.urgent.value.calibration == CALIBRATION_SELF_REPORTED &&
+      steps.urgent.value.confidence >= vars.page_threshold}
   - id: page
     if: ${steps.confident_and_urgent.value}
     log:

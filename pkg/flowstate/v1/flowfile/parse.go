@@ -1051,6 +1051,12 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// from here on, before anything reads a declaration's type.
 	c.lowerScalarTypes()
 
+	// An enum value written by name becomes its number, so the specification
+	// holds what a run stores and neither driver learns a name (enumnames.go).
+	if len(c.diags) == 0 {
+		lowerEnumNames(workflow)
+	}
+
 	// A declaration typed by a record with a `sensitive:` field is sensitive whole.
 	v1.DeriveSensitive(workflow)
 

@@ -61,10 +61,10 @@ last of those values; it is then dropped.
 A Flowfile that needs it can derive an expected position from `distribution`
 and the question's level order.
 
-The output encoding spells an enum as its number (`1` is
-`CALIBRATION_MODEL_PROBABILITY`, `3` is `CALIBRATION_NONE`) and an absent
-`confidence` as `0`, so test `calibration` before trusting a number; the example
-does.
+The output encoding spells an enum as its number and an absent `confidence` as
+`0`, so test `calibration` before trusting a number; the example does. A Flowfile
+writes the enum by name (`calibration == CALIBRATION_MODEL_PROBABILITY`) and the
+compiler lowers it to the number, given the plugin's catalog.
 
 ## Failure handling
 

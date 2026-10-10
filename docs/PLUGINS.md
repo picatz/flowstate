@@ -318,6 +318,21 @@ not the task set it, so reading one the task left empty gives that field's zero
 value rather than failing with "no such key"; the exception is a singular
 message, which is `null` when unset.
 
+An `enum` field is stored as its number, and a workflow reads it by name. Every
+value of an enum that a step's task can output is a name in that file's
+expressions: with `enum Verdict { VERDICT_UNSPECIFIED = 0; VERDICT_SAFE = 1; }`
+in the output, `${steps.scan.verdict == VERDICT_SAFE}` compiles to
+`== 1` before the specification exists, so both drivers evaluate the number and
+the name needs no descriptor at run time. The names come from the same
+descriptors as everything above, so they cannot drift from the schema, and the
+compiler refuses what the schema does not allow: comparing the field with a
+string (`verdict == "safe"`, never true), with a number the enum does not define,
+or with a misspelled name, which is reported with the near miss. A name the file
+binds itself (a step `vars:` entry, a loop's iterator) keeps that meaning, and a
+name two enums among the file's tasks define differently is not offered. This
+needs the plugin's descriptors, so a command that checks or tests a file without
+launching the plugins is given the catalog: `--plugin-catalog`.
+
 Two kinds are not converted. A well-known type — `google.protobuf.Timestamp`,
 `Duration` and their siblings — is refused, because what one means on the
 workflow side is a schema-wide question rather than this SDK's to answer

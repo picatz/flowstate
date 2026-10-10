@@ -378,6 +378,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// same mistake twice in two voices.
 	types := newTypeTable(wf)
 	ds = append(ds, checkExpressionTypes(wf, types)...)
+	ds = append(ds, enumComparisonErrors(wf)...)
 	ds = append(ds, checkFunctionBodies(wf)...)
 
 	// Two sibling steps whose `if:` conditions look like they were meant to be
@@ -1802,6 +1803,8 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 			ref, v1.StepsRoot)
 		if suggestion, ok := nearest.Name(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
 			message += fmt.Sprintf("; did you mean `%s.%s`?", v1.StepsRoot, suggestion)
+		} else {
+			message += unknownEnumHint(wf, ref)
 		}
 		d := Diagnostic{
 			Step: stepID, Field: inputName,

@@ -99,7 +99,7 @@ check:
 	$(MAKE) test-ordering
 	go run ./cmd/flow fix --check examples/
 	go run ./cmd/flow lint --strict examples/
-	go run ./cmd/flow test --coverage-required examples/
+	go run ./cmd/flow test --coverage-required --plugin-catalog examples/plugins/plugins.lock.json examples/
 	go run ./cmd/flow breaking --against origin/main examples/
 	$(MAKE) fuzz-smoke
 	$(MAKE) appearance

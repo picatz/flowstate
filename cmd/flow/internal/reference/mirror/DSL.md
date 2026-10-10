@@ -3258,6 +3258,25 @@ uninstalled plugin is diagnosed as an installation question rather than a spelli
 one. The `plugins:` version header, the submit-time catalog check, and the language
 server's two-level completion tree have since landed.
 
+*Enum values keep their names at the author's edge.* A plugin's output stores a
+Protobuf enum as its number, and the schema names it (`CALIBRATION_SELF_REPORTED`
+is `2`), so an author used to write the number and lose the name. Every enum value
+the outputs of a file's own task steps can hold is now a name in that file's
+expressions, taken from the same descriptors the registry already holds for typing
+and completion, and the compiler replaces it with the number before the
+specification exists. That is the whole of the run-time story: the drivers evaluate
+`== 2`, as before, so they agree by construction and a worker needs no descriptor.
+A name the author bound (a step var, a loop's iterator or state, a function's
+parameter, a macro's variable) keeps its meaning, and a name two enums define
+differently is not offered. A comparison of an output field with a string, with a
+number the enum does not define, or with a misspelled name is a compile-time
+diagnostic with the near miss. The field check is by field name, because the
+checker does not yet type what is inside a task's answer: it fires only when every
+output field of that name among the file's tasks is the same enum. The cost is
+that a file naming an enum needs the plugin's descriptors wherever it is
+compiled, so `flow test`, `flow validate` and the editor are given the catalog
+(`--plugin-catalog`) the way `plugin-examples` already gives it.
+
 ### `exec:` is built-in, denied by default
 
 Competitiveness with CI systems needs process execution; the admission test's second

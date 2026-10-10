@@ -584,6 +584,7 @@ func referenceScope(doc *document, pos lsp.Position, clock bool, current *outlin
 	}
 
 	scope.locals = append(scope.locals, declaredFunctionCandidates(doc, pos)...)
+	scope.locals = append(scope.locals, enumValueCandidates(doc, pos)...)
 	scope.documentLevel = inDocumentExpression(doc, pos)
 
 	if clock {
