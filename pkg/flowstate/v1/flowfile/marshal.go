@@ -32,6 +32,10 @@ import (
 // string containing ${, which would be read as an expression, and an expression
 // whose source used a macro, which cel-go cannot write back.
 func Marshal(wf *v1.Workflow) ([]byte, error) {
+	if err := checkSourceForms(wf); err != nil {
+		return nil, err
+	}
+
 	// A credential bound once under `plugins:` is written once: the steps that
 	// carry the binding's expansion come out without it, and reading the file back
 	// expands them again. Done on a copy, because the caller's workflow is theirs,
