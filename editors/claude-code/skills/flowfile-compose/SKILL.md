@@ -25,8 +25,8 @@ callable in any expression, `must:`, and `allow:`.
 
 ## A module
 
-A file with no `steps:` that declares only `types:`, `functions:`, and
-`errors:` is a module: validated, formatted, and linted, never run. Importers
+A file with no `steps:` that declares only `types:`, `functions:`,
+`errors:`, and optionally `use:` is a module: validated, formatted, and linted, never run. Importers
 name its declarations through the alias, never bare. Quote a whole value that
 holds `: ` (a map literal does); `flow fmt` keeps the quotes only where YAML
 needs them.
