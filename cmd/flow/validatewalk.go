@@ -191,7 +191,9 @@ func collectValidateTargets(paths []string, stdin io.Reader) ([]validateTarget, 
 // directory-walk read simply drops the one file that would not classify as a
 // Flowfile at that size anyway, and continues sweeping the rest.
 func readFileBounded(p string) (data []byte, truncated bool, err error) {
-	f, err := os.Open(p)
+	// Refuses a named pipe or other non-regular file instead of blocking in
+	// open; the walk treats that like any other unreadable file.
+	f, err := flowfile.OpenRegular(p)
 	if err != nil {
 		return nil, false, err
 	}
