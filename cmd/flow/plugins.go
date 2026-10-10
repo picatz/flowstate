@@ -505,6 +505,18 @@ func splitSearchPath(value string) []string {
 // be silently skipped.
 func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
 
+// measure hashes the plugin binaries these flags discover, launching none of
+// them; see [plugin.MeasureDistributions].
+func (f pluginFlags) measure(logger *slog.Logger) (map[string]string, error) {
+	return plugin.MeasureDistributions(plugin.Config{
+		SearchPath:              f.dirs,
+		AllowInsecureSearchPath: f.allowInsecureDirs,
+		Only:                    f.only,
+		HostVersion:             version,
+		Logger:                  logger,
+	})
+}
+
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
 	// Refused rather than ignored: an operator who wrote this meant to change
@@ -697,12 +709,6 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if pinReport.active() {
-		// Measuring is the point, so nothing is pinned for this launch: a
-		// pinned host refuses the very binary whose drift is being asked about.
-		flags.pinnedDigests = nil
-	}
-
 	if !flags.configured() {
 		if pinReport.active() {
 			// An empty answer here would pass an empty pins file, or overwrite a
@@ -724,6 +730,17 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if pinReport.active() {
+		// Hashed, never launched: a binary whose drift is being asked about
+		// must not be handed the deployment's environment and egress to answer.
+		measured, err := flags.measure(pluginLogger(cmd, surface))
+		if err != nil {
+			return err
+		}
+
+		return pinReport.write(surface, measured)
+	}
+
 	host, err := flags.host(pluginLogger(cmd, surface))
 	if err != nil {
 		return err
@@ -735,10 +752,6 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 	}
 
 	catalog := host.Catalog()
-
-	if pinReport.active() {
-		return pinReport.write(surface, catalog)
-	}
 
 	if format.Machine() {
 		return writeJSON(surface, format, catalog)

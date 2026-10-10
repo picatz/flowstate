@@ -12,19 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
 func digestOf(b string) string { return "sha256:" + strings.Repeat(b, 32) }
-
-func catalogOf(pairs ...string) *v1.PluginCatalog {
-	catalog := &v1.PluginCatalog{}
-	for i := 0; i+1 < len(pairs); i += 2 {
-		catalog.Plugins = append(catalog.Plugins, &v1.PluginDescription{Name: pairs[i], DistributionDigest: pairs[i+1]})
-	}
-
-	return catalog
-}
 
 func writePins(t *testing.T, body string) string {
 	t.Helper()
@@ -40,8 +31,7 @@ func writePins(t *testing.T, body string) string {
 func TestEmittedPluginPinsRoundTripThroughThePinLoader(t *testing.T) {
 	t.Parallel()
 
-	measured, err := measuredPluginDigests(catalogOf("github", digestOf("ab"), "slack", digestOf("cd")))
-	require.NoError(t, err)
+	measured := map[string]string{"github": digestOf("ab"), "slack": digestOf("cd")}
 
 	var out bytes.Buffer
 	require.NoError(t, writePluginPins(ui.Plain(&out, &bytes.Buffer{}), measured))
@@ -63,13 +53,6 @@ func TestAnEmptyEmitIsStillALoadablePinsFile(t *testing.T) {
 	loaded, err := pluginPinsOf(writePins(t, out.String()), nil)
 	require.NoError(t, err)
 	assert.Empty(t, loaded)
-}
-
-func TestAPluginWithNoMeasuredDigestIsNotSilentlyOmitted(t *testing.T) {
-	t.Parallel()
-
-	_, err := measuredPluginDigests(catalogOf("bare", ""))
-	require.ErrorContains(t, err, "bare")
 }
 
 func TestPluginPinDriftInEachDirection(t *testing.T) {
@@ -158,10 +141,12 @@ func TestPluginPinReportFlagsConflict(t *testing.T) {
 	require.ErrorContains(t, err, "pass one")
 	assert.True(t, isUsageError(err))
 
-	cmd, _ = pinReportCommand(t, "--plugin-dir", dir, "--emit-pins", "-o", "json")
-	err = runPlugins(cmd, nil)
-	require.ErrorContains(t, err, "no --output format")
-	assert.True(t, isUsageError(err))
+	for _, format := range []string{"json", "text"} {
+		cmd, _ = pinReportCommand(t, "--plugin-dir", dir, "--emit-pins", "-o", format)
+		err = runPlugins(cmd, nil)
+		require.ErrorContains(t, err, "no --output format", format)
+		assert.True(t, isUsageError(err))
+	}
 }
 
 func TestPluginPinReportRefusesPinsAppliedToTheMeasurement(t *testing.T) {
@@ -190,4 +175,47 @@ func TestPluginPinReportNeedsAPluginDirectory(t *testing.T) {
 		require.ErrorContains(t, err, "need a plugin directory")
 		assert.True(t, isUsageError(err))
 	}
+}
+
+func TestPluginsDiffPinsRefusesAMalformedPinsFile(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	for name, body := range map[string]string{
+		"bad name":   "pins:\n  GitHub: " + digestOf("ab") + "\n",
+		"bad digest": "pins:\n  github: sha256:tooshort\n",
+	} {
+		cmd, _ := pinReportCommand(t, "--plugin-dir", dir, "--diff-pins", writePins(t, body))
+		err := runPlugins(cmd, nil)
+		require.ErrorIs(t, err, plugin.ErrDigestPin, name)
+	}
+}
+
+// TestPluginPinReportMeasuresWithoutLaunching uses a file that cannot run: were
+// the plugin launched the command would fail, so success shows it was only
+// hashed, and a rewrite of it shows as drift.
+func TestPluginPinReportMeasuresWithoutLaunching(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	require.NoError(t, os.Chmod(dir, 0o700))
+
+	bin := filepath.Join(dir, plugin.BinaryPrefix+"alpha")
+	require.NoError(t, os.WriteFile(bin, []byte("not a program v1"), 0o700))
+
+	cmd, out := pinReportCommand(t, "--plugin-dir", dir, "--emit-pins")
+	require.NoError(t, runPlugins(cmd, nil))
+	pins := writePins(t, out.String())
+
+	cmd, out = pinReportCommand(t, "--plugin-dir", dir, "--diff-pins", pins)
+	require.NoError(t, runPlugins(cmd, nil))
+	assert.Contains(t, out.String(), "plugin pins match: 1")
+
+	require.NoError(t, os.WriteFile(bin, []byte("swapped"), 0o700))
+
+	cmd, out = pinReportCommand(t, "--plugin-dir", dir, "--diff-pins", pins)
+	err := runPlugins(cmd, nil)
+	require.ErrorContains(t, err, "1 changed")
+	assert.Contains(t, out.String(), "changed  alpha")
 }

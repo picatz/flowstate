@@ -11,7 +11,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
 
@@ -48,13 +47,13 @@ func (r pluginPinReport) active() bool { return r.emit || r.diffFile != "" }
 func addPluginPinReportFlags(cmd *cobra.Command) {
 	cmd.Flags().Bool("emit-pins", false,
 		"write a pins file (`pins: {name: sha256:hex}`, usable as --plugin-pins) for the plugins "+
-			"this directory holds, instead of listing them. The digests are what this launch "+
-			"measured, so emitting from a directory nobody has vetted pins whatever is in it "+
+			"this directory holds, instead of listing them. Nothing is launched: the digests are "+
+			"what hashing each binary measured, so emitting from a directory nobody has vetted pins whatever is in it "+
 			"(trust on first use): review the file before adopting it")
 	cmd.Flags().String("diff-pins", "",
 		"compare the digests this directory measures with a pins file and report each plugin "+
 			"added (unpinned), changed or missing, exiting 1 on any drift, instead of listing "+
-			"plugins. The plugins launch unpinned so a swapped binary is reported rather than refused")
+			"plugins. Nothing is launched, so a swapped binary is reported without being run")
 }
 
 // pluginPinReportOf reads the two flags off cmd and refuses a combination that
@@ -71,7 +70,7 @@ func pluginPinReportOf(cmd *cobra.Command, format OutputFormat) (pluginPinReport
 	case report.active() && (cmd.Flags().Changed("plugin-pins") || cmd.Flags().Changed("plugin-pin")):
 		return report, newUsageError(errors.New(
 			"--emit-pins and --diff-pins measure with no pins applied; drop --plugin-pins/--plugin-pin, or use --diff-pins FILE to compare against a pins file"))
-	case report.active() && format.Machine():
+	case report.active() && (format.Machine() || cmd.Flags().Changed("output")):
 		return report, newUsageError(errors.New(
 			"--emit-pins and --diff-pins write their own document and take no --output format"))
 	}
@@ -80,12 +79,7 @@ func pluginPinReportOf(cmd *cobra.Command, format OutputFormat) (pluginPinReport
 }
 
 // write answers the request from the measured catalog.
-func (r pluginPinReport) write(surface *ui.UI, catalog *v1.PluginCatalog) error {
-	measured, err := measuredPluginDigests(catalog)
-	if err != nil {
-		return err
-	}
-
+func (r pluginPinReport) write(surface *ui.UI, measured map[string]string) error {
 	if r.emit {
 		return writePluginPins(surface, measured)
 	}
@@ -95,32 +89,23 @@ func (r pluginPinReport) write(surface *ui.UI, catalog *v1.PluginCatalog) error 
 		return err
 	}
 
+	// The same check a pin gets when a host is built, so a malformed name or
+	// digest is refused the way --plugin-pins refuses it rather than reported
+	// as ordinary drift.
+	if err := plugin.ValidatePins(cfg.Pins); err != nil {
+		return fmt.Errorf("plugin pins %s: %w", r.diffFile, err)
+	}
+
 	drift := diffPluginPins(cfg.Pins, measured)
 	drift.write(surface)
 
 	return drift.err()
 }
 
-// measuredPluginDigests maps each discovered plugin to its distribution digest.
-// A plugin whose descriptor carries none is an error rather than an omission: a
-// pins file that silently lacked it would read as complete.
-func measuredPluginDigests(catalog *v1.PluginCatalog) (map[string]string, error) {
-	out := make(map[string]string, len(catalog.GetPlugins()))
-	for _, p := range catalog.GetPlugins() {
-		if p.GetDistributionDigest() == "" {
-			return nil, fmt.Errorf("plugin %q reported no distribution digest, so there is nothing to pin or compare", p.GetName())
-		}
-
-		out[p.GetName()] = p.GetDistributionDigest()
-	}
-
-	return out, nil
-}
-
 // writePluginPins renders measured as a [plugin.PinsConfig] document, the same
 // shape --plugin-pins reads.
 func writePluginPins(surface *ui.UI, measured map[string]string) error {
-	fmt.Fprint(surface.Out, "# Measured from the plugins this launch found, not vetted: pinning an\n"+
+	fmt.Fprint(surface.Out, "# Measured from the plugins found (none launched), not vetted: pinning an\n"+
 		"# unvetted directory is trust on first use. Review before adopting.\n")
 
 	if len(measured) == 0 {
@@ -184,7 +169,7 @@ func (d pluginPinDrift) write(surface *ui.UI) {
 		fmt.Fprintf(out, "changed  %s\n  pinned:   %s\n  measured: %s\n", c.name, c.pinned, c.measured)
 	}
 	for _, name := range d.added {
-		fmt.Fprintf(out, "added    %s (found but not pinned; it launches unpinned)\n", name)
+		fmt.Fprintf(out, "added    %s (found but not pinned; it would launch unpinned)\n", name)
 	}
 	for _, name := range d.missing {
 		fmt.Fprintf(out, "missing  %s (pinned but not found; a worker restricted to it would refuse to start)\n", name)

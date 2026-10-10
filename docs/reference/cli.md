@@ -1550,8 +1550,8 @@ flow plugins -o json \
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
-| `--diff-pins <string>` | `string` | — | — | compare the digests this directory measures with a pins file and report each plugin added (unpinned), changed or missing, exiting 1 on any drift, instead of listing plugins. The plugins launch unpinned so a swapped binary is reported rather than refused |
-| `--emit-pins` | `bool` | `false` | — | write a pins file (`pins: {name: sha256:hex}`, usable as --plugin-pins) for the plugins this directory holds, instead of listing them. The digests are what this launch measured, so emitting from a directory nobody has vetted pins whatever is in it (trust on first use): review the file before adopting it |
+| `--diff-pins <string>` | `string` | — | — | compare the digests this directory measures with a pins file and report each plugin added (unpinned), changed or missing, exiting 1 on any drift, instead of listing plugins. Nothing is launched, so a swapped binary is reported without being run |
+| `--emit-pins` | `bool` | `false` | — | write a pins file (`pins: {name: sha256:hex}`, usable as --plugin-pins) for the plugins this directory holds, instead of listing them. Nothing is launched: the digests are what hashing each binary measured, so emitting from a directory nobody has vetted pins whatever is in it (trust on first use): review the file before adopting it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
