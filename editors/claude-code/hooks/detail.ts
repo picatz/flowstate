@@ -283,6 +283,20 @@ export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Det
     steps: detail.steps.map(s => (open(s.name, s.status) ? { ...s, status: released } : s)),
   }
 }
+
+/**
+ * The step a delivered signal released, and its wait timer (`approve · wait timeout`), read as succeeded:
+ * the server took the signal, so the row that still says waiting is a read from before it. Only waiting
+ * rows of that step change; anything else, and a run the server reads differently later, is left to it.
+ */
+export const closeWait = (detail: Detail, step: string): Detail => {
+  const name = plainLabel(step)
+  if (name === '') return detail
+  const base = (label: string) => label.split(' · ')[0]
+  const mine = (label: string) => base(label) === name || base(label).endsWith(`> ${name}`)
+  return { ...detail, steps: detail.steps.map(s => (s.status.kind === 'waiting' && mine(s.name) ? { ...s, status: statusFor('succeeded') } : s)) }
+}
+
 /** A step's time as the row shows it: its recorded duration, else for a running or waiting step the time since it began, counted against `now` so it moves between reads. */
 export const stepElapsed = (s: Step, now: number): number | undefined => {
   if (s.durationMs !== undefined) return s.durationMs

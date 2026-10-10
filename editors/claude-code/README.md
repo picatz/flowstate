@@ -50,8 +50,10 @@ because `flow timeline` names only the waiting step, never the signal name that
 run, or a `flow get` that fails or prints something else shows none.
 
 A gate offers one button, `Send signal <name>`. Pressing it only asks: the pane
-shows `Send signal "<name>" to run <id> on server <address>? Nothing is sent
-until you confirm.` with `Confirm: send <name>` and `Cancel`. Only Confirm runs
+shows two short lines, `Send <name> to <run name> (<short id>) on <address>?` and
+`Nothing is sent until you confirm.`, with `Confirm: send <name>` and `Cancel` as
+spaced buttons. The full id stays in the argv, not in the question; the server's own
+decision on who may act is shown only if it refuses. Only Confirm runs
 `flow signal`, once, as one argv with no shell:
 `flow signal [--address=<address>] -- <workflow-id> <signal-name>`. The address
 is `FLOWSTATE_ADDRESS` when set (and then passed explicitly, so the argv targets
@@ -85,7 +87,13 @@ timeline before sending again. Who may act is decided by the server, from the
 workflow's `signals:` policy and the caller's credentials; the mod enforces
 nothing of its own and shows the server's refusal as it is. On success the card
 says `delivered` and refreshes from the timeline and `flow get`; "delivered"
-means the server took the signal, not that the workflow has acted on it.
+means the server took the signal, not that the workflow has acted on it. So the card
+does not keep a stale picture, the delivered signal's gate and the waiting step's timer
+(`approve · wait timeout`) read as closed at once, for the next three reads; the
+delivered line (ids shortened) goes at the read after the first, and if the server still
+reports the gate after that (a quorum not yet met, say) it is shown again as the server
+says. A refused or unknown delivery closes nothing. The run id on the card is shortened,
+with a `Copy id` button.
 
 The pane's Send/Confirm replaces the Bash guard's question for this one action
 only. The `guardServerActions` guard still asks before Claude runs `flow signal`

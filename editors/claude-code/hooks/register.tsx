@@ -8,11 +8,11 @@ import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReas
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
-import { MAX_ENTRIES, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { Poller, isLive } from './poll'
 import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
 import type { Parsed as TimelineParsed } from './detail'
-import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
+import { WORKFLOW_ID, signalLines, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, applyReport, applyEdit } from './verify'
 import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, applyRerun, rerunLine, rerunQuestion, summaryOf, unknownBand } from './testband'
@@ -322,6 +322,13 @@ export const register: Register = (on, options) => {
    * these closure values, never state.
    */
   let reuse = false
+  /** Reads of the open run made so far (not local ticks), to age out what a delivery closed. */
+  let freshReads = 0
+  /** The last delivered signal: closed on the card for HOLD_READS reads, its line shown for SHOW_READS. */
+  const NO_DELIVERY = { id: '', signal: '', step: '', at: 0 }
+  let delivery = NO_DELIVERY
+  const HOLD_READS = 3
+  const SHOW_READS = 2
   let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates; story: string[] } | undefined
   const poller = new Poller()
 
@@ -614,6 +621,9 @@ export const register: Register = (on, options) => {
     // A local tick redraws from the last read of this run and filter; any other draw reads afresh.
     const again = reuse && lastRead !== undefined && lastRead.id === id && lastRead.expr === expr ? lastRead : undefined
     reuse = false
+    if (!again) freshReads++
+    // A signal the server just took: for a few reads its gate and wait timer read as closed, then the server's own account stands.
+    const mine = delivery.id === id && id !== '' && freshReads - delivery.at < HOLD_READS ? delivery : undefined
     // Independent legs, started together: a stalled one costs its own timeout, not both.
     const [runs, account] = again
       ? [again.runs, again.account]
@@ -629,7 +639,8 @@ export const register: Register = (on, options) => {
     const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: live ? '' : memo.status, startTime: live ? null : memo.startTime || null, closeTime: memo.closeTime || null })
     const head = statusOf(known?.status)
     // A completed run has no open gate (released, not succeeded); a failed or cancelled one shows closed: the card and the graph overlay both read the one settled account.
-    const detail = settleWaits(rawDetail, known?.status)
+    const settled = settleWaits(rawDetail, known?.status)
+    const detail = settled && mine ? closeWait(settled, mine.step) : settled
     const now = Date.now()
     const facts = factsFor(known ?? { workflowId: id }, detail, now)
     const { shown, more } = visibleSteps(detail?.steps ?? [])
@@ -664,6 +675,9 @@ export const register: Register = (on, options) => {
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
+    const gates = found.gates.filter(g => !(mine && g.signal === mine.signal))
+    /** The delivered line is shown for the refresh that follows the delivery and gone by the next. */
+    const showDelivered = delivery.id === id && delivery.signal === last.signal && freshReads - delivery.at < SHOW_READS
 
     // The run form: the Flowfiles on offer, and the selected one's declared inputs.
     const offered = await listFlowfiles($)
@@ -784,7 +798,14 @@ export const register: Register = (on, options) => {
             <Text bold>
               <Text color={COLOR[head.tone]}>{head.symbol}</Text> {head.word} {clean(known?.name) || middleTruncate(id)}
             </Text>
-            <Text dimColor>  id {clean(id, 256)}</Text>
+            <Box>
+              <Text dimColor>  id {middleTruncate(id, 24)}  </Text>
+              <Button key="copy-id" label="Copy id" plain onPress={async () => {
+                await $.ui.copy({ text: id, surface: e.surface }).catch(() => undefined)
+              }}>
+                Copy id
+              </Button>
+            </Box>
             <Text>  {story(facts)}</Text>
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
             {account && 'error' in account ? (
@@ -819,7 +840,7 @@ export const register: Register = (on, options) => {
             )}
             {parkable && !idOk && <Text dimColor>  No signal button: this run's id is not a plain one.</Text>}
             {parkable && 'refused' in target && <Text dimColor>  No signal button: {target.refused}.</Text>}
-            {found.gates.map(g => {
+            {gates.map(g => {
               const asking = g.refused === '' && asked.id !== '' && asked.signal === g.signal
               return (
                 <Box flexDirection="column">
@@ -854,13 +875,12 @@ export const register: Register = (on, options) => {
                   )}
                   {asking && (
                     <Box flexDirection="column">
-                      <Text color={COLOR.wait}>      {confirmText(asked.id, asked.signal, asked.address)}</Text>
-                      <Text dimColor>      The server decides whether you may act, and says so if not.</Text>
+                      <Text color={COLOR.wait}>      {signalLines(asked.id, asked.signal, asked.address, known?.name)[0]}</Text>
+                      <Text dimColor>      {signalLines(asked.id, asked.signal, asked.address, known?.name)[1]}</Text>
                       <Box>
                         <Button
                           key={`confirm-signal:${g.signal}`}
                           label={`Confirm: send ${g.signal}`}
-                          plain
                           onPress={async () => {
                             if (sending) return
                             sending = true
@@ -879,6 +899,8 @@ export const register: Register = (on, options) => {
                               } catch (err) {
                                 result = unknownOutcome(err, c.id, c.signal)
                               }
+                              // Taken by the server: close its gate and wait timer on the card now, and let the following reads confirm or contradict it.
+                              if (result.ok) delivery = { id: c.id, signal: c.signal, step: g.step, at: freshReads }
                               await update($, outcome, () => ({ id: c.id, signal: c.signal, ...result }))
                             } finally {
                               sending = false
@@ -887,7 +909,8 @@ export const register: Register = (on, options) => {
                         >
                           Confirm: send {g.signal}
                         </Button>
-                        <Button key={`cancel-signal:${g.signal}`} label="Cancel" plain onPress={() => update($, confirm, () => NO_CONFIRM)}>
+                        <Text>{'   '}</Text>
+                        <Button key={`cancel-signal:${g.signal}`} label="Cancel" onPress={() => update($, confirm, () => NO_CONFIRM)}>
                           Cancel
                         </Button>
                       </Box>
@@ -897,7 +920,7 @@ export const register: Register = (on, options) => {
               )
             })}
             {moreText(found) !== '' && <Text dimColor>  {moreText(found)}</Text>}
-            {last.id === id && last.text !== '' && (
+            {last.id === id && last.text !== '' && (!last.ok || showDelivered) && (
               <Text color={last.ok ? COLOR.ok : COLOR.fail}>
                 {'  '}
                 {last.ok ? '✓' : '✗'} {last.text}

@@ -151,6 +151,14 @@ const refusalLine = (stderr: string): string => {
   const cause = shorten(said.replace(/^signalling "[^"]*":\s*/, '')).slice(0, 120)
   return `Not sent: ${cause}`
 }
+/**
+ * The same question as two short lines: what will be sent, to which run (its name and a short id)
+ * and where, then the promise. The run's full id stays in the argv, not in the question.
+ */
+export const signalLines = (id: string, name: string, address: string, runName?: string): [string, string] => [
+  `Send ${clean(name, 128)} to ${clean(runName, 60) ? `${clean(runName, 60)} (${middleTruncate(id, 12)})` : middleTruncate(id, 20)} on ${where(address)}?`,
+  'Nothing is sent until you confirm.',
+]
 
 /** A run that threw or timed out proves nothing: the server may have taken the signal. */
 export const unknownOutcome = (err: unknown, id: string, name: string): { ok: boolean; text: string } => ({
