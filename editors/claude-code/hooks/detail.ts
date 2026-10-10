@@ -1,5 +1,5 @@
 import { clean } from './runs'
-import { statusOf } from './vocab'
+import { statusFor, statusOf } from './vocab'
 import type { RunFacts, Status } from './vocab'
 
 /** A card lists this many steps; the rest is "and N more", one `flow timeline` away. */
@@ -32,6 +32,9 @@ export interface Execution {
   /** The label reached the bound, so it may be a cut one and is never matched to a step. */
   cut: boolean
 }
+
+/** The engine's suffix on the timer a `wait_for_signal` opens beside its gate. */
+const WAIT_TIMER = / · wait timeout$/
 
 /** Longest full label kept: a 128-byte id, backticks and the engine's ` · wait timeout` suffix fit. */
 const MAX_LABEL = 160
@@ -176,5 +179,28 @@ export const factsFor = (
     failedStep: failed?.name,
     failure: failed?.reason || detail?.runFailure,
     elapsedMs: start !== undefined && end !== undefined ? end - start : undefined,
+  }
+}
+
+/**
+ * A run that COMPLETED cannot still be waiting at a gate, yet the engine leaves the
+ * `wait_for_signal` timer row open when the gate is released (no KIND_TIMER_FIRED).
+ * So on a completed run only, each open `· wait timeout` timer is shown as
+ * succeeded/`released`, on the executions (graph overlay) and the steps (card)
+ * alike. `released` claims neither the signal nor the timeout; no signal row is
+ * read, because it carries only a name and cannot say which gate it answered.
+ * Any other run status leaves the detail exactly as the timeline said.
+ *
+ * This is the fallback for histories already written; closing the timer row at
+ * the source is an engine-side fix and a separate change.
+ */
+export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Detail | undefined => {
+  if (detail === undefined || statusOf(runStatus).kind !== 'succeeded') return detail
+  const open = (label: string, status: Status) => status.kind === 'waiting' && WAIT_TIMER.test(label)
+  const released = statusFor('succeeded', 'released')
+  return {
+    ...detail,
+    executions: detail.executions.map(e => (!e.cut && open(e.label, e.status) ? { ...e, status: released } : e)),
+    steps: detail.steps.map(s => (open(s.name, s.status) ? { ...s, status: released } : s)),
   }
 }

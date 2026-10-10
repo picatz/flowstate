@@ -1,4 +1,4 @@
-import { parseTimeline } from '../hooks/detail'
+import { parseTimeline, settleWaits } from '../hooks/detail'
 import type { Execution } from '../hooks/detail'
 import { MAX_NAME, NOT_RUN, parseGraph } from '../hooks/graph'
 import type { Graph } from '../hooks/graph'
@@ -251,4 +251,13 @@ test('a saga: a step that succeeded and was then undone reads compensated, not a
   // An undo still running is appended, and the step is not called compensated.
   const part = overlayStatus(g, stepsOf(entry('STEP_COMPLETED', '`build`'), entry('STEP_SCHEDULED', '`build` · undo')))
   expect(liveLines(g, part, 'f', 'r', false)[2]).toBe('  ✓ build · succeeded, undo running')
+})
+
+test('a wait on a COMPLETED run overlays as succeeded/released; on a running run it stays waiting', () => {
+  const p = parseTimeline(JSON.stringify({ entries: [entry('TIMER_STARTED', '`summary` · wait timeout'), entry('SIGNAL_RECEIVED', 'release-approved')] }))
+  if (!('detail' in p)) throw new Error(p.error)
+  const label = '`summary` · wait timeout'
+  expect(p.detail.executions.find(e => e.label === label)?.status.kind).toBe('waiting')
+  expect(settleWaits(p.detail, 'STATUS_COMPLETED')!.executions.find(e => e.label === label)?.status).toEqual(statusFor('succeeded', 'released'))
+  expect(settleWaits(p.detail, 'STATUS_RUNNING')!.executions.find(e => e.label === label)?.status.kind).toBe('waiting')
 })

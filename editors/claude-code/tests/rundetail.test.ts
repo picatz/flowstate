@@ -1,4 +1,4 @@
-import { MAX_ENTRIES, MAX_STEPS, factsFor, parseTimeline, visibleSteps } from '../hooks/detail'
+import { MAX_ENTRIES, MAX_STEPS, factsFor, parseTimeline, settleWaits, visibleSteps } from '../hooks/detail'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -320,4 +320,55 @@ test('the truncation note does not claim a plain rerun reads the rest', async ($
   expect(t?.text).toMatch(/--after-event-id/)
   expect(t?.text).not.toMatch(/reads the rest/)
   await ui.unmount()
+})
+
+// A wait_for_signal opens a "<step> · wait timeout" timer that the engine leaves open when the gate is released.
+const parsed = (...entries: unknown[]) => {
+  const p = parseTimeline(JSON.stringify({ entries }))
+  if (!('detail' in p)) throw new Error(p.error)
+  return p.detail
+}
+const T = (step: string, at = 0) => row('TIMER_STARTED', `${step} · wait timeout`, {}, at)
+const S = (name: string, at = 0) => row('SIGNAL_RECEIVED', name, {}, at)
+const BUILD = [row('STEP_SCHEDULED', 'build', {}, 0), row('STEP_COMPLETED', 'build', {}, 1)]
+
+test('a COMPLETED run releases its open wait timer: succeeded/released, done, off waitingOn', () => {
+  const d = parsed(...BUILD, T('approve', 2), S('release-approved', 5))
+  expect(factsFor({ workflowId: 'wf', status: 'STATUS_RUNNING' }, d)).toMatchObject({ done: 2, total: 3, waitingOn: 'approve · wait timeout' })
+  const s = settleWaits(d, 'STATUS_COMPLETED')!
+  const timer = s.executions.find(e => e.label === 'approve · wait timeout')!
+  expect([timer.status.kind, timer.status.word]).toEqual(['succeeded', 'released'])
+  expect(s.steps.find(x => x.name === 'approve · wait timeout')!.status.word).toBe('released')
+  expect(factsFor({ workflowId: 'wf', status: 'STATUS_COMPLETED' }, s)).toMatchObject({ done: 3, total: 3, waitingOn: undefined })
+})
+
+test('two open timers on a COMPLETED run are both released', () => {
+  const s = settleWaits(parsed(T('a', 0), T('b', 1)), 'STATUS_COMPLETED')!
+  expect(s.executions.map(e => e.status.word)).toEqual(['released', 'released'])
+  expect(s.steps.map(x => x.status.word)).toEqual(['released', 'released'])
+})
+
+test('a RUNNING run with an open timer and an unrelated signal row is still waiting', () => {
+  const d = parsed(T('approve', 0), S('early-signal-for-another-gate', 1))
+  expect(d.steps.find(x => x.name === 'approve · wait timeout')!.status.kind).toBe('waiting')
+  const s = settleWaits(d, 'STATUS_RUNNING')!
+  expect(s).toEqual(d)
+  expect(factsFor({ workflowId: 'wf' }, s).waitingOn).toBe('approve · wait timeout')
+})
+
+test('a FAILED, cancelled, terminated, timed-out or unknown run is left exactly as the timeline said', () => {
+  const d = parsed(T('approve', 0))
+  for (const st of ['STATUS_FAILED', 'STATUS_CANCELED', 'STATUS_TERMINATED', 'STATUS_TIMED_OUT', '', undefined]) expect(settleWaits(d, st)).toEqual(d)
+})
+
+test('a timer that fired, and a step that is not a wait timeout, are unchanged on a COMPLETED run', () => {
+  const d = parsed(T('approve', 0), row('TIMER_FIRED', 'approve · wait timeout', {}, 4), row('TIMER_STARTED', 'sleep', {}, 5))
+  const s = settleWaits(d, 'STATUS_COMPLETED')!
+  expect(s.steps.find(x => x.name === 'approve · wait timeout')!.status.word).toBe('succeeded')
+  expect(s.steps.find(x => x.name === 'sleep')!.status.kind).toBe('waiting')
+})
+
+test('parseTimeline alone never closes a wait on a signal row', () => {
+  const d = parsed(T('approve', 0), S('release-approved', 1))
+  expect(d.steps.find(x => x.name === 'approve · wait timeout')!.status.kind).toBe('waiting')
 })
