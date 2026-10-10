@@ -68,6 +68,9 @@ func pluginPinReportOf(cmd *cobra.Command, format OutputFormat) (pluginPinReport
 	switch {
 	case emit && diffFile != "":
 		return report, newUsageError(errors.New("--emit-pins and --diff-pins are two different answers; pass one"))
+	case report.active() && (cmd.Flags().Changed("plugin-pins") || cmd.Flags().Changed("plugin-pin")):
+		return report, newUsageError(errors.New(
+			"--emit-pins and --diff-pins measure with no pins applied; drop --plugin-pins/--plugin-pin, or use --diff-pins FILE to compare against a pins file"))
 	case report.active() && format.Machine():
 		return report, newUsageError(errors.New(
 			"--emit-pins and --diff-pins write their own document and take no --output format"))

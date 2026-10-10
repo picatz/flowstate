@@ -687,15 +687,16 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	pinReport, err := pluginPinReportOf(cmd, format)
+	if err != nil {
+		return err
+	}
+
 	flags, err := pluginFlagsOf(cmd)
 	if err != nil {
 		return err
 	}
 
-	pinReport, err := pluginPinReportOf(cmd, format)
-	if err != nil {
-		return err
-	}
 	if pinReport.active() {
 		// Measuring is the point, so nothing is pinned for this launch: a
 		// pinned host refuses the very binary whose drift is being asked about.

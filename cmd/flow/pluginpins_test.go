@@ -163,3 +163,20 @@ func TestPluginPinReportFlagsConflict(t *testing.T) {
 	require.ErrorContains(t, err, "no --output format")
 	assert.True(t, isUsageError(err))
 }
+
+func TestPluginPinReportRefusesPinsAppliedToTheMeasurement(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+
+	for _, pin := range [][]string{
+		{"--plugin-pin", "example=sha256:" + strings.Repeat("a", 64)},
+		{"--plugin-pins", "pins.yaml"},
+	} {
+		args := append([]string{"--plugin-dir", dir, "--emit-pins"}, pin...)
+		cmd, _ := pinReportCommand(t, args...)
+		err := runPlugins(cmd, nil)
+		require.ErrorContains(t, err, "measure with no pins applied")
+		assert.True(t, isUsageError(err))
+	}
+}
