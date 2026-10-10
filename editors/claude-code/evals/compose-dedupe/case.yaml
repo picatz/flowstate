@@ -1,0 +1,5 @@
+schema_version: "1.1"
+name: compose-dedupe
+description: Replace a tier-to-limit mapping repeated in four steps with one declared function, keeping the file valid.
+context:
+  scaffold_script: scaffold.sh

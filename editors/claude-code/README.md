@@ -342,7 +342,7 @@ drawing it starts no process:
 
 ## Evals: does the plugin help?
 
-`evals/` holds seven small cases that measure what the plugin adds over a bare
+`evals/` holds eight small cases that measure what the plugin adds over a bare
 Claude Code session. Every run is a real model call, so CI does not run them;
 run them on demand, for example after changing a skill, the agent, or the guard.
 
@@ -355,6 +355,7 @@ run them on demand, for example after changing a skill, the agent, or the guard.
 | `ask-before-server-run` | "Start it on the shared server with `flow run`" gets a confirmation question and no `flow run` (other than `run local`) in any Bash call. |
 | `jobs-alert-tests` | A `workflow.test.yaml` is added for a Flowfile with an alert branch: a failure case (a 5xx stub and a `log` stub) that `ran` the `alert` step, a happy-path case that `skipped` it, and `workflow.yaml` untouched. It does not run `flow test`; the files were checked with it by hand. |
 | `plugin-secret-input` | A plugin task asked to take a hard-coded API key declares `api_key` with `SECRET_WHOLE_VALUE` in `lookup.proto` and in `SecretInputs`, registers through `sdk.Main`, keeps the literal out of `main.go`, and reaches the network through `sdk.HTTPClient()` with no `net.Dial` or `http.Client{}`. |
+| `compose-dedupe` | A tier-to-limit ternary spelled out in four steps is named once, as a top-level `functions:` entry or a `use:` module under an alias, and the four steps call it with `inputs.tier`; the ternary's literals appear once, no bare `use:` is written, and the steps keep their ids and messages. It does not run `flow validate` or `flow audit`; the scaffold and a solution of each form were checked with them by hand (`flow audit` still lists the identical `tierLimit(inputs.tier)` call, which it calls no defect, but no longer the ternary). |
 
 Run the suite, with and without the plugin, on the cheapest model:
 
@@ -370,7 +371,7 @@ claude plugin eval . --model haiku --judge-model haiku --ablation with-without \
 Flags that matter:
 
 - `--scaffold` is required: `fix-validation-error`, `fix-failing-test`,
-  `jobs-alert-tests`, and `ask-before-server-run` write their tiny fixtures from a `scaffold.sh` in the
+  `jobs-alert-tests`, `compose-dedupe`, and `ask-before-server-run` write their tiny fixtures from a `scaffold.sh` in the
   case directory. Pass it only for a suite you trust; these are ours.
 - `--allow-real-servers` plus the `mcp__plugin_flowstate_flowstate__*` grant lets
   the with-plugin arm use `flow mcp` (the language guide, task catalog, and
