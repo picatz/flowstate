@@ -196,7 +196,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -499,19 +498,26 @@ func WithRootCAs(pool *x509.CertPool) Option {
 	}
 }
 
+// maxCABundleBytes bounds the PEM bundle [WithRootCAsFile] reads. A system
+// trust store is a few hundred kilobytes; this leaves room for one and still
+// caps what a misconfigured path costs.
+const maxCABundleBytes = 1 << 20
+
 // WithRootCAsFile verifies the vault's certificate against the PEM bundle in a
 // file, which is the shape a CA certificate takes when it is mounted into a pod
 // from a ConfigMap or a Secret.
 //
 // The file is read when the provider is constructed, so an unreadable or
 // certificate-free bundle fails at startup rather than at the first TLS handshake.
+// It must be a regular file of at most 1 MiB: a FIFO or device is refused rather
+// than blocking construction, and an oversize file rather than read into memory.
 func WithRootCAsFile(path string) Option {
 	return func(p *Provider) error {
 		if path == "" {
 			return fmt.Errorf("secrets/vault: WithRootCAsFile was given an empty path")
 		}
 
-		pem, err := os.ReadFile(path)
+		pem, err := readBoundedRegular(path, maxCABundleBytes)
 		if err != nil {
 			return fmt.Errorf("secrets/vault: reading CA bundle: %w", err)
 		}
