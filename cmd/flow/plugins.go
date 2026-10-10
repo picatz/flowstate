@@ -423,14 +423,9 @@ func pluginEnvOf(envFile string, envFlags []string) (map[string][]string, error)
 func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error) {
 	var base map[string]string
 	if pinsFile != "" {
-		data, err := readBoundedFile(pinsFile, "a plugin pins file", maxPluginPinsBytes)
+		cfg, err := readPluginPinsFile(pinsFile)
 		if err != nil {
-			return nil, fmt.Errorf("reading plugin pins %s: %w", pinsFile, err)
-		}
-
-		cfg, err := plugin.ParsePinsConfig(data)
-		if err != nil {
-			return nil, fmt.Errorf("parsing plugin pins %s: %w", pinsFile, err)
+			return nil, err
 		}
 
 		base = cfg.Pins
@@ -509,6 +504,18 @@ func splitSearchPath(value string) []string {
 // asked for" to a command line that named a plugin, which is how a pin came to
 // be silently skipped.
 func (f pluginFlags) configured() bool { return len(f.dirs) > 0 }
+
+// measure hashes the plugin binaries these flags discover, launching none of
+// them; see [plugin.MeasureDistributions].
+func (f pluginFlags) measure(logger *slog.Logger) (map[string]string, error) {
+	return plugin.MeasureDistributions(plugin.Config{
+		SearchPath:              f.dirs,
+		AllowInsecureSearchPath: f.allowInsecureDirs,
+		Only:                    f.only,
+		HostVersion:             version,
+		Logger:                  logger,
+	})
+}
 
 // host builds a host for these flags. The caller owns closing it.
 func (f pluginFlags) host(logger *slog.Logger) (*plugin.Host, error) {
@@ -692,12 +699,23 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	pinReport, err := pluginPinReportOf(cmd, format)
+	if err != nil {
+		return err
+	}
+
 	flags, err := pluginFlagsOf(cmd)
 	if err != nil {
 		return err
 	}
 
 	if !flags.configured() {
+		if pinReport.active() {
+			// An empty answer here would pass an empty pins file, or overwrite a
+			// real one through a redirect, on nothing but a forgotten flag.
+			return newUsageError(errors.New("--emit-pins and --diff-pins need a plugin directory: pass --plugin-dir or set FLOWSTATE_PLUGIN_DIR"))
+		}
+
 		// An empty answer with two meanings — nothing installed, or nowhere to
 		// look — and only one of them is a mistake. So the machine shape carries
 		// the search path and this says which it is.
@@ -710,6 +728,17 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 				"No plugin directory is configured. Pass --plugin-dir or set $"+pluginSearchPathEnv+"."))
 
 		return nil
+	}
+
+	if pinReport.active() {
+		// Hashed, never launched: a binary whose drift is being asked about
+		// must not be handed the deployment's environment and egress to answer.
+		measured, err := flags.measure(pluginLogger(cmd, surface))
+		if err != nil {
+			return err
+		}
+
+		return pinReport.write(surface, measured)
 	}
 
 	host, err := flags.host(pluginLogger(cmd, surface))

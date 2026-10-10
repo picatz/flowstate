@@ -3589,12 +3589,23 @@ flow plugins --plugin-dir /usr/local/lib/flowstate/plugins
 # The same thing as a document:
 flow plugins --plugin-dir /usr/local/lib/flowstate/plugins --output json
 
+# Write a pins file for what that directory holds (trust on first use: review
+# it before adopting it):
+flow plugins --plugin-dir /usr/local/lib/flowstate/plugins \
+  --emit-pins > plugin-pins.yaml
+
+# Before a restart, show how the directory differs from the pins file (exits 1
+# on drift):
+flow plugins --plugin-dir /usr/local/lib/flowstate/plugins \
+  --diff-pins plugin-pins.yaml
+
 # Which plugin provides a given task:
 flow plugins -o json \
   | jq -r '.plugins[] | select(.tasks[].name == "example.greet") | .name'`,
 	}
 	addOutputFlag(pluginsCmd)
 	addPluginFlags(pluginsCmd)
+	addPluginPinReportFlags(pluginsCmd)
 
 	// Keys and JWT commands, for admin debugging of workload identity: what a
 	// generated key publishes, and what a token actually claims and verifies

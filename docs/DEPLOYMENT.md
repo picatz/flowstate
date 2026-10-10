@@ -194,6 +194,40 @@ $ echo "sha256:$(sha256sum /usr/local/lib/flowstate/plugins/flowstate-plugin-git
 sha256:1f3d...c2
 ```
 
+Rather than copying digests by hand, `flow plugins` turns what it measures into
+the pins file and checks a pins file against it:
+
+```console
+$ flow plugins --plugin-dir /usr/local/lib/flowstate/plugins --emit-pins \
+    > /etc/flowstate/plugin-pins.yaml
+$ flow plugins --plugin-dir /usr/local/lib/flowstate/plugins \
+    --diff-pins /etc/flowstate/plugin-pins.yaml
+changed  github
+  pinned:   sha256:1f3d...c2
+  measured: sha256:77aa...09
+added    slack (found but not pinned; it would launch unpinned)
+missing  jira (pinned but not found; a worker restricted to it would refuse to start)
+$ echo $?
+1
+```
+
+`--emit-pins` writes the same `pins:` document `--plugin-pins` reads, one entry
+per plugin found. It is a measurement, not a verdict: run against a directory
+nobody has vetted, it pins whatever is there, which is trust on first use.
+Review the binaries (or run it on a build you produced) before committing the
+file. `--diff-pins` compares the directory with a file and reports each plugin
+as `changed`, `added` (found, unpinned) or `missing` (pinned, not found),
+exiting 1 on any drift and 0 when they match, so a swapped binary is a review
+artifact before a worker restart turns it into a refusal. Both modes only hash
+the binaries: nothing is launched, so a replaced binary is reported without
+being run with the worker's environment and egress. They take no `--plugin-pin`
+or `--plugin-pins` and no `--output` format. The hash is of the file at its
+path, which is the value a pinned launch enforces; the limit above about
+platforms without descriptor execution applies to that launch, not to this
+measurement. A pins file with a malformed name or digest is refused as
+`--plugin-pins` refuses it. For an upgrade, emit again and review the file's
+diff in version control.
+
 One-off pins go straight on the command line, repeatable:
 
 ```console
