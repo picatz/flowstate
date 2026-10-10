@@ -155,7 +155,7 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 		{
 			name: "map get",
 			expr: "{'a': 1}.get('a')",
-			says: "`m.?k.orValue(default)`",
+			says: "`m[?k].orValue(default)`",
 		},
 		{
 			name: "max names the macro",
@@ -173,9 +173,9 @@ func TestAnExpressionThatCannotEvaluateIsReported(t *testing.T) {
 			says: "`x in xs`",
 		},
 		{
-			name: "list indexOf names the operator",
+			name: "list indexOf keeps the plain overload message",
 			expr: "[1, 2].indexOf(1)",
-			says: "`x in xs`",
+			says: "no matching overload for 'indexOf'",
 		},
 		{
 			name: "the referral names the listing that prints functions",

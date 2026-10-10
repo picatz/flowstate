@@ -599,14 +599,14 @@ var stringOfAStructure = regexp.MustCompile(`^found no matching overload for 'st
 var missingIdiom = map[string]string{
 	"keys":   "`m.transformList(k, v, k)` lists a map's keys",
 	"values": "`m.transformList(k, v, v)` lists a map's values",
-	"get":    "`m.?k.orValue(default)` reads a key that may be absent",
+	"get":    "`m[?k].orValue(default)` reads a key that may be absent (`m.?name` when the name is literal)",
 	"max":    "`math.greatest(a, b)` or `math.greatest(list)`",
 	"min":    "`math.least(a, b)` or `math.least(list)`",
 }
 
 // listMembership matches a list asked what a string is asked: `contains` and
-// `indexOf` exist on strings only.
-var listMembership = regexp.MustCompile(`^found no matching overload for '(contains|indexOf)' applied to 'list\(`)
+// exists on strings only; `indexOf` returns a position, which membership is not.
+var listMembership = regexp.MustCompile(`^found no matching overload for 'contains' applied to 'list\(`)
 
 // forAnAuthor turns one of cel-go's sentences into one written for the person who
 // typed the expression.
@@ -649,7 +649,7 @@ func forAnAuthor(message string) string {
 	}
 
 	if listMembership.MatchString(message) {
-		return message + "; `contains` and `indexOf` are string functions, and a list is asked " +
+		return message + "; `contains` is a string function, and a list is asked " +
 			"`x in xs` for membership"
 	}
 

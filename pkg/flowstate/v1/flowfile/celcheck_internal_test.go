@@ -109,5 +109,8 @@ func TestIdiomAdviceIsScopedToWhatItAnswers(t *testing.T) {
 	assert.NotContains(t, said, "orValue")
 	assert.Contains(t, said, "flow tasks")
 
+	const indexOnList = "found no matching overload for 'indexOf' applied to 'list(int).(int)'"
+	assert.Equal(t, indexOnList, forAnAuthor(indexOnList), "a position is not a membership test")
+
 	assert.Contains(t, forAnAuthor("found no matching overload for 'contains' applied to 'list(int).(int)'"), "`x in xs`")
 }

@@ -431,12 +431,12 @@ and 1.7% across the shipped corpus; it also repaired `flow fix`, which until now
 refused outright to write back any file containing `filter` or `map`.
 
 *The spellings other languages teach, and what to write here.* The profile has no
-`keys`, `values`, `get`, `max`, `min`, or `contains`/`indexOf` on a list, and the
+`keys`, `values`, `get`, `max`, `min`, or `contains` on a list, and the
 validator names the canonical form instead of only refusing: a map's keys are
 `m.transformList(k, v, k)` and its values `m.transformList(k, v, v)`; a key that may be
-absent is `m.?k.orValue(default)`; the larger of values is `math.greatest(a, b)` or
+absent is `m[?k].orValue(default)` (`m.?name` for a literal name); the larger of values is `math.greatest(a, b)` or
 `math.greatest(list)` (and `math.least`); and list membership is `x in xs`, the one
-spelling for it. These are diagnostics, not new functions: each already has exactly one
+spelling for it (a list has no `indexOf`; no diagnostic claims an idiom for position). These are diagnostics, not new functions: each already has exactly one
 spelling, and a second would be a second mechanism.
 
 *A second correction, on the one position that spoke a different dialect.* Retiring
