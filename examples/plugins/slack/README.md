@@ -1,8 +1,8 @@
 # Slack messages
 
 Three tested examples of the [`slack` plugin](../../../plugins/slack/README.md),
-sharing one module, [`lib.yaml`](lib.yaml), imported with `use:`: the channel and
-message-key scalar types (`must:` checks them before a run starts) and the
+sharing one module, [`lib.yaml`](lib.yaml), imported with `use:`: the message-key and
+change scalar types (`must:` checks them before a run starts) and the
 functions that word an approval outcome. `lib.test.yaml` tests the module itself.
 A card's `plain:` and markup structure stays written out, because the plugin reads
 it as a literal:

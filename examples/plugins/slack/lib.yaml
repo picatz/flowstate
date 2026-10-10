@@ -1,4 +1,4 @@
-# The vocabulary the Slack examples share: what a Slack input must look like, and the
+# The vocabulary the Slack examples share: the message key and change an input must be, and the
 # computations they would otherwise each write out by hand.
 #
 # A module has no steps, so it cannot run; each example names it under `use:` and the
@@ -7,17 +7,12 @@
 # reads a card field as a literal; what is shared here is the text that goes into it.
 edition: v2026.4
 name: slack-lib
-description: Slack identifiers and card text shared by the Slack plugin examples.
+description: Slack input types and card text shared by the Slack plugin examples.
 types:
-  ChannelId:
-    description: A stable Slack conversation ID, never a channel name.
-    type: string
-    must: this.matches("^[CDG][A-Z0-9]{8,254}$")
-    example: C123APPROVAL
   MessageKey:
     description: A UUID chosen once for one logical message and reused unchanged only for it.
     type: string
-    must: this.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
     example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
   Change:
     description: A bounded, human-readable change being approved.

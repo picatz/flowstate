@@ -36,7 +36,7 @@ use:
     path: ./lib.yaml
 inputs:
   channel:
-    type: lib.ChannelId
+    type: string
     required: true
     description: stable Slack conversation ID, not a channel name
     example: C123APPROVAL

@@ -75,14 +75,14 @@ tests:
         approved: false
         request_message_ts: "1503435956.000247"
 
-  - name: a channel name is not a conversation ID
+  - name: a message key that is not a UUID is refused
     inputs:
-      channel: general
+      request_message_key: not-a-uuid
     secrets:
       env:SLACK_BOT_TOKEN: not-a-real-token
     expect:
       failed: true
-      error_contains: channel
+      error_contains: request_message_key
 
   - name: an empty change is refused before anything is posted
     inputs:
