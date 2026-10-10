@@ -1,5 +1,5 @@
 import { clean } from './runs'
-import { statusOf } from './vocab'
+import { statusFor, statusOf } from './vocab'
 import type { RunFacts, Status } from './vocab'
 
 /** A card lists this many steps; the rest is "and N more", one `flow timeline` away. */
@@ -32,6 +32,9 @@ export interface Execution {
   /** The label reached the bound, so it may be a cut one and is never matched to a step. */
   cut: boolean
 }
+
+/** The engine's suffix on the timer a `wait_for_signal` opens beside its gate. */
+const WAIT_TIMER = / · wait timeout$/
 
 /** Longest full label kept: a 128-byte id, backticks and the engine's ` · wait timeout` suffix fit. */
 const MAX_LABEL = 160
@@ -103,6 +106,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   const byName = new Map<string, Step & { began?: number }>()
   const executions: Execution[] = []
   const lastOf = new Map<string, Execution>()
+  const stepOfExec = new Map<Execution, string>()
   let runFailure = ''
   for (const r of rows) {
     if (r.kind === 'KIND_RUN_ENDED' || r.kind === 'KIND_RUN_CONTINUED' || r.step === '') {
@@ -119,6 +123,7 @@ export const parseTimeline = (stdout: string): Parsed => {
       const one = { label: r.full, status: known, attempt, cut: r.cut }
       executions.push(one)
       lastOf.set(r.full, one)
+      stepOfExec.set(one, r.step)
     } else {
       last.status = known
       last.attempt = Math.max(last.attempt, attempt)
@@ -134,6 +139,20 @@ export const parseTimeline = (stdout: string): Parsed => {
     else if (known.kind === 'succeeded') step.reason = ''
     if (known.kind !== 'running' && known.kind !== 'waiting' && step.began !== undefined && r.at !== undefined) {
       step.durationMs = r.at - step.began
+    }
+    // The signal won the race: the engine emits the signal row and never fires the wait's timer. With exactly one
+    // wait timer still open the signal can only have answered it; with none or several it is ambiguous, so they stay waiting.
+    if (r.kind === 'KIND_SIGNAL_RECEIVED') {
+      const open = executions.filter(e => !e.cut && WAIT_TIMER.test(e.label) && e.status.kind === 'waiting')
+      if (open.length === 1) {
+        const timer = open[0]
+        timer.status = statusFor('succeeded', 'answered')
+        const owner = byName.get(stepOfExec.get(timer) ?? '')
+        if (owner && owner.status.kind === 'waiting') {
+          owner.status = timer.status
+          if (owner.began !== undefined && r.at !== undefined) owner.durationMs = r.at - owner.began
+        }
+      }
     }
   }
 

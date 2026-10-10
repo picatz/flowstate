@@ -1,5 +1,5 @@
 import { clean } from '../hooks/runs'
-import { SIGNAL_NAME, WORKFLOW_ID, getArgv, moreText, parseGates, signalArgv, targetOf } from '../hooks/signal'
+import { outcomeOf, unknownOutcome, SIGNAL_NAME, WORKFLOW_ID, getArgv, moreText, parseGates, signalArgv, targetOf } from '../hooks/signal'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -152,7 +152,7 @@ test('a failing flow signal shows the server\'s refusal, cleaned and bounded, an
   await ui.press({ key: 'confirm-signal:deploy-approved' })
 
   expect(signals(seen)).toHaveLength(1)
-  const shown = await ui.find({ type: 'Text', text: /✗ not sent: permission denied: the starter of a run may not approve it/ })
+  const shown = await ui.find({ type: 'Text', text: /✗ Not sent: permission denied: the starter of a run may not approve it/ })
   expect(shown).toBeDefined()
   expect(shown?.text).not.toMatch(/\u001b/)
   expect(shown?.text).not.toMatch(/ask someone else/)
@@ -164,7 +164,7 @@ test('a flow signal that fails with nothing on stderr still says it was not sent
   const { ui } = await open($, on, { signal: fail('') })
   await ui.press({ key: 'signal:deploy-approved' })
   await ui.press({ key: 'confirm-signal:deploy-approved' })
-  expect(await ui.find({ type: 'Text', text: /✗ not sent: no server answered/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✗ Not sent: no server answered/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -366,4 +366,46 @@ test('clean drops zero-width and bidi format characters', () => {
   const hostile = 'ap\u202eprove\u200b\u200f\u2066x\u2069\ufeff'
   expect(clean(hostile)).toBe('approvex')
   expect(clean('ünï — ok')).toBe('ünï — ok')
+})
+
+const LONG = 'flowstate-workflow-3f7c9a2e-5b1d-4c8e-9a6f-0d2b7e1c4a58-and-more-text'
+const FINISHED_STDERR = `ERROR\nsignalling "${LONG}": failed_precondition: delivering a signal to run "${LONG}": that workload has already finished\n\nNEXT\n  flow get ${LONG}`
+
+test('outcomeOf says plainly that the run had already finished, with no id', () => {
+  const out = outcomeOf({ exitCode: 1, stderr: FINISHED_STDERR }, LONG, 'deploy-approved')
+  expect(out).toEqual({ ok: false, text: 'Nothing sent: the run had already finished.' })
+  const stale = `ERROR\nfailed_precondition: delivering a signal to run "${LONG}": the execution named by that run id has already finished; retry without it`
+  expect(outcomeOf({ exitCode: 1, stderr: stale }, LONG, 'x').text).toBe('Nothing sent: the run had already finished.')
+})
+
+test('any other refusal is "Not sent: <cause>" with ids cut and never repeated whole', () => {
+  const out = outcomeOf({ exitCode: 1, stderr: `ERROR\nsignalling "${LONG}": permission denied: run "${LONG}" may not be approved by its starter` }, LONG, 'x')
+  expect(out.ok).toBe(false)
+  expect(out.text).toMatch(/^Not sent: permission denied: run "/)
+  expect(out.text).not.toContain(LONG)
+  expect(out.text).not.toMatch(/signalling/)
+  expect(out.text.length).toBeLessThan(160)
+})
+
+test('delivery unknown keeps its honesty but cuts the id', () => {
+  const out = unknownOutcome(new Error(`timed out waiting for "${LONG}"`), LONG, 'deploy-approved')
+  expect(out.ok).toBe(false)
+  expect(out.text).toMatch(/^delivery unknown for deploy-approved on /)
+  expect(out.text).toMatch(/check the timeline before sending again/)
+  expect(out.text).not.toContain(LONG)
+})
+
+test('a signal that finds the run done says so plainly and the card re-reads the run', async ($, on) => {
+  const { ui, seen } = await open($, on, { signal: fail(FINISHED_STDERR) })
+  await ui.press({ key: 'signal:deploy-approved' })
+  const before = seen.filter(a => a[1] === 'timeline').length
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+  expect(signals(seen)).toHaveLength(1)
+  expect(await ui.find({ type: 'Text', text: /✗ Nothing sent: the run had already finished\./ })).toBeDefined()
+  // The outcome update redraws the pane, which reads the list and the timeline again: the card shows the truth.
+  expect(seen.filter(a => a[1] === 'timeline').length).toBeGreaterThan(before)
+  expect(await texts(ui)).not.toContain('failed_precondition')
+  // The question is consumed: a second press of Confirm is not drawn.
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  await ui.unmount()
 })

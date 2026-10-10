@@ -1,5 +1,6 @@
 import { DEFAULT_ADDRESS } from './guard'
 import { clean, rejection } from './runs'
+import { middleTruncate } from './vocab'
 
 /**
  * The signal gate on a run's card (roadmap slice 7). Pure and bounded: the pane
@@ -136,14 +137,29 @@ export const signalArgv = (flow: string, address: string, id: string, name: stri
 export const confirmText = (id: string, name: string, address: string): string =>
   `Send signal "${clean(name, 128)}" to run ${clean(id, 256)} on server ${where(address)}? Nothing is sent until you confirm.`
 
+/** An id the card already names above is never repeated whole in a sentence: any long quoted token is cut to its ends. */
+const shorten = (text: string): string => text.replace(/"([^"]{25,})"/g, (_m, id: string) => `"${middleTruncate(id, 16)}"`)
+
+/** The server refused because the run is over (`FailedPrecondition`: "that workload has already finished", "the execution ... has already finished"). */
+const FINISHED = /already (?:finished|completed|closed)|not running|no longer running/i
+
+/** What a refusal says in one short line: the run is over, or a cause with the ids cut. */
+const refusalLine = (stderr: string): string => {
+  const said = rejection(stderr)
+  if (FINISHED.test(said)) return 'Nothing sent: the run had already finished.'
+  // Drop the CLI's `signalling "<id>": ` lead and a repeated `code:` prefix of the run id; keep the cause.
+  const cause = shorten(said.replace(/^signalling "[^"]*":\s*/, '')).slice(0, 120)
+  return `Not sent: ${cause}`
+}
+
 /** A run that threw or timed out proves nothing: the server may have taken the signal. */
 export const unknownOutcome = (err: unknown, id: string, name: string): { ok: boolean; text: string } => ({
   ok: false,
-  text: `delivery unknown for ${clean(name, 128)} on ${clean(id, 256)}: ${clean(String(err), 100) || 'no answer'}; check the timeline before sending again`,
+  text: `delivery unknown for ${clean(name, 128)} on ${middleTruncate(id, 16)}: ${shorten(clean(String(err), 100)) || 'no answer'}; check the timeline before sending again`,
 })
 
 /** The one-line answer to a press: what `flow signal` did, or the server's own refusal, cleaned and bounded. */
 export const outcomeOf = (ran: { exitCode: number; stderr: string }, id: string, name: string): { ok: boolean; text: string } =>
   ran.exitCode === 0
-    ? { ok: true, text: `delivered ${clean(name, 128)} to ${clean(id, 256)}` }
-    : { ok: false, text: `not sent: ${rejection(ran.stderr)}` }
+    ? { ok: true, text: `delivered ${clean(name, 128)} to ${middleTruncate(id, 16)}` }
+    : { ok: false, text: refusalLine(ran.stderr) }

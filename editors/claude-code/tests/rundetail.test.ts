@@ -321,3 +321,66 @@ test('the truncation note does not claim a plain rerun reads the rest', async ($
   expect(t?.text).not.toMatch(/reads the rest/)
   await ui.unmount()
 })
+
+// A wait_for_signal opens a "<step> · wait timeout" timer; when the signal wins, the engine emits only the signal row.
+const parsed = (...entries: unknown[]) => {
+  const p = parseTimeline(JSON.stringify({ entries }))
+  if (!('detail' in p)) throw new Error(p.error)
+  return p.detail
+}
+const T = (step: string, at = 0) => row('TIMER_STARTED', `${step} · wait timeout`, {}, at)
+const S = (name: string, at = 0) => row('SIGNAL_RECEIVED', name, {}, at)
+
+test('a signal closes the one open wait timer as answered, on the execution and the step', () => {
+  const d = parsed(row('STEP_SCHEDULED', 'build', {}, 0), row('STEP_COMPLETED', 'build', {}, 1), T('approve', 2), S('release-approved', 5))
+  const timer = d.executions.find(e => e.label === 'approve · wait timeout')!
+  expect(timer.status.kind).toBe('succeeded')
+  expect(timer.status.word).toBe('answered')
+  const step = d.steps.find(s => s.name === 'approve · wait timeout')!
+  expect(step.status.kind).toBe('succeeded')
+  expect(step.status.word).toBe('answered')
+  expect(step.durationMs).toBe(3000)
+  expect(d.steps.some(s => s.status.kind === 'waiting')).toBe(false)
+  // done/total counts it: build, the timer and the signal row.
+  expect(factsFor({ workflowId: 'wf' }, d)).toMatchObject({ done: 3, total: 3, waitingOn: undefined })
+})
+
+test('two open wait timers and one signal: ambiguous, both stay waiting', () => {
+  const d = parsed(T('approve', 0), T('review', 1), S('release-approved', 2))
+  expect(d.executions.filter(e => e.status.kind === 'waiting')).toHaveLength(2)
+  expect(d.steps.filter(s => s.status.kind === 'waiting')).toHaveLength(2)
+  expect(factsFor({ workflowId: 'wf' }, d).waitingOn).toBe('approve · wait timeout')
+})
+
+test('each signal answers the one timer open at its moment', () => {
+  const d = parsed(T('a', 0), S('s1', 1), T('b', 2), S('s2', 3))
+  expect(d.executions.filter(e => e.label.endsWith('wait timeout')).map(e => e.status.word)).toEqual(['answered', 'answered'])
+})
+
+test('a signal with no wait timer changes nothing', () => {
+  const d = parsed(row('STEP_SCHEDULED', 'build', {}, 0), S('release-approved', 1))
+  expect(d.steps.map(s => [s.name, s.status.kind])).toEqual([['build', 'running'], ['release-approved', 'succeeded']])
+})
+
+test('a signal that arrives before the timer opens does not answer it later', () => {
+  const d = parsed(S('early', 0), T('approve', 1))
+  expect(d.steps.find(s => s.name === 'approve · wait timeout')!.status.kind).toBe('waiting')
+})
+
+test('a timer that fired stays as it is (succeeded, not answered), and a later signal has nothing to close', () => {
+  const d = parsed(T('approve', 0), row('TIMER_FIRED', 'approve · wait timeout', {}, 4), S('late', 5))
+  const timer = d.executions.find(e => e.label === 'approve · wait timeout')!
+  expect(timer.status.kind).toBe('succeeded')
+  expect(timer.status.word).toBe('succeeded')
+})
+
+test('an unanswered wait timer with no signal stays waiting', () => {
+  const d = parsed(T('approve', 0))
+  expect(d.steps[0].status.kind).toBe('waiting')
+  expect(factsFor({ workflowId: 'wf' }, d).waitingOn).toBe('approve · wait timeout')
+})
+
+test('a plain timer that is not a wait timeout is never closed by a signal', () => {
+  const d = parsed(row('TIMER_STARTED', 'sleep', {}, 0), S('x', 1))
+  expect(d.steps.find(s => s.name === 'sleep')!.status.kind).toBe('waiting')
+})

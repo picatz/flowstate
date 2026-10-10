@@ -252,3 +252,10 @@ test('a saga: a step that succeeded and was then undone reads compensated, not a
   const part = overlayStatus(g, stepsOf(entry('STEP_COMPLETED', '`build`'), entry('STEP_SCHEDULED', '`build` · undo')))
   expect(liveLines(g, part, 'f', 'r', false)[2]).toBe('  ✓ build · succeeded, undo running')
 })
+
+test('an answered wait overlays as succeeded/answered, never waiting', () => {
+  const ex = stepsOf(entry('TIMER_STARTED', '`summary` · wait timeout'), entry('SIGNAL_RECEIVED', 'release-approved'))
+  expect(ex.find(e => e.label === '`summary` · wait timeout')?.status).toEqual(statusFor('succeeded', 'answered'))
+  const waiting = stepsOf(entry('TIMER_STARTED', '`summary` · wait timeout'))
+  expect(waiting[0].status.kind).toBe('waiting')
+})
