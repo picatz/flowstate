@@ -9,6 +9,7 @@ import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from '.
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { PaneNotes } from './panenotes'
 import { Poller, isLive } from './poll'
 import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
 import type { Parsed as TimelineParsed } from './detail'
@@ -328,6 +329,8 @@ export const register: Register = (on, options) => {
   /** The last delivered signal: closed on the card for HOLD_READS reads, its line shown for SHOW_READS. */
   const NO_DELIVERY = { id: '', signal: '', step: '', at: 0 }
   let delivery = NO_DELIVERY
+  /** What the user did in the pane since the last prompt; the next prompt carries it to the model. */
+  const paneNotes = new PaneNotes()
   const HOLD_READS = 3
   const SHOW_READS = 2
   let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates; story: string[] } | undefined
@@ -356,7 +359,8 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const file = mentionedFlowfile(e.text)
     const text = file === undefined ? undefined : await gather($, flow, file)
-    return next(text === undefined ? e : { ...e, context: [...(e.context ?? []), text] })
+    const extra = [text, paneNotes.take()].filter((t): t is string => t !== undefined)
+    return next(extra.length === 0 ? e : { ...e, context: [...(e.context ?? []), ...extra] })
   })
 
   on('command.run', { command: 'flowstate' }, async $ => {
@@ -902,6 +906,7 @@ export const register: Register = (on, options) => {
                               }
                               // Taken by the server: close its gate and wait timer on the card now, and let the following reads confirm or contradict it.
                               if (result.ok) delivery = { id: c.id, signal: c.signal, step: g.step, at: freshReads }
+                              paneNotes.signal(c.signal, c.id, result.ok, result.ok ? '' : result.text)
                               await update($, outcome, () => ({ id: c.id, signal: c.signal, ...result }))
                             } finally {
                               sending = false

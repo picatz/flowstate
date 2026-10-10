@@ -64,6 +64,7 @@ changes or cannot be read between the question and Confirm, nothing is sent.
 Send, Confirm and Cancel are keyed per gate, and a Confirm acts only while the
 pending question is still for its own gate and run; two quick Confirm presses
 send one signal.
+A press that was confirmed leaves one line for Claude (`pane: sent <signal> to <run> ✓`, or `✗` with the server's reason) in a fenced data block on your next prompt, so an answer after you opened a gate knows it happened. At most five lines are kept, each is cleaned, and they go once.
 There is no auto-send, no default-confirm and no retry. Closing the card or
 selecting another run drops a pending question.
 

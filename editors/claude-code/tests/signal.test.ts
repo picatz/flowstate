@@ -457,3 +457,35 @@ test('a transport-style error is never the confident finished line', () => {
     expect(out.text).toBe(`Not sent: unavailable: ${cause}`)
   }
 })
+
+test('a signal sent from the pane reaches the next prompt as one fenced note, once', async ($, on) => {
+  on('prompt.submit', (_$: unknown, e: { text: string; context?: string[] }) => ({ text: e.text, context: e.context }))
+  const { ui } = await open($, on, {})
+  await ui.press({ key: 'signal:deploy-approved' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+
+  const sent = await $.prompt.submit({ text: 'what happened?' })
+  expect(sent.context?.join('\n')).toContain('pane: sent deploy-approved to wf-1 ✓')
+  const again = await $.prompt.submit({ text: 'and now?' })
+  expect(again.context ?? []).toEqual([])
+  await ui.unmount()
+})
+
+test('a refused signal is told to the next prompt with its reason', async ($, on) => {
+  on('prompt.submit', (_$: unknown, e: { text: string; context?: string[] }) => ({ text: e.text, context: e.context }))
+  const { ui } = await open($, on, { signal: fail('permission denied') })
+  await ui.press({ key: 'signal:deploy-approved' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+
+  const sent = await $.prompt.submit({ text: 'did it work?' })
+  expect(sent.context?.join('\n')).toMatch(/pane: send deploy-approved to wf-1 ✗ .*permission denied/)
+  await ui.unmount()
+})
+
+test('a pane that sent nothing adds nothing to a prompt', async ($, on) => {
+  on('prompt.submit', (_$: unknown, e: { text: string; context?: string[] }) => ({ text: e.text, context: e.context }))
+  const { ui } = await open($, on, {})
+  const sent = await $.prompt.submit({ text: 'hello' })
+  expect(sent.context ?? []).toEqual([])
+  await ui.unmount()
+})
