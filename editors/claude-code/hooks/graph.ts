@@ -24,6 +24,8 @@ const MAX_NOTE = 160
 const MAX_LABEL = 60
 const MAX_DETAIL = 80
 const MAX_ADDRESS = 200
+/** The schema's longest workflow name. */
+export const MAX_NAME = 128
 /** Nesting deeper than this is drawn at this depth; the schema's steps nest a few levels, not dozens. */
 export const MAX_DEPTH = 8
 /** A graph read is stopped after this long and reported as unreadable. */
@@ -76,8 +78,10 @@ export interface Graph {
   notes: string[]
   /** The rows follow the edges' nesting; false when they could only be put in the document's node order. */
   nested: boolean
-  /** The workflow node's label (the declared name), cleaned; empty when the document has none. */
+  /** The workflow node's label (the declared name) for display, cut to the label bound; empty when the document has none. */
   workflow: string
+  /** The same name uncut up to the schema's 128 (cleaned), for matching; one char over means it was cut, and nothing matches it. */
+  workflowId: string
 }
 
 /** A graph that is shown, or the one reason it is not. */
@@ -131,6 +135,7 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
   // Nodes by id, in document order; a repeated id keeps its first.
   const index = new Map<string, number>()
   const rows: Row[] = []
+  let workflowId = ''
   let skipped = 0
   for (const raw of doc.nodes.slice(0, MAX_NODES)) {
     const n = obj(raw)
@@ -140,6 +145,7 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
     }
     index.set(n.id, rows.length)
     const kind = typeof n.kind === 'string' && Object.hasOwn(KIND, n.kind) ? KIND[n.kind] : 'node'
+    if (kind === 'workflow' && workflowId === '') workflowId = clean(n.label, MAX_NAME + 1)
     rows.push({ depth: 1, kind, label: clean(n.label, MAX_LABEL) || clean(n.id, MAX_LABEL), detail: clean(n.detail, MAX_DETAIL), address: clean(n.address, MAX_ADDRESS) })
   }
   if (doc.nodes.length > MAX_NODES) {
@@ -216,7 +222,7 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
   // Without a single CONTAINS edge the nesting is not stated at all.
   const nested = parent.size > 0 || rows.length <= 1
   if (!nested) note('the graph states no nesting, so the nodes are listed in the order given')
-  return { graph: { rows: order.map(i => rows[i]), partial, notes: [...cli, ...own], nested, workflow: rows.find(r => r.kind === 'workflow')?.label ?? '' } }
+  return { graph: { rows: order.map(i => rows[i]), partial, notes: [...cli, ...own], nested, workflow: rows.find(r => r.kind === 'workflow')?.label ?? '', workflowId } }
 }
 
 /** `    ○ label — detail`: one row, indented by depth, the mark first. */

@@ -20,7 +20,25 @@ export interface Step {
   reason: string
 }
 
+/**
+ * One execution of a step as the timeline shows it, unfolded: a retry attempt
+ * or a repeated run of the same label is its own entry. The label is the
+ * engine's full one (bounded, cleaned), where a `Step`'s name is cut for the card.
+ */
+export interface Execution {
+  label: string
+  status: Status
+  attempt: number
+  /** The label reached the bound, so it may be a cut one and is never matched to a step. */
+  cut: boolean
+}
+
+/** Longest full label kept: a 128-byte id, backticks and the engine's ` · wait timeout` suffix fit. */
+const MAX_LABEL = 160
+
 export interface Detail {
+  /** Every execution in the order they began (for the graph overlay; the card reads `steps`). */
+  executions: Execution[]
   /** The steps in the order they began. */
   steps: Step[]
   /** A run-level failure (a row with no step), cleaned. */
@@ -40,6 +58,9 @@ const toMs = (t: unknown): number | undefined => {
 interface Raw {
   kind: string
   step: string
+  /** The label before the card's cut to 60. */
+  full: string
+  cut: boolean
   at?: number
   attempt: number
   failure: string
@@ -61,7 +82,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
   if (typeof doc !== 'object' || doc === null || !Array.isArray(doc.entries)) {
     // protojson leaves `entries` out of an empty account.
-    if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) return { detail: { steps: [], runFailure: '', truncated: doc.truncated === true } }
+    if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) return { detail: { executions: [], steps: [], runFailure: '', truncated: doc.truncated === true } }
     return { error: 'flow printed something that is not a timeline' }
   }
 
@@ -71,6 +92,8 @@ export const parseTimeline = (stdout: string): Parsed => {
     rows.push({
       kind: e.kind,
       step: clean(e.step, 60),
+      full: clean(e.step, MAX_LABEL),
+      cut: typeof e.step === 'string' && e.step.length >= MAX_LABEL,
       at: toMs(e.time),
       attempt: Number.isFinite(e.attempt) ? e.attempt : 0,
       failure: clean(e.failure, MAX_REASON),
@@ -78,6 +101,8 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
 
   const byName = new Map<string, Step & { began?: number }>()
+  const executions: Execution[] = []
+  const lastOf = new Map<string, Execution>()
   let runFailure = ''
   for (const r of rows) {
     if (r.kind === 'KIND_RUN_ENDED' || r.kind === 'KIND_RUN_CONTINUED' || r.step === '') {
@@ -86,6 +111,18 @@ export const parseTimeline = (stdout: string): Parsed => {
     }
     const known = statusOf(r.kind)
     if (known.kind === 'unknown') continue
+    // Unfolded: a row opens a new execution when it starts one and the label's last is over or on another attempt.
+    const attempt = Math.max(r.attempt, 1)
+    const last = lastOf.get(r.full)
+    const starts = r.kind === 'KIND_STEP_SCHEDULED' || r.kind === 'KIND_TIMER_STARTED'
+    if (last === undefined || (starts && (last.attempt !== attempt || (last.status.kind !== 'running' && last.status.kind !== 'waiting')))) {
+      const one = { label: r.full, status: known, attempt, cut: r.cut }
+      executions.push(one)
+      lastOf.set(r.full, one)
+    } else {
+      last.status = known
+      last.attempt = Math.max(last.attempt, attempt)
+    }
     let step = byName.get(r.step)
     if (!step) {
       step = { name: r.step, status: known, attempts: 0, reason: '', began: r.at }
@@ -101,7 +138,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
 
   const steps = [...byName.values()].map(({ began: _began, ...step }) => step)
-  return { detail: { steps, runFailure, truncated: doc.truncated === true || doc.entries.length > MAX_ENTRIES } }
+  return { detail: { executions, steps, runFailure, truncated: doc.truncated === true || doc.entries.length > MAX_ENTRIES } }
 }
 
 /**

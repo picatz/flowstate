@@ -1,6 +1,6 @@
-import type { Step } from './detail'
+import type { Execution } from './detail'
 import type { Graph, Row } from './graph'
-import { NOT_RUN, markedText, rowText } from './graph'
+import { MAX_NAME, NOT_RUN, markedText, rowText } from './graph'
 import { clean } from './runs'
 import { statusFor } from './vocab'
 import type { Status } from './vocab'
@@ -40,6 +40,8 @@ export interface Mark {
   steps: number
   /** The most attempts any of them shows. */
   attempts: number
+  /** The step's compensation (`<id> · undo` rows), when the timeline has one. */
+  undo?: Status
 }
 
 export interface Overlay {
@@ -51,6 +53,8 @@ export interface Overlay {
   ambiguous: number
   /** Graph step rows below the top level, which the timeline cannot be tied to. */
   nested: number
+  /** Timeline labels at the read bound: possibly cut, so never matched. */
+  cut: number
   /** Top-level graph steps with no timeline step. */
   silent: number
 }
@@ -80,9 +84,16 @@ export const aggregate = (statuses: readonly Status[]): Status => {
  * by two rows marks neither. Never throws; bounded by the graph (200 rows) and
  * the steps given (the detail card's own bound).
  */
-export const overlayStatus = (graph: Graph, steps: readonly Step[]): Overlay => {
-  const byLabel = new Map<string, Step[]>()
-  for (const s of steps) byLabel.set(s.name, [...(byLabel.get(s.name) ?? []), s])
+export const overlayStatus = (graph: Graph, steps: readonly Execution[]): Overlay => {
+  const byLabel = new Map<string, Execution[]>()
+  let cut = 0
+  for (const s of steps) {
+    if (s.cut) {
+      cut++
+      continue
+    }
+    byLabel.set(s.label, [...(byLabel.get(s.label) ?? []), s])
+  }
 
   const seen = new Map<string, number>()
   for (const r of graph.rows) if (r.kind === 'step' && TOP_LEVEL.test(r.address)) seen.set(r.address, (seen.get(r.address) ?? 0) + 1)
@@ -109,15 +120,25 @@ export const overlayStatus = (graph: Graph, steps: readonly Step[]): Overlay => 
       continue
     }
     used.add(key)
-    marks.set(r, { status: aggregate(found.map(s => s.status)), steps: found.length, attempts: Math.max(...found.map(s => s.attempts)) })
+    let status = aggregate(found.map(s => s.status))
+    // A compensation row for this very id: the effect was undone, so a plain success would mislead.
+    const undoKey = `${key} · undo`
+    const undos = byLabel.get(undoKey)
+    let undo: Status | undefined
+    if (undos !== undefined) {
+      used.add(undoKey)
+      undo = aggregate(undos.map(s => s.status))
+      if (status.kind === 'succeeded' && undo.kind === 'succeeded') status = statusFor('compensated')
+    }
+    marks.set(r, { status, steps: found.length, attempts: Math.max(...found.map(s => s.attempt)), undo })
   }
   // A step whose address was ambiguous was not placed, so it counts as unmatched too.
-  const unmatched = steps.filter(s => !used.has(s.name)).length
-  return { marks, unmatched, ambiguous, nested, silent }
+  const unmatched = [...byLabel.keys()].filter(k => !used.has(k)).length
+  return { marks, unmatched: unmatched + cut, ambiguous, nested, cut, silent }
 }
 
 /** The words after a marked row: `· succeeded`, with attempts and an aggregate stated. */
-export const markText = (m: Mark): string => ` · ${m.status.word}${m.attempts > 1 ? `, attempt ${m.attempts}` : ''}${m.steps > 1 ? `, ${m.steps} timeline steps` : ''}`
+export const markText = (m: Mark): string => ` · ${m.status.word}${m.attempts > 1 ? `, attempt ${m.attempts}` : ''}${m.steps > 1 ? `, ${m.steps} executions` : ''}${m.undo !== undefined && m.status.kind !== 'compensated' ? `, undo ${m.undo.word}` : ''}`
 
 /** One graph row as text: marked from the overlay, or with the not-run mark when it has no status. */
 export const liveRowText = (r: Row, overlay: Overlay): string => {
@@ -126,18 +147,23 @@ export const liveRowText = (r: Row, overlay: Overlay): string => {
 }
 
 /** The same workflow: the run's declared name is the graph's workflow node. Anything less is no overlay. */
-export const sameWorkflow = (graph: Graph, runName: unknown): boolean => graph.workflow !== '' && clean(runName, 60) === graph.workflow
+export const sameWorkflow = (graph: Graph, runName: unknown): boolean => {
+  // Both sides compare uncut (up to the schema's 128). A name past the bound on either side was cut, so it is never equal to anything.
+  if (typeof runName !== 'string' || runName.length > MAX_NAME || graph.workflowId.length > MAX_NAME) return false
+  return graph.workflowId !== '' && clean(runName, MAX_NAME + 1) === graph.workflowId
+}
 
 /** The headline of an overlaid graph; `from` is the run's short id. */
 export const liveHead = (graph: Graph, overlay: Overlay, file: string, from: string): string => {
   const steps = graph.rows.filter(r => r.kind === 'step').length
-  return `${clean(file, 200)}: ${steps} step${steps === 1 ? '' : 's'} as declared; status from run ${clean(from, 40)}: ${overlay.marks.size} of ${steps} have one; ${NOT_RUN} means no status from that run, not that the step did not run${graph.partial ? '; partial' : ''}`
+  return `${clean(file, 200)}: ${steps} step${steps === 1 ? '' : 's'} as declared; status from run ${clean(from, 40)}: ${overlay.marks.size} of ${steps} have one; ${NOT_RUN} means no status from that run, not that the step did not run; the file may have changed since that run${graph.partial ? '; partial' : ''}`
 }
 
 /** What the overlay could not place, one note each, in a fixed order. `clipped` is the server cutting the timeline. */
 export const overlayNotes = (overlay: Overlay, clipped: boolean): string[] => [
   ...(overlay.unmatched > 0 ? [`${overlay.unmatched} timeline step${overlay.unmatched === 1 ? '' : 's'} not in this graph's top-level steps (nested steps, timers, compensations and engine steps are not mapped)`] : []),
   ...(overlay.nested > 0 ? [`${overlay.nested} nested step${overlay.nested === 1 ? '' : 's'} keep ${NOT_RUN}: the timeline does not say which iteration, branch or arm a row belongs to`] : []),
+  ...(overlay.cut > 0 ? [`${overlay.cut} timeline step${overlay.cut === 1 ? '' : 's'} had a label too long to read whole and ${overlay.cut === 1 ? 'is' : 'are'} not matched`] : []),
   ...(overlay.ambiguous > 0 ? [`${overlay.ambiguous} graph step${overlay.ambiguous === 1 ? '' : 's'} share an address and get no status`] : []),
   ...(clipped ? ['the server clipped the timeline, so a step without a status may not have been read'] : []),
 ]

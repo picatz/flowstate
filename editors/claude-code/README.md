@@ -191,9 +191,21 @@ never passes `--live`, and contacts no server.
     (`settle · sleep`, `approval · wait timeout`), engine steps (`task capability
     admission`, `run vars`) and compensations are not mapped and are reported as
     "N timeline steps not in this graph's top-level steps".
-  - **Never a guess.** Two graph rows with one address get no status; several
-    timeline steps for one address aggregate (any failed is `✗`, else any running,
-    else any waiting, else all agreeing, else `? mixed`) and the count is said; a
+  - **Same name, not the same file.** A run is accepted when its workflow name
+    equals the graph's; the file may have changed since that run, and the
+    headline says so.
+  - **Compensation.** A top-level step whose `` `id` · undo `` row succeeded reads
+    `↺ compensated`, not a plain success; a failed or running undo is appended.
+  - **Labels at the bound.** A timeline label of 160 characters or more may be
+    cut, so it is never matched and is counted in a note.
+  - **Never a guess.** Two graph rows with one address get no status; each
+    execution of a label (every retry attempt, every repeated run, read from the
+    unfolded timeline rows, labels kept to 160 characters) is aggregated: any failed
+    is `✗`, else any running, else any waiting, else all agreeing, else `? mixed`,
+    and the count is said (a step that failed once and then succeeded on retry
+    reads `✗ failed, attempt 2, 2 executions`, conservatively); the run's name and
+    the graph's workflow name are compared uncut (up to the schema's 128), and a
+    name past 128 on either side matches nothing, so no overlay is shown; a
     clipped timeline adds a note that an unmarked step may not have been read.
 - **Bounded.** Output over 256 KiB is not parsed; at most 200 nodes and 400 edges
   are read, labels are cut to 60 characters and details to 80, and every string is

@@ -602,7 +602,7 @@ export const register: Register = (on, options) => {
     // Live status on the graph: only from the run already open above (its timeline is already read; nothing new is started),
     // and only when that run is of this graph's workflow. A different name is said, never overlaid.
     const withRun = steps && 'graph' in steps && id !== '' && detail !== undefined ? steps.graph : undefined
-    const overlaid = withRun !== undefined && sameWorkflow(withRun, known?.name) ? overlayStatus(withRun, detail!.steps) : undefined
+    const overlaid = withRun !== undefined && sameWorkflow(withRun, known?.name) ? overlayStatus(withRun, detail!.executions) : undefined
     const otherRun = withRun !== undefined && overlaid === undefined
     const fromRun = middleTruncate(id, 16)
     const fields: Field[] = schema && 'fields' in schema ? schema.fields : []
@@ -654,7 +654,7 @@ export const register: Register = (on, options) => {
             return (
               <Button key={`run:${clean(r.workflowId, 200)}`} label={one.text} plain onPress={async () => {
                 await update($, summary, () => ({
-                  name: clean(r.name, 80),
+                  name: clean(r.name, 129),
                   status: clean(r.status, 40),
                   startTime: clean(r.startTime, 40),
                   closeTime: clean(r.closeTime, 40),
