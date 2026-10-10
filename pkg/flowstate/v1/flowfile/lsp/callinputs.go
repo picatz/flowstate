@@ -6,6 +6,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"github.com/sourcegraph/go-lsp"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -51,11 +52,15 @@ import (
 // One reader for every question asked about a callee, where its `name:` is and
 // what inputs it declares, so a bound tightened for one is tightened for both.
 func readCalleeSource(path string) ([]byte, bool) {
-	f, err := os.Open(path)
+	// O_NONBLOCK so a FIFO opens at once, then the descriptor must be a regular file.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, false
 	}
 	defer f.Close()
+	if info, err := f.Stat(); err != nil || !info.Mode().IsRegular() {
+		return nil, false
+	}
 
 	// One byte past the bound, so that a file at exactly the limit is read whole
 	// and one above it is recognizable as over rather than silently truncated

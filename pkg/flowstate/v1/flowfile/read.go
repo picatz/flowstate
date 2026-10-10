@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"syscall"
 )
 
 // Three readers in this package take a path chosen by something other than a
@@ -28,7 +29,9 @@ import (
 // implementation shape, kept local to where the cycle otherwise happens to
 // be. See CLAUDE.md, "Bound anything that consumes untrusted input".
 func readBoundedSource(path string) ([]byte, error) {
-	f, err := os.Open(path)
+	// O_NONBLOCK so that opening a FIFO returns at once instead of waiting for a
+	// writer; the descriptor's kind is checked next, before any read.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
