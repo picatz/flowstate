@@ -1069,6 +1069,161 @@ func TestMCPSessionLimiterReleasesASlotTheSDKDoesNotKnow(t *testing.T) {
 		"a slot counting a session the SDK does not have must be released, not refreshed")
 }
 
+// mcpCommitSpy is the client's side of the wire: it runs observe at the moment
+// the status reaches the underlying writer, which is the earliest a client can
+// read it. Ordering is injected here rather than raced for.
+type mcpCommitSpy struct {
+	*httptest.ResponseRecorder
+	observe func()
+}
+
+func (s *mcpCommitSpy) WriteHeader(status int) {
+	s.observe()
+	s.ResponseRecorder.WriteHeader(status)
+}
+
+func (s *mcpCommitSpy) Flush() {
+	s.observe()
+	s.ResponseRecorder.Flush()
+}
+
+func mcpLimiterHasSession(l *mcpSessionLimiter, id string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	_, ok := l.active[id]
+
+	return ok
+}
+
+// TestMCPSessionLimiterSettlesBeforeTheClientCanReadTheStatus is #2191: a slot
+// freed (or a session counted) only after the handler returns is still held
+// while a client that already read the response opens its next session.
+func TestMCPSessionLimiterSettlesBeforeTheClientCanReadTheStatus(t *testing.T) {
+	t.Parallel()
+
+	newLimiter := func() *mcpSessionLimiter {
+		return newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, time.Now)
+	}
+	open := func(l *mcpSessionLimiter, id string) {
+		l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(mcpSessionHeader, id)
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	}
+	deleteOf := func(id string) *http.Request {
+		req := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+		req.Header.Set(mcpSessionHeader, id)
+
+		return req
+	}
+
+	t.Run("a DELETE frees the slot before its status is visible", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		open(l, "one")
+
+		var reusable bool
+		spy := &mcpCommitSpy{ResponseRecorder: httptest.NewRecorder()}
+		spy.observe = func() { reusable = l.open() == 0 }
+		l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(spy, deleteOf("one"))
+
+		require.True(t, reusable, "the slot must already be free when the client can read the 2xx")
+	})
+
+	t.Run("a bare flush commits an implicit 200", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		open(l, "one")
+
+		var reusable bool
+		spy := &mcpCommitSpy{ResponseRecorder: httptest.NewRecorder()}
+		spy.observe = func() { reusable = l.open() == 0 }
+		l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.(http.Flusher).Flush()
+		})).ServeHTTP(spy, deleteOf("one"))
+
+		require.True(t, reusable)
+	})
+
+	t.Run("an initialize is a session before its status is visible", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+
+		var counted bool
+		spy := &mcpCommitSpy{ResponseRecorder: httptest.NewRecorder()}
+		spy.observe = func() { counted = mcpLimiterHasSession(l, "new") }
+		l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(mcpSessionHeader, "new")
+			w.WriteHeader(http.StatusOK)
+		})).ServeHTTP(spy, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+		require.True(t, counted, "the reservation must already be a session when the client can read the response")
+		require.Equal(t, 1, l.open())
+	})
+
+	t.Run("a refused DELETE keeps the slot", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		open(l, "one")
+
+		for _, status := range []int{http.StatusForbidden, http.StatusInternalServerError} {
+			l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(status)
+			})).ServeHTTP(httptest.NewRecorder(), deleteOf("one"))
+		}
+
+		require.Equal(t, 1, l.open(), "only an accepted DELETE or a 404 may free a slot")
+		require.False(t, l.reserve(), "the bound must still hold")
+	})
+
+	t.Run("repeated writes settle once", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		l.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(mcpSessionHeader, "one")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("a"))
+			w.(http.Flusher).Flush()
+			_, _ = w.Write([]byte("b"))
+		})).ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+		require.Equal(t, 1, l.open(), "a second settle would drive the pending count negative and open the bound")
+		require.False(t, l.reserve())
+	})
+
+	t.Run("a handler that writes nothing still settles", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		l.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+
+		require.Equal(t, 0, l.open())
+	})
+
+	t.Run("a silent DELETE is an implicit 200 and frees the slot", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		open(l, "one")
+
+		l.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), deleteOf("one"))
+
+		require.Equal(t, 0, l.open())
+		open(l, "two")
+		require.True(t, mcpLimiterHasSession(l, "two"), "the next initialize at the limit must be admitted")
+	})
+}
+
 // TestMCPServeAtABareOriginServesOnlyTheRootPath is Codex's other finding on
 // #807: a resource identifier naming a bare origin has the path "/", and
 // [http.ServeMux] reads a pattern ending in "/" as a *subtree*, so registering
