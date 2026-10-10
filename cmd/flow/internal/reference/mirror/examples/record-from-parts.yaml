@@ -1,6 +1,6 @@
 # Reuse, by what is being reused. An expression is a function, a shape is a type, a
 # record built from parts is a function that returns a type, and a sequence of steps is
-# a workflow another one `call:`s (or a module workflow taken with `use:`). There is no
+# a workflow another one `call:`s (`use:` takes only step-less modules of functions and types). There is no
 # template for steps: a repeated sequence is a process with a contract, so it is a
 # child workflow.
 #

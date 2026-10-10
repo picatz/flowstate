@@ -1733,7 +1733,7 @@ invariant 2 is one mechanism per concept, and a second step-sequence template be
 | An expression | a function (`functions:`) | its body, inlined at each call |
 | A shape | a type (`types:`) | the record or the base type and its rule |
 | A record built from parts | a function that `returns:` a type | a map, held to the type where it is bound |
-| A sequence of steps | a child workflow, by `call:` or a module workflow taken with `use:` | the callee's steps, with a contract |
+| A sequence of steps | a child workflow, by `call:` (a `use:` module has no steps; it shares functions and types) | the callee's steps, with a contract |
 
 A record is a map at run time, so a function returns one with a map literal and names the
 record in `returns:`. The record's rules are held where the value is bound, not where the
