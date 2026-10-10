@@ -1,0 +1,69 @@
+# A workflow that takes its vocabulary from the starter modules beside it.
+#
+# `ids.yaml`, `numbers.yaml` and `errors.yaml` in this directory are a small library
+# to copy: none of them has steps, so none can run, and each is checked by
+# `flow validate`, `flow fmt` and `flow lint` like any other file. This workflow is
+# the one that runs, and it shows the shape of using them: every name is qualified by
+# the alias (`ids.Uuid`, `numbers.clamp`, `errs.PermissionDenied`), a module is read
+# from disk when the file compiles, and everything it declares is inlined here, so
+# both drivers run plain CEL and no worker ever opens a module.
+#
+# The input types do the validating. `owner` that is not a UUID, `port` outside
+# 1 to 65535 or `canary` above 100 is refused before the run starts, and the check
+# lives in one module instead of being copied into each workflow that takes a port.
+#
+# `ids` is pinned. The digest is the hash of the bytes this author read, so an edit
+# to `ids.yaml` stops this file compiling until someone reads the change and runs
+# `flow fix --repin examples/lib`. `numbers` and `errs` are not pinned, so an edit to
+# them is picked up the next time this file is compiled; pin the modules whose change
+# should stop the world.
+#
+#   flow run local examples/lib/workflow.yaml \
+#       --input-file examples/lib/inputs.json
+edition: v2026.4
+name: lib
+use:
+  ids:
+    path: ./ids.yaml
+    digest: sha256:62d97e15d3e283bf1929a09499ce92ca51d0c9f850e696f11f16c618733d2763
+  numbers:
+    path: ./numbers.yaml
+  errs:
+    path: ./errors.yaml
+inputs:
+  owner:
+    type: ids.Uuid
+    required: true
+    description: the account that owns the service
+  service:
+    type: ids.Slug
+    required: true
+    description: the name the service is deployed under
+  port:
+    type: numbers.Port
+    default: 8080
+    description: where the service listens
+  canary:
+    type: numbers.Percent
+    default: 10
+    description: the share of traffic the new version receives
+  replicas:
+    type: numbers.Count
+    default: 2
+    description: how many copies to run, before the cluster's limit is applied
+steps:
+  - id: guard
+    if: ${inputs.service == "admin"}
+    fail:
+      error: errs.PermissionDenied
+      message: ${"the service name " + inputs.service + " is reserved"}
+  - id: sized
+    value: ${numbers.clamp(inputs.replicas, 1, 5)}
+  - id: deploy
+    log:
+      message: ${"deploying %s for %s on port %d with %d replicas".format([inputs.service, inputs.owner, inputs.port, steps.sized.value])}
+outputs:
+  replicas:
+    value: ${steps.sized.value}
+    type: numbers.Count
+    description: the replicas deployed, never more than the cluster allows

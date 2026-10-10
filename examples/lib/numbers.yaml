@@ -1,0 +1,42 @@
+# A starter module: numbers with a meaning, and the arithmetic that keeps them there.
+#
+# A scalar type is a built-in base and a rule over `this`. `Port` is an `int` that is
+# also a usable port, so an input declared `numbers.Port` is refused before the run
+# starts when it is not one. A function sees only its parameters, so `clamp` takes
+# its bounds as arguments instead of reading them from somewhere.
+edition: v2026.4
+name: numbers
+description: Counts, percentages and ports, and the helpers that bound them.
+types:
+  Port:
+    description: A TCP or UDP port a service can listen on.
+    type: int
+    must: inRange(this, 1, 65535)
+    example: 8080
+  Percent:
+    description: A whole number from 0 to 100.
+    type: int
+    must: inRange(this, 0, 100)
+    example: 25
+  Count:
+    description: A whole number of things, at least one.
+    type: int
+    must: this >= 1
+    example: 3
+functions:
+  inRange:
+    description: Whether value lies between lo and hi, both included.
+    params:
+      value: int
+      lo: int
+      hi: int
+    returns: bool
+    body: ${value >= lo && value <= hi}
+  clamp:
+    description: value, raised to lo or lowered to hi when it lies outside them.
+    params:
+      value: int
+      lo: int
+      hi: int
+    returns: int
+    body: ${math.least(math.greatest(value, lo), hi)}

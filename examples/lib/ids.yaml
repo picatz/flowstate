@@ -1,0 +1,34 @@
+# A starter module: identifiers worth checking once.
+#
+# Copy the modules in this directory next to your workflows and name them under
+# `use:` (workflow.yaml here does). A module is read whole and every declaration in
+# it is public, so there is nothing to learn but the rules: change a rule here and
+# every file that uses the module gets it, which is why a file that must not change
+# silently pins the module with `digest:`.
+edition: v2026.4
+name: ids
+description: Identifiers a workflow takes as input, with the rule each must satisfy.
+types:
+  Uuid:
+    description: A version 1 to 5 UUID in its lowercase, hyphenated form.
+    type: string
+    must: isUuid(this)
+    example: 123e4567-e89b-42d3-a456-426614174000
+  Slug:
+    description: Lowercase words joined by single dashes, at most 63 characters.
+    type: string
+    must: isSlug(this) && size(this) <= 63
+    example: checkout-api
+functions:
+  isUuid:
+    description: Whether text is a lowercase, hyphenated UUID of version 1 to 5.
+    params:
+      text: string
+    returns: bool
+    body: ${text.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")}
+  isSlug:
+    description: Whether text is lowercase letters and digits joined by single dashes.
+    params:
+      text: string
+    returns: bool
+    body: ${text.matches("^[a-z0-9]+(-[a-z0-9]+)*$")}

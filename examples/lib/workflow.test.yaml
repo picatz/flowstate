@@ -1,0 +1,80 @@
+# The modules' declarations only matter where they are used, so these cases cross the
+# boundary in both directions: a value the starter types admit runs, one they refuse
+# never starts, and the function and the error the modules declare decide a step the
+# way a local declaration would.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: values the starter types admit are deployed
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: checkout-api
+    expect:
+      ran: [sized, deploy]
+      skipped: [guard]
+      outputs:
+        replicas: 2
+
+  - name: a function the library declares bounds a count
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: checkout-api
+      replicas: 40
+    expect:
+      outputs:
+        replicas: 5
+
+  - name: an error the library declares is the failure
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: admin
+    expect:
+      failed: {step: guard, error: errs.PermissionDenied}
+      error_contains: the service name admin is reserved
+
+  - name: Uuid refuses an owner that is not a UUID
+    inputs:
+      owner: not-a-uuid
+      service: checkout-api
+    expect:
+      failed: true
+      error_contains: owner
+
+  - name: Slug refuses a name with capitals
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: Checkout API
+    expect:
+      failed: true
+      error_contains: service
+
+  - name: Port refuses a number past the last port
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: checkout-api
+      port: 70000
+    expect:
+      failed: true
+      error_contains: port
+
+  - name: Percent refuses a share above one hundred
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: checkout-api
+      canary: 101
+    expect:
+      failed: true
+      error_contains: canary
+
+  - name: Count refuses zero replicas
+    inputs:
+      owner: 123e4567-e89b-42d3-a456-426614174000
+      service: checkout-api
+      replicas: 0
+    expect:
+      failed: true
+      error_contains: replicas
