@@ -2,7 +2,7 @@ import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
 import { DEFAULT_ADDRESS } from './guard'
 import { clean } from './runs'
-import { baseName, chip, middleTruncate, statusFor, statusOf } from './vocab'
+import { baseName, middleTruncate, statusOf } from './vocab'
 
 /** What the Runs pane last learned from a server: when, which address, and the runs that need a person. */
 export interface Seen {
@@ -48,39 +48,24 @@ export interface Inputs {
 }
 
 /**
- * The status line, plain text: every status is a symbol and a word, and every
- * fact comes from state already held, so drawing it runs nothing. With nothing
- * known it names the one command to start. A server's counts show only while
- * fresh and only when someone needs attending to; they carry the time they
- * were read, since the line is redrawn on events, not by a clock.
+ * The status line, plain text: empty unless something needs a person. Only
+ * real attention shows, behind one leading `⚠`: a validate with errors, a
+ * failed local run, a verification still owed after an edit, and runs the
+ * server reports as failed. A passing check, a validate that could not run, and
+ * nothing known at all print nothing, and the line never suggests a command
+ * (it cannot tell whether the pane is open). Every fact comes from state
+ * already held, so drawing it runs nothing; a server's count shows only while
+ * fresh and carries the time it was read, since the line is redrawn on events,
+ * not by a clock. The host already prefixes the line with the mod's name.
  */
 export const statusText = ({ report, run, owes, seen, now }: Inputs): string => {
   const parts: string[] = []
-  if (report !== undefined) {
-    const n = report.diagnostics.length
-    const s =
-      report.failure !== undefined
-        ? statusFor('unknown', 'did not run')
-        : n > 0
-          ? statusFor('failed', `${count(n)} error${n === 1 ? '' : 's'}`)
-          : statusFor('succeeded', 'ok')
-    parts.push(`validate ${chip(s)} ${file(report.file)}`)
-  }
-  if (run !== undefined && run.kind !== '') {
-    const s =
-      run.kind === 'ok'
-        ? statusFor('succeeded')
-        : run.kind === 'failed'
-          ? statusFor('failed')
-          : run.kind === 'notrun'
-            ? statusFor('skipped', 'not run')
-            : statusFor('unknown')
-    parts.push(`run ${chip(s)} ${file(run.file)}`)
-  }
-  if (owes !== undefined) parts.push(chip(statusFor('waiting', `owes ${clean(owes, 20)}`)))
+  const n = report?.failure === undefined ? (report?.diagnostics.length ?? 0) : 0
+  if (report !== undefined && n > 0) parts.push(`validate ${count(n)} error${n === 1 ? '' : 's'} ${file(report.file)}`)
+  if (run?.kind === 'failed') parts.push(`run failed ${file(run.file)}`)
+  if (owes !== undefined) parts.push(`owes ${clean(owes, 20)}`)
   if (seen !== undefined && seen.at > 0 && now >= seen.at && now - seen.at < FRESH_MS && seen.failed > 0) {
-    parts.push(`server ${middleTruncate(seen.address || DEFAULT_ADDRESS, 30)} ${chip(statusFor('failed', `${count(seen.failed)} need attention`))} at ${clock(seen.at)}`)
+    parts.push(`server ${middleTruncate(seen.address || DEFAULT_ADDRESS, 30)} ${count(seen.failed)} need attention at ${clock(seen.at)}`)
   }
-  // The host already prefixes the line with the mod's name.
-  return parts.length === 0 ? 'nothing checked yet · run /flowstate' : parts.join(' · ')
+  return parts.length === 0 ? '' : `⚠ ${parts.join(' · ')}`
 }

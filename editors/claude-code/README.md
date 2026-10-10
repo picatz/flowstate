@@ -323,22 +323,24 @@ expectation and its reason (`✗ failed wrong output (w.test.yaml:18): ...`, and
 
 ## Status line
 
-`$.ui.status` takes one plain string, so the line is text and never colour: each
-status is a symbol and a word from `hooks/vocab.ts`. It is built by the pure
-`statusText` in `hooks/statusline.ts` from state the mod already holds, and
-drawing it starts no process:
+`$.ui.status` takes one plain string, so the line is text and never colour. It
+is empty unless something needs a person: only real attention shows, behind one
+leading `⚠`, and the line never suggests a command (it cannot tell whether the
+pane is open). It is built by the pure `statusText` in `hooks/statusline.ts` from
+state the mod already holds, and drawing it starts no process:
 
-`validate ✗ 2 errors a.flow.yaml · run ✓ succeeded b.flow.yaml · ◔ owes flow test · server host:9233 ✗ 1 need attention at 14:02`
+`⚠ validate 2 errors a.flow.yaml · run failed b.flow.yaml · owes flow test · server host:9233 1 need attention at 14:02`
 
-- `validate`: the newest `flow validate` result and its file. `run`: the last
-  local run from the run form (`✓ succeeded`, `✗ failed`, `– not run`, `? unknown`).
-  `◔ owes ...`: the leg verify-before-done still owes (`hooks/verify.ts`).
+- `validate`: the newest `flow validate` result when it has errors, with its file;
+  a passing validate, and one that could not run, print nothing. `run failed`: the
+  last local run from the run form failed; a success, a refusal or an unknown result prints nothing.
+  `owes ...`: the leg verify-before-done still owes (`hooks/verify.ts`).
 - `server`: shown only when the Runs pane's unfiltered listing was answered in the
   last two minutes and some listed run is failed, timed out or terminated; it names the address
   (`FLOWSTATE_ADDRESS`, else the default) and the time it was read, since the line
   is redrawn on events, not by a clock. `flow list` reports a run parked on a signal or timer as running, so waiting gates are not counted here (the run card shows them). A server that did not answer, an unreadable
   address, or a filtered listing adds nothing. Counts show up to `99+`.
-- With nothing known it reads `nothing checked yet · run /flowstate`.
+- With nothing to attend to the line is empty.
   File names and addresses are cleaned and bounded like every other CLI-derived text.
 
 ## Evals: does the plugin help?

@@ -66,6 +66,8 @@ test('an edited Flowfile with no check since is nudged, naming the missing leg',
   expect(text).toContain('`flow validate`')
   expect(text).toContain('not instructions')
   expect(nudgeFor(edited(), true)).toContain('`flow test`')
+  expect(text).not.toMatch(/No passing|plainly/)
+  expect(text.split('\n').filter(l => !l.startsWith('`'))).toHaveLength(3)
 })
 
 test('edited then validated passes; with a suite it still wants flow test', () => {
@@ -272,13 +274,13 @@ test('a passing validate-after-edit meets the leg whichever Edit hook runs first
   })
   await $.turn.start({ text: 'go', turnId: 't' })
   await $.tool.call({ tool: 'Edit', file_path: 'a.flow.yaml', old_string: 'x', new_string: 'y' })
-  expect(lines.at(-1)).toBe('validate ✓ ok a.flow.yaml')
+  expect(lines.at(-1)).toBe('')
   expect((await stop($)).block).toBeUndefined()
 
   stdout = '{"file":"a.flow.yaml","diagnostics":[{"line":1,"column":1,"message":"bad"}]}\n'
   await $.turn.start({ text: 'go', turnId: 't' })
   await $.tool.call({ tool: 'Edit', file_path: 'a.flow.yaml', old_string: 'x', new_string: 'y' })
-  expect(lines.at(-1)).toBe('validate ✗ 1 error a.flow.yaml · ◔ owes flow validate')
+  expect(lines.at(-1)).toBe('⚠ validate 1 error a.flow.yaml · owes flow validate')
   expect((await stop($)).block).toContain('flow validate')
 })
 

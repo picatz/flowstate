@@ -76,11 +76,11 @@ export const formatContext = ({ file, tasks, report }: Gathered): string | undef
       'Run `flow tasks <name>` for one task in full.',
     )
   } else {
-    lines.push('Task catalog unavailable: `flow tasks` did not answer.')
+    lines.push('flow tasks: no result')
   }
   const shown = clean(file, MAX_PATH)
   if (report === undefined) {
-    lines.push(`Last validation of ${shown} unavailable: \`flow validate\` did not answer.`)
+    lines.push(`flow validate ${shown}: no result`)
   } else if (report.diagnostics.length === 0) {
     lines.push(`flow validate ${shown}: valid`)
   } else {

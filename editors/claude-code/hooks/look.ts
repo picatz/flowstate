@@ -94,9 +94,9 @@ export const labelsFor = (files: readonly unknown[]): string[] => {
 
 /** One short line per empty state: what is missing, then the one next action. */
 export const COPY = {
-  runs: 'No runs yet. Run a Flowfile below.',
+  runs: 'No runs yet.',
   runsFiltered: 'No runs match the filter.',
-  noFlowfile: 'No Flowfile here. Try /flowstate:new <what you want>.',
+  noFlowfile: 'No Flowfile here.',
   graph: 'Pick a Flowfile to see its steps.',
   flowfiles: 'Edit a Flowfile and it shows up here.',
 } as const

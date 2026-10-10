@@ -90,10 +90,16 @@ test('control characters in diagnostics and file names never reach the block', (
   expect(text).toContain('boom]0;pwn')
 })
 
+test('an unanswered leg never reads as a failure of the other, and nothing says "did not answer"', () => {
+  const text = formatContext({ file: 'a.flow.yaml', report: { file: 'a.flow.yaml', diagnostics: [] } }) ?? ''
+  expect(text).toContain('flow validate a.flow.yaml: valid')
+  expect(text).not.toMatch(/did not answer|unavailable/)
+})
+
 test('a leg that failed is said once, and both failing adds nothing', () => {
-  expect(formatContext({ file: 'a.flow.yaml', tasks: ['http'] })).toContain('`flow validate` did not answer')
+  expect(formatContext({ file: 'a.flow.yaml', tasks: ['http'] })).toContain('flow validate a.flow.yaml: no result')
   expect(formatContext({ file: 'a.flow.yaml', report: { file: 'a.flow.yaml', diagnostics: [] } })).toContain(
-    '`flow tasks` did not answer',
+    'flow tasks: no result',
   )
   expect(formatContext({ file: 'a.flow.yaml' })).toBeUndefined()
 })
@@ -159,7 +165,7 @@ test('a non-zero flow tasks is left out while the validation still shows', async
   const sent = await $.prompt.submit({ text: 'fix a.flow.yaml' })
 
   const context = (sent.context ?? []).join('\n')
-  expect(context).toContain('`flow tasks` did not answer')
+  expect(context).toContain('flow tasks: no result')
   expect(context).toContain('a.flow.yaml: valid')
 })
 

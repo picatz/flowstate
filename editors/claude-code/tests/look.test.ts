@@ -72,8 +72,8 @@ test('empty-state copy is short, names one next action, and has no mechanism tal
     expect(line.length).toBeLessThanOrEqual(60)
     expect(line).not.toMatch(/flow run local|flow graph|no server/)
   }
-  expect(COPY.runs).toBe('No runs yet. Run a Flowfile below.')
-  expect(COPY.noFlowfile).toBe('No Flowfile here. Try /flowstate:new <what you want>.')
+  expect(COPY.runs).toBe('No runs yet.')
+  expect(COPY.noFlowfile).toBe('No Flowfile here.')
   expect(COPY.graph).toBe('Pick a Flowfile to see its steps.')
   expect(COPY.flowfiles).toBe('Edit a Flowfile and it shows up here.')
 })
