@@ -3,10 +3,13 @@ package engine_test
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
@@ -36,6 +39,56 @@ func waitFixtures(cost string) map[string]func(id string) *v1.Node {
 		"a past wait_until": func(id string) *v1.Node {
 			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
 				Kind: &v1.Wait_Until{Until: v1.NewExpr(cost + " > 0 ? timestamp('2000-01-01T00:00:00Z') : now")},
+			}}}
+		},
+		"a shaped signal's outputs": func(id string) *v1.Node {
+			// Shaping runs when the wait resolves, and a zero timeout resolves it
+			// before it parks.
+			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_Signal{Signal: &v1.Signal{
+					Name:    "never-sent",
+					Outputs: map[string]*v1.Value{"size": v1.NewExpr(cost)},
+				}},
+				Timeout: durationpb.New(0),
+			}}}
+		},
+		"a shaped batch's outputs": func(id string) *v1.Node {
+			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{
+					Name:    "never-sent",
+					Outputs: map[string]*v1.Value{"size": v1.NewExpr(cost)},
+				}},
+				Timeout: durationpb.New(0),
+			}}}
+		},
+		"a zero batch timeout": func(id string) *v1.Node {
+			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind:        &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{Name: "never-sent"}},
+				TimeoutExpr: v1.NewExpr(cost + " > 0 ? duration('0s') : duration('1s')"),
+			}}}
+		},
+		"a signal prompt": func(id string) *v1.Node {
+			// Evaluated after the wait has been found unable to resolve early,
+			// so the wait parks on a one-second timer the test clock skips.
+			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind:    &v1.Wait_Signal{Signal: &v1.Signal{Name: "never-sent", Prompt: v1.NewExpr("string(" + cost + ")")}},
+				Timeout: durationpb.New(time.Second),
+			}}}
+		},
+		"a batch prompt": func(id string) *v1.Node {
+			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind:    &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{Name: "never-sent", Prompt: v1.NewExpr("string(" + cost + ")")}},
+				Timeout: durationpb.New(time.Second),
+			}}}
+		},
+		"a quorum prompt": func(id string) *v1.Node {
+			return &v1.Node{Id: id, Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{
+					Name:   "never-sent",
+					Prompt: v1.NewExpr("string(" + cost + ")"),
+					Quorum: &v1.SignalQuorum{Approve: 1},
+				}},
+				Timeout: durationpb.New(time.Second),
 			}}}
 		},
 		"a zero signal timeout": func(id string) *v1.Node {
@@ -148,4 +201,85 @@ func TestASegmentOfCheapLazilyResolvedOutputsDoesNotSuspend(t *testing.T) {
 
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError(), "cheap stored outputs must resolve within one segment")
+}
+
+// quorumDeliveries is few on purpose: each heavy evaluation runs inside one step
+// with no yield, so more of them than the slice threshold needs only risks the
+// deadlock detector.
+const quorumDeliveries = 8
+
+// quorumState is a quorum wait over quorumDeliveries carried deliveries followed by a
+// free step. The deliveries are already carried, so the wait drains them without
+// parking and the zero timeout ends it; a segment boundary falls between the two
+// steps, which is where the spent cost is read. Approve is above the delivery
+// count so the tally never decides early and every delivery is evaluated.
+func quorumState(approved bool, veto *v1.Value, exclude []*v1.Value) *v1.RunState {
+	pending := make([]*v1.PendingSignal, quorumDeliveries)
+	for i := range pending {
+		pending[i] = &v1.PendingSignal{
+			Name: "votes",
+			Payload: &v1.Node_Outputs{NamedValues: map[string]*v1.Value{
+				"approved": v1.NewLiteral(approved),
+			}},
+		}
+	}
+
+	return &v1.RunState{
+		Workflow: &v1.Workflow{Name: "quorum-cost", Profile: v1.CurrentProfile, Steps: []*v1.Node{
+			{Id: "gate", Kind: &v1.Node_Wait{Wait: &v1.Wait{
+				Kind: &v1.Wait_SignalBatch{SignalBatch: &v1.SignalBatch{
+					Name:   "votes",
+					Quorum: &v1.SignalQuorum{Approve: 100, Distinct: proto.Bool(false), Veto: veto, Exclude: exclude},
+				}},
+				Timeout: durationpb.New(0),
+			}}},
+			{Id: "after", Kind: &v1.Node_Value{Value: v1.NewLiteral(int64(1))}},
+		}},
+		PendingSignals: pending,
+		StepsBudget:    10_000,
+	}
+}
+
+func quorumFixtures(cost string) map[string]*v1.RunState {
+	return map[string]*v1.RunState{
+		"a quorum veto":    quorumState(true, v1.NewExpr(cost+" < 0"), nil),
+		"a quorum exclude": quorumState(true, nil, []*v1.Value{v1.NewExpr(cost + " < 0 ? ['nobody'] : []")}),
+	}
+}
+
+func TestASegmentSuspendsOnTheCostOfQuorumExpressions(t *testing.T) {
+	t.Parallel()
+
+	for name, state := range quorumFixtures(heavySliceExpr) {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			env := atABound(newWaitEnv(t))
+			env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
+
+			carried := carriedState(t, env, state)
+
+			require.NotEmpty(t, carried.GetFrames(), "the segment suspended without recording where to resume")
+			assert.Equal(t, int32(1), carried.GetFrames()[0].GetNextNode(),
+				"the segment did not suspend between the gate and the step after it")
+		})
+	}
+}
+
+func TestASegmentOfCheapQuorumExpressionsDoesNotSuspend(t *testing.T) {
+	t.Parallel()
+
+	for name, state := range quorumFixtures("1") {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			env := newWaitEnv(t)
+			env.OnUpsertMemo(mock.Anything).Return(nil).Maybe()
+
+			env.ExecuteWorkflow(engine.Run, state)
+
+			require.True(t, env.IsWorkflowCompleted())
+			require.NoError(t, env.GetWorkflowError(), "a cheap quorum must finish in one segment")
+		})
+	}
 }

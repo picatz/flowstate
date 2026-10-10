@@ -806,6 +806,11 @@ func (e *executor) chargeValueCost(cost uint64) {
 // a replay charging more could cross the threshold — and emit a
 // Continue-As-New — at a boundary where the recorded history holds an activity.
 //
+// The wait expressions and the lazily resolved output expressions were added to
+// version 2 in place, on purpose: Flowstate is pre-release with no deployed
+// histories, so a version 2 history recorded before that change is not
+// replay-compatible (its larger slice-cost sum can suspend at an earlier boundary).
+//
 // The split covers which expressions are charged, not what any one of them
 // costs; see [workflowSliceCostChange] for the half no version can gate.
 func (e *executor) chargeWorkflowCost(cost uint64) {
