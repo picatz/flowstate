@@ -70,7 +70,7 @@ test('with no Flowfile chosen the Graph section is an empty state naming the one
 
 test('choosing a Flowfile reads its steps with exactly flow graph -o json --workflow NAME -- FILE, 10 s, and draws the rows', async ($, on) => {
   const { ui, seen } = await open($, on)
-  expect(graphs(seen)).toEqual([['flow', 'graph', '-o', 'json', '--workflow', 'deploy', '--', 'deploy.flow.yaml']])
+  expect(graphs(seen)).toEqual([['flow', 'graph', '-o', 'json', '--workflow=deploy', '--', 'deploy.flow.yaml']])
   expect(limits.at(-1)).toBe(10000)
   expect(graphs(seen)[0]).not.toContain('--live')
   const all = await texts(ui)
@@ -122,7 +122,7 @@ test('a partial graph is labelled partial and its notes are shown', async ($, on
   await ui.unmount()
 })
 
-for (const [why, source] of [['no top-level name', 'steps: []\n'], ['a flag-like name', 'name: --live\n'], ['an unreadable file', 'deny']] as const) {
+for (const [why, source] of [['no top-level name', 'steps: []\n'], ['an invalid name', 'name: a;b\n'], ['an unreadable file', 'deny']] as const) {
   test(`a file with ${why} runs nothing and says why`, async ($, on) => {
     const { ui, seen } = await open($, on, { source })
     expect(graphs(seen)).toEqual([])

@@ -157,10 +157,10 @@ The pane's `Graph` section draws one Flowfile's steps as text, for the file the
 the command). It is read only: it writes no file,
 never passes `--live`, and contacts no server.
 
-- **One graph model.** `flow graph -o json --workflow <name> -- <file>` (10 s)
+- **One graph model.** `flow graph -o json --workflow=<name> -- <file>` (10 s)
   prints the schema's `flowstate.v1.Graph`, the document `flow explore` and the
   debugger read. `<name>` is the file's own top-level `name:` (it must match the
-  schema's name pattern and cannot start with `-`; the CLI checks it against the
+  schema's name grammar; it may start with `-`, so it is one `--workflow=<name>` argument; the CLI checks it against the
   file, and its refusal is shown). The file must be one the run form offers. The
   mod keeps no graph model of its own (`hooks/graph.ts`, pure and tested).
 - **Rows.** One row per node in the document's order, `○ label — detail`, nested
@@ -176,7 +176,7 @@ never passes `--live`, and contacts no server.
   cleaned of control, escape and bidi characters. A cut says so in a note.
 - **Partial is labelled.** A graph the CLI marks partial (a file in the path that
   does not compile, a bound it reached) says `partial` in its headline and shows
-  its notes (at most 5).
+  its notes (at most 5 of the CLI's, plus the view's own notes, which are never crowded out).
 - **Failure is one line.** A refusal, a timeout, malformed or cut output, or a
   file with no plain `name:` shows `Graph unavailable (<reason>)`; the run form
   and the Flowfiles list are unaffected. The read, a failure included, is cached

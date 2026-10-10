@@ -18,7 +18,7 @@ import { clean } from './runs'
 export const MAX_STDOUT = 256 * 1024
 export const MAX_NODES = 200
 export const MAX_EDGES = 400
-/** Notes shown, and the characters of each. */
+/** The CLI's own notes shown; the view's own truncation notes and the "more notes" line are always shown besides. */
 export const MAX_NOTES = 5
 const MAX_NOTE = 160
 const MAX_LABEL = 60
@@ -31,8 +31,8 @@ export const GRAPH_TIMEOUT_MS = 10000
 /** The mark of a step nothing has run: the structure is declared, no run is overlaid. */
 export const NOT_RUN = '○'
 
-/** A workflow's declared name: the schema's pattern, and never starting with `-`, so it cannot be a flag. */
-export const WORKFLOW_NAME = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$/
+/** A workflow's declared name: the schema's grammar (`^[A-Za-z0-9-_]+$`, 1 to 128). It may start with `-`, so it travels as `--workflow=<name>`. */
+export const WORKFLOW_NAME = /^[A-Za-z0-9_-]{1,128}$/
 
 /**
  * The declared name from a Flowfile's text: the first top-level `name:` line,
@@ -52,7 +52,7 @@ export const workflowName = (text: string): string | undefined => {
  */
 export const graphArgv = (flow: string, file: string, name: string): string[] | undefined => {
   if (!RUN_FILE.test(file) || !isFlowfile(file) || !WORKFLOW_NAME.test(name)) return undefined
-  return [flow, 'graph', '-o', 'json', '--workflow', name, '--', file]
+  return [flow, 'graph', '-o', 'json', `--workflow=${name}`, '--', file]
 }
 
 /** One line of the drawn graph. */
@@ -112,15 +112,16 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
   }
   if (doc === undefined || !Array.isArray(doc.nodes) || (doc.edges !== undefined && !Array.isArray(doc.edges))) return { unreadable: 'the output was not a graph document' }
 
-  const notes: string[] = []
+  // The CLI's notes are cut to MAX_NOTES; the view's own notes (a fixed few) are kept apart so they can never be crowded out.
+  const own: string[] = []
   const note = (n: string) => {
-    if (notes.length < MAX_NOTES) notes.push(clean(n, MAX_NOTE))
+    own.push(clean(n, MAX_NOTE))
   }
   let partial = doc.partial === true
   const given = Array.isArray(doc.notes) ? doc.notes : []
-  for (const n of given.slice(0, MAX_NOTES)) if (typeof n === 'string' && clean(n, MAX_NOTE) !== '') note(n)
+  const cli = given.flatMap(n => (typeof n === 'string' && clean(n, MAX_NOTE) !== '' ? [clean(n, MAX_NOTE)] : [])).slice(0, MAX_NOTES)
   if (given.length > MAX_NOTES) note(`${given.length - MAX_NOTES} more notes not shown`)
-  if (partial && notes.length === 0) note('the graph says it is partial and gives no reason')
+  if (partial && cli.length === 0) note('the graph says it is partial and gives no reason')
 
   // Nodes by id, in document order; a repeated id keeps its first.
   const index = new Map<string, number>()
@@ -185,10 +186,12 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
       roots.push(i)
     }
   }
+  let flattened = false
   const walk = (i: number, depth: number) => {
     const stack: [number, number][] = [[i, depth]]
     while (stack.length > 0) {
       const [at, d] = stack.pop()!
+      if (d > MAX_DEPTH) flattened = true
       rows[at].depth = Math.min(d, MAX_DEPTH)
       order.push(at)
       for (const c of (children.get(at) ?? []).toReversed()) stack.push([c, d + 1])
@@ -201,10 +204,14 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
     partial = true
     note(`${stray} nodes are contained in a cycle and are listed unnested`)
   }
+  if (flattened) {
+    partial = true
+    note(`nesting deeper than ${MAX_DEPTH} levels is drawn at level ${MAX_DEPTH}`)
+  }
   // Without a single CONTAINS edge the nesting is not stated at all.
   const nested = parent.size > 0 || rows.length <= 1
   if (!nested) note('the graph states no nesting, so the nodes are listed in the order given')
-  return { graph: { rows: order.map(i => rows[i]), partial, notes, nested } }
+  return { graph: { rows: order.map(i => rows[i]), partial, notes: [...cli, ...own], nested } }
 }
 
 /** `    ○ label — detail`: one row, indented by depth, the mark first. */

@@ -196,8 +196,10 @@ test('workflowName reads the top-level name only, plain or quoted, and refuses a
   expect(workflowName('# c\nname: "a_b-1"  # note\n')).toBe('a_b-1')
   expect(workflowName("name: 'x'\n")).toBe('x')
   expect(workflowName('steps:\n  - name: nested\n')).toBeUndefined()
-  expect(workflowName('name: -rf\n')).toBeUndefined()
-  expect(workflowName('name: --live\n')).toBeUndefined()
+  // The schema allows a leading `-`; it is safe because the argv element is `--workflow=<name>`.
+  expect(workflowName('name: -deploy\n')).toBe('-deploy')
+  expect(workflowName('name: "--live"\n')).toBe('--live')
+  expect(workflowName('name: --address=evil:1\n')).toBeUndefined()
   expect(workflowName('name: has space\n')).toBeUndefined()
   expect(workflowName('name: a;b\n')).toBeUndefined()
   expect(workflowName('name: ' + 'a'.repeat(129) + '\n')).toBeUndefined()
@@ -205,11 +207,13 @@ test('workflowName reads the top-level name only, plain or quoted, and refuses a
 })
 
 test('graphArgv is one argv with the name checked and the file after --, never --live', () => {
-  expect(graphArgv('flow', 'workflow.yaml', 'approval-gate')).toEqual(['flow', 'graph', '-o', 'json', '--workflow', 'approval-gate', '--', 'workflow.yaml'])
-  expect(graphArgv('flow', 'workflows/deep.yaml', 'x')).toEqual(['flow', 'graph', '-o', 'json', '--workflow', 'x', '--', 'workflows/deep.yaml'])
+  expect(graphArgv('flow', 'workflow.yaml', 'approval-gate')).toEqual(['flow', 'graph', '-o', 'json', '--workflow=approval-gate', '--', 'workflow.yaml'])
+  expect(graphArgv('flow', 'workflows/deep.yaml', 'x')).toEqual(['flow', 'graph', '-o', 'json', '--workflow=x', '--', 'workflows/deep.yaml'])
   // Flag-like or off-list files and names are refused, not rewritten.
   for (const file of ['-o', '--live', '-x.flow.yaml', '.hidden.flow.yaml', '../a.flow.yaml', '/etc/passwd', 'a b.flow.yaml', 'notes.md', 'x.test.yaml', '']) expect(graphArgv('flow', file, 'x')).toBeUndefined()
-  for (const name of ['-x', '--live', '--address=evil:1', 'a b', 'a;b', '', '$(x)']) expect(graphArgv('flow', 'workflow.yaml', name)).toBeUndefined()
+  expect(graphArgv('flow', 'workflow.yaml', '-deploy')).toEqual(['flow', 'graph', '-o', 'json', '--workflow=-deploy', '--', 'workflow.yaml'])
+  expect(graphArgv('flow', 'workflow.yaml', '--live')).toEqual(['flow', 'graph', '-o', 'json', '--workflow=--live', '--', 'workflow.yaml'])
+  for (const name of ['--address=evil:1', 'a=b', 'a'.repeat(129), 'a b', 'a;b', '', '$(x)']) expect(graphArgv('flow', 'workflow.yaml', name)).toBeUndefined()
   expect(graphArgv('flow', 'workflow.yaml', 'x')).not.toContain('--live')
 })
 
@@ -222,4 +226,31 @@ test('graphOf: only exit 0 with a whole document is a graph; refusals give one l
   expect(graphOf(ran({ isStdoutTruncated: true }))).toEqual({ unreadable: 'the graph is larger than the view reads' })
   expect(graphOf(undefined, new Error('timed out after 10000ms'))).toEqual({ unreadable: 'Error: timed out after 10000ms' })
   expect(GRAPH_TIMEOUT_MS).toBe(10000)
+})
+
+test('more CLI notes than the bound: the "more notes" line and the view\'s own truncation notes are never crowded out', () => {
+  const many = Array.from({ length: 20 }, (_, i) => `cli note ${i}`)
+  const nodes = [node('workflow:w', 'WORKFLOW', 'w'), ...Array.from({ length: 300 }, (_, i) => node(`step:w/s${i}`, 'STEP', `s${i}`))]
+  const edges = Array.from({ length: 500 }, (_, i) => edge('workflow:w', `step:w/s${i % 300}`))
+  const g = graphOrFail(doc(nodes, edges, { partial: true, notes: many }))
+  const all = g.notes.join('\n')
+  expect(g.notes.filter(n => n.startsWith('cli note'))).toHaveLength(5)
+  expect(all).toContain('15 more notes not shown')
+  expect(all).toContain(`first ${MAX_NODES} of 301 nodes`)
+  expect(all).toContain(`first ${MAX_EDGES} of 500 edges`)
+  expect(g.notes.length).toBeLessThanOrEqual(5 + 8)
+})
+
+test('nesting past the depth cap marks the graph partial and says rows were drawn shallower', () => {
+  const deep = (n: number) => {
+    const nodes = Array.from({ length: n }, (_, i) => node(`step:w/s${i}`, 'STEP', `s${i}`))
+    return doc(nodes, Array.from({ length: n - 1 }, (_, i) => edge(`step:w/s${i}`, `step:w/s${i + 1}`)))
+  }
+  const over = graphOrFail(deep(MAX_DEPTH + 3))
+  expect(over.partial).toBe(true)
+  expect(over.notes).toContain(`nesting deeper than ${MAX_DEPTH} levels is drawn at level ${MAX_DEPTH}`)
+  // Exactly at the cap nothing is flattened.
+  const at = graphOrFail(deep(MAX_DEPTH))
+  expect(at.partial).toBe(false)
+  expect(at.notes).toEqual([])
 })
