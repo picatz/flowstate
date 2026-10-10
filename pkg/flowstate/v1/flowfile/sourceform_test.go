@@ -51,7 +51,34 @@ func TestMarshalRefusesASourceFormThatDoesNotExpandToTheRuleThatRuns(t *testing.
 		"a scalar type with no rule": {mustFile, func(wf *v1.Workflow) {
 			wf.DeclaredInputs[0].TypeSource = proto.String("Code")
 			wf.DeclaredInputs[0].Must = nil
-		}, "carries no rule"},
+		}, "does not declare"},
+		"a scalar use whose rule was swapped": {scalarFile, func(wf *v1.Workflow) {
+			for _, d := range wf.DeclaredInputs {
+				if d.GetName() == "alias" {
+					d.Must = proto.String("false")
+				}
+			}
+		}, "not the rule of scalar type"},
+		"a scalar use whose own rule was swapped": {scalarFile, func(wf *v1.Workflow) {
+			for _, d := range wf.DeclaredInputs {
+				if d.GetName() == "id" {
+					d.MustSource = proto.String("this != \"zzz-99\"")
+				}
+			}
+		}, "not the rule of scalar type"},
+		"a scalar output whose rule was swapped": {scalarFile, func(wf *v1.Workflow) {
+			wf.DeclaredOutputs[0].Must = proto.String("false")
+		}, "not the rule of scalar type"},
+		"a scalar record field whose rule was swapped": {scalarFile, func(wf *v1.Workflow) {
+			for _, ty := range wf.DeclaredTypes {
+				for _, f := range ty.GetFields() {
+					f.Must = proto.String("false")
+				}
+			}
+		}, "not the rule of scalar type"},
+		"a type must": {mustFile, func(wf *v1.Workflow) {
+			wf.DeclaredTypes[0].MustSource = proto.String("size(this) > 0")
+		}, "must"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

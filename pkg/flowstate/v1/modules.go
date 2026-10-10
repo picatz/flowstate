@@ -97,10 +97,11 @@ var reservedModuleAliases = sync.OnceValue(func() map[string]bool {
 	}
 	words[OutputsRoot] = true
 	// The names bound bare, each in the one place it is in scope: a loop's current
-	// item and carried state, a step's tolerated failure, a wait's payload, a
+	// item and carried state, a step's tolerated failure, a wait's payload and result, a
 	// trigger's event, an http task's response, a constraint's value and a signal
 	// policy's sender. An alias spelled like one would make `item.x` mean two things.
-	for _, word := range []string{DefaultIterator, LoopStateField, StepErrorOutput, StepFailureOutput, PayloadOutput, EventRoot, ResponseRoot, "this", "sender"} {
+	for _, word := range []string{DefaultIterator, LoopStateField, StepErrorOutput, StepFailureOutput, PayloadOutput, SenderOutput, // "sender" is also a signal policy's caller: the same word, a different binding.
+		DeliveriesOutput, CountOutput, DecisionOutput, ApprovalsOutput, EventRoot, ResponseRoot, "this"} {
 		words[word] = true
 	}
 	for _, word := range CELUnusableStepIDs() {

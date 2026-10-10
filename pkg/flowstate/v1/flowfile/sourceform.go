@@ -2,7 +2,6 @@ package flowfile
 
 import (
 	"fmt"
-	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -18,16 +17,27 @@ import (
 // compiler lowered it, and must equal the lowered text. The check is bounded by the
 // expansion budget the function set already enforces.
 func checkSourceForms(wf *v1.Workflow) error {
-	set, errs := v1.NewFunctionSet(wf.GetProfile(), wf.GetDeclaredFunctions())
-	if len(errs) > 0 {
-		return fmt.Errorf("source forms cannot be checked: %w", errs[0].Err)
+	// Built on the first source form to expand, so a workflow that carries none
+	// (most) costs nothing here.
+	var set *v1.FunctionSet
+	expand := func(source string) (string, error) {
+		if set == nil {
+			built, errs := v1.NewFunctionSet(wf.GetProfile(), wf.GetDeclaredFunctions())
+			if len(errs) > 0 {
+				return "", fmt.Errorf("source forms cannot be checked: %w", errs[0].Err)
+			}
+			set = built
+		}
+		expanded, _, err := set.ExpandText(source)
+
+		return expanded, err
 	}
 
 	same := func(what, source, lowered string) error {
 		if source == "" {
 			return nil
 		}
-		expanded, _, err := set.ExpandText(source)
+		expanded, err := expand(source)
 		if err != nil {
 			return fmt.Errorf("%s: its source form does not expand: %w", what, err)
 		}
@@ -51,24 +61,37 @@ func checkSourceForms(wf *v1.Workflow) error {
 		return err
 	}
 
+	scalars := map[string]string{}
+	for _, t := range wf.GetDeclaredTypes() {
+		if t.Base != nil && t.Must != nil {
+			scalars[t.GetName()] = t.GetMust()
+		}
+	}
+
 	declaration := func(what string, must, mustSource, typeSource *string) error {
-		if typeSource != nil && must == nil {
-			return fmt.Errorf("%s: names the scalar type %q but carries no rule", what, *typeSource)
-		}
-		if mustSource == nil {
-			return nil
-		}
 		if typeSource == nil {
+			if mustSource == nil {
+				return nil
+			}
+
 			return same(what+" must", *mustSource, deref(must))
 		}
-		// A constrained scalar stores the type's rule conjoined with the author's own,
-		// so the author's rule is the tail of what runs.
-		own, _, err := set.ExpandText(*mustSource)
-		if err != nil {
-			return fmt.Errorf("%s must: its source form does not expand: %w", what, err)
+		// A constrained scalar stores the named type's rule alone, or conjoined with
+		// the author's own expanded rule, which is what `must_source` then holds.
+		rule, ok := scalars[*typeSource]
+		if !ok {
+			return fmt.Errorf("%s: names the scalar type %q, which this workflow does not declare", what, *typeSource)
 		}
-		if *must != own && !strings.HasSuffix(*must, " && ("+own+")") {
-			return fmt.Errorf("%s must: its source form expands to something other than the rule that runs; drop the source form or recompile the file", what)
+		want := rule
+		if mustSource != nil {
+			own, err := expand(*mustSource)
+			if err != nil {
+				return fmt.Errorf("%s must: its source form does not expand: %w", what, err)
+			}
+			want = "(" + rule + ") && (" + own + ")"
+		}
+		if deref(must) != want {
+			return fmt.Errorf("%s must: is not the rule of scalar type %q (with the declaration's own rule, if any); drop the source form or recompile the file", what, *typeSource)
 		}
 
 		return nil
