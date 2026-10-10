@@ -135,6 +135,19 @@ order does not reorder the card).
   characters, and at most 5 leases are read.
 - **Plain labels.** The backticks the engine puts around ids are dropped from every label
   shown (`orders > charge`); the graph overlay still matches on the engine's own label.
+- **The debug story.** For a run whose timeline shows a debug lease, the card also reads
+  `flow debug get -o json [--address=...] -- <id>` (5 s, read only, `hooks/debug.ts`), the
+  schema's `DebugSnapshot`, and draws what it says now: `◉ paused orders[1]/charge · breakpoint
+  · 1 breakpoint hit`, `◉ debug session running <where>`, or `◉ debug session detached · last at
+  <where>`, then up to three dim notes from the snapshot's notice, log, failed, tolerated and
+  waiting observations, and a failure stop's redacted sentence. Everything is cleaned and
+  bounded (256 KiB document, 80-character address, 120-character notes); a read that fails
+  (no session is left, no server) or prints something else adds no line. **What does not
+  exist:** the timeline has no row for a breakpoint hit or a resume, and the snapshot is
+  the current state with no history of earlier pauses, so a pause that was resumed cannot be
+  shown (`... · resumed`), and the inspected value at a pause (`amount=900`) is not in the
+  snapshot (`flow debug history --inspect` evaluates an expression the caller chooses, and
+  the pane does not run it). Those lines are not invented.
 - Loop iterations are not shown: a timeline row names no iteration (`orders[1]`), so
   `orders > charge` is one row however many times it ran (`attempt N` counts retries).
 

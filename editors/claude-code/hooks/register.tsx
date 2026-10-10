@@ -10,6 +10,7 @@ import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } 
 import type { Listing } from './runs'
 import { MAX_ENTRIES, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { Poller, isLive } from './poll'
+import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
@@ -145,6 +146,21 @@ const readGates = async ($: Engine, flow: string, address: string, id: string): 
     return ran.exitCode === 0 ? parseGates(ran.stdout) : NO_GATES
   } catch {
     return NO_GATES
+  }
+}
+
+/**
+ * A run's debug session, from `flow debug get`. Read only and asked only of a run whose
+ * timeline shows a debug lease; a failure to answer (no session left, no server) is no story.
+ */
+const readStory = async ($: Engine, flow: string, address: string, id: string): Promise<string[]> => {
+  const argv = debugArgv(flow, address, id)
+  if (argv === undefined) return []
+  try {
+    const ran = await $.process.run(argv, { timeoutMs: DEBUG_TIMEOUT_MS })
+    return ran.exitCode === 0 ? (storyOf(ran.stdout, ran.isStdoutTruncated === true)?.lines ?? []) : []
+  } catch {
+    return []
   }
 }
 
@@ -306,7 +322,7 @@ export const register: Register = (on, options) => {
    * these closure values, never state.
    */
   let reuse = false
-  let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates } | undefined
+  let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates; story: string[] } | undefined
   const poller = new Poller()
 
   on('session.start', async ($, e, next) => {
@@ -642,7 +658,9 @@ export const register: Register = (on, options) => {
     const parkable = id !== '' && (facts.waitingOn !== undefined || ['running', 'waiting'].includes(head.kind))
     const idOk = WORKFLOW_ID.test(id)
     const found = again ? again.found : parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
-    lastRead = { id, expr, runs, account, found }
+    // The debug story is read only for a run whose timeline shows a debug lease, and only on a read, not on a local tick.
+    const debugLines = again ? again.story : (detail?.leases.length ?? 0) > 0 && idOk && 'address' in target ? await readStory($, flow, target.address, id) : []
+    lastRead = { id, expr, runs, account, found, story: debugLines }
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
@@ -794,7 +812,8 @@ export const register: Register = (on, options) => {
                 ))}
                 {more > 0 && <Text dimColor>  and {more} more; `flow timeline` with the id above lists them all</Text>}
                 {detail?.leases.map(l => <Text>{'  '}<Text color={COLOR.active}>{leaseLine(l, polling)}</Text></Text>)}
-                {hiddenNote(detail?.hidden ?? 0) !== '' && <Text dimColor>  {hiddenNote(detail?.hidden ?? 0)}</Text>}
+                {debugLines.map(l => <Text color={l.startsWith('◉') ? COLOR.active : undefined} dimColor={!l.startsWith('◉')}>{'  '}{l}</Text>)}
+                {hiddenNote(detail?.hidden ?? 0) !== '' &&<Text dimColor>  {hiddenNote(detail?.hidden ?? 0)}</Text>}
                 {detail?.truncated && <Text dimColor>  The server clipped this account; `flow timeline --help` says how to continue it (--run-id, --after-event-id).</Text>}
               </Box>
             )}
