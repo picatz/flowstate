@@ -150,6 +150,40 @@ a server, which stays a deliberate action through the Bash guard.
   A workflow that waits on a signal needs `--signal`, which the form does not offer,
   so it ends as outcome unknown at the limit; run it from a terminal.
 
+## Graph
+
+The pane's `Graph` section draws one Flowfile's steps as text, for the file the
+`Run a Flowfile` Select has chosen (with none chosen it is an empty state naming
+the command). It is read only: it writes no file,
+never passes `--live`, and contacts no server.
+
+- **One graph model.** `flow graph -o json --workflow <name> -- <file>` (10 s)
+  prints the schema's `flowstate.v1.Graph`, the document `flow explore` and the
+  debugger read. `<name>` is the file's own top-level `name:` (it must match the
+  schema's name pattern and cannot start with `-`; the CLI checks it against the
+  file, and its refusal is shown). The file must be one the run form offers. The
+  mod keeps no graph model of its own (`hooks/graph.ts`, pure and tested).
+- **Rows.** One row per node in the document's order, `○ label — detail`, nested
+  under the node that `CONTAINS` it: a loop body, a parallel branch or a switch arm
+  sits one level in, under its parent. The other edge kinds (`CALL`, `USES`,
+  `WAITS`) order nothing and are not drawn; no dependency order is derived. If the
+  document states no nesting the rows stay in node order and a note says so. A node
+  in a containment cycle is listed unnested, once, and the graph is marked partial.
+- **No status.** `○` means not run: the graph is what the file declares, and no
+  run is overlaid in this slice, so no row carries a success, failure or colour.
+- **Bounded.** Output over 256 KiB is not parsed; at most 200 nodes and 400 edges
+  are read, labels are cut to 60 characters and details to 80, and every string is
+  cleaned of control, escape and bidi characters. A cut says so in a note.
+- **Partial is labelled.** A graph the CLI marks partial (a file in the path that
+  does not compile, a bound it reached) says `partial` in its headline and shows
+  its notes (at most 5).
+- **Failure is one line.** A refusal, a timeout, malformed or cut output, or a
+  file with no plain `name:` shows `Graph unavailable (<reason>)`; the run form
+  and the Flowfiles list are unaffected. The read, a failure included, is cached
+  per file and modification time; `Refresh graph` drops it and reads again.
+- **Plain text is the same facts.** The drawn rows are the lines `graphLines`
+  returns, character for character.
+
 ## Output cards
 
 After a run from the form succeeds, the pane shows the workflow's declared outputs as
