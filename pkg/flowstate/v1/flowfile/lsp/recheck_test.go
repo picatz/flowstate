@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
@@ -99,6 +98,25 @@ func TestSavingAModuleRechecksOnlyTheFilesItsInterfaceChanged(t *testing.T) {
 		bill := s.docs.open(fileURI(filepath.Join(dir, "bill.yaml")), 2, useSource+"\n# edit\n", nil)
 		assert.Empty(t, s.dependentsToRecheck(bill))
 	})
+}
+
+// A pin is about bytes: a comment-only save leaves the interface alone and still
+// breaks an importer that pins the module, so that importer is republished, with the
+// mismatch; an importer that does not pin it is not.
+func TestSavingAPinnedModuleRechecksItsPinnedImporter(t *testing.T) {
+	t.Parallel()
+
+	s, dir, _ := recheckServer(t)
+	pinned := strings.Replace(useSource, "    path: ./lib/ids.yaml\n",
+		"    path: ./lib/ids.yaml\n    digest: "+v1.ContentDigest([]byte(usedModuleSource))+"\n", 1)
+	pinnedDoc := s.docs.open(fileURI(filepath.Join(dir, "pinned.yaml")), 1, pinned, nil)
+	require.Empty(t, diagnose(pinnedDoc))
+
+	changed := save(t, s, dir, "# note\n"+usedModuleSource)
+	assert.Equal(t, []string{"pinned.yaml"}, uris(s.dependentsToRecheck(changed)), "only the importer that pins the bytes")
+
+	republished := s.docs.open(pinnedDoc.uri, 2, pinned, nil)
+	assert.Contains(t, strings.Join(messages(diagnose(republished)), "\n"), "pins module ids")
 }
 
 const workflowWithoutUse = `edition: ` + flowfile.CurrentEdition + `
@@ -212,12 +230,25 @@ func TestSavingABrokenModulePublishesOneLineToTheImporter(t *testing.T) {
 		return strings.Contains(joined, substring) && strings.Count(joined, "which has") <= 1
 	}
 
+	// Registered before the condition is read, so a publish landing between the two
+	// is seen by one or the other; each wait ends at the harness's hang backstop.
+	until := func(done func() bool) {
+		t.Helper()
+		for {
+			wait := c.expectPublish()
+			if done() {
+				return
+			}
+			c.await(wait)
+		}
+	}
+
 	saved(strings.Replace(usedModuleSource, "returns: bool", "returns: bogus", 1))
-	require.Eventually(t, func() bool { return importerSays(`uses "./lib/ids.yaml", which has 1 error`) }, 10*time.Second, 10*time.Millisecond)
+	until(func() bool { return importerSays(`uses "./lib/ids.yaml", which has 1 error`) })
 
 	saved(usedModuleSource)
-	require.Eventually(t, func() bool {
+	until(func() bool {
 		got, ok := c.lastPublishedFor(billURI)
 		return ok && len(got.Diagnostics) == 0
-	}, 10*time.Second, 10*time.Millisecond)
+	})
 }

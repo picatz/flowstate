@@ -19,7 +19,10 @@ import (
 // declares, so a save that only adds a comment or reformats leaves it as it was and
 // republishes nothing beyond the module itself, and a save that changes what it
 // declares republishes every open file that reaches it through modules whose own
-// interface changed with it. A file is only ever republished, never skipped, when
+// interface changed with it. The exception is a `use:` entry that pins the saved
+// module with `digest:`: a pin is about bytes, so any save of that module
+// republishes the file, and a module that pins it, which then no longer compiles
+// and so has no interface, reaches its own users through that. A file is only ever republished, never skipped, when
 // there is doubt: a module whose last interface is not known, that does not
 // compile, or that the walk cannot finish within its budget counts as changed.
 
@@ -73,9 +76,7 @@ func (s *FlowfileServer) dependentsToRecheck(saved *document) []*document {
 		return nil
 	}
 	walk := &interfaceWalk{memo: &s.interfaces, saved: canonicalPath(path), loads: v1.MaxModules, verdicts: map[string]bool{}}
-	if !walk.changed(walk.saved, 0) {
-		return nil
-	}
+	walk.changed(walk.saved, 0)
 
 	var out []*document
 	for _, doc := range s.docs.snapshot() {
@@ -131,7 +132,7 @@ func (w *interfaceWalk) changed(path string, depth int) bool {
 		if !ok {
 			return true
 		}
-		if !slices.ContainsFunc(usedModules(module), func(m usedModule) bool { return w.changed(m.path, depth+1) }) {
+		if !slices.ContainsFunc(usedModules(module), func(m usedModule) bool { return w.reaches(m, depth+1) }) {
 			w.verdicts[path] = false
 
 			return false
@@ -148,5 +149,12 @@ func (w *interfaceWalk) changed(path string, depth int) bool {
 
 // usesChanged reports whether doc uses a module that changed.
 func (w *interfaceWalk) usesChanged(doc *document) bool {
-	return slices.ContainsFunc(usedModules(doc), func(m usedModule) bool { return w.changed(m.path, 1) })
+	return slices.ContainsFunc(usedModules(doc), func(m usedModule) bool { return w.reaches(m, 1) })
+}
+
+// reaches reports whether the use m is affected by the save: the module changed,
+// or the entry pins the saved module, whose bytes a save may have changed without
+// changing what it declares.
+func (w *interfaceWalk) reaches(m usedModule, depth int) bool {
+	return w.changed(m.path, depth) || (m.pinned && m.path == w.saved)
 }
