@@ -43,6 +43,10 @@ func TestMeasureDistributionsHashesWithoutLaunching(t *testing.T) {
 	only, err := MeasureDistributions(Config{SearchPath: []string{dir}, Only: []string{"beta"}})
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{"beta": got["beta"]}, only)
+
+	_, err = MeasureDistributions(Config{SearchPath: []string{dir}, Only: []string{"beta", "nosuch"}})
+	require.ErrorIs(t, err, ErrLaunch)
+	assert.Contains(t, err.Error(), "nosuch")
 }
 
 func TestMeasureDistributionsSeesAChangedBinary(t *testing.T) {

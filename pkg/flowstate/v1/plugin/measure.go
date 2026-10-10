@@ -16,7 +16,8 @@ import (
 // and egress policy to answer. The result is a measurement, not a vetting; see
 // [PinsConfig].
 //
-// cfg.Only narrows the answer to the named plugins, as it narrows a launch.
+// cfg.Only narrows the answer to the named plugins, as it narrows a launch, and
+// a name with no binary is an [ErrLaunch] error as it is there.
 func MeasureDistributions(cfg Config) (map[string]string, error) {
 	found, err := Discover(cfg)
 	if err != nil {
@@ -24,6 +25,14 @@ func MeasureDistributions(cfg Config) (map[string]string, error) {
 	}
 
 	out := make(map[string]string, len(found))
+
+	// As a launch does: a name asked for with no binary is a typo or a missing
+	// install, and an empty answer for it would read as a clean measurement.
+	for _, name := range cfg.Only {
+		if !slices.ContainsFunc(found, func(f Found) bool { return f.Name == name }) {
+			return nil, fmt.Errorf("%w: no %s%s on the search path %v", ErrLaunch, BinaryPrefix, name, cfg.SearchPath)
+		}
+	}
 
 	for _, f := range found {
 		if len(cfg.Only) > 0 && !slices.Contains(cfg.Only, f.Name) {
