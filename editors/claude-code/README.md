@@ -161,13 +161,14 @@ order does not reorder the card).
   waiting observations, and a failure stop's redacted sentence. Everything is cleaned and
   bounded (256 KiB document, 80-character address, 120-character notes); a read that fails
   (no session is left, no server) or prints something else adds no line. **What does not
-  exist:** the timeline has no row for a breakpoint hit or a resume, and the snapshot is
-  the current state with no history of earlier pauses, so a pause that was resumed cannot be
-  shown (`... · resumed`), and the inspected value at a pause (`amount=900`) is not in the
-  snapshot (`flow debug history --inspect` evaluates an expression the caller chooses, and
-  the pane does not run it). Those lines are not invented.
-- Loop iterations are not shown: a timeline row names no iteration (`orders[1]`), so
-  `orders > charge` is one row however many times it ran (`attempt N` counts retries).
+  exist:** the timeline names a hold and how it ended but not which step a breakpoint hit
+  or why, and the snapshot is the current state with no history of earlier stops, so a
+  past stop's location and the inspected value at a pause (`amount=900`) are not shown
+  (`flow debug history --inspect` evaluates an expression the caller chooses, and the pane
+  does not run it). Those lines are not invented.
+- Loop iterations are not numbered: a timeline row names no iteration (`orders[1]`), so
+  `orders > charge` is one row however many times it ran, with a dim `×N` for the number
+  of times it was scheduled (`attempt N` counts retries).
 
 ## Run a Flowfile
 
