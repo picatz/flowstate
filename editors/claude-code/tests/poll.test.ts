@@ -94,6 +94,16 @@ test('a pane that stopped drawing stops the poll after the grace period', async 
   expect(r.redraws.length).toBe(0)
 })
 
+test('a draw that is still working keeps the poll alive however long it takes', async () => {
+  const r = rig()
+  r.poller.start(r.deps)
+  r.advance(DRAW_GRACE_MS - 1)
+  r.poller.drawBegan()
+  r.advance(DRAW_GRACE_MS - 1)
+  await r.fire()
+  expect(r.poller.active).toBe(true)
+})
+
 test('with no change the poll gives up after a bounded number of reads', async () => {
   const r = rig()
   r.poller.start(r.deps)

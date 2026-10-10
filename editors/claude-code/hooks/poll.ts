@@ -111,7 +111,8 @@ export class Poller {
     if (gen !== this.gen || !this.on) return
     this.ticks++
     // The pane draws each tick it is open; no draw for a while means it was closed, so stop rather than leak a timer.
-    if (this.clock() - this.drawnAt > DRAW_GRACE_MS) return this.stop()
+    // A draw still working is an open pane, however long its reads take.
+    if (!this.drawing && this.clock() - this.drawnAt > DRAW_GRACE_MS) return this.stop()
     this.sinceRead += TICK_MS
     let read = false
     if (this.sinceRead >= readDelay(this.idle)) {
