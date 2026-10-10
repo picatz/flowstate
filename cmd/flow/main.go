@@ -2281,6 +2281,22 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// restart.
 	defer closePlugins()
 
+	// The same facts without launching anything, from a document: an explicit
+	// --plugin-catalog is read once here, and fails the command naming the file
+	// for the reason a plugin that will not come up does. Without it, and
+	// without --plugin-dir, the lock found next to each document is read as
+	// that document opens ([lockDiscovery]); a lock decides nothing the
+	// Flowfile beside it does not already decide, and it executes nothing, so
+	// it does not breach the rule above about what a workspace may choose.
+	var discover func(string) error
+	if pluginCatalogPath(cmd) != "" {
+		if _, err := loadPluginCatalog(cmd); err != nil {
+			return fmt.Errorf("--%s could not be read: %w", pluginCatalogFlag, err)
+		}
+	} else if dirs, _ := cmd.Flags().GetStringArray("plugin-dir"); len(dirs) == 0 {
+		discover = (&lockDiscovery{}).discover
+	}
+
 	// A person who follows the root help's own example (`flow lsp`) gets
 	// silence indistinguishable from a hang: this server speaks nothing until
 	// an editor writes to it. The banner is the account of that, gated on
@@ -2312,7 +2328,7 @@ func runLSP(cmd *cobra.Command, args []string) error {
 		// goroutine and not yet finished at once — a client sending faster
 		// than this process can keep up gets its read loop blocked rather
 		// than an unbounded pile of goroutines.
-		lsp.NewHandler(&lsp.FlowfileServer{Tasks: v1.DefaultRegistry()}),
+		lsp.NewHandler(&lsp.FlowfileServer{Tasks: v1.DefaultRegistry(), PluginCatalog: discover}),
 	)
 
 	// NewConn serves in a background goroutine and returns immediately, so
@@ -2367,9 +2383,12 @@ func runLSP(cmd *cobra.Command, args []string) error {
 // runner. The two flags are mutually exclusive on the command line; see
 // [loadPluginCatalog].
 //
-// What is deliberately unchanged is the answer with neither flag: a step
-// naming a plugin task still gets the installation-question diagnostic rather
-// than a pass, because whether a plugin is installed is a deployment's decision
+// A plugins.lock.json above the files named is read as --plugin-catalog would
+// ([discoverPluginLock]) unless a flag or --plugin-dir spoke.
+//
+// What is deliberately unchanged is the answer with neither flag and no lock: a
+// step naming a plugin task still gets the installation-question diagnostic
+// rather than a pass, because whether a plugin is installed is a deployment's decision
 // and this process has not been told. See unknownTaskMessage in the flowfile
 // package.
 func runValidate(cmd *cobra.Command, args []string) error {
@@ -2412,9 +2431,9 @@ func runValidate(cmd *cobra.Command, args []string) error {
 	// against whichever source this invocation named — the two are mutually
 	// exclusive on the command line (see [pluginFlagsOf]), so only one of them
 	// ever answers.
-	if fromFile, err := loadPluginCatalog(cmd); err != nil {
-		return fmt.Errorf("the catalog on --%s is what these files are checked against, "+
-			"and it could not be read, so nothing was checked: %w", pluginCatalogFlag, err)
+	if fromFile, err := loadPluginCatalog(cmd, args...); err != nil {
+		return fmt.Errorf("the plugin catalog (--%s, or the %s found next to these files) is what they are checked against, "+
+			"and it could not be read, so nothing was checked: %w", pluginCatalogFlag, pluginLockName, err)
 	} else if fromFile != nil {
 		catalog = fromFile
 	}
@@ -3730,7 +3749,11 @@ flow lsp
 
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
-flow lsp --plugin-dir /opt/flowstate/plugins`,
+flow lsp --plugin-dir /opt/flowstate/plugins
+
+# The same from a saved catalog, nothing launched; with neither flag the
+# plugins.lock.json above each document is used:
+flow lsp --plugin-catalog /work/repo/plugins.lock.json`,
 	}
 
 	// The same flags `flow worker` takes, doing the same thing — one discovery
@@ -3753,6 +3776,11 @@ flow lsp --plugin-dir /opt/flowstate/plugins`,
 	// text with it, so what `flow lsp --help` prints and what the command does
 	// are one decision.
 	addEditorPluginFlags(lspCmd)
+
+	// The offline alternative to --plugin-dir: descriptors read from a saved
+	// catalog, nothing launched. Without either flag the server reads the
+	// plugins.lock.json next to each document it opens.
+	addPluginCatalogFlag(lspCmd)
 
 	// Add command groups for better organization
 	rootCmd.AddGroup(&cobra.Group{

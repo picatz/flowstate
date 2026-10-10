@@ -1357,12 +1357,17 @@ flow lsp
 # Teach the editor the tasks a plugin provides, so a file that names one
 # stops reading as a mistake:
 flow lsp --plugin-dir /opt/flowstate/plugins
+
+# The same from a saved catalog, nothing launched; with neither flag the
+# plugins.lock.json above each document is used:
+flow lsp --plugin-catalog /work/repo/plugins.lock.json
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
+| `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |
 | `--plugin-dir <string,...>` | `stringArray` | — | — | absolute directory to discover plugins in, repeatable, in precedence order; a relative path is refused and $FLOWSTATE_PLUGIN_DIR is not read, because an editor starts this process in the workspace |
 | `--plugin-env <string,...>` | `stringArray` | — | — | configure one plugin's processes, plugin=KEY=VALUE, repeatable. The variable reaches that plugin alone and nothing else this worker launches. A plugin environment is readable to anything running as this user, so name a path to a file rather than a secret value |
 | `--plugin-env-file <string>` | `string` | — | `FLOWSTATE_PLUGIN_ENV` | path to a YAML environment file (default $FLOWSTATE_PLUGIN_ENV), the file form of `--plugin-env` for a deployment configuring more than a couple of plugins: `env: {name: {KEY: VALUE}}`; merged with any `--plugin-env`, and a variable set by both is refused |

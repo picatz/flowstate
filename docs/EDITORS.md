@@ -272,6 +272,22 @@ shows the signature built from the descriptors the plugin shipped, its inputs ar
 checked against them, and the unknown-task diagnostic goes away. Point it at the
 same directory your workers use and the editor and the worker agree.
 
+To teach the editor a plugin's tasks without launching anything, pass
+`--plugin-catalog` with a saved catalog (`flow plugins --output json`). Without
+either flag the server reads the `plugins.lock.json` it finds above each document
+it opens, the way `flow validate` does; a lock that cannot be read is shown as a
+warning message instead of being ignored. It reads descriptors only and starts no
+process, so a workspace cannot make your editor execute anything this way.
+
+Every lock it discovers is registered into one process-wide registry, so with
+several workspaces open the server knows the union of their plugin tasks, and if
+two locks define the same task name the one registered last wins. A lock is read
+when a document is opened, not when the lock changes: reopen a document after
+editing a lock. Tasks are never unregistered, so a task removed from a lock
+lingers until the server restarts, and a document in one workspace can see tasks
+from another's lock. At most 8 distinct locks are registered per server; past
+that the lock is refused with a warning message.
+
 `--plugin`, `--plugin-scheme` and `--allow-insecure-plugin-dir` are accepted too,
 with the meanings [CLI.md](CLI.md) gives them. A plugin that will not start —
 including one you pinned with `--plugin` that is not installed — fails the command

@@ -159,13 +159,10 @@ func walkEmbeddedWorkflowNodes(nodes []*Node, depth int, visit func(wf *Workflow
 // resolve, and pins nothing further, so no partly pinned specification is left
 // behind by a submission that was refused.
 func ResolvePlugins(wf *Workflow, catalog *PluginCatalog) error {
-	available := make(map[string]*PluginDescription)
-	for _, p := range catalog.GetPlugins() {
-		available[p.GetName()] = p
-	}
+	available := pluginsByName(catalog)
 
 	return walkEmbeddedWorkflows(wf, 0, func(wf *Workflow) error {
-		resolved, err := resolveOne(wf, available, catalog.GetClaimsSchemaVersion())
+		resolved, err := resolveOne(wf, available, catalog.GetClaimsSchemaVersion(), true)
 		if err != nil {
 			return err
 		}
@@ -173,6 +170,38 @@ func ResolvePlugins(wf *Workflow, catalog *PluginCatalog) error {
 
 		return nil
 	})
+}
+
+// CheckPluginRequirements is [ResolvePlugins] without the pin: it answers
+// whether every workflow in the call tree names plugins the catalog has, at a
+// version that satisfies the floor, and selects nothing and writes nothing.
+//
+// It exists for an offline reader of a *portable* catalog such as a checked-in
+// plugins.lock.json, which omits the distribution digest because that digest
+// hashes native executable bytes and differs across GOOS/GOARCH. Such a catalog
+// cannot be pinned to, and an authoring check has no run to pin; it needs the
+// version and availability half of the decision only. Every refusal of
+// [ResolvePlugins] other than "this entry is incomplete" is the same refusal
+// here, from the same code ([resolveOne]), so the two cannot disagree about a
+// requirement. A submission still goes through [ResolvePlugins] against a live
+// catalog.
+func CheckPluginRequirements(wf *Workflow, catalog *PluginCatalog) error {
+	available := pluginsByName(catalog)
+
+	return walkEmbeddedWorkflows(wf, 0, func(wf *Workflow) error {
+		_, err := resolveOne(wf, available, catalog.GetClaimsSchemaVersion(), false)
+
+		return err
+	})
+}
+
+func pluginsByName(catalog *PluginCatalog) map[string]*PluginDescription {
+	available := make(map[string]*PluginDescription)
+	for _, p := range catalog.GetPlugins() {
+		available[p.GetName()] = p
+	}
+
+	return available
 }
 
 // resolveOne selects the plugins one workflow requires, or says why it cannot.
@@ -185,7 +214,10 @@ func ResolvePlugins(wf *Workflow, catalog *PluginCatalog) error {
 // rather than anything per-plugin — one build computes every plugin's claim
 // fields under the same schema version, so it is read once here and pinned
 // onto every resolution from this catalog.
-func resolveOne(wf *Workflow, available map[string]*PluginDescription, claimsSchemaVersion uint32) ([]*ResolvedPlugin, error) {
+//
+// requirePin is false only for [CheckPluginRequirements]: it skips the
+// completeness refusal below and nothing else.
+func resolveOne(wf *Workflow, available map[string]*PluginDescription, claimsSchemaVersion uint32, requirePin bool) ([]*ResolvedPlugin, error) {
 	resolved := make([]*ResolvedPlugin, 0, len(wf.GetPluginRequirements()))
 	for _, requirement := range wf.GetPluginRequirements() {
 		want, ok := parsePluginVersion(requirement.GetMinimumVersion())
@@ -211,7 +243,7 @@ func resolveOne(wf *Workflow, available map[string]*PluginDescription, claimsSch
 			return nil, fmt.Errorf("plugin %q is %s on this deployment, below the %s the file requires",
 				p.GetName(), p.GetVersion(), requirement.GetMinimumVersion())
 		}
-		if p.GetProtocolVersion() == 0 || p.GetTaskSchemaDigest() == "" || p.GetDistributionDigest() == "" || p.GetClaimsDigest() == "" {
+		if requirePin && (p.GetProtocolVersion() == 0 || p.GetTaskSchemaDigest() == "" || p.GetDistributionDigest() == "" || p.GetClaimsDigest() == "") {
 			return nil, fmt.Errorf("plugin %q catalog entry is incomplete, so there is nothing to pin: "+
 				"a run is pinned to a protocol version, a task schema digest, a claims digest and a "+
 				"distribution digest, and this deployment reported %q at protocol %d",

@@ -355,6 +355,45 @@ task as one it has not been told about, which is correct rather than unhelpful:
 whether a plugin is installed is a deployment's decision and not a property of
 the file.
 
+#### A `plugins.lock.json` next to the file is found for you
+
+With neither `--plugin-dir` nor `--plugin-catalog`, `flow validate`, `flow test`,
+`flow compile`, `flow fix` and `flow schedule create` look for a
+`plugins.lock.json` in the directory of the file you named and then in each
+parent, as `go` looks for `go.mod`, and read the nearest one as the catalog. That
+is why the shipped examples are green with no flags:
+
+```console
+$ flow validate examples/plugins/slack/approval.yaml
+$ flow test examples/plugins/slack/
+```
+
+The rules, each of which fails closed:
+
+- An explicit `--plugin-catalog` wins and nothing is searched. So does
+  `--plugin-dir` (or `$FLOWSTATE_PLUGIN_DIR`): launched plugins already form the
+  registry.
+- A lock that is present but unusable (it does not parse, it is a symbolic link,
+  it is not a regular file, it is over the size bound) fails the command naming it.
+  It is never skipped and the search never continues past it to a parent.
+- A lock file that is itself a symbolic link is refused (a symlinked parent
+  directory is not detected), and the walk stops after 32 directories.
+- One invocation checks against one lock: files governed by different locks, or
+  some under a lock and some under none, are refused. Name `--plugin-catalog` to
+  say which. Standard input has no location and discovers nothing.
+- A directory above the lock (`flow test examples/`) is not governed by it;
+  name the catalog there, as CI does.
+
+A discovered lock is exactly as trusted as the Flowfile beside it. It decides
+which plugin tasks, input shapes and outputs the checker believes in, which is
+authority the file already has over its own steps. It is read through the same
+bounded loader as `--plugin-catalog` and only registers descriptors: no plugin
+process is started and no plugin code runs. It is not evidence about any
+deployment (`flow run` still asks the server), and a requirement check against
+it covers versions and availability but cannot pin a run, because the committed
+lock omits the platform-specific distribution digest. `flow lsp` does the same
+for each document it opens, and takes `--plugin-catalog` for an explicit one.
+
 ### A value your released build refuses
 
 A closed enum names exactly the choices a build carries, and every surface —

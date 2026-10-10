@@ -216,9 +216,9 @@ func runFix(cmd *cobra.Command, paths []string, opts fixOptions) error {
 
 	// Same place in the sequence, for the same reason: before a single file is
 	// read. A catalog that will not load leaves every file exactly as it was.
-	if _, err := loadPluginCatalog(cmd); err != nil {
-		return fmt.Errorf("--%s names what these files are rewritten against, and it "+
-			"could not be read, so nothing was written: %w", pluginCatalogFlag, err)
+	if _, err := loadPluginCatalog(cmd, paths...); err != nil {
+		return fmt.Errorf("the plugin catalog (--%s, or the %s found next to these files) is what they are "+
+			"rewritten against, and it could not be read, so nothing was written: %w", pluginCatalogFlag, pluginLockName, err)
 	}
 
 	files, err := collectFlowfiles(paths)

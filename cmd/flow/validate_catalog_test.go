@@ -128,7 +128,16 @@ func TestValidateAcceptsAPluginTaskGivenASavedCatalog(t *testing.T) {
 	// Without: the installation question, unchanged. Whether a plugin is
 	// installed is a deployment's decision, and with neither flag this process
 	// has not been told.
-	output, err := runFlowCapturing(t, bin, "validate", exampleGreetWorkflow)
+	//
+	// From a copy outside the examples tree: the shipped file sits under
+	// examples/plugins/plugins.lock.json, which `validate` now discovers
+	// ([TestShippedPluginExamplesValidateAndTestWithNoFlags]).
+	source, err := os.ReadFile(exampleGreetWorkflow)
+	require.NoError(t, err)
+	unlocked := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(unlocked, source, 0o600))
+
+	output, err := runFlowCapturing(t, bin, "validate", unlocked)
 	require.Error(t, err, "a file naming an unregistered plugin task validated clean:\n%s", output)
 	assert.Contains(t, output, `no plugin task "example.greet" is registered here`,
 		"the answer with no catalog is not the installation-question diagnostic:\n%s", output)
@@ -452,22 +461,27 @@ func TestFixWritesNothingWhenACatalogWillNotLoad(t *testing.T) {
 // TestACatalogLosesToNothingItWasNotPointedAt is the absent direction, and it
 // is what keeps the default behaviour the one every invocation in the tree has
 // today: with no --plugin-catalog and no --plugin-dir, a step naming a plugin
-// task still gets the installation question, and no file on disk is read.
+// task still gets the installation question, and no file on disk that does not
+// govern the Flowfile is read.
 //
 // Written with a catalog sitting in the working directory under the name the
-// issue's own example uses, because "nothing is read" is otherwise a claim
-// about an absence that no test would notice breaking.
+// issue's own example uses, but in a directory that is not an ancestor of the
+// file: discovery looks upward from the file ([discoverPluginLock]), never at
+// the working directory, so "nothing unrelated is read" stays a claim a test
+// would notice breaking.
 func TestACatalogLosesToNothingItWasNotPointedAt(t *testing.T) {
 	bin := buildFlowBinary(t)
 	catalog := pluginCatalogFor(t, bin)
 
-	dir := t.TempDir()
+	root := t.TempDir()
+	dir := filepath.Join(root, "elsewhere")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
 
 	saved, err := os.ReadFile(catalog)
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "plugins.lock.json"), saved, 0o600))
 
-	path := filepath.Join(dir, "workflow.yaml")
+	path := filepath.Join(root, "workflow.yaml")
 	require.NoError(t, os.WriteFile(path, []byte(`edition: v2026.4
 name: greet
 steps:

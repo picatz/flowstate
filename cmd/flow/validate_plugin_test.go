@@ -160,7 +160,14 @@ func TestValidateAcceptsAPluginTaskGivenThePluginDir(t *testing.T) {
 	// not change — whether a plugin is installed is a deployment's decision, so
 	// a checker that has not been told about one says what it does not know
 	// rather than passing the file silently.
-	output, err := runFlowCapturing(t, bin, "validate", exampleGreetWorkflow)
+	// From a copy outside the examples tree, which a discovered plugins.lock.json
+	// would otherwise answer for.
+	source, err := os.ReadFile(exampleGreetWorkflow)
+	require.NoError(t, err)
+	unlocked := filepath.Join(t.TempDir(), "workflow.yaml")
+	require.NoError(t, os.WriteFile(unlocked, source, 0o600))
+
+	output, err := runFlowCapturing(t, bin, "validate", unlocked)
 	require.Error(t, err, "a file naming an unregistered plugin task validated clean:\n%s", output)
 	assert.Contains(t, output, `no plugin task "example.greet" is registered here`,
 		"the plugin-free answer is not the installation-question diagnostic:\n%s", output)

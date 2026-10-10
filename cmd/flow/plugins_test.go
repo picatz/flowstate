@@ -247,7 +247,7 @@ func TestTheLanguageServerTakesThePluginFlags(t *testing.T) {
 	}
 	require.NotNil(t, cmd, "there is no lsp command")
 
-	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins"} {
+	for _, name := range []string{"plugin-dir", "plugin", "plugin-scheme", "allow-insecure-plugin-dir", "plugin-pin", "plugin-pins", pluginCatalogFlag} {
 		assert.NotNil(t, cmd.Flags().Lookup(name),
 			"`flow lsp` does not take --%s, so an author cannot tell their editor "+
 				"about a plugin their worker runs", name)
