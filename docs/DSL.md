@@ -3287,6 +3287,19 @@ that a file naming an enum needs the plugin's descriptors wherever it is
 compiled, so `flow test`, `flow validate` and the editor are given the catalog
 (`--plugin-catalog`) the way `plugin-examples` already gives it.
 
+*The same descriptors name the fields of a message inside an answer.* The type
+table stops at `answers` (`list(dyn)`), so `steps.decide.answers[0].chioce` used to
+validate and fail hours into a durable run. A select on a message the file provably
+reads from a task's answer is now checked against that message's fields, and a
+misspelled one is a diagnostic with the near miss. "Provably" is the same chain as
+the enum check, through message-typed fields, indexing and `filter(...)`, plus a
+comprehension's own variable while its range is such a list
+(`answers.exists(a, a.chioce == "x")`). A bare name, a record built with `map`, a
+`value:` step, a map-valued or dynamic-valued field, and a task whose `outputs:`
+the file shapes are never judged. A task input the schema marks `required`
+(`model:` of `anthropic.decide` and `openai.decide`) is refused when it is missing,
+by the same rule that already covered the built-in tasks.
+
 ### `exec:` is built-in, denied by default
 
 Competitiveness with CI systems needs process execution; the admission test's second

@@ -4,6 +4,7 @@ package anthropic.v1;
 
 option go_package = "github.com/picatz/flowstate/plugins/anthropic/gen/anthropic/v1;anthropicv1";
 
+import "buf/validate/validate.proto";
 import "flowstate/decision/v1/decision.proto";
 import "flowstate/v1/schema.proto";
 import "flowstate/v1/value.proto";
@@ -44,7 +45,7 @@ message DecideInputs {
   // Model is the Anthropic model identifier the request names, required and
   // never defaulted here. It is passed through unchanged, so an alias or a
   // dated snapshot both work; the API refuses one it does not know.
-  string model = 2;
+  string model = 2 [(buf.validate.field).required = true];
 
   // Evidence is the text the questions are about, sent as the user message and
   // limited to 262,144 bytes. It is data to be judged, not instructions: the
