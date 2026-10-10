@@ -736,11 +736,12 @@ each refusal costs one link rather than one argument.
 9. **No judgment in `flow fix`.** Exact-match rewrites, or refusal with a position. No
    name invention, no "probably equivalent", no reflowing an author's file beyond the
    edit that was asked for.
-10. **The DSL does not become a general-purpose language.** No user-defined functions
-    in the file, no recursion, no unbounded anything an outside party can grow. Reuse
-    composes through `call:`, a unit with a contract resolved at compile time, rather
-    than through macros or includes. Expressiveness grows in CEL's scope and in the
-    standard library, where it stays pure, cost-bounded and identical on both drivers.
+10. **The DSL does not become a general-purpose language.** A `functions:` block names a
+    pure computation, inlined at each call, and has no recursion, no side effects and no
+    unbounded anything an outside party can grow. A process with its own steps composes
+    through `call:`, a unit with a contract resolved at compile time, rather than through
+    macros or includes. Expressiveness grows in CEL's scope and in the standard library,
+    where it stays pure, cost-bounded and identical on both drivers.
 
 ## Keeping this document honest
 
