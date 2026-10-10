@@ -1,0 +1,50 @@
+# A module that builds a record from parts: `Block` and `Message` are the shapes, and
+# `section`, `divider` and `message` are functions that return them. A record is a map
+# at run time, so a function that returns one is a map literal; the record's rules are
+# held where the value is bound (an output, an input, a call's argument), not where the
+# literal is written.
+edition: v2026.4
+name: blocks
+types:
+  Block:
+    description: One block of a chat message.
+    fields:
+      type:
+        type: enum
+        values:
+          - section
+          - divider
+        required: true
+      text:
+        type: string
+        min_len: 1
+        max_len: 3000
+  Message:
+    description: A channel and the blocks to post there.
+    fields:
+      channel:
+        type: string
+        required: true
+      blocks:
+        type: list(Block)
+        required: true
+        min_items: 1
+        max_items: 50
+functions:
+  section:
+    description: A block of text.
+    params:
+      text: string
+    returns: Block
+    body: '${{"type": "section", "text": text}}'
+  divider:
+    description: A rule between blocks.
+    returns: Block
+    body: '${{"type": "divider"}}'
+  message:
+    description: The channel and blocks to post, built from parts.
+    params:
+      channel: string
+      blocks: list(Block)
+    returns: Message
+    body: '${{"channel": channel, "blocks": blocks}}'
