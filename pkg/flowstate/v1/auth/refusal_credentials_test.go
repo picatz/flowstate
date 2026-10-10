@@ -64,11 +64,12 @@ func TestNewProtectedResourceRefusalsNeverQuoteCredentials(t *testing.T) {
 	})
 }
 
-// TestPolicyValidateDisagreeingKeySourceDoesNotQuoteCredentials pins that
-// policy validation never quotes an issuer's credential, on the path that
-// reaches the "disagree on signing-key source" refusal as on the ones before
-// it (picatz/flowstate#2039).
-func TestPolicyValidateDisagreeingKeySourceDoesNotQuoteCredentials(t *testing.T) {
+// TestPolicyValidateDoesNotQuoteAnIssuersCredentials pins that validating a
+// policy whose issuers carry a credential never quotes it
+// (picatz/flowstate#2039). It does not reach the "disagree on signing-key
+// source" refusal: issuer validation rejects the credential first, which is why
+// that site's redaction is belt-and-braces and has no test of its own.
+func TestPolicyValidateDoesNotQuoteAnIssuersCredentials(t *testing.T) {
 	t.Parallel()
 
 	const secret = "s3cr3t"
