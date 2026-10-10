@@ -15,7 +15,7 @@ http
            body                      string
                                      A raw request body, sent as written.
            bearer                    any, may hold a secret reference
-                                     *** the credential for an
+                                     Bearer is the credential for an
                                      Authorization header, and it is the first
                                      task input built to take a secret
                                      reference.
