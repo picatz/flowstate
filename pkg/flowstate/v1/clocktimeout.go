@@ -104,8 +104,15 @@ func (c *clockDeadlineContext) Done() <-chan struct{} { return c.done }
 // Err reports [context.DeadlineExceeded] once this context's own deadline
 // lapsed, the parent's error when the parent ended first (so a lapsed
 // schedule-to-close budget still reads as a deadline one level down), and
-// [context.Canceled] otherwise.
+// [context.Canceled] otherwise. It is nil until Done is closed, as the
+// [context.Context] contract requires; Done closes on its own goroutine, a
+// moment after the embedded context ends.
 func (c *clockDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+	default:
+		return nil
+	}
 	if c.fired.Load() {
 		return context.DeadlineExceeded
 	}
