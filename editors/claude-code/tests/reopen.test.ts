@@ -30,8 +30,8 @@ test('opening /flowstate rebuilds the Flowfiles list and the status line from th
 
   const validated = seen.filter(a => a[1] === 'validate').map(a => a.at(-1)).toSorted()
   expect(validated).toEqual(['bad.flow.yaml', 'good.flow.yaml'])
-  expect(statuses.at(-1)).toMatch(/^flowstate: validate/)
-  expect(statuses.at(-1)).not.toMatch(/nothing checked yet/)
+  // The status line is quiet: the newest report here is the clean file, so it prints nothing.
+  expect(statuses.at(-1)).toBe('')
 
   const ui = await mount($)
   const all = await texts(ui)
@@ -39,6 +39,14 @@ test('opening /flowstate rebuilds the Flowfiles list and the status line from th
   expect(all).toMatch(/bad\.flow\.yaml/)
   expect(all).toMatch(/good\.flow\.yaml/)
   await ui.unmount()
+})
+
+test('a rebuilt file with errors raises the quiet status line, and a clean directory still prints nothing', async ($, on) => {
+  const seen: string[][] = []
+  const statuses: string[] = []
+  world(on, ['bad.flow.yaml'], seen, statuses)
+  await $.command.run({ command: 'flowstate', args: '' })
+  expect(statuses.at(-1)).toBe('⚠ validate 1 error bad.flow.yaml')
 })
 
 test('reopening does not validate a file again, and a file an edit already reported is not duplicated', async ($, on) => {
@@ -73,7 +81,7 @@ test('with no Flowfile in the directory nothing is validated and the status stay
   world(on, ['README.md'], seen, statuses)
   await $.command.run({ command: 'flowstate', args: '' })
   expect(seen.filter(a => a[1] === 'validate')).toEqual([])
-  expect(statuses.at(-1)).toMatch(/nothing checked yet/)
+  expect(statuses.at(-1) ?? '').toBe('')
 })
 
 test('validateOnEdit off also stops the rebuild from running flow', { options: { validateOnEdit: false } }, async ($, on) => {

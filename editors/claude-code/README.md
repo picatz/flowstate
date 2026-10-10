@@ -120,10 +120,12 @@ While a run is open in the pane and is running or waiting, the pane reads
   closed or another is opened, and when the pane has not drawn for 5 seconds (it
   was closed; opening it again starts the poll if the run is still live).
   Nothing is left running after any of these.
-- **A finished run settles its waits** (`settleWaits`): no step or timer reads
-  running or waiting once the run is over. A succeeded run closes them as
-  succeeded and the progress bar fills; a failed or cancelled run closes them as
-  `closed`, never as success. A wait takes the run's close time as its end.
+- **A finished run settles its waits** (`settleWaits`, one function for the card and
+  the graph overlay): a COMPLETED run shows each open `wait timeout` gate timer as
+  `released` (so the bar fills); a failed, cancelled, terminated or timed-out run shows
+  its open waiting or running rows as `closed`, never as released or succeeded. A run
+  still running, or of unknown status, is left as the timeline said. The refresh is what
+  lets the card see the run's final status and timeline without being reopened.
 
 ## Steps the card shows
 

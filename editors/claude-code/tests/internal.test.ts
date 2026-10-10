@@ -61,10 +61,13 @@ test('the debugger reads attached while the run is live and detached once it is 
   expect(leaseLine(ended, true)).toBe('◉ debugger htt detached')
 })
 
-test('settling a completed run leaves the debugger out of the steps and closes a user sleep that never fired', () => {
-  const d = settleWaits(parsed(KENT.filter(r => r[0] !== 11)), 'succeeded', Date.UTC(2026, 9, 9, 10, 0, 30))
-  expect(d.steps.map(s => s.status.kind)).toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded'])
-  expect(d.steps[2].durationMs).toBe(20_000)
+test('settling a completed run leaves the debugger out of the steps: only a gate timer is released, a sleep stays as the timeline said', () => {
+  const rows = KENT.filter(r => r[0] !== 11)
+  const d = settleWaits(parsed(rows), 'STATUS_COMPLETED')!
+  expect(d.steps.map(s => s.status.kind)).toEqual(['succeeded', 'succeeded', 'waiting', 'succeeded'])
+  const gated = settleWaits(parsed(rows.map((r): Row => (r[0] === 10 ? [10, 'TIMER_STARTED', '`approve` · wait timeout', 10] : r))), 'STATUS_COMPLETED')!
+  expect(gated.steps.map(s => s.status.kind)).toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded'])
+  expect(gated.leases).toHaveLength(1)
 })
 
 test('backticks are dropped from every label shown, and only from the display', () => {

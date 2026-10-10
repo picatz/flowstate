@@ -143,24 +143,20 @@ test('a waiting step counts up from its start between reads', () => {
   expect(stepElapsed(settle, base - 1)).toBeUndefined()
 })
 
-test('a finished run settles its waits and the bar fills; a live run is left alone', () => {
-  const p = parseTimeline(entries(['STEP_SCHEDULED', 'a', 0], ['STEP_COMPLETED', 'a', 5], ['TIMER_STARTED', 'settle · sleep', 10], ['STEP_SCHEDULED', 'b', 11]))
+test('a completed run releases its open gate timer and the bar fills; failed or cancelled show closed; a live run is left alone', () => {
+  const p = parseTimeline(entries(['STEP_SCHEDULED', 'a', 0], ['STEP_COMPLETED', 'a', 5], ['TIMER_STARTED', 'approve · wait timeout', 10]))
   if (!('detail' in p)) throw new Error('no detail')
-  const close = Date.UTC(2026, 9, 9, 10, 3, 0)
-  const done = settleWaits(p.detail, 'succeeded', close)
-  expect(done.steps.map(s => s.status.kind)).toEqual(['succeeded', 'succeeded', 'succeeded'])
-  expect(done.steps[1].durationMs).toBe(close - Date.UTC(2026, 9, 9, 10, 0, 10))
-  const facts = factsFor({ workflowId: 'w', status: 'STATUS_COMPLETED', closeTime: new Date(close).toISOString() }, done)
+  const done = settleWaits(p.detail, 'STATUS_COMPLETED')!
+  expect(done.steps.map(s => s.status.kind)).toEqual(['succeeded', 'succeeded'])
+  const facts = factsFor({ workflowId: 'w', status: 'STATUS_COMPLETED' }, done)
   expect(facts.done).toBe(facts.total)
   expect(facts.waitingOn).toBeUndefined()
   // failed or cancelled: closed, never presented as success
-  expect(settleWaits(p.detail, 'failed', close).steps[1].status.word).toBe('closed')
-  expect(settleWaits(p.detail, 'cancelled', close).steps[1].status.kind).toBe('cancelled')
+  expect(settleWaits(p.detail, 'STATUS_FAILED')!.steps[1].status.word).toBe('closed')
+  expect(settleWaits(p.detail, 'STATUS_CANCELED')!.steps[1].status.kind).toBe('cancelled')
   // not over, or not known: unchanged
-  expect(settleWaits(p.detail, 'running', close)).toBe(p.detail)
-  expect(settleWaits(p.detail, 'unknown', close)).toBe(p.detail)
-  // a close time before the step began does not invent a negative duration
-  expect(settleWaits(p.detail, 'succeeded', 1).steps[1].durationMs).toBeUndefined()
+  expect(settleWaits(p.detail, 'STATUS_RUNNING')).toBe(p.detail)
+  expect(settleWaits(p.detail, 'unknown')).toBe(p.detail)
 })
 
 test('the fingerprint changes with status and steps but not with time', () => {

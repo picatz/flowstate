@@ -180,7 +180,7 @@ test('a refused signal closes nothing: the gate stays and the refusal stays', as
   const { ui } = await open($, on, { signal: fail('permission denied') })
   await ui.press({ key: 'signal:deploy-approved' })
   await ui.press({ key: 'confirm-signal:deploy-approved' })
-  expect(await ui.find({ type: 'Text', text: /not sent: permission denied/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Not sent: permission denied/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: /Send signal deploy-approved/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /approval.*waiting/ })).toBeDefined()
   await ui.unmount()
