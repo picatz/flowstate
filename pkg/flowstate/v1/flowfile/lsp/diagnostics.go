@@ -146,7 +146,7 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		err error
 	)
 	if path, ok := doc.filesystemPath(); ok {
-		ds, err = flowfile.ValidateSourceAt([]byte(doc.text), path)
+		ds, err = moduleCache.ValidateSourceAt([]byte(doc.text), path)
 	} else {
 		ds, err = flowfile.ValidateSource([]byte(doc.text))
 	}

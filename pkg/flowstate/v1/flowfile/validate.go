@@ -2182,7 +2182,7 @@ func sortedInputNames(inputs map[string]*v1.Value) []string {
 // is no workflow to validate, and the error already describes every problem the
 // compiler found, with positions.
 func ValidateSource(data []byte) (Diagnostics, error) {
-	return validateThroughEdition(data, "")
+	return validateThroughEdition(data, "", nil)
 }
 
 // ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
@@ -2192,7 +2192,7 @@ func ValidateSourceFile(path string) (Diagnostics, error) {
 	if err != nil {
 		return nil, err
 	}
-	return validateThroughEdition(data, path)
+	return validateThroughEdition(data, path, nil)
 }
 
 // ParseAndValidateFile compiles a Flowfile read from disk and validates what it
@@ -2245,7 +2245,7 @@ func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Position
 	if err != nil {
 		var gate Diagnostics
 		if errors.As(err, &gate) && isEditionGate(gate) {
-			if _, verr := validateThroughEdition(data, path); verr != nil {
+			if _, verr := validateThroughEdition(data, path, nil); verr != nil {
 				return nil, nil, nil, verr
 			}
 		}
@@ -2271,7 +2271,7 @@ func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Position
 // path holds on disk yet — an editor's unsaved buffer — resolving a `call:`
 // step relative to path's directory all the same. See [ParseAt].
 func ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
-	return validateThroughEdition(data, path)
+	return validateThroughEdition(data, path, nil)
 }
 
 // validateThroughEdition validates data, and when the only thing in the way is
@@ -2317,8 +2317,8 @@ func ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
 // an author anyway: an old file, a new binary, and a stamp to update. Any
 // rewrite that moves a line leaves the gate exactly where it was, because the
 // alternative is being helpful about the wrong line.
-func validateThroughEdition(data []byte, path string) (Diagnostics, error) {
-	ds, err := parseAndValidate(data, path)
+func validateThroughEdition(data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
+	ds, err := parseAndValidate(data, path, cache)
 	if err == nil {
 		return ds, nil
 	}
@@ -2336,7 +2336,7 @@ func validateThroughEdition(data []byte, path string) (Diagnostics, error) {
 		return nil, err
 	}
 
-	rest, restErr := parseAndValidate(fixed.Source, path)
+	rest, restErr := parseAndValidate(fixed.Source, path, cache)
 	if restErr != nil {
 		var restDiagnostics Diagnostics
 		if !errors.As(restErr, &restDiagnostics) {
@@ -2406,8 +2406,8 @@ func isEditionDeclaration(line string) bool {
 // Calls [parse] directly rather than the public [Parse]/[ParseAt], so that when
 // the compiler reports diagnostics, the partial workflow is still available for
 // [validateParsed] to run the step-id checks against.
-func parseAndValidate(data []byte, path string) (Diagnostics, error) {
-	return validateParsed(parse(data, path, nil, new(int), nil))
+func parseAndValidate(data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
+	return validateParsed(parse(data, path, nil, new(int), cache.moduleSession()))
 }
 
 func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {

@@ -57,6 +57,10 @@ type FlowfileServer struct {
 
 	docs documentStore
 
+	// interfaces is the interface each module had when its users were last
+	// published for; see recheck.go.
+	interfaces interfaceMemo
+
 	// testDiagnosticsBySource retains each open test document's contribution
 	// to every URI it diagnoses. A suite may diagnose its included
 	// testdefaults.yaml; aggregation prevents one clean suite from clearing a
@@ -233,6 +237,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, s.tasks())
 		s.publish(ctx, conn, doc)
+		s.rememberInterface(doc)
 		return nil, nil
 
 	case "textDocument/didChange":
@@ -254,13 +259,17 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 	case "textDocument/didSave":
 		// A save carries the text only when the client honors the advertised
 		// includeText; either way the open document is the authority, so a save
-		// simply re-publishes.
+		// simply re-publishes. A saved module also re-publishes the open files
+		// whose meaning its save changed; see recheck.go.
 		var params lsp.DidSaveTextDocumentParams
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
 		if doc, ok := s.docs.get(params.TextDocument.URI); ok {
 			s.publish(ctx, conn, doc)
+			for _, dependent := range s.dependentsToRecheck(doc) {
+				s.publish(ctx, conn, dependent)
+			}
 		}
 		return nil, nil
 

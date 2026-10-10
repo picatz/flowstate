@@ -750,6 +750,19 @@ func (s *documentStore) get(uri lsp.DocumentURI) (*document, bool) {
 	return doc, ok
 }
 
+// snapshot returns the documents open now, in no order. The documents are
+// immutable once stored, so the caller may read them without the lock.
+func (s *documentStore) snapshot() []*document {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*document, 0, len(s.docs))
+	for _, doc := range s.docs {
+		out = append(out, doc)
+	}
+
+	return out
+}
+
 // getByFilesystemPath finds an open local document independent of whether the
 // client spelled its URI with an empty or localhost authority.
 func (s *documentStore) getByFilesystemPath(path string) (*document, bool) {
