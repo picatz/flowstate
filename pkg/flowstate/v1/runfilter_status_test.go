@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/require"
 
@@ -104,7 +105,7 @@ func TestAStatusLiteralIsReadByItsEnumNameWhateverTheSpelling(t *testing.T) {
 
 // TestAStatusThatIsNotOneStaysRefused is the fail-closed direction of the same
 // change: accepting more spellings must not turn an unknown literal into a match.
-// Ambiguous display words are refused too, because `done` could be COMPLETED,
+// Ambiguous words are refused too, because `done` could be COMPLETED,
 // CANCELED, or TERMINATED and picking one would answer a different question than
 // the one asked.
 func TestAStatusThatIsNotOneStaysRefused(t *testing.T) {
@@ -162,4 +163,23 @@ func TestANearMissSaysWhatItProbablyMeant(t *testing.T) {
 	_, err = v1.NewRunFilter(`status == "` + strings.Repeat("x", 4096) + `"`)
 	require.Error(t, err)
 	require.NotContains(t, err.Error(), "did you mean")
+}
+
+// TestAStatusDiagnosticStaysValidUTF8 checks the two rune-sensitive paths of the
+// did-you-mean: a long non-ASCII literal is echoed cut on a rune boundary, and a
+// one-rune non-ASCII typo is one edit from its status, not two.
+func TestAStatusDiagnosticStaysValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	// Three-byte runes, so a 32-byte cut falls inside one.
+	_, err := v1.NewRunFilter(`status == "` + strings.Repeat("\u65e5", 50) + `"`)
+	require.Error(t, err)
+	require.True(t, utf8.ValidString(err.Error()), "diagnostic is valid UTF-8")
+	require.Contains(t, err.Error(), "not a run status")
+	require.NotContains(t, err.Error(), "did you mean")
+
+	_, err = v1.NewRunFilter(`status == "f\u00e0iled"`)
+	require.Error(t, err)
+	require.True(t, utf8.ValidString(err.Error()))
+	require.Contains(t, err.Error(), `(did you mean "FAILED"?)`)
 }

@@ -413,7 +413,7 @@ $ flow timeline "$ID"
 A few more commands to try on a new run: `flow cancel` asks a run to stop and
 lets it clean up, `flow terminate` stops it at once, and
 `flow list --filter 'status == "RUNNING"'` narrows the listing with a CEL
-expression. A status matches in any case and by its display word, so
+expression. A status matches in any case and by an accepted alias, so
 `status == "succeeded"` finds the COMPLETED runs.
 
 ## 8. Clean up

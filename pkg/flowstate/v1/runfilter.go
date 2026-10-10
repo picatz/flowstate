@@ -11,6 +11,9 @@ import (
 	"github.com/google/cel-go/common/ast"
 	"github.com/google/cel-go/common/operators"
 	"github.com/google/cel-go/common/types"
+
+	"github.com/picatz/flowstate/internal/textbound"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/nearest"
 )
 
 // Filtering a listing, in the language the rest of the system already speaks.
@@ -411,8 +414,8 @@ func checkStatusLiterals(checked *cel.Ast) error {
 		statusAliasList(valid))
 }
 
-// statusAliases are the display words a person reads in `flow get` and the
-// plugin pane for a status whose enum name reads differently. Only the ones with
+// statusAliases are the accepted aliases a person may type for a status whose
+// enum name reads differently (`flow get` prints the enum name, not the alias). Only the ones with
 // exactly one meaning are here: `succeeded` is COMPLETED and nothing else, while
 // a word like `done` or `stopped` could be COMPLETED, CANCELED, or TERMINATED and
 // is left an error rather than guessed at. Keys are the normalised form (upper
@@ -432,7 +435,7 @@ func normalizeStatusWord(word string) string {
 }
 
 // resolveStatusLiteral returns the enum name a status literal denotes: the name in
-// any case, or one of the display words in [statusAliases]. An alias whose target
+// any case, or one of the accepted aliases in [statusAliases]. An alias whose target
 // is no longer in the schema's vocabulary resolves to nothing, so the table can
 // never invent a status the descriptor does not have.
 func resolveStatusLiteral(literal string, valid map[string]bool) (string, bool) {
@@ -458,14 +461,14 @@ func statusSuggestion(literal string, valid map[string]bool) string {
 	if len(literal) > maxStatusSuggestLen {
 		// Echoed truncated: the diagnostic is bounded however long the caller's
 		// literal was.
-		return fmt.Sprintf("%q...", literal[:maxStatusSuggestLen])
+		return fmt.Sprintf("%q", textbound.Truncate(literal, maxStatusSuggestLen))
 	}
 	quoted := fmt.Sprintf("%q", literal)
 
 	word := normalizeStatusWord(literal)
 	best, bestDistance, tied := "", 3, false
 	for _, name := range sortedNames(valid) {
-		switch d := editDistance(word, name); {
+		switch d := nearest.Distance(word, name); {
 		case d < bestDistance:
 			best, bestDistance, tied = name, d, false
 		case d == bestDistance:
@@ -479,7 +482,7 @@ func statusSuggestion(literal string, valid map[string]bool) string {
 	return fmt.Sprintf("%s (did you mean %q?)", quoted, best)
 }
 
-// statusAliasList names the display words for the diagnostic, derived from the
+// statusAliasList names the accepted aliases for the diagnostic, derived from the
 // table so the message cannot list one the resolver does not accept.
 func statusAliasList(valid map[string]bool) string {
 	var words []string
@@ -491,28 +494,6 @@ func statusAliasList(valid map[string]bool) string {
 	words = append(words, `"timed out" for TIMED_OUT`)
 
 	return strings.Join(words, ", ")
-}
-
-// editDistance is the Levenshtein distance between two short words.
-func editDistance(a, b string) int {
-	prev := make([]int, len(b)+1)
-	for j := range prev {
-		prev[j] = j
-	}
-	for i := 1; i <= len(a); i++ {
-		cur := make([]int, len(b)+1)
-		cur[0] = i
-		for j := 1; j <= len(b); j++ {
-			cost := 1
-			if a[i-1] == b[j-1] {
-				cost = 0
-			}
-			cur[j] = min(prev[j]+1, cur[j-1]+1, prev[j-1]+cost)
-		}
-		prev = cur
-	}
-
-	return prev[len(b)]
 }
 
 // walkStatusComparisons calls found for every string literal compared against the
