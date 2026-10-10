@@ -99,7 +99,7 @@ func TestParseSignalFlag(t *testing.T) {
 		{
 			name:    "not JSON",
 			flag:    "deploy-approved=yes",
-			wantErr: "not a JSON object",
+			wantErr: "not valid JSON",
 		},
 		{
 			// The shell-quoting mistake this is most likely to be: a bare list
@@ -514,6 +514,38 @@ func TestSignalPayloadSyntaxErrorNamesOnlyAPosition(t *testing.T) {
 			require.Nil(t, fake.got, "a malformed payload was sent anyway")
 		})
 	}
+}
+
+// TestSignalPayloadTypeErrorsAreToldApart checks that only a payload that is not
+// an object is called one: a valid object whose number overflows float64 fails on
+// the nested value, and says where without quoting the value or its key.
+func TestSignalPayloadTypeErrorsAreToldApart(t *testing.T) {
+	for _, data := range []string{`[1, 2]`, `"hunter2"`, `5`, `true`} {
+		t.Run(data, func(t *testing.T) {
+			fake := &fakeWorkflowService{}
+			serveFake(t, fake)
+			cmd, _ := signalCommand(t)
+			require.NoError(t, cmd.Flags().Set("data", data))
+
+			err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
+			require.ErrorContains(t, err, "not a JSON object")
+			require.NotContains(t, err.Error(), "hunter2")
+			require.Nil(t, fake.got)
+		})
+	}
+
+	fake := &fakeWorkflowService{}
+	serveFake(t, fake)
+	cmd, _ := signalCommand(t)
+	require.NoError(t, cmd.Flags().Set("data", `{"hunterkey":1e1000}`))
+
+	err := runSignal(cmd, []string{"deploy-abc123", "deploy-approved"})
+	require.ErrorContains(t, err, "invalid JSON syntax at line 1, column")
+	require.ErrorContains(t, err, "byte offset")
+	require.NotContains(t, err.Error(), "not a JSON object", "a valid object was called something else")
+	require.NotContains(t, err.Error(), "hunterkey", "the key was quoted")
+	require.NotContains(t, err.Error(), "1e1000", "the value was quoted")
+	require.Nil(t, fake.got)
 }
 
 // TestSignalRefusesAnInvalidNameBeforeSending checks the schema's own rules run

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"slices"
 	"strings"
 
@@ -321,12 +322,14 @@ func parseSignalPayload(source, raw string) (*v1.Node_Outputs, error) {
 		// A payload can carry a secret an approver was handed, and the decoder
 		// quotes the character it stopped at, so only the position is reported
 		// (see [redactedJSONError]). A well-formed document of the wrong kind
-		// is named by its own fixed phrase.
-		if _, wrongKind := errors.AsType[*json.UnmarshalTypeError](err); wrongKind {
+		// is named by its own fixed phrase: that is a type error aimed at the
+		// destination map itself, whereas a valid object holding a number that
+		// overflows float64 fails on the nested value and keeps its position.
+		if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok && typeErr.Type == reflect.TypeFor[map[string]any]() {
 			return nil, fmt.Errorf("%s: payload is not a JSON object", source)
 		}
 
-		return nil, fmt.Errorf("%s: payload is not a JSON object: %w", source, redactedJSONError(raw, err))
+		return nil, fmt.Errorf("%s: payload is not valid JSON: %w", source, redactedJSONError(raw, err))
 	}
 
 	outputs := &v1.Node_Outputs{NamedValues: make(map[string]*v1.Value, len(fields))}
