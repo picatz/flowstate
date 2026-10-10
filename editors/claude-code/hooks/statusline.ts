@@ -2,7 +2,7 @@ import type { FileReport } from '../types'
 import type { RunSummary } from '../types/flowstate'
 import { DEFAULT_ADDRESS } from './guard'
 import { clean } from './runs'
-import { chip, middleTruncate, statusFor, statusOf } from './vocab'
+import { baseName, chip, middleTruncate, statusFor, statusOf } from './vocab'
 
 /** What the Runs pane last learned from a server: when, which address, and the runs that need a person. */
 export interface Seen {
@@ -30,7 +30,7 @@ export const seenFrom = (runs: readonly RunSummary[], address: string, at: numbe
 }
 
 export const count = (n: number): string => (n > MAX_COUNT ? `${MAX_COUNT}+` : String(Math.max(0, Math.trunc(n) || 0)))
-const file = (name: unknown): string => middleTruncate(name, 28).replaceAll('`', "'")
+const file = (name: unknown): string => baseName(name, 28)
 const clock = (at: number): string => {
   const d = new Date(at)
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
@@ -81,5 +81,6 @@ export const statusText = ({ report, run, owes, seen, now }: Inputs): string => 
   if (seen !== undefined && seen.at > 0 && now >= seen.at && now - seen.at < FRESH_MS && seen.failed > 0) {
     parts.push(`server ${middleTruncate(seen.address || DEFAULT_ADDRESS, 30)} ${chip(statusFor('failed', `${count(seen.failed)} need attention`))} at ${clock(seen.at)}`)
   }
-  return parts.length === 0 ? 'flowstate: nothing checked yet, run /flowstate' : `flowstate: ${parts.join(' · ')}`
+  // The host already prefixes the line with the mod's name.
+  return parts.length === 0 ? 'nothing checked yet · run /flowstate' : parts.join(' · ')
 }

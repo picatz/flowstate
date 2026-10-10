@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 
-import { COLOR, SPINNER, chip, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from '../hooks/vocab'
+import { COLOR, SPINNER, baseName, chip, duration, middleTruncate, progressBar, runRow, statusFor, statusOf, story } from '../hooks/vocab'
 
 test('every status has a symbol, a word, and a colour token, and the symbol alone tells them apart', () => {
   const kinds = ['succeeded', 'failed', 'running', 'waiting', 'cancelled', 'skipped', 'compensated', 'unknown'] as const
@@ -130,4 +130,9 @@ test('a run row carries the status word and the id, so it reads without colour',
   const row = runRow({ workflowId: 'nightly-1', runId: 'r', status: 'STATUS_FAILED', name: 'nightly-etl' } as never)
   expect(row.text).toBe('failed nightly-etl (nightly-1)')
   expect(row.status.symbol).toBe('✗')
+})
+
+test('baseName keeps the file name of a very long path', () => {
+  expect(baseName(`/${'d'.repeat(600)}/workflow.yaml`)).toBe('workflow.yaml')
+  expect(baseName('/a/b/c.flow.yaml')).toBe('c.flow.yaml')
 })

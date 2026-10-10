@@ -8,12 +8,12 @@ const seen = (over: Partial<Seen> = {}): Seen => ({ at: NOW - 1000, address: 'fl
 const clean = { file: 'a.flow.yaml', diagnostics: [] }
 
 test('with nothing known the line names the one command to start', () => {
-  expect(statusText({ now: NOW })).toBe('flowstate: nothing checked yet, run /flowstate')
+  expect(statusText({ now: NOW })).toBe('nothing checked yet · run /flowstate')
   expect(statusText({ now: NOW, run: { file: 'a', kind: '' }, seen: NO_SEEN })).toContain('nothing checked yet')
 })
 
 test('a validate result is a symbol, a word and the file', () => {
-  expect(statusText({ now: NOW, report: clean })).toBe('flowstate: validate ✓ ok a.flow.yaml')
+  expect(statusText({ now: NOW, report: clean })).toBe('validate ✓ ok a.flow.yaml')
   const bad = { file: 'a.flow.yaml', diagnostics: [{ line: 1, column: 1, message: 'x' }] }
   expect(statusText({ now: NOW, report: bad })).toContain('validate ✗ 1 error a.flow.yaml')
   expect(statusText({ now: NOW, report: { ...bad, diagnostics: [...bad.diagnostics, ...bad.diagnostics] } })).toContain('✗ 2 errors')
@@ -26,6 +26,13 @@ test('file names are cleaned and bounded, never trusted', () => {
   expect(text.length).toBeLessThan(80)
 })
 
+test('the line carries no name of its own and shows base names only', () => {
+  expect(statusText({ now: NOW })).not.toMatch(/^flowstate/)
+  const text = statusText({ now: NOW, report: { file: '/private/tmp/claude-1/deep/workflow.yaml', diagnostics: [] }, run: { file: 'C:\\w\\d.flow.yaml', kind: 'ok' } })
+  expect(text).toBe('validate ✓ ok workflow.yaml · run ✓ succeeded d.flow.yaml')
+  expect(statusText({ now: NOW, report: { file: `/x/${'n'.repeat(80)}.flow.yaml`, diagnostics: [] } })).toMatch(/^validate ✓ ok …n+\.flow\.yaml$/)
+})
+
 test('a local run is a chip and a word, whatever happened', () => {
   const line = (kind: 'ok' | 'failed' | 'unknown' | 'notrun') => statusText({ now: NOW, run: { file: 'a.flow.yaml', kind } })
   expect(line('ok')).toContain('run ✓ succeeded a.flow.yaml')
@@ -35,11 +42,11 @@ test('a local run is a chip and a word, whatever happened', () => {
 })
 
 test('an owed verification leg is shown with its command', () => {
-  expect(statusText({ now: NOW, owes: 'flow test' })).toBe('flowstate: ◔ owes flow test')
+  expect(statusText({ now: NOW, owes: 'flow test' })).toBe('◔ owes flow test')
 })
 
 test('a server answer shows only while fresh and only when someone needs attending to', () => {
-  expect(statusText({ now: NOW, seen: seen() })).toMatch(/^flowstate: server flow\.example:9233 ✗ 2 need attention at \d\d:\d\d$/)
+  expect(statusText({ now: NOW, seen: seen() })).toMatch(/^server flow\.example:9233 ✗ 2 need attention at \d\d:\d\d$/)
   expect(statusText({ now: NOW, seen: seen({ at: NOW - FRESH_MS }) })).toContain('nothing checked yet')
   expect(statusText({ now: NOW, seen: seen({ at: NOW + 5000 }) })).toContain('nothing checked yet')
   expect(statusText({ now: NOW, seen: seen({ failed: 0 }) })).toContain('nothing checked yet')
@@ -88,9 +95,9 @@ const failedRun = JSON.stringify({ runs: [{ workflowId: 'w1', status: 'STATUS_FA
 test('an edit shows the validate result and the owed leg, and starts nothing for the line', async ($, on) => {
   const { argvs, lines } = stub(on, { validate: '{"file":"a.flow.yaml","diagnostics":[{"line":2,"column":1,"message":"bad"}]}\n' })
   await $.turn.start({ text: 'go', turnId: 't' })
-  expect(lines.at(-1)).toBe('flowstate: nothing checked yet, run /flowstate')
+  expect(lines.at(-1)).toBe('nothing checked yet · run /flowstate')
   await edit($)
-  expect(lines.at(-1)).toBe('flowstate: validate ✗ 1 error a.flow.yaml · ◔ owes flow validate')
+  expect(lines.at(-1)).toBe('validate ✗ 1 error a.flow.yaml · ◔ owes flow validate')
   // The only process in the whole sequence is the validation of the edit itself.
   expect(argvs).toEqual([['flow', 'validate', '-o', 'jsonl', '--', 'a.flow.yaml']])
 })
@@ -101,17 +108,17 @@ test('a passing check clears the owed leg, and a test suite changes which leg is
   await edit($)
   expect(lines.at(-1)).toContain('◔ owes flow test')
   await $.tool.call({ tool: 'Bash', command: 'flow test' })
-  expect(lines.at(-1)).toBe('flowstate: validate ✓ ok a.flow.yaml')
+  expect(lines.at(-1)).toBe('validate ✓ ok a.flow.yaml')
 })
 
 test('the Runs pane puts the attention count and address on the line; a filtered listing does not', async ($, on) => {
   const { argvs, lines } = stub(on, { list: failedRun, address: 'flow.example:9233' })
   const ui = await mount($)
-  expect(lines.at(-1)).toMatch(/^flowstate: server flow\.example:9233 ✗ 1 need attention at \d\d:\d\d$/)
+  expect(lines.at(-1)).toMatch(/^server flow\.example:9233 ✗ 1 need attention at \d\d:\d\d$/)
   // The line does not make the pane redraw in a loop.
   expect(argvs.filter(a => a[1] === 'list').length).toBeLessThan(4)
   await ui.input({ key: 'filter', text: 'status == "FAILED"' })
-  expect(lines.at(-1)).toBe('flowstate: nothing checked yet, run /flowstate')
+  expect(lines.at(-1)).toBe('nothing checked yet · run /flowstate')
   await ui.unmount()
 })
 
@@ -141,11 +148,11 @@ test('a local run from the form puts its result on the line, success or failure,
   await ui.select({ plugin: 'flowstate', key: 'run-file', value: 'deploy.flow.yaml' })
   await ui.press({ key: 'run-local' })
   await ui.press({ key: 'confirm-run' })
-  expect(lines.at(-1)).toBe('flowstate: run ✓ succeeded deploy.flow.yaml')
+  expect(lines.at(-1)).toBe('run ✓ succeeded deploy.flow.yaml')
   exitCode = 1
   await ui.press({ key: 'run-local' })
   await ui.press({ key: 'confirm-run' })
-  expect(lines.at(-1)).toBe('flowstate: run ✗ failed deploy.flow.yaml')
+  expect(lines.at(-1)).toBe('run ✗ failed deploy.flow.yaml')
   expect(argvs.filter(a => a[1] === 'run').length).toBe(2)
   await ui.unmount()
 })
@@ -169,11 +176,11 @@ test('a refusal before the run replaces the previous result on the line, and spa
   await ui.select({ plugin: 'flowstate', key: 'run-file', value: 'deploy.flow.yaml' })
   await ui.press({ key: 'run-local' })
   await ui.press({ key: 'confirm-run' })
-  expect(lines.at(-1)).toBe('flowstate: run ✓ succeeded deploy.flow.yaml')
+  expect(lines.at(-1)).toBe('run ✓ succeeded deploy.flow.yaml')
   await ui.press({ key: 'run-local' })
   listed = false
   await ui.press({ key: 'confirm-run' })
-  expect(lines.at(-1)).toBe('flowstate: run – not run deploy.flow.yaml')
+  expect(lines.at(-1)).toBe('run – not run deploy.flow.yaml')
   expect(argvs.filter(a => a[1] === 'run').length).toBe(1)
   await ui.unmount()
 })

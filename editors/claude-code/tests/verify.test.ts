@@ -1,4 +1,4 @@
-import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from '../hooks/verify'
+import { EMPTY, applyEdit, applyReport, checkOf, creditValidated, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from '../hooks/verify'
 import type { Verify } from '../hooks/verify'
 import { expect, test } from 'claude-code/testing'
 
@@ -116,7 +116,9 @@ test('a test suite is found by name and the scan is bounded', () => {
 })
 
 // The hooks themselves, with the engine stubbed.
-const stubTurn = (on: any, files: string[] = [], bash: { isError?: true; interrupted?: boolean; backgroundTaskId?: string } = {}, earlier?: string) => {
+// The edit's own validate reports a problem, so only the Bash checks under test can meet the leg.
+const BROKEN = '{"file":"a.flow.yaml","diagnostics":[{"line":1,"column":1,"message":"bad"}]}\n'
+const stubTurn = (on: any, files: string[] = [], bash: { isError?: true; interrupted?: boolean; backgroundTaskId?: string } = {}, earlier?: string, validateOut = BROKEN) => {
   on('turn.start', () => ({ turnId: 't' }))
   on('classic.Stop', () => (earlier === undefined ? {} : { block: earlier }))
   on('tool.call', (_$: unknown, e: { tool: string }) =>
@@ -125,7 +127,7 @@ const stubTurn = (on: any, files: string[] = [], bash: { isError?: true; interru
         ? { result: undefined, isError: true }
         : { result: { stdout: '', stderr: '', interrupted: bash.interrupted ?? false, backgroundTaskId: bash.backgroundTaskId } }
       : { result: 'ok' })
-  on('process.run', () => ({ value: { exitCode: 0, stdout: '{"file":"a.flow.yaml","diagnostics":[]}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: validateOut, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   on('fs.list', () => ({ value: files.map(name => ({ name, kind: 'file', size: 1, mtimeMs: 0, isLink: false })) }))
   on('ui.status', () => ({ value: undefined }))
 }
@@ -228,4 +230,89 @@ test('the band credits a lone flow test only; verify credit for chains is unchan
     expect(isLoneTest(c)).toBe(false)
   }
   expect(checkOf('cd svc && flow test .')).toBe('test')
+})
+
+test('creditValidated meets the validate leg only when every edited file has a clean report', () => {
+  const ok = (file: string) => ({ file, diagnostics: [] })
+  const two = recordEdit(edited('a.flow.yaml'), 'b.flow.yaml')
+  expect(creditValidated(edited(), [ok('a.flow.yaml')]).validated).toBe(true)
+  expect(missingLeg(creditValidated(edited(), [ok('a.flow.yaml')]), false)).toBeUndefined()
+  // A path is compared in the form recordEdit stored it.
+  expect(creditValidated(edited('a`b.flow.yaml'), [ok('a`b.flow.yaml')]).validated).toBe(true)
+  // Never `tested`, so a suite still owes `flow test`.
+  expect(creditValidated(edited(), [ok('a.flow.yaml')]).tested).toBe(false)
+  expect(creditValidated(two, [ok('a.flow.yaml'), ok('b.flow.yaml')]).validated).toBe(true)
+
+  const diag = { file: 'a.flow.yaml', diagnostics: [{ line: 1, column: 1, message: 'x' }] }
+  const failed = { file: 'a.flow.yaml', diagnostics: [], failure: 'no flow' }
+  for (const [state, reports] of [
+    [edited(), [diag]],
+    [edited(), [failed]],
+    [edited(), []],
+    [edited(), [ok('other.flow.yaml')]],
+    [two, [ok('a.flow.yaml')]],
+    [two, [ok('a.flow.yaml'), failed]],
+    [EMPTY, [ok('a.flow.yaml')]],
+  ] as const) {
+    expect(creditValidated(state, reports)).toBe(state)
+  }
+})
+
+test('a passing validate-after-edit meets the leg whichever Edit hook runs first, and a failing one does not', async ($, on) => {
+  const lines: string[] = []
+  let stdout = '{"file":"a.flow.yaml","diagnostics":[]}\n'
+  on('classic.Stop', () => ({}))
+  on('tool.call', () => ({ result: 'ok' }))
+  on('turn.start', () => ({ turnId: 't' }))
+  on('fs.list', () => ({ value: [] }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
+  on('ui.status', (_$: unknown, e: unknown) => {
+    lines.push(typeof e === 'string' ? e : String((e as { text?: string }).text))
+    return { value: undefined }
+  })
+  await $.turn.start({ text: 'go', turnId: 't' })
+  await $.tool.call({ tool: 'Edit', file_path: 'a.flow.yaml', old_string: 'x', new_string: 'y' })
+  expect(lines.at(-1)).toBe('validate ✓ ok a.flow.yaml')
+  expect((await stop($)).block).toBeUndefined()
+
+  stdout = '{"file":"a.flow.yaml","diagnostics":[{"line":1,"column":1,"message":"bad"}]}\n'
+  await $.turn.start({ text: 'go', turnId: 't' })
+  await $.tool.call({ tool: 'Edit', file_path: 'a.flow.yaml', old_string: 'x', new_string: 'y' })
+  expect(lines.at(-1)).toBe('validate ✗ 1 error a.flow.yaml · ◔ owes flow validate')
+  expect((await stop($)).block).toContain('flow validate')
+})
+
+test('creditValidated matches the exact path: aliases of one display form never share a report', () => {
+  const ok = (file: string) => ({ file, diagnostics: [] })
+  const bad = (file: string) => ({ file, diagnostics: [{ line: 1, column: 1, message: 'x' }] })
+  const long = (tail: string) => `${'d'.repeat(250)}${tail}.flow.yaml`
+  const [a, b] = [long('a'), long('b')]
+  // Cut at 200 characters, both show the same; they are still two files.
+  const both = recordEdit(recordEdit(EMPTY, a), b)
+  expect(creditValidated(both, [ok(a), bad(b)])).toBe(both)
+  expect(creditValidated(both, [ok(a)])).toBe(both)
+  expect(creditValidated(both, [ok(a), ok(b)]).validated).toBe(true)
+  const one = recordEdit(EMPTY, a)
+  expect(creditValidated(one, [ok(b)])).toBe(one)
+  expect(creditValidated(one, [ok(a), bad(b)])).toBe(one)
+  expect(creditValidated(one, [ok(a)]).validated).toBe(true)
+  // A backtick and an apostrophe show alike.
+  const tick = recordEdit(recordEdit(EMPTY, "a'b.flow.yaml"), 'a`b.flow.yaml')
+  expect(creditValidated(tick, [ok("a'b.flow.yaml"), bad('a`b.flow.yaml')])).toBe(tick)
+  expect(creditValidated(tick, [ok("a'b.flow.yaml"), ok('a`b.flow.yaml')]).validated).toBe(true)
+  // A path too long to match exactly is never credited.
+  const huge = recordEdit(EMPTY, `${'d'.repeat(5000)}.flow.yaml`)
+  expect(creditValidated(huge, [ok(`${'d'.repeat(5000)}.flow.yaml`)])).toBe(huge)
+})
+
+test('a clean report meets the leg and a broken one never does, in either order of report and edit', () => {
+  const clean = [{ file: 'a.flow.yaml', diagnostics: [] }]
+  const broken = [{ file: 'a.flow.yaml', diagnostics: [{ line: 1, column: 1, message: 'x' }] }]
+  // Report first, then the edit.
+  expect(applyEdit(applyReport(EMPTY, clean, false), 'a.flow.yaml', clean).validated).toBe(true)
+  expect(applyEdit(applyReport(EMPTY, broken, true), 'a.flow.yaml', broken).validated).toBe(false)
+  // Edit first (with nothing or a stale clean report), then the report.
+  expect(applyReport(applyEdit(EMPTY, 'a.flow.yaml', []), clean, false).validated).toBe(true)
+  expect(applyReport(applyEdit(EMPTY, 'a.flow.yaml', clean), broken, true).validated).toBe(false)
+  expect(applyReport(applyEdit(EMPTY, 'a.flow.yaml', []), broken, true).validated).toBe(false)
 })

@@ -12,7 +12,7 @@ import { MAX_ENTRIES, factsFor, parseTimeline, settleWaits, visibleSteps } from 
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
-import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, recordEdit } from './verify'
+import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, applyReport, applyEdit } from './verify'
 import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, applyRerun, rerunLine, rerunQuestion, summaryOf, unknownBand } from './testband'
 import type { Band } from './testband'
 import { NO_SEEN, seenFrom, statusText } from './statusline'
@@ -316,7 +316,13 @@ export const register: Register = (on, options) => {
       await update($, reports, list =>
         [...list.filter(r => r.file !== report.file), report].slice(-MAX_REPORTS),
       )
+      // The other Edit hook may have recorded the edit first; credit from here too so order does not matter.
       const broken = report.diagnostics.length > 0 || report.failure !== undefined
+      if (nudges) {
+        const stored = await read($, reports).catch(() => [] as FileReport[])
+        // The edit hook below may have credited this file from an older clean report before this one landed.
+        await update($, verify, s => applyReport(s, stored, broken)).catch(() => undefined)
+      }
       await refreshStatus($, nudges, heard)
 
       return broken ? { ...ran, context: [...(ran.context ?? []), summarize(report)] } : ran
@@ -340,7 +346,9 @@ export const register: Register = (on, options) => {
         // A result for the old files must not stand as current.
         if (typeof e.file_path === 'string' && (isFlowfile(e.file_path) || isTestFile(e.file_path))) await setBand($, null).catch(() => undefined)
         if (nudges) {
-          await update($, verify, s => recordEdit(s, e.file_path)).catch(() => undefined)
+          // A validate that already passed (the hook above) is the check this edit owes.
+          const known = isEnabled ? await read($, reports).catch(() => [] as FileReport[]) : []
+          await update($, verify, s => applyEdit(s, e.file_path, known)).catch(() => undefined)
           await refreshStatus($, nudges, heard)
         }
       }
