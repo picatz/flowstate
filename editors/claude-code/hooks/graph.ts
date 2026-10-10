@@ -23,6 +23,9 @@ export const MAX_NOTES = 5
 const MAX_NOTE = 160
 const MAX_LABEL = 60
 const MAX_DETAIL = 80
+const MAX_ADDRESS = 200
+/** The schema's longest workflow name. */
+export const MAX_NAME = 128
 /** Nesting deeper than this is drawn at this depth; the schema's steps nest a few levels, not dozens. */
 export const MAX_DEPTH = 8
 /** A graph read is stopped after this long and reported as unreadable. */
@@ -64,6 +67,8 @@ export interface Row {
   label: string
   /** What the step does, in the debugger's words; empty for none. */
   detail: string
+  /** The node's `address` (`decision?0/deploy`; empty for the workflow itself), cleaned. The one key a run's status is matched on. */
+  address: string
 }
 
 export interface Graph {
@@ -73,6 +78,10 @@ export interface Graph {
   notes: string[]
   /** The rows follow the edges' nesting; false when they could only be put in the document's node order. */
   nested: boolean
+  /** The workflow node's label (the declared name) for display, cut to the label bound; empty when the document has none. */
+  workflow: string
+  /** The same name uncut up to the schema's 128 (cleaned), for matching; one char over means it was cut, and nothing matches it. */
+  workflowId: string
 }
 
 /** A graph that is shown, or the one reason it is not. */
@@ -126,6 +135,7 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
   // Nodes by id, in document order; a repeated id keeps its first.
   const index = new Map<string, number>()
   const rows: Row[] = []
+  let workflowId = ''
   let skipped = 0
   for (const raw of doc.nodes.slice(0, MAX_NODES)) {
     const n = obj(raw)
@@ -135,7 +145,8 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
     }
     index.set(n.id, rows.length)
     const kind = typeof n.kind === 'string' && Object.hasOwn(KIND, n.kind) ? KIND[n.kind] : 'node'
-    rows.push({ depth: 1, kind, label: clean(n.label, MAX_LABEL) || clean(n.id, MAX_LABEL), detail: clean(n.detail, MAX_DETAIL) })
+    if (kind === 'workflow' && workflowId === '') workflowId = clean(n.label, MAX_NAME + 1)
+    rows.push({ depth: 1, kind, label: clean(n.label, MAX_LABEL) || clean(n.id, MAX_LABEL), detail: clean(n.detail, MAX_DETAIL), address: clean(n.address, MAX_ADDRESS) })
   }
   if (doc.nodes.length > MAX_NODES) {
     partial = true
@@ -211,13 +222,16 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
   // Without a single CONTAINS edge the nesting is not stated at all.
   const nested = parent.size > 0 || rows.length <= 1
   if (!nested) note('the graph states no nesting, so the nodes are listed in the order given')
-  return { graph: { rows: order.map(i => rows[i]), partial, notes: [...cli, ...own], nested } }
+  return { graph: { rows: order.map(i => rows[i]), partial, notes: [...cli, ...own], nested, workflow: rows.find(r => r.kind === 'workflow')?.label ?? '', workflowId } }
 }
 
 /** `    ○ label — detail`: one row, indented by depth, the mark first. */
-export const rowText = (r: Row): string => {
+export const rowText = (r: Row): string => markedText(r, NOT_RUN)
+
+/** The same row with another mark and words after it: what a run's status adds, nothing else. */
+export const markedText = (r: Row, mark: string, after = ''): string => {
   const what = r.detail !== '' ? r.detail : r.kind === 'step' || r.kind === 'workflow' ? '' : r.kind
-  return `${'  '.repeat(r.depth)}${r.kind === 'workflow' ? 'workflow' : NOT_RUN} ${r.label}${what === '' ? '' : ` — ${what}`}`
+  return `${'  '.repeat(r.depth)}${r.kind === 'workflow' ? 'workflow' : mark} ${r.label}${what === '' ? '' : ` — ${what}`}${after}`
 }
 
 /** The section's headline: what the rows are, and that nothing has run. */
