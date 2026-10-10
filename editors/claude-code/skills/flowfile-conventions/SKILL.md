@@ -27,7 +27,10 @@ read the row before arguing with it.
 - Three or more outcomes on one value is `switch:` with a meaningful
   `default:`, not nested ternaries or sibling `if:` steps.
 - A value read more than once is a `value:` step; a constant is a workflow
-  `vars:` entry; a repeated computation is a `functions:` entry.
+  `vars:` entry; a repeated computation is a `functions:` entry (a `call:` is
+  a whole durable run, too heavy for a one-line computation). A shape or a
+  scalar with a rule is a `types:` entry, and any of these shared across files
+  is a module taken with `use:`; see `flowfile-compose`.
 - `timeout:` and `retry:` belong on the task step doing the work, not on
   `for_each:`, `parallel:`, `call:`, `loop:`, `switch:`, or a wait.
 - Input limits: `min_len:`, `max_len:`, `min_items:`, `max_items:`; anything

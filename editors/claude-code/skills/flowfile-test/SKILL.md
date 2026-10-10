@@ -15,6 +15,11 @@ under a second and nothing reaches the network.
   `--coverage-required` to fail on steps and `switch` arms no case reaches.
 - The `flowstate_test` MCP tool runs a case without a shell.
 
+A module (a file with no steps, imported with `use:`) is tested without a run:
+name it as the case's `workflow:` and state only `expect.check:` (claims over
+its functions) and `expect.types:` (`admits:` and `refuses:` values for a
+scalar type). See `flowfile-compose`.
+
 Write a case for the failure path (a stubbed task error, a timeout, a denied
 approval) as well as the happy path; a test that only passes proves little.
 A case's `ran:`, `skipped:` and `compensated:` must name real steps, and the
