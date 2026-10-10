@@ -274,7 +274,7 @@ func rootHolds(root string) string {
 	case RunRoot:
 		return "the run's own address and starter identity"
 	case TriggerRoot:
-		return "how the run started"
+		return "the details of how the run started"
 	default:
 		return "those values"
 	}

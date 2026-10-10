@@ -468,6 +468,16 @@ steps:
 `,
 			want: "is the root the run's own address and starter identity are named under",
 		},
+		{
+			name: "a step may not be called trigger",
+			src: `
+steps:
+  - id: trigger
+    log:
+      message: hello
+`,
+			want: "is the root the details of how the run started are named under",
+		},
 	}
 
 	for _, tt := range tests {
