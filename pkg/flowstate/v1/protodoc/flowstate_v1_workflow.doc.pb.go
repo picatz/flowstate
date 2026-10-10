@@ -476,6 +476,24 @@ func init() {
 				" modules however deep they nest.\n",
 		},
 		{
+			Name: "flowstate.v1.Workflow.step_defaults",
+			Leading: " StepDefaults is the `step_defaults:` block: the `timeout:`, `total_timeout:`\n" +
+				" and `retry:` a file states once for every step that does work and does not\n" +
+				" state its own.\n" +
+				"\n" +
+				" It is an authoring record, not a second place a driver looks. The compiler\n" +
+				" resolves it into each eligible step's [Node.policy] (a key the step states\n" +
+				" replaces the default's, whole), so a driver reads one policy per step and\n" +
+				" the two cannot differ on which applies. It is kept here so the factoring\n" +
+				" survives a round trip: without it `flow fmt` would write the resolved values\n" +
+				" back into every step and the block would not outlive its first format.\n" +
+				" A specification built without the compiler gets no defaults from this field.\n" +
+				"\n" +
+				" `continue_on_error` and `tolerated_kinds` are refused, because blanket\n" +
+				" tolerance is a decision about one step's failure. A workflow with no steps\n" +
+				" (a module) has nothing to default and is refused when it sets this.\n",
+		},
+		{
 			Name: "flowstate.v1.Workflow.StepOutputs",
 			Leading: " StepOutputs is a map of step IDs to their outputs. Each step's outputs are\n" +
 				" represented as a map of named values, allowing for structured outputs that\n" +

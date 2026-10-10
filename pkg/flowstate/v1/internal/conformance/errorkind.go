@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/durationpb"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // ErrorKindCase pairs a workflow that fails outright — not a step
@@ -85,11 +86,60 @@ func ErrorKindCases(httpBaseURL string) []ErrorKindCase {
 			}},
 		}
 	}
+	// A `retry:` that comes from the file's `step_defaults:` rather than from the
+	// step. The compiler resolves it into the step's policy, so what both drivers
+	// are held to is that the resolved policy is the one they run; the second case
+	// is the step's own `retry:` winning, which a driver reading the block itself
+	// could get wrong. Compiled from the author's source, as [EnumNameCases] is.
+	var inheritedAttempts, overriddenAttempts atomic.Int32
+	inheritedTask := kindRetryTask("test.error_kind_step_defaults", &inheritedAttempts)
+	overriddenTask := kindRetryTask("test.error_kind_step_defaults_override", &overriddenAttempts)
+	stepDefaultsWorkflow := func(task *v1.TaskDef, stepRetry string) *v1.Workflow {
+		if err := v1.DefaultRegistry().Register(*task); err == nil {
+			defer v1.DefaultRegistry().Unregister(task.Name)
+		}
+
+		workflow, err := flowfile.Unmarshal([]byte(`edition: v2026.4
+name: error-kind-step-defaults
+step_defaults:
+  retry: {attempts: 3, interval: 1ms, backoff: 1.0, max_interval: 1ms}
+steps:
+  - id: flaky
+` + stepRetry + `    ` + task.Name + `: {}
+`))
+		if err != nil {
+			// A literal source with its fixture registered: a failure is this
+			// function being wrong, as in [EnumNameCases].
+			panic("compiling the step defaults case " + task.Name + ": " + err.Error())
+		}
+
+		return workflow
+	}
+
 	var onlyOtherAttempts, onlyAttempts atomic.Int32
 	onlyOtherTask := kindRetryTask("test.error_kind_retry_only_other", &onlyOtherAttempts)
 	onlyTask := kindRetryTask("test.error_kind_retry_only", &onlyAttempts)
 
 	return []ErrorKindCase{
+		{
+			// Nothing on the step says how often to try: the file's default does.
+			Name:             "a retry from step_defaults is the policy the step runs with",
+			Workflow:         stepDefaultsWorkflow(inheritedTask, ""),
+			ExpectedKind:     v1.ErrorKindUpstream,
+			TaskDef:          inheritedTask,
+			Attempts:         inheritedAttempts.Load,
+			ExpectedAttempts: 3,
+		},
+		{
+			// And the step's own `retry:` replaces it, so a single attempt is a
+			// single attempt on both drivers whatever the file defaults to.
+			Name:             "a step's own retry replaces the step_defaults retry",
+			Workflow:         stepDefaultsWorkflow(overriddenTask, "    retry: {attempts: 1}\n"),
+			ExpectedKind:     v1.ErrorKindUpstream,
+			TaskDef:          overriddenTask,
+			Attempts:         overriddenAttempts.Load,
+			ExpectedAttempts: 1,
+		},
 		{
 			// `retry.only:` that does not name the kind rules it out.
 			Name:             "a retry only list that omits the kind stops after one attempt",

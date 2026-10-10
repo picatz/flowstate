@@ -81,6 +81,7 @@ headings below, not this list.*
   - [A tolerated failure is a typed value](#a-tolerated-failure-is-a-typed-value)
   - [`errors:` and `fail:`: a workflow names its own refusals](#errors-and-fail-a-workflow-names-its-own-refusals)
   - [Tolerating and retrying by kind](#tolerating-and-retrying-by-kind)
+  - [Policy stated once: `step_defaults:`](#policy-stated-once-step_defaults)
   - [It is `undo:`, not `on_failure:`](#it-is-undo-not-on_failure)
   - [Per-step, not a workflow-level handler list](#per-step-not-a-workflow-level-handler-list)
   - [Registered on success, and only on success](#registered-on-success-and-only-on-success)
@@ -4190,6 +4191,58 @@ nearest real one. Both drivers apply the same rule, pinned by shared conformance
 cases; on the durable driver the narrowing compiles to Temporal's
 non-retryable error types and can only add to them. See
 `examples/failure-kinds/`.
+
+### Policy stated once: `step_defaults:`
+
+A file that bounds ten calls the same way used to write the same `timeout:` and
+`retry:` ten times, and a change to the bound was ten edits that could miss one.
+`step_defaults:` is the one place to say it, and it is the same mechanism as every
+other repeated thing in a file: name it once, use it by position (see
+[Composition, end to end](#composition-end-to-end-choosing-a-mechanism-and-evolving-it-safely-landed)).
+No template, no inheritance between files.
+
+```yaml
+step_defaults:
+  timeout: 30s
+  retry: {attempts: 4, interval: 2s}
+steps:
+  - id: fetch                 # 30s, 4 attempts
+    http: {url: https://api.example.com/items}
+  - id: slow
+    timeout: 5m               # 5m; still 4 attempts
+    http: {url: https://api.example.com/export}
+  - id: charge
+    retry: {attempts: 1}      # 30s; one attempt, nothing of the default's interval
+    http: {method: POST, url: https://api.example.com/charges}
+```
+
+**Decisions, each pinned by a test:**
+
+- **Three keys.** `timeout:`, `total_timeout:` and `retry:`, with the grammar they
+  have on a step. `continue_on_error:` is refused: tolerating a failure is a decision
+  about one step's failure, and a blanket one hides the failures the rest of the file
+  branches on.
+- **The step wins, per key, and a key is replaced whole.** A step's `retry:` is not
+  merged field by field with the default's, because a merge makes "what does this
+  step do" a question about two places. `retry:` with nothing under it takes the
+  engine's own retry behaviour, which is how a step opts out. A step cannot remove a
+  default `timeout:`: a bound is what a default is for.
+- **It reaches the steps `timeout:` and `retry:` are accepted on**, at any depth of a
+  `for_each:`, `loop:`, `parallel:` or `switch:` body. `value:`, `fail:`, waits and
+  the composite kinds take nothing, rather than refusing the file. A `call:` step runs
+  another file, so its steps take that file's `step_defaults:`; a compensation under
+  `undo:` has no policy of its own and is not reached.
+- **Resolved when the file compiles.** Each eligible step's compiled policy holds the
+  values it runs with, so both drivers read one policy per step and cannot disagree on
+  which applies; the two `step_defaults` cases in the shared `ErrorKindCases` pin this on both drivers (a default's attempt count is the one run, and a step's own `retry:` replaces it).
+  [`Workflow.step_defaults`](../proto/flowstate/v1/workflow.proto) records the block so
+  `flow fmt` keeps it factored: a step that states a key equal to the default is
+  written without it, and a hand-built specification that sets the field without
+  resolving it gets nothing from it.
+- **Refused where it means nothing or contradicts.** An empty block, an unknown key,
+  a file with no `steps:` (a module), a `total_timeout:` shorter than the `timeout:`
+  beside it, and an inherited key that makes a step's own total shorter than its
+  timeout (or the reverse) are diagnostics with a position.
 
 ### It is `undo:`, not `on_failure:`
 

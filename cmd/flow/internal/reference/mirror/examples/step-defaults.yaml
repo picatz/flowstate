@@ -1,0 +1,44 @@
+# A bound several steps share is written once. `step_defaults:` holds the
+# `timeout:`, `total_timeout:` and `retry:` that every step that does work takes
+# unless it states its own, so changing the bound is one edit rather than a hunt
+# for the step that kept the old one.
+#
+# Per key the step wins, and a key is replaced whole: `slow` below sets its own
+# `timeout:` and still takes the default `retry:`, while a step that wrote
+# `retry:` would take none of the default's fields. `retry:` with nothing under
+# it asks for the engine's own retry behaviour. `continue_on_error:` is not a
+# default: tolerating a failure is a decision about one step.
+#
+# Steps that schedule no single activity (`value:`, `for_each:`, `parallel:`,
+# `call:`, a wait) take nothing, and the steps inside a `for_each:` body do. A
+# `call:` takes its callee file's own defaults, not this file's.
+edition: v2026.4
+name: step-defaults
+step_defaults:
+  timeout: 30s
+  retry:
+    attempts: 4
+    interval: 2s
+    backoff: 2.0
+    max_interval: 20s
+steps:
+  - id: fetch
+    log:
+      message: fetching
+  - id: slow
+    timeout: 5m
+    log:
+      message: a longer attempt, with the same retries
+  - id: once
+    retry:
+      attempts: 1
+    log:
+      message: not safe to repeat
+  - id: each
+    for_each:
+      items: ${[1, 2]}
+      as: n
+      steps:
+        - id: handle
+          log:
+            message: handling ${n}

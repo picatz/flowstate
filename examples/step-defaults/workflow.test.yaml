@@ -1,0 +1,14 @@
+# The defaults are resolved into each step when the file compiles; the compiled
+# policies are asserted in pkg/flowstate/v1/flowfile/stepdefaults_test.go and run
+# on both drivers by the shared conformance cases. This suite proves the file
+# runs end to end.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: every step runs under the defaults or its own override
+    expect:
+      ran: [fetch, slow, once, each]

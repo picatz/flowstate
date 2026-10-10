@@ -91,6 +91,7 @@ The top-level keys:
 | `inputs` | no | The run's typed arguments. [Inputs](#inputs) |
 | `outputs` | no | The run's result. [Outputs](#outputs) |
 | `vars` | no | Named constants, read as `vars.<name>`. [Vars](#vars) |
+| `step_defaults` | no | `timeout`, `total_timeout` and `retry` stated once for every task step that does not write its own. [Retries and timeouts](#retries-and-timeouts) |
 | `steps` | yes | What the workflow does, 1 to 100 steps. [Steps](#steps) |
 | `triggers` | no | How runs may start besides `flow run`: a schedule, webhooks, and rules for manual starts. [Triggers](#starting-runs-triggers) |
 | `concurrency` | no | At most one run per key. [One run at a time](#one-run-at-a-time-concurrency) |
@@ -1172,6 +1173,29 @@ These keys work on task steps only; each has literal values. A step's inputs are
 resolved once, before the first attempt, so an error in an input expression is
 not retried.
 
+**Say it once.** A bound several steps share belongs in `step_defaults:`, which
+takes `timeout`, `total_timeout` and `retry` and gives them to every task step that
+does not write its own:
+
+```yaml
+step_defaults:
+  timeout: 30s
+  retry: {attempts: 4, interval: 2s}
+steps:
+  - id: fetch
+    http: {url: https://api.example.com/items}   # 30s, 4 attempts
+  - id: charge
+    retry: {attempts: 1}                         # 30s, one attempt
+    http: {method: POST, url: https://api.example.com/charges}
+```
+
+The step wins per key, and a key is replaced whole (`charge` takes none of the
+default's `interval`); `retry:` with nothing under it asks for the engine's own
+behaviour. It reaches the steps inside `for_each:`, `loop:`, `parallel:` and `switch:`
+bodies, takes nothing on a `call:` (that file has its own), and does not carry
+`continue_on_error:`, which stays a decision about one step. See
+[`examples/step-defaults`](../examples/step-defaults).
+
 **What is retried** is decided by the failure, not by preference. Transient
 failures (`Upstream`, `Timeout`, `RateLimited`, `Internal`) are retried.
 Permanent ones (`InvalidInput`, `Expression`, `PolicyDenied`, `LimitExceeded`,
@@ -1748,7 +1772,7 @@ the run is refused before it starts rather than failing partway.
 
 **Top level:** `edition`, `name`, `labels`, `description`, `plugins`, `use` (each
 alias takes a `path`), `types`, `errors`, `functions`, `inputs`, `triggers`, `concurrency`, `signals`, `debug`,
-`vars`, `steps`, `outputs`.
+`vars`, `step_defaults` (`timeout`, `total_timeout`, `retry`), `steps`, `outputs`.
 
 **Type declaration:** `description`, `fields` (each written like an input), `must`.
 **Function declaration:** `description`, `params`, `returns`, `body`. **Error

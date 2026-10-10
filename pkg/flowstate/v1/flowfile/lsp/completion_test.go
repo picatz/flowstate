@@ -331,7 +331,7 @@ edition: v2026.4
 			src:  `|`,
 			exact: []string{
 				"edition", "name", "labels", "description", "use", "types", "errors", "functions", "inputs", "outputs", "vars",
-				"steps", "triggers", "signals", "debug", "concurrency", "plugins",
+				"steps", "triggers", "signals", "debug", "concurrency", "step_defaults", "plugins",
 			},
 		},
 		{
@@ -414,6 +414,28 @@ edition: v2026.4
 `,
 			want:    []string{"id", "description", "if", "vars", "continue_on_error"},
 			notWant: []string{"timeout", "retry"},
+		},
+		{
+			name: "step_defaults offers exactly the policy keys",
+			src: `name: c
+step_defaults:
+  |
+steps: []
+edition: v2026.4
+`,
+			exact: []string{"timeout", "total_timeout", "retry"},
+		},
+		{
+			name: "step_defaults retry offers the retry keys",
+			src: `name: c
+step_defaults:
+  retry:
+    |
+steps: []
+edition: v2026.4
+`,
+			want:    []string{"attempts", "interval", "backoff", "max_interval", "only"},
+			notWant: []string{"timeout"},
 		},
 		{
 			// A task step's own kind key is the task name, which is not in

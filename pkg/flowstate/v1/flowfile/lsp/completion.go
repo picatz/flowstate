@@ -120,6 +120,10 @@ var dslKeys = map[string][]dslKey{
 		{name: "signals", detail: "map", docs: "Declares the named signals this workflow accepts and the authorization policy for each."},
 		{name: "debug", detail: "map", docs: "Controls who may open and operate a debug session for this workflow."},
 		{name: "concurrency", detail: "map", docs: "Controls how runs of this workflow share a concurrency key and what happens when another run already holds it."},
+		{name: "step_defaults", detail: "map", docs: "States once the `timeout:`, `total_timeout:` and `retry:` that every step that does work takes unless it states its own, so a file that bounds ten calls the same way says it once.\n\n" +
+			"Per key the step wins, and a key is replaced whole: a step's `retry:` is not merged with the default's, and a step that writes `retry:` with nothing under it takes the engine's own retry behaviour. " +
+			"It reaches task steps at any depth of a `for_each:`, `loop:`, `parallel:` or `switch:` body; a `call:` takes the callee file's own defaults. " +
+			"`continue_on_error:` is not a default: tolerating a failure is a decision about one step."},
 		{name: "plugins", detail: "map", docs: "Declares the plugins this workflow requires and the minimum semantic version accepted for each."},
 	},
 	"steps": {
@@ -303,6 +307,11 @@ var dslKeys = map[string][]dslKey{
 	"default": {
 		{name: "steps", detail: "list", docs: "The body to run when no case matches. `steps: []` is legal: deliberately handling nothing else, written down."},
 	},
+	"step_defaults": {
+		{name: "timeout", detail: "duration", docs: "Bounds one attempt at the step, written as `30s`, `5m`, or `1h`."},
+		{name: "total_timeout", detail: "duration", docs: "Bounds the step across *every* attempt and every wait between them, written as `30s`, `5m`, or `1h`: the wall-clock budget for the whole retried step, where `timeout:` bounds one attempt inside it."},
+		{name: "retry", detail: "map", docs: "How a failed attempt is retried. Omit it to use the engine's defaults."},
+	},
 	"retry": {
 		{name: "attempts", detail: "int", docs: "Total attempts including the first, so `1` disables retrying."},
 		{name: "interval", detail: "duration", docs: "The delay before the second attempt."},
@@ -409,6 +418,8 @@ func completeAt(doc *document, pos lsp.Position) *lsp.CompletionList {
 		// The keys under a task's own name are its inputs, which come from its
 		// schema rather than from this package's table.
 		return list(inputCandidates(word, replace, current, doc.tasks))
+	case endsWith(path, "step_defaults"):
+		return list(dslCandidates("step_defaults", word, replace))
 	case endsWith(path, "retry"):
 		return list(dslCandidates("retry", word, replace))
 	case endsWith(path, "for_each"):

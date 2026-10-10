@@ -1364,6 +1364,11 @@ debug:
     - subject: "https://issuer.example.com#sre@example.com"
 concurrency:
   key: ${"all-keys"}
+step_defaults:
+  timeout: 30s
+  total_timeout: 5m
+  retry:
+    attempts: 3
 plugins: {}
 vars:
   region: eu-west-1

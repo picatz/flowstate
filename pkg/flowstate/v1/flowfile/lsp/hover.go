@@ -181,6 +181,18 @@ func documentKeyAt(file *parsedFile, pos lsp.Position) (dslKey, lsp.Range, bool)
 		return dslKey{}, lsp.Range{}, false
 	}
 	for _, e := range file.entries {
+		// `step_defaults:` is a block of the document's own, whose keys are the
+		// step's policy keys documented at their own level.
+		if e.key == "step_defaults" {
+			for _, ne := range nestedEntries(e) {
+				if !contains(ne.keyRange, pos) {
+					continue
+				}
+				if k, ok := lookupDSLKey("step_defaults", ne.key); ok {
+					return k, ne.keyRange, true
+				}
+			}
+		}
 		if !contains(e.keyRange, pos) {
 			continue
 		}
