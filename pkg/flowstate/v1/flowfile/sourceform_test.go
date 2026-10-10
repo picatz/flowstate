@@ -93,3 +93,21 @@ func TestMarshalRefusesASourceFormThatDoesNotExpandToTheRuleThatRuns(t *testing.
 		})
 	}
 }
+
+// A module that uses another module's scalar carries a record field typed by the
+// chained name; that declaration is the module's to write back, so Marshal's source
+// check must not ask this workflow to declare it.
+func TestMarshalAcceptsAScalarCarriedThroughTwoModules(t *testing.T) {
+	t.Parallel()
+
+	dir := tree(t, map[string]string{
+		"m.yaml": workflowUsing("use:\n  b:\n    path: ./b.yaml\n", ""),
+		"b.yaml": "edition: " + flowfile.CurrentEdition + "\nname: b\nuse:\n  a:\n    path: ./a.yaml\ntypes:\n  Rec:\n    fields:\n      c:\n        type: a.Code\n        required: true\n",
+		"a.yaml": "edition: " + flowfile.CurrentEdition + "\nname: a\ntypes:\n  Code:\n    type: string\n    must: size(this) > 2\n",
+	})
+	wf, err := compileAt(t, dir, "m.yaml")
+	require.NoError(t, err)
+
+	_, err = flowfile.Marshal(wf)
+	require.NoError(t, err)
+}

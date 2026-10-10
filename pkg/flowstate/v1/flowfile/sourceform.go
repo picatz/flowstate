@@ -107,6 +107,9 @@ func checkSourceForms(wf *v1.Workflow) error {
 		}
 	}
 	for _, t := range wf.GetDeclaredTypes() {
+		if v1.IsCarried(t.GetName()) {
+			continue // the module that declared it writes it back
+		}
 		if err := same("type "+t.GetName()+" must", t.GetMustSource(), t.GetMust()); err != nil {
 			return err
 		}
