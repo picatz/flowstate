@@ -109,6 +109,13 @@ type Positions struct {
 	// diagnostic needs: a bare word an author left unfenced was probably meant
 	// as a string, and one they fenced was a reference (#1682).
 	unfenced map[string]bool
+
+	// blockFenced holds the paths whose scalar was a `|` or `>` block holding one
+	// whole-value fence and a newline YAML appended: a fact the compiled value
+	// cannot carry, because [blockScalarText] drops that newline so the value
+	// types as the expression `|-` already gives. The tier-4 lint reads it to
+	// say which spelling the author should have used (#1466).
+	blockFenced map[string]bool
 }
 
 func newPositions() *Positions {
@@ -119,6 +126,8 @@ func newPositions() *Positions {
 		triggers: make(map[string]string),
 		stepAt:   make(map[string]string),
 		unfenced: make(map[string]bool),
+
+		blockFenced: make(map[string]bool),
 	}
 }
 
@@ -393,15 +402,36 @@ func (p *Positions) Unfenced(step, field string) bool {
 	if p == nil {
 		return false
 	}
+	return p.flagged(p.unfenced, step, field)
+}
+
+// recordBlockFence notes that the scalar at path was a clip-chomped block
+// scalar whose content is one whole-value fence.
+func (p *Positions) recordBlockFence(path string) {
+	p.blockFenced[path] = true
+}
+
+// BlockFenced reports whether a step's named field was written as a `|` or `>`
+// block scalar holding exactly one fence, found by the same candidate search as
+// [Positions.Unfenced].
+func (p *Positions) BlockFenced(step, field string) bool {
+	if p == nil {
+		return false
+	}
+	return p.flagged(p.blockFenced, step, field)
+}
+
+// flagged looks a step's field up in one of the per-path sets above.
+func (p *Positions) flagged(set map[string]bool, step, field string) bool {
 	if step == "" {
-		return p.unfenced[field]
+		return set[field]
 	}
 	base, ok := p.StepPath(step)
 	if !ok {
 		return false
 	}
 	for _, candidate := range fieldCandidates(base, field) {
-		if p.unfenced[candidate] {
+		if set[candidate] {
 			return true
 		}
 	}

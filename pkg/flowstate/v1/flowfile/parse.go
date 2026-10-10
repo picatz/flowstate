@@ -660,6 +660,7 @@ func YAMLSyntaxDiagnostics(data []byte, err error) Diagnostics {
 
 	d.Message = yamlCoordinate.ReplaceAllString(d.Message, " at line $1, column $2")
 	offerQuotedFence(data, &d)
+	explainFenceInFlowMapping(data, &d)
 
 	return Diagnostics{d}
 }

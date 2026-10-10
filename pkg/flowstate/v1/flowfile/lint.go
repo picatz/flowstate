@@ -137,6 +137,11 @@ const (
 	// StyleKeyAsFilter is R11: a webhook's `idempotency_key:` is a ternary with a
 	// constant arm, which is a filter written as a key.
 	StyleKeyAsFilter StyleRule = "R11/key-as-filter"
+
+	// StyleBlockScalarFence is R12: a `|` or `>` block scalar whose content is
+	// one whole-value fence, where `|-` or a plain scalar says the same thing
+	// without leaning on a compiler rule to forgive the newline.
+	StyleBlockScalarFence StyleRule = "R12/block-scalar-fence"
 )
 
 // A StyleFinding is one tier-4 suggestion about one file.
@@ -226,6 +231,7 @@ func Lint(wf *v1.Workflow, pos *Positions) []StyleFinding {
 	findings = append(findings, equalityDispatch(wf, pos)...)
 	findings = append(findings, signatureHeaderKeys(wf, pos)...)
 	findings = append(findings, keysAsFilters(wf, pos)...)
+	findings = append(findings, blockScalarFences(wf, pos)...)
 
 	slices.SortStableFunc(findings, func(a, b StyleFinding) int {
 		if a.Line != b.Line {
@@ -1056,4 +1062,42 @@ func isEventHeaders(e *expr.Expr) bool {
 	default:
 		return false
 	}
+}
+
+// blockScalarFences reports a `|` or `>` block scalar that holds one fence and
+// nothing else (#1466).
+//
+// `value: |` over `${1 + 1}` is the natural way to give an expression a line of
+// its own, and it is legal YAML whose plain reading is the string `"2\n"`. The
+// compiler forgives it ([blockScalarText] drops the newline YAML appended, so the
+// value types as the expression), which is why nothing refuses it — but the
+// spelling still asks a reader to know that, and the same text in another YAML
+// tool means something else. `|-` states the intent, and a plain scalar states it
+// with less. Every shipped example that uses a block scalar writes `|-`.
+//
+// Read from [Positions.BlockFenced], the compiler's own record of the scalars it
+// forgave, rather than from the source: the compiled value is identical either
+// way, so the fact has to be kept where the compiler still had the node.
+func blockScalarFences(wf *v1.Workflow, pos *Positions) []StyleFinding {
+	var findings []StyleFinding
+
+	exprSites(wf, pos, func(written writtenExpr) {
+		if !pos.BlockFenced(written.Step, written.Path) {
+			return
+		}
+
+		at := exprPosition(pos, written.Step, written.Path, written.Value.GetExpr())
+		findings = append(findings, StyleFinding{
+			Rule:   StyleBlockScalarFence,
+			Line:   at.Line,
+			Column: at.Column,
+			Step:   written.Step,
+			Field:  written.Field,
+			Message: "this `|` or `>` block scalar holds only one expression, and YAML's trailing newline " +
+				"is not part of what you meant; write `|-` (or a plain scalar with the `${...}` on the " +
+				"key's own line) so the value is the expression and nothing more",
+		})
+	})
+
+	return findings
 }

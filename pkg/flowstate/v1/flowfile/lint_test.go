@@ -1128,3 +1128,49 @@ func TestLintStaysSilentOnAKeyWithNoConstantArm(t *testing.T) {
 		})
 	}
 }
+
+// blockScalarFile is a Flowfile whose one `value:` is the given scalar text,
+// indented under the key.
+func blockScalarFile(value string) string {
+	return "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: " + value + "\n"
+}
+
+// TestLintReportsABlockScalarHoldingOneFence is R12, positive (#1466): `|` and
+// `>` over a lone fence are legal and compile to the expression, and both are
+// named, at the block's content line, with `|-` as the remedy.
+func TestLintReportsABlockScalarHoldingOneFence(t *testing.T) {
+	for name, value := range map[string]string{
+		"literal": "|\n      ${1 + 1}",
+		"folded":  ">\n      ${1 + 1}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			found := findingsFor(lintOf(t, blockScalarFile(value)), StyleBlockScalarFence)
+			require.Len(t, found, 1)
+			assert.Equal(t, 6, found[0].Line)
+			assert.Equal(t, "a", found[0].Step)
+			assert.Equal(t, "value", found[0].Field)
+			assert.Contains(t, found[0].Message, "`|-`")
+			assert.Contains(t, found[0].String(), "docs/STYLE.md R12/block-scalar-fence")
+		})
+	}
+}
+
+// TestLintStaysSilentOnABlockScalarThatIsNotAWholeFence is R12's negative
+// direction: the canonical `|-`, a plain scalar, and a block holding a fence
+// among other text (which interpolates, so the newline is real text) are not
+// the trap.
+func TestLintStaysSilentOnABlockScalarThatIsNotAWholeFence(t *testing.T) {
+	for name, value := range map[string]string{
+		"the canonical strip":       "|-\n      ${1 + 1}",
+		"a plain scalar":            "${1 + 1}",
+		"a fence among other text":  "|\n      total: ${1 + 1}",
+		"a block of plain text":     "|\n      hello",
+		"folded strip":              ">-\n      ${1 + 1}",
+		"two fences":                "|\n      ${1}${2}",
+		"kept trailing blank lines": "|+\n      ${1 + 1}\n\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			requireNoFindings(t, findingsFor(lintOf(t, blockScalarFile(value)), StyleBlockScalarFence))
+		})
+	}
+}

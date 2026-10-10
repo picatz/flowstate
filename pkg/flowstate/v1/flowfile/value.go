@@ -232,7 +232,12 @@ func (c *compiler) value(n ast.Node, path string, r ref, exprCtx bool) *v1.Value
 	case *ast.LiteralNode:
 		// A block scalar: | or >. Its text is a string like any other, once the
 		// newline YAML itself appended is not mistaken for text the author wrote.
-		return c.scalarString(n, blockScalarText(blockText(node)), path, r, exprCtx)
+		raw := blockText(node)
+		text := blockScalarText(raw)
+		if text != raw {
+			c.pos.recordBlockFence(path)
+		}
+		return c.scalarString(n, text, path, r, exprCtx)
 	case *ast.MappingNode, *ast.MappingValueNode, *ast.SequenceNode:
 		return c.composite(n, path, r)
 	default:

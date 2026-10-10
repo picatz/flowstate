@@ -32,6 +32,7 @@ charter.
 | This rule has no enforcement path | R9. The charter enforces itself or shrinks |
 | What should a webhook's `idempotency_key:` read? | R10. A dedupe key names the event, never the attempt |
 | How does a webhook decline a delivery it does not want? | R11. Declining a delivery is `when:`, never the key |
+| How is a block scalar holding one expression written? | R12. A block scalar holding one expression strips its newline |
 
 Anti-goals are Part IV of the same file. A proposal that hits one is refused with
 that reference rather than a new parallel argument.
