@@ -43,6 +43,7 @@ headings below, not this list.*
   - [A file with no steps is a module *(landed)*](#a-file-with-no-steps-is-a-module-landed)
   - [`use:`: a module imported by an alias *(landed)*](#use-a-module-imported-by-an-alias-landed)
   - [Composition, end to end: choosing a mechanism and evolving it safely *(landed)*](#composition-end-to-end-choosing-a-mechanism-and-evolving-it-safely-landed)
+  - [Testing a module *(landed)*](#testing-a-module-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
   - [`http:` stays; its response scope gets a root *(landed)*](#http-stays-its-response-scope-gets-a-root-landed)
@@ -1553,8 +1554,8 @@ functions:
   steps); import it with use:, don't run it`. A spec that reaches a driver or the server
   without going through a loader is refused too, by the schema (`steps` requires an
   item), and both drivers say it is a module. A `*.test.yaml` case naming a module as its
-  `workflow:` fails with the same sentence; function cases against a module come with the
-  rest of the module design.
+  `workflow:` does not run it: it tests the module's own functions and scalar types (see
+  [Testing a module](#testing-a-module-landed)).
 - **Imported with `use:`.** See the next section. A module cannot be run, called with
   `call:`, or reached from another file any other way.
 
@@ -1711,6 +1712,49 @@ used; a use may add a `must:` of its own and both hold. An input, an output and 
 field all take the type. A module is validated, formatted and linted like any other
 file, and `flow run` refuses it by name, so the examples corpus checks the module files
 it ships and never runs them.
+
+### Testing a module *(landed)*
+
+A module has no steps, so its functions and scalar types are tested without a workflow.
+A `*.test.yaml` case names the module as its `workflow:` and states only `expect.check:`
+and `expect.types:`; `flow test`, its report, exit code, `--select` and `-o` formats are
+the ones every suite uses. See `examples/lib/ids.test.yaml` and `numbers.test.yaml`.
+
+```yaml
+defaults:
+  workflow: ./numbers.yaml            # a module
+tests:
+  - name: clamp bounds a count
+    expect:
+      check:                          # the module's functions, by their declared names
+        - clamp(40, 1, 5) == 5
+        - '!inRange(0, 1, 5)'
+  - name: Port covers 1 to 65535
+    expect:
+      types:                          # a scalar type, by its declared name
+        Port:
+          admits: [1, 8080, 65535]
+          refuses: [0, 65536, "8080"]
+```
+
+- **One evaluator.** A claim's function calls are inlined by the same function set the
+  compiler uses, and the claim is evaluated by the engine's evaluator like any `check:`.
+  A function that errors fails the case as an errored check; a claim comparing with `==`
+  or `!=` that does not hold prints what the left side came to.
+- **A type is judged as an input is.** Each value is bound as an input declared with the
+  type's base and rule, the shape an import of the type lowers to, so a value a case sees
+  admitted is admitted wherever the type is used. `refuses:` is the direction that proves
+  the rule is not vacuous; a value of the wrong kind for the base is a refusal. A record
+  type is not tested this way, and naming one fails the case.
+- **Local only.** A module has no steps, so there is no run to put on a second driver and
+  no coverage to account for; a function is plain CEL once inlined, which both drivers
+  already evaluate.
+- **Nothing that needs a run.** `inputs:`, `stubs:`, `signals:` and the run expectations
+  (`outputs`, `ran`, `failed`, ...) have no meaning for a module, so a case that states
+  one errors rather than passing. `expect.types:` against a workflow errors too.
+- **Bounded.** A case puts at most 200 values to its types, a case carries at most 200
+  claims, a suite at most its usual number of cases, each claim runs under the
+  evaluator's cost limit, and a case reports at most 16 failures and then counts the rest.
 
 **Pins, and the one command that moves them.** `digest:` on a `use:` entry is the hash of
 the module bytes the author read. A changed module stops the file compiling with

@@ -302,6 +302,7 @@ signals:
 | `denied_signals` | Signals the case sends that the workflow's `signals:` policy must refuse. Each needs at least one scripted delivery denied by the same check the server's Signal door runs; a signal another sender got through still counts. A name the workflow has no policy for, or the case never sends, is refused when the case loads. |
 | `invocations` | How often tasks ran, and in what order. See below. |
 | `check` | CEL claims over the finished run. See below. |
+| `types` | Only for a case whose `workflow:` is a module: values a scalar type must admit or refuse. See [Testing a module](DSL.md#testing-a-module-landed). |
 | `inputs`, `refused`, `idempotency_key` | For a case with a webhook `trigger:`: what the delivery bound, whether it was refused, and the key it produced. |
 | `response` | For a case with a webhook `trigger:` whose webhook declares `respond_within:`: the document its receiver would answer with. `status:` is `completed`, `failed` or `running`; `outputs:` (completed only) must equal the declared outputs exactly, a sensitive one as the withheld marker. |
 

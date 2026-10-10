@@ -1,0 +1,41 @@
+# A module has no steps, so its cases run no workflow: they call the module's own
+# functions in `check:` (by their bare names, as declared) and put values to its
+# scalar types in `types:`. A type is judged the way an input declared with it is, so
+# a value admitted here is admitted wherever the type is imported.
+edition: v2026.4
+defaults:
+  workflow: ./ids.yaml
+tests:
+  - name: isUuid reads the version and variant digits
+    expect:
+      check:
+        - isUuid("123e4567-e89b-42d3-a456-426614174000")
+        - that: '!isUuid("123e4567-e89b-62d3-a456-426614174000")'
+          because: version 6 is outside 1 to 5
+        - that: '!isUuid("123E4567-E89B-42D3-A456-426614174000")'
+          because: the form is lowercase
+        - '!isUuid("123e4567e89b42d3a456426614174000")'
+
+  - name: isSlug joins lowercase words with single dashes
+    expect:
+      check:
+        - isSlug("checkout-api")
+        - isSlug("v2")
+        - '!isSlug("Checkout API")'
+        - '!isSlug("-checkout")'
+        - '!isSlug("checkout--api")'
+        - '!isSlug("")'
+
+  - name: Uuid admits and refuses by its rule
+    expect:
+      types:
+        Uuid:
+          admits: [123e4567-e89b-42d3-a456-426614174000]
+          refuses: [not-a-uuid, "", 123e4567-e89b-62d3-a456-426614174000, 42]
+
+  - name: Slug is capped at 63 characters
+    expect:
+      types:
+        Slug:
+          admits: [checkout-api, a, abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-012345678]
+          refuses: [Checkout-Api, checkout_api, abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-0123456789]

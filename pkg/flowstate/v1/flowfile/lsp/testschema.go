@@ -211,6 +211,7 @@ var testDocKeys = map[testDocLevel][]dslKey{
 		{name: "others", detail: "string", docs: "The only accepted value is `skipped`, closing the `ran:` claim: every step the workflow has that `ran:` does not name must have been skipped (issue #416)."},
 		{name: "invocations", detail: "list", docs: "How often tasks ran and in what order (#1667): `task:` or `step:` with `count:`, `never:`, or `at_least:`/`at_most:`, or an `order:` of steps."},
 		{name: "check", detail: "list", docs: "CEL claims over the finished run (#1072), for everything the named fields above cannot say."},
+		{name: "types", detail: "map", docs: "Only for a case whose `workflow:` is a module. Keyed by a scalar type the module declares, each entry lists `admits:` values the type must accept and `refuses:` values it must reject, judged the way an input declared with the type is."},
 	},
 	testLevelCheck:  checkClaimKeys,
 	testLevelFailed: failedClaimKeys,
