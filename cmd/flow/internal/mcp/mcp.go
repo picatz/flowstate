@@ -93,7 +93,7 @@ const MaxResultBytes = 256 << 10
 // TestEveryToolHasADescription fails rather than an agent being handed a mute
 // tool.
 func ToolDescription(rpc string) string {
-	return toolDescription(rpc, false)
+	return toolDescription(rpc, false, false)
 }
 
 // toolDescription is [ToolDescription] with the reduced surface's answer
@@ -105,7 +105,7 @@ func ToolDescription(rpc string) string {
 // one describing behavior this surface does not have is a diagnostic that
 // lies — the failure "Diagnostics are a feature" names, pointed at a
 // non-human reader. Reported by Codex on picatz/flowstate#807.
-func toolDescription(rpc string, reduced bool) string {
+func toolDescription(rpc string, reduced, pluginCatalog bool) string {
 	description, ok := protodoc.Method(WorkflowServiceName, protoreflect.Name(rpc))
 	if !ok {
 		return ""
@@ -113,7 +113,7 @@ func toolDescription(rpc string, reduced bool) string {
 
 	note := toolNotes[rpc]
 	if reduced {
-		note = reducedToolNotes[rpc]
+		note = reducedToolNote(rpc, pluginCatalog)
 	}
 
 	for _, extra := range []string{note, localToolNote(rpc)} {
@@ -125,22 +125,59 @@ func toolDescription(rpc string, reduced bool) string {
 	return description
 }
 
-// reducedToolNotes replaces [toolNotes] on the surface [AddLocalCapabilities]
-// registers, for the tools whose stdio note is untrue there.
+// reducedToolNote is the surface note for a tool on the surface
+// [AddLocalCapabilities] registers, for the tools whose stdio note is untrue
+// there or whose answer depends on a fact only that surface has.
 //
-// One entry, and the absence of the others is the point: a tool with no entry
-// here gets no surface note rather than an inherited one, because an empty
-// map would silently reintroduce every note this exists to suppress.
-// GetCatalog's stdio note describes dispatching to a deployment named by
-// --address, a flag `flow mcp serve` does not have and a dispatch it
+// A tool with no case gets no surface note rather than an inherited one, because
+// falling back to [toolNotes] would silently reintroduce every note this exists
+// to suppress. GetCatalog's stdio note describes dispatching to a deployment
+// named by --address, a flag `flow mcp serve` does not have and a dispatch it
 // deliberately does not do (see cmd/flow/mcpserve.go on why no tool here
 // reaches a deployment).
-var reducedToolNotes = map[string]string{
-	"GetCatalog": "This surface always answers from this binary's own build: its task registry and " +
-		"any plugins this process started. It never dispatches to another deployment, so what is " +
-		"reported here is what this process can validate and rehearse against, which may differ " +
-		"from what the deployment that will eventually run a submitted workflow can execute.",
+//
+// The plugin sentence is the other fact. This surface launches no plugin (there
+// is no --plugin-dir here: executing binaries from a network-facing process is a
+// separate decision), so a plugin task is known to it only when the operator
+// supplied a --plugin-catalog. Validate, Compile and GetCatalog all read the
+// task registry that catalog populates, so each says which of the two cases the
+// agent is in; without it, "no plugin task is registered here" would read as a
+// verdict on the workflow when it is a statement about this process
+// (picatz/flowstate#1340).
+func reducedToolNote(rpc string, pluginCatalog bool) string {
+	plugins := noPluginCatalogNote
+	if pluginCatalog {
+		plugins = pluginCatalogNote
+	}
+
+	switch rpc {
+	case "GetCatalog":
+		return "This surface always answers from this binary's own build: its task registry and " +
+			"the plugin catalog this process was started with, if any. It never dispatches to another " +
+			"deployment, so what is reported here is what this process can validate and rehearse " +
+			"against, which may differ from what the deployment that will eventually run a submitted " +
+			"workflow can execute.\n\n" + plugins
+	case "Validate", "Compile":
+		return plugins
+	}
+
+	return ""
 }
+
+const (
+	// noPluginCatalogNote is the disclosure when the operator supplied none.
+	noPluginCatalogNote = "Plugin tasks are not known to this server: it was started without a plugin catalog " +
+		"(`--plugin-catalog`) and never launches plugins. A Flowfile that uses a plugin task will be reported " +
+		"as `no plugin task \"x\" is registered here` even when it is valid on a deployment that has the " +
+		"plugin, and the task catalog lists built-in tasks only. Treat that as silence about plugins, " +
+		"not as proof the task does not exist."
+
+	// pluginCatalogNote is the disclosure when the operator did.
+	pluginCatalogNote = "Plugin tasks are known to this server only from the plugin catalog (`--plugin-catalog`) " +
+		"it was started with; it never launches plugins. A plugin task that catalog does not describe will be " +
+		"reported as `no plugin task \"x\" is registered here`, which says what this server was told, not what " +
+		"the deployment that runs the workflow has installed."
+)
 
 // toolNotes are the per-tool paragraphs that are about this surface rather
 // than about the RPC, appended after the schema's own prose.
@@ -323,6 +360,13 @@ type Deps struct {
 	// registered, by [AddCapabilities] and [AddLocalCapabilities] alike.
 	WrapResourceHandler func(uri string, next mcp.ResourceHandler) mcp.ResourceHandler
 
+	// PluginCatalog reports that the operator supplied a plugin catalog
+	// (`flow mcp serve --plugin-catalog`), so that the reduced surface's tool
+	// descriptions can say which plugin tasks its answers cover. It selects
+	// words only; the tasks themselves are in the registry the catalog was
+	// loaded into. Read only by [AddLocalCapabilities].
+	PluginCatalog bool
+
 	// reduced marks the registration [AddLocalCapabilities] performs, where
 	// several tools and resources the full surface serves are absent. It
 	// selects the descriptions that are true there — see [toolDescription]
@@ -428,7 +472,7 @@ func AddLocalCapabilities(
 		name := ToolName(method.Name)
 		srv.AddTool(&mcp.Tool{
 			Name:         name,
-			Description:  toolDescription(method.Name, deps.reduced),
+			Description:  toolDescription(method.Name, deps.reduced, deps.PluginCatalog),
 			InputSchema:  SchemaForMessage(method.Input),
 			OutputSchema: SchemaForMessage(method.Output),
 			// No Meta: [ToolViews] names no local tool today, and a view

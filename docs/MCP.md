@@ -188,14 +188,18 @@ would spend this process's own credential on a caller's behalf. An agent that
 needs durable runs over HTTP talks to the [API](API.md) directly with its own
 credential.
 
-**This surface cannot see plugin tasks.** `flow mcp serve` takes no
-`--plugin-dir` or `--plugin-catalog`, so a plugin task is unknown to it:
+**Plugin tasks are known only from a catalog.** `flow mcp serve` takes
+`--plugin-catalog` (the document `flow plugins --plugin-dir <dir> --output json`
+writes) and no `--plugin-dir`: a catalog launches nothing, and executing plugin
+binaries from a network-facing process is a separate decision. With one,
+`flowstate_validate` and `flowstate_compile` accept the catalog's tasks and
+`flowstate_get_catalog` lists them. Without one, a plugin task is unknown:
 `flowstate_validate` reports `no plugin task "x" is registered here` for a
 workflow that is valid on a deployment with the plugin, and
 `flowstate_get_catalog` lists built-in tasks only. Treat both answers as silent
-about plugins, not as proof that none exist. Validate a workflow that uses
-plugin tasks with `flow validate --plugin-dir`, or through stdio `flow mcp
---plugin-dir`, which does load them (picatz/flowstate#1340).
+about plugins, not as proof that none exist; the three tools' descriptions say
+which case the server is in (picatz/flowstate#1340). The catalog is read once at
+start-up, so restart after the plugins change.
 
 [MCP over HTTP](MCP_AUTHORIZATION.md) covers the authorization exchange,
 configuration, and limits.

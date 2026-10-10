@@ -12,12 +12,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/require"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
@@ -109,6 +111,22 @@ func newMCPServeFixtureForIssuer(
 ) *mcpServeFixture {
 	t.Helper()
 
+	return newMCPServeFixtureWithPlugins(t, issuer, maxSessions, maxRequestBytes, testTimeout, "")
+}
+
+// newMCPServeFixtureWithPlugins is the one that actually wires it. pluginCatalog
+// is what runMCPServe passes after loading --plugin-catalog: the tasks are
+// already in the registry, and the tool descriptions are told so.
+func newMCPServeFixtureWithPlugins(
+	t *testing.T,
+	issuer *authtest.Issuer,
+	maxSessions int,
+	maxRequestBytes int64,
+	testTimeout time.Duration,
+	pluginCatalogPath string,
+) *mcpServeFixture {
+	t.Helper()
+
 	policy := &auth.Policy{Issuers: []auth.TrustedIssuer{{Actions: everyAction,
 		Name:      "agent-idp",
 		Issuer:    issuer.URL(),
@@ -136,7 +154,14 @@ func newMCPServeFixtureForIssuer(
 	recorder, err := audit.NewRecorder(audit.WithoutStderr(), audit.WithEmitter(auditSink))
 	require.NoError(t, err)
 
-	tools, err := mcpServeTools(guard, testTimeout, recorder, nil)
+	// Through the step runMCPServe runs, with a command carrying the flag, so a
+	// catalog discarded on the way to the server is a failure here.
+	serveCmd := &cobra.Command{Use: "serve"}
+	addPluginCatalogFlag(serveCmd)
+	if pluginCatalogPath != "" {
+		require.NoError(t, serveCmd.Flags().Set(pluginCatalogFlag, pluginCatalogPath))
+	}
+	tools, err := mcpServeToolsFromFlags(serveCmd, guard, testTimeout, recorder, nil)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(logger, tools, verifier, protectedResource, mcpServeLimits{
@@ -913,7 +938,7 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false)
 	require.NoError(t, err)
 
 	_, err = mcpServeHandler(slog.Default(), tools, nil, nil, limits)
@@ -1075,7 +1100,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.Equal(t, "/", protectedResource.ResourcePath(),
 		"a bare-origin resource is the shape this test exists for")
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -1547,5 +1572,151 @@ func TestMCPServeDebugToolTakesTheExclusiveRegistryLock(t *testing.T) {
 	case <-called:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the debug call never ran after the lock was released")
+	}
+}
+
+// pluginFlowfile uses the example plugin's task and nothing that needs the
+// plugin to be launched: this surface only validates it.
+const pluginFlowfile = `edition: v2026.4
+name: plugin-greeting
+steps:
+  - id: hello
+    example.greet:
+      greeting: Hello
+      name: world
+      token: ${secret('env:GREET_TOKEN')}
+`
+
+// validateOverMCP calls flowstate_validate over the served surface and returns
+// what the agent reads: the report, rendered.
+func validateOverMCP(t *testing.T, session *mcp.ClientSession) string {
+	t.Helper()
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name: flowmcp.ToolName("Validate"),
+		Arguments: map[string]any{
+			"files": []any{map[string]any{"name": "greet.yaml", "source": pluginFlowfile}},
+		},
+	})
+	require.NoError(t, err)
+
+	return renderEveryShape(result)
+}
+
+// TestMCPServeDeclaresThePluginCatalogAndNotPluginDir pins the decision on
+// #1340: a catalog launches nothing and fits a network-facing process; launching
+// plugin binaries from it is not decided, so --plugin-dir stays off.
+func TestMCPServeDeclaresThePluginCatalogAndNotPluginDir(t *testing.T) {
+	t.Parallel()
+
+	var serve *cobra.Command
+	for _, mcpCmd := range newRootCommand().Commands() {
+		if mcpCmd.Name() != "mcp" {
+			continue
+		}
+		for _, c := range mcpCmd.Commands() {
+			if c.Name() == "serve" {
+				serve = c
+			}
+		}
+	}
+	require.NotNil(t, serve, "there is no `flow mcp serve` command")
+
+	require.NotNil(t, serve.Flags().Lookup(pluginCatalogFlag),
+		"`flow mcp serve` cannot be told what the deployment's plugins provide")
+	require.Nil(t, serve.Flags().Lookup("plugin-dir"),
+		"`flow mcp serve` would exec plugin binaries from a network-facing surface")
+}
+
+// TestMCPServeValidatesAPluginTaskGivenAPluginCatalog is #1340's acceptance
+// clause on the serve path, in both directions. Not parallel: the catalog is
+// registered into the process-wide task registry, as it is when the command
+// runs, and a parallel sibling would see the task.
+func TestMCPServeValidatesAPluginTaskGivenAPluginCatalog(t *testing.T) {
+	bin := buildFlowBinary(t)
+	catalog := pluginCatalogFor(t, bin)
+
+	const task = "example.greet"
+	require.NotContains(t, v1.DefaultRegistry().Names(), task,
+		"the premise is that this build does not register the plugin task")
+
+	t.Run("without a catalog the answer announces itself", func(t *testing.T) {
+		fixture := newMCPServeFixture(t, mcpServeDefaultMaxSessions, mcpServeDefaultMaxRequestBytes)
+		session := fixture.connect(t, fixture.goodToken("agent"))
+
+		require.Contains(t, validateOverMCP(t, session), `no plugin task "example.greet" is registered here`)
+
+		tools, err := session.ListTools(t.Context(), nil)
+		require.NoError(t, err)
+
+		seen := 0
+		for _, tool := range tools.Tools {
+			switch tool.Name {
+			case flowmcp.ToolName("Validate"), flowmcp.ToolName("Compile"), flowmcp.ToolName("GetCatalog"):
+				seen++
+				require.Contains(t, tool.Description, "started without a plugin catalog",
+					"%s must say this surface cannot see plugin tasks", tool.Name)
+				require.Contains(t, tool.Description, "--plugin-catalog", tool.Name)
+			}
+		}
+		require.Equal(t, 3, seen)
+	})
+
+	t.Run("with a catalog the plugin task is known", func(t *testing.T) {
+		t.Cleanup(func() { v1.DefaultRegistry().Unregister(task) })
+
+		issuer := authtest.NewIssuer()
+		t.Cleanup(func() { _ = issuer.Close() })
+		fixture := newMCPServeFixtureWithPlugins(t, issuer, mcpServeDefaultMaxSessions,
+			mcpServeDefaultMaxRequestBytes, mcpServeDefaultTestTimeout, catalog)
+		session := fixture.connect(t, fixture.goodToken("agent"))
+
+		require.NotContains(t, validateOverMCP(t, session), "no plugin task",
+			"a task the supplied catalog describes was reported unknown")
+
+		catalogResult, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name:      flowmcp.ToolName("GetCatalog"),
+			Arguments: map[string]any{},
+		})
+		require.NoError(t, err)
+		require.Contains(t, renderEveryShape(catalogResult), task,
+			"flowstate_get_catalog does not list the supplied catalog's task")
+
+		tools, err := session.ListTools(t.Context(), nil)
+		require.NoError(t, err)
+		for _, tool := range tools.Tools {
+			if tool.Name == flowmcp.ToolName("Validate") {
+				require.Contains(t, tool.Description, "only from the plugin catalog")
+				require.NotContains(t, tool.Description, "started without a plugin catalog")
+			}
+		}
+	})
+}
+
+// TestMCPServeRefusesAnUnusablePluginCatalogBeforeServing: the step that builds
+// the served tools fails on a catalog it cannot read or that is over the file
+// bound, so nothing is bound without the plugins the operator named.
+func TestMCPServeRefusesAnUnusablePluginCatalogBeforeServing(t *testing.T) {
+	// Not parallel: it shares the process-wide registry with the test above.
+	oversize := filepath.Join(t.TempDir(), "big.json")
+	f, err := os.Create(oversize)
+	require.NoError(t, err)
+	require.NoError(t, f.Truncate(maxPluginCatalogBytes+1))
+	require.NoError(t, f.Close())
+
+	for name, path := range map[string]string{
+		"missing":  filepath.Join(t.TempDir(), "absent.json"),
+		"oversize": oversize,
+	} {
+		t.Run(name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "serve"}
+			addPluginCatalogFlag(cmd)
+			require.NoError(t, cmd.Flags().Set(pluginCatalogFlag, path))
+
+			tools, err := mcpServeToolsFromFlags(cmd, newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil)
+			require.Error(t, err)
+			require.Nil(t, tools)
+			require.Contains(t, err.Error(), "--"+pluginCatalogFlag)
+		})
 	}
 }

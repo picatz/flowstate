@@ -175,6 +175,14 @@ func addMCPServeFlags(cmd *cobra.Command) {
 	addTLSFlags(cmd)
 	addAuditRequiredFlag(cmd)
 
+	// The catalog and not --plugin-dir, on purpose: a catalog is a descriptor
+	// document that launches nothing, which is the only shape that fits a
+	// process facing the network. Executing plugin binaries from here is a
+	// separate decision (picatz/flowstate#1340). Flowfiles on this surface are
+	// only validated, compiled and rehearsed under stubs, never run, which is
+	// the property addPluginCatalogFlag requires of the verbs that take it.
+	addPluginCatalogFlag(cmd)
+
 	cmd.Flags().Int64("max-request-bytes", mcpServeDefaultMaxRequestBytes,
 		"largest request body this surface will read, in bytes. A request over the limit is "+
 			"refused with 413 rather than buffered")
@@ -795,6 +803,7 @@ func mcpServeTools(
 	testTimeout time.Duration,
 	recorder *audit.Recorder,
 	reportAuditFailure func(error),
+	pluginCatalog bool,
 ) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
 
@@ -814,6 +823,11 @@ func mcpServeTools(
 		flowmcp.Deps{
 			Audit:        recorder,
 			AuditFailure: reportAuditFailure,
+
+			// Words only: the catalog's tasks were registered by
+			// [loadPluginCatalog] before this server was built, and the tool
+			// descriptions say whether that happened.
+			PluginCatalog: pluginCatalog,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -849,6 +863,29 @@ func mcpServeTools(
 	)
 
 	return srv, nil
+}
+
+// mcpServeToolsFromFlags is the load-then-build step of [runMCPServe]: it reads
+// --plugin-catalog into the registry and then builds the server whose
+// descriptions say so, as one unit so a test drives the same wiring the command
+// runs. Loading comes first so the first request already sees the catalog's
+// tasks. A catalog that cannot be read stops the command before anything is
+// bound: serving without it would answer `no plugin task` for every task the
+// operator said this deployment has.
+func mcpServeToolsFromFlags(
+	cmd *cobra.Command,
+	guard *mcpServeRegistryGuard,
+	testTimeout time.Duration,
+	recorder *audit.Recorder,
+	reportAuditFailure func(error),
+) (*mcp.Server, error) {
+	pluginCatalog, err := loadPluginCatalog(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("--%s names the plugins this surface validates against, and it could not be read: %w",
+			pluginCatalogFlag, err)
+	}
+
+	return mcpServeTools(guard, testTimeout, recorder, reportAuditFailure, pluginCatalog != nil)
 }
 
 // mcpServeRegistryGuard serializes this surface's tools against the one piece
@@ -1095,7 +1132,7 @@ func runMCPServe(cmd *cobra.Command, _ []string) error {
 	// HTTP server has drained, so the batch includes in-flight decisions.
 	defer flushAudit()
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
+	tools, err := mcpServeToolsFromFlags(cmd, newMCPServeRegistryGuard(), flags.testTimeout, recorder, func(err error) {
 		logger.Error("could not record MCP tool authorization decision", "error", err)
 	})
 	if err != nil {
