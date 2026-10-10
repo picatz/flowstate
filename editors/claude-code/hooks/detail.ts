@@ -18,6 +18,8 @@ export interface Step {
   durationMs?: number
   /** The failure sentence of the latest failed attempt, cleaned. */
   reason: string
+  /** When the step's first row happened: a waiting step's elapsed time is counted from here, locally, between reads. */
+  startedMs?: number
 }
 
 /**
@@ -128,7 +130,7 @@ export const parseTimeline = (stdout: string): Parsed => {
     }
     let step = byName.get(r.step)
     if (!step) {
-      step = { name: r.step, status: known, attempts: 0, reason: '', began: r.at }
+      step = { name: r.step, status: known, attempts: 0, reason: '', began: r.at, startedMs: r.at }
       byName.set(r.step, step)
     }
     step.status = known
@@ -189,13 +191,27 @@ export const factsFor = (
  * succeeded/`released`, on the executions (graph overlay) and the steps (card)
  * alike. `released` claims neither the signal nor the timeout; no signal row is
  * read, because it carries only a name and cannot say which gate it answered.
- * Any other run status leaves the detail exactly as the timeline said.
+ * A failed or cancelled run (the live refresh is what reads one that has just ended) is
+ * never shown as released: its open waiting or running rows read `closed`, as cancelled,
+ * since the run ended with them unanswered. A run still running, or of unknown status,
+ * leaves the detail exactly as the timeline said.
  *
  * This is the fallback for histories already written; closing the timer row at
  * the source is an engine-side fix and a separate change.
  */
 export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Detail | undefined => {
-  if (detail === undefined || statusOf(runStatus).kind !== 'succeeded') return detail
+  if (detail === undefined) return detail
+  const kind = statusOf(runStatus).kind
+  if (kind === 'failed' || kind === 'cancelled') {
+    const closed = statusFor('cancelled', 'closed')
+    const ended = (status: Status) => status.kind === 'waiting' || status.kind === 'running'
+    return {
+      ...detail,
+      executions: detail.executions.map(e => (!e.cut && ended(e.status) ? { ...e, status: closed } : e)),
+      steps: detail.steps.map(s => (ended(s.status) ? { ...s, status: closed } : s)),
+    }
+  }
+  if (kind !== 'succeeded') return detail
   const open = (label: string, status: Status) => status.kind === 'waiting' && WAIT_TIMER.test(label)
   const released = statusFor('succeeded', 'released')
   return {
@@ -204,3 +220,13 @@ export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Det
     steps: detail.steps.map(s => (open(s.name, s.status) ? { ...s, status: released } : s)),
   }
 }
+/** A step's time as the row shows it: its recorded duration, else for a running or waiting step the time since it began, counted against `now` so it moves between reads. */
+export const stepElapsed = (s: Step, now: number): number | undefined => {
+  if (s.durationMs !== undefined) return s.durationMs
+  if ((s.status.kind === 'waiting' || s.status.kind === 'running') && s.startedMs !== undefined && now >= s.startedMs) return now - s.startedMs
+  return undefined
+}
+
+/** What changed in a read, for the poller's backoff: status, and each step's name, status and attempts. Times are left out, they always move. */
+export const fingerprint = (status: unknown, detail: Detail | undefined): string =>
+  `${clean(status, 40)}|${(detail?.steps ?? []).map(s => `${s.name}:${s.status.kind}:${s.attempts}`).join(',')}|${detail?.truncated === true}`

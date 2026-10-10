@@ -91,6 +91,32 @@ The pane's Send/Confirm replaces the Bash guard's question for this one action
 only. The `guardServerActions` guard still asks before Claude runs `flow signal`
 in a Bash command, and turning it off does not remove the pane's confirm step.
 
+## Live refresh
+
+While a run is open in the pane and is running or waiting, the pane reads
+`flow list` and `flow timeline` again by itself and stops when the run ends
+(`hooks/poll.ts`, pure and tested).
+
+- **Schedule.** A one-second tick redraws the card from its last read, so a
+  waiting step's elapsed time (`settle · sleep  2m 53s`, counted from its first
+  timeline row) moves without starting a process. A read is due every 2 seconds at
+  first and backs off to every 10 seconds while nothing changes (2 s three times,
+  then 4 s, 8 s, 10 s); a change in the run's status or steps takes it back to 2 s.
+  The timeline does not carry a timer's length, so a sleep shows the time waited, not
+  the time left.
+- **Bounded.** One redraw at a time (a tick that finds a draw in flight skips it,
+  and the next tick is scheduled only after the redraw settled), a generation
+  guard so a stale timer does nothing, and a hard stop after 60 reads in a row
+  with no change.
+- **Stops.** On a succeeded, failed, cancelled or unknown status, when the run is
+  closed or another is opened, and when the pane has not drawn for 5 seconds (it
+  was closed; opening it again starts the poll if the run is still live).
+  Nothing is left running after any of these.
+- **A finished run settles its waits** (`settleWaits`): no step or timer reads
+  running or waiting once the run is over. A succeeded run closes them as
+  succeeded and the progress bar fills; a failed or cancelled run closes them as
+  `closed`, never as success. A wait takes the run's close time as its end.
+
 ## Run a Flowfile
 
 The pane's `Run a Flowfile` section runs a Flowfile on this machine from a form

@@ -8,7 +8,8 @@ import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReas
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
-import { MAX_ENTRIES, factsFor, parseTimeline, settleWaits, visibleSteps } from './detail'
+import { MAX_ENTRIES, factsFor, fingerprint, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { Poller, isLive } from './poll'
 import type { Parsed as TimelineParsed } from './detail'
 import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
@@ -58,7 +59,9 @@ const runResult = atom({ plugin: 'flowstate', key: 'runResult' } as const, NO_RU
 const outputsRaw = atom({ plugin: 'flowstate', key: 'outputsRaw' } as const, false)
 /** Bumped by the Graph section's Refresh so the pane draws again after the cached read is dropped. */
 const graphSeq = atom({ plugin: 'flowstate', key: 'graphSeq' } as const, 0)
-const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
+/** Bumped by the live refresh so the open run's card draws again (hooks/poll.ts); it holds nothing. */
+const pulse = atom({ plugin: 'flowstate', key: 'pulse' } as const, 0)
+const NO_GATES: Gates ={ gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
 /** Bumped by every write of the band, so a slow rerun can tell the band moved while it ran. */
@@ -276,6 +279,14 @@ export const register: Register = (on, options) => {
   const outSchemas = new Map<string, Declared>()
   /** Graphs by file and modification time; a failed read is kept too, so a broken file is not re-read on every redraw. */
   const graphs = new Map<string, GraphParsed>()
+  /**
+   * Live refresh of the open run (hooks/poll.ts). A redraw that is not a read reuses `lastRead`,
+   * so the one-second tick moves elapsed time without starting a process. Render only writes
+   * these closure values, never state.
+   */
+  let reuse = false
+  let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates } | undefined
+  const poller = new Poller()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -556,22 +567,45 @@ export const register: Register = (on, options) => {
     const expr = await read($, filter)
     const id = await read($, selected)
     const memo = await read($, summary)
+    await read($, pulse)
+    poller.drawBegan()
+    // A local tick redraws from the last read of this run and filter; any other draw reads afresh.
+    const again = reuse && lastRead !== undefined && lastRead.id === id && lastRead.expr === expr ? lastRead : undefined
+    reuse = false
     // Independent legs, started together: a stalled one costs its own timeout, not both.
-    const [runs, account] = await Promise.all([
-      listRuns($, flow, expr),
-      id === '' ? Promise.resolve(undefined) : readTimeline($, flow, id),
-    ])
+    const [runs, account] = again
+      ? [again.runs, again.account]
+      : await Promise.all([
+          listRuns($, flow, expr),
+          id === '' ? Promise.resolve(undefined) : readTimeline($, flow, id),
+        ])
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
-    const unsettled = account && 'detail' in account ? account.detail : undefined
+    const rawDetail = account && 'detail' in account ? account.detail : undefined
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
     // Only a terminal status survives the press: a remembered running or waiting one is stale by now, so it reads as unknown.
     const live = ['running', 'waiting'].includes(statusOf(memo.status).kind)
     const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: live ? '' : memo.status, startTime: live ? null : memo.startTime || null, closeTime: memo.closeTime || null })
-    // A completed run has no open gate: the card and the graph overlay both read the one settled account.
-    const detail = settleWaits(unsettled, known?.status)
-    const facts = factsFor(known ?? { workflowId: id }, detail, Date.now())
-    const { shown, more } = visibleSteps(detail?.steps ?? [])
     const head = statusOf(known?.status)
+    // A completed run has no open gate (released, not succeeded); a failed or cancelled one shows closed: the card and the graph overlay both read the one settled account.
+    const detail = settleWaits(rawDetail, known?.status)
+    const now = Date.now()
+    const facts = factsFor(known ?? { workflowId: id }, detail, now)
+    const { shown, more } = visibleSteps(detail?.steps ?? [])
+    // Live refresh runs only while the open run is running or waiting; a final, unknown or closed run stops it.
+    const polling = id !== '' && isLive(head.kind)
+    poller.seen(fingerprint(known?.status, detail), polling)
+    if (polling) {
+      poller.start({
+        after: (ms, fn) => {
+          const t = $.clock.after(ms, fn)
+          return () => t.cancel()
+        },
+        redraw: async read => {
+          reuse = !read
+          await update($, pulse, n => n + 1)
+        },
+      })
+    }
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
     // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
@@ -581,7 +615,8 @@ export const register: Register = (on, options) => {
     if (changed) await refreshStatus($, nudges, heard)
     const parkable = id !== '' && (facts.waitingOn !== undefined || ['running', 'waiting'].includes(head.kind))
     const idOk = WORKFLOW_ID.test(id)
-    const found = parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
+    const found = again ? again.found : parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
+    lastRead = { id, expr, runs, account, found }
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
@@ -655,6 +690,7 @@ export const register: Register = (on, options) => {
     }
 
     const labels = labelsFor(list.map(r => r.file))
+    poller.drawEnded()
 
     return (
       <Box flexDirection="column">
@@ -723,7 +759,7 @@ export const register: Register = (on, options) => {
                       <Text color={COLOR[s.status.tone]}>{s.status.symbol}</Text> {s.name}{' '}
                       <Text dimColor>
                         {s.status.word}
-                        {s.durationMs !== undefined ? `  ${duration(s.durationMs)}` : ''}
+                        {stepElapsed(s, now) !== undefined ? `  ${duration(stepElapsed(s, now))}` : ''}
                         {s.attempts > 1 ? `  attempt ${s.attempts}` : ''}
                       </Text>
                     </Text>
