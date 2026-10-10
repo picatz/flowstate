@@ -83,6 +83,24 @@ func TestTheTimelineAccountsForARunThatActuallyRan(t *testing.T) {
 	assert.Contains(t, steps, "deploy-approved",
 		"the gate was answered and the account does not say so")
 
+	// The gate's timeout closes under the label it opened with, so a reader
+	// folding rows by step sees the wait end rather than hang on a run that
+	// succeeded. Not fired: nobody let the timeout lapse.
+	assert.NotContains(t, timelineKinds(finished), v1.TimelineEntry_KIND_TIMER_FIRED)
+	var opened, closed string
+	for _, entry := range finished.GetEntries() {
+		switch entry.GetKind() {
+		case v1.TimelineEntry_KIND_TIMER_STARTED:
+			opened = entry.GetStep()
+		case v1.TimelineEntry_KIND_TIMER_CANCELED:
+			closed = entry.GetStep()
+		default:
+		}
+	}
+	assert.NotEmpty(t, opened)
+	assert.Equal(t, opened, closed,
+		"the signal won and nothing closed the gate's timeout row under its own label")
+
 	// Ordered, which is the whole of what an account is. Positions rather than
 	// an exact sequence, because the events between them are not this test's
 	// subject.

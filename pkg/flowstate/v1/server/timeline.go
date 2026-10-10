@@ -523,13 +523,19 @@ func (s *FlowstateServer) timelineEntry(
 		}
 
 	case enums.EVENT_TYPE_TIMER_CANCELED:
-		// Not a row: a cancelled timer is a wait that ended because the thing
-		// it was bounding happened, and the account already says that — the
-		// signal that answered a gate is right there. Forgotten, though, or a
-		// run parked and released many times would carry every lapsed timer.
-		delete(inFlight, event.GetTimerCanceledEventAttributes().GetStartedEventId())
-
-		return nil
+		// A row, because the wait it closes was one: a reader folding rows by
+		// label sees `<step> · wait timeout` begin and, without this, never end
+		// when the signal wins, so a gate that was answered reads as waiting
+		// forever on a run that succeeded. The signal row cannot stand in for it,
+		// as it is named for the signal rather than the step. Labelled from the
+		// start it closes, then forgotten, or a run parked and released many
+		// times would carry every lapsed timer.
+		entry.Kind = v1.TimelineEntry_KIND_TIMER_CANCELED
+		started := event.GetTimerCanceledEventAttributes().GetStartedEventId()
+		if work, ok := inFlight[started]; ok {
+			entry.Step = work.label
+			delete(inFlight, started)
+		}
 
 	case enums.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED:
 		// Named, never carrying its payload: a signal's payload is somebody's

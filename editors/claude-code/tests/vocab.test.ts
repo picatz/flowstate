@@ -43,6 +43,7 @@ test('statusOf reads every status the schema and the timeline name', () => {
   expect(statusOf('KIND_STEP_FAILED').kind).toBe('failed')
   expect(statusOf('KIND_TIMER_STARTED').kind).toBe('waiting')
   expect(statusOf('KIND_TIMER_FIRED').kind).toBe('succeeded')
+  expect(statusOf('KIND_TIMER_CANCELED').kind).toBe('succeeded')
   expect(statusOf('FAILED').kind).toBe('failed')
   expect(statusOf('compensated').kind).toBe('compensated')
 })

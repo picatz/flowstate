@@ -392,6 +392,16 @@ const (
 	// KIND_RUN_ENDED is the workload finishing, whichever way. The run's status
 	// says which; this says when.
 	TimelineEntry_KIND_RUN_ENDED TimelineEntry_Kind = 10
+	// KIND_TIMER_CANCELED is a wait closing without elapsing: the `timeout:`
+	// bound on a `wait_for_signal:` whose signal arrived first. It carries the
+	// label of the KIND_TIMER_STARTED row it closes, so a consumer that folds
+	// rows by step reads the gate as answered rather than as waiting forever on
+	// a run that went on to succeed. It is the opposite fact from
+	// KIND_TIMER_FIRED, which is a gate nobody answered.
+	//
+	// Appended last, so an older client that does not know the value skips the
+	// row as an unknown kind and is no worse off than before it existed.
+	TimelineEntry_KIND_TIMER_CANCELED TimelineEntry_Kind = 11
 )
 
 // Enum value maps for TimelineEntry_Kind.
@@ -408,6 +418,7 @@ var (
 		8:  "KIND_SIGNAL_RECEIVED",
 		9:  "KIND_RUN_CONTINUED",
 		10: "KIND_RUN_ENDED",
+		11: "KIND_TIMER_CANCELED",
 	}
 	TimelineEntry_Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED":     0,
@@ -421,6 +432,7 @@ var (
 		"KIND_SIGNAL_RECEIVED": 8,
 		"KIND_RUN_CONTINUED":   9,
 		"KIND_RUN_ENDED":       10,
+		"KIND_TIMER_CANCELED":  11,
 	}
 )
 
@@ -3085,7 +3097,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x04step\x18\x04 \x01(\tR\x04step\x12\x1b\n" +
 	"\tspec_hash\x18\x05 \x01(\tR\bspecHash\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\"\x9c\x04\n" +
+	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\"\xb5\x04\n" +
 	"\rTimelineEntry\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x03R\aeventId\x12.\n" +
 	"\x04time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12>\n" +
@@ -3093,7 +3105,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x04step\x18\x04 \x01(\tR\x04step\x12\x18\n" +
 	"\aattempt\x18\x05 \x01(\x05R\aattempt\x12,\n" +
 	"\x12scheduled_event_id\x18\a \x01(\x03R\x10scheduledEventId\x12\x18\n" +
-	"\afailure\x18\x06 \x01(\tR\afailure\"\x89\x02\n" +
+	"\afailure\x18\x06 \x01(\tR\afailure\"\xa2\x02\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13KIND_STEP_SCHEDULED\x10\x01\x12\x17\n" +
@@ -3106,7 +3118,8 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x14KIND_SIGNAL_RECEIVED\x10\b\x12\x16\n" +
 	"\x12KIND_RUN_CONTINUED\x10\t\x12\x12\n" +
 	"\x0eKIND_RUN_ENDED\x10\n" +
-	"B\xa7\x01\n" +
+	"\x12\x17\n" +
+	"\x13KIND_TIMER_CANCELED\x10\vB\xa7\x01\n" +
 	"\x10com.flowstate.v1B\bRunProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (
