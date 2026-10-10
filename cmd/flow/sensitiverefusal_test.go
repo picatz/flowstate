@@ -472,3 +472,72 @@ func TestInputCoercionErrorHonorsRevealSensitive(t *testing.T) {
 	assert.NotContains(t, err.Error(), v1.SensitiveMarker,
 		"a revealed word was marked as redacted anyway")
 }
+
+// syntaxInputFileWorkflow declares a sensitive string input beside an ordinary
+// one, for the malformed-document cases below.
+const syntaxInputFileWorkflow = `edition: v2026.4
+name: onboard-syntax
+inputs:
+  pin:
+    type: string
+    sensitive: true
+  region:
+    type: string
+steps:
+  - id: greet
+    log:
+      message: onboarding
+`
+
+// TestInputFileSyntaxErrorDoesNotQuoteASensitiveValue is #2096's second half:
+// `encoding/json` words a syntax error with the offending character, so a bare
+// `{"pin": hunter2}` was refused with `invalid character 'h' ...` — the first
+// rune of a secret, at a point where no declaration has been matched yet. The
+// refusal now carries a position and a fixed phrase, and the document's text
+// stays out of it.
+func TestInputFileSyntaxErrorDoesNotQuoteASensitiveValue(t *testing.T) {
+	t.Parallel()
+
+	const secret = "hunter2"
+
+	for name, body := range map[string]string{
+		"bare word":        "{\n  \"region\": \"eu\",\n  \"pin\": " + secret + "\n}",
+		"truncated":        "{\n  \"pin\": \"" + secret,
+		"bad after secret": "{\"pin\": \"" + secret + "\" \"region\": \"eu\"}",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			path := writeInputsFile(t, body)
+
+			stdout, stderr, err := runLocal(t, syntaxInputFileWorkflow, "--output", "json", "--input-file", path)
+			require.Error(t, err, "a malformed document is refused")
+
+			for _, surface := range []string{stdout, stderr, err.Error()} {
+				assert.NotContains(t, surface, secret)
+				assert.NotContains(t, surface, "invalid character",
+					"the decoder's own wording names the offending character")
+				assert.NotContains(t, surface, "'h'")
+			}
+
+			assert.Contains(t, err.Error(), "invalid JSON syntax")
+			assert.Contains(t, err.Error(), "line ")
+			assert.Contains(t, err.Error(), "column ")
+		})
+	}
+}
+
+// TestInputFileSyntaxErrorNamesTheLineAndColumn pins the position itself, so the
+// redaction cannot quietly become a message that says nothing.
+func TestInputFileSyntaxErrorNamesTheLineAndColumn(t *testing.T) {
+	t.Parallel()
+
+	_, err := decodeInputJSON("{\n  \"pin\": hunter2\n}")
+	require.Error(t, err)
+	assert.EqualError(t, err, "invalid JSON syntax at line 2, column 11 (byte offset 12)")
+
+	_, err = decodeInputJSON(`{"pin": "zq9`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the document ends before it is complete")
+	assert.NotContains(t, err.Error(), "zq9")
+}
