@@ -92,6 +92,40 @@ cases:
 	require.Contains(t, text.Stdout, "6 cases (egress policy): 6 passed, 0 failed")
 }
 
+// A rule over `credentials` is judged on the fact the case states, in both
+// directions, as the worker judges it from the task it runs.
+func TestPolicyTestEgressCredentialsAreStatedByTheCase(t *testing.T) {
+	t.Parallel()
+
+	policy := writeFile(t, "egress.yaml", `egress:
+  schemes: [https]
+  allow:
+    - host == "api.example.com"
+  deny:
+    - credentials && host != "api.example.com"
+    - host == "open.example.com" && credentials
+`)
+	cases := writeFile(t, "cases.yaml", `surface: egress
+cases:
+  - name: a credentialed request to the vetted host is allowed
+    request: {url: "https://api.example.com/", credentials: true}
+    expect: allow
+  - name: a credentialed request to open is refused by the credential rule
+    request: {url: "https://open.example.com/", credentials: true}
+    expect: deny
+    rule: 'credentials && host != "api.example.com"'
+  - name: the same request without a credential is only unlisted
+    request: {url: "https://open.example.com/"}
+    expect: deny
+    rule: allow rules
+`)
+
+	res, report := policyTestJSON(t, policy, cases)
+	require.Equal(t, 0, res.ExitCode, res.Output())
+	require.True(t, report.Matches)
+	require.Equal(t, 3, report.Total)
+}
+
 // The negative direction the verb exists for: a policy that wrongly allows
 // fails the case that says it must deny.
 func TestPolicyTestAPolicyThatWronglyAllowsFailsItsDenyCase(t *testing.T) {
@@ -271,6 +305,7 @@ func TestPolicyTestRefusesWhatCannotBeTrusted(t *testing.T) {
 		"an issuer entry nothing admitted":      {"surface: egress\ncases:\n  - {name: a, principal: {issuer_entry: ci}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "issuer_entry"},
 		"a kind no policy assigns":              {"surface: egress\ncases:\n  - {name: a, principal: {kind: robot}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "robot"},
 		"a kind spelled in the enum's case":     {"surface: egress\ncases:\n  - {name: a, principal: {kind: Human}, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "Human"},
+		"a credential on another surface":       {"surface: task\ncases:\n  - {name: a, request: {task: http, credentials: true}, expect: allow}\n", "request.credentials belongs to another surface"},
 		"a surface mismatched":                  {"surface: task\ncases:\n  - {name: a, request: {url: \"https://api.github.com/\"}, expect: allow}\n", "another surface"},
 	} {
 		t.Run(name, func(t *testing.T) {

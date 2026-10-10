@@ -60,7 +60,7 @@ func newPolicyTestCommand() *cobra.Command {
 			"surface's rules read as `identity.<field>`. Absent is no attested caller, and a case " +
 			"carries only what it names: a rule on a `kind` or an action the case did not give it " +
 			"does not match. Nothing is attested. `request` " +
-			"depends on the surface: `url`, `method` (default GET) and optionally `ip` for egress; " +
+			"depends on the surface: `url`, `method` (default GET) and optionally `ip` and `credentials` for egress; " +
 			"`task` for task shape; `argv`, `dir` and `env` for exec. A request carrying another " +
 			"surface's fields is refused.\n\n" +
 			"`expect` is `allow` or `deny` and is required. A denial can say which rule denied with " +

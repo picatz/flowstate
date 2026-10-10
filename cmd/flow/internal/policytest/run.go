@@ -66,6 +66,7 @@ type Egress struct{ Policy *netpolicy.Policy }
 // reservation are not asked: they need a dial, which is the engine's.
 func (e Egress) Decide(ctx context.Context, c Case) (Decision, error) {
 	ctx = netpolicy.ContextWithIdentity(ctx, c.subject.egress)
+	ctx = netpolicy.ContextWithCredentials(ctx, c.req.GetCredentials())
 
 	err := e.Policy.CheckURL(ctx, methodOf(c), c.url)
 	if err == nil && c.addr.IsValid() {
