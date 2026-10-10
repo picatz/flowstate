@@ -366,6 +366,14 @@ state the mod already holds, and drawing it starts no process:
   (`FLOWSTATE_ADDRESS`, else the default) and the time it was read, since the line
   is redrawn on events, not by a clock. `flow list` reports a run parked on a signal or timer as running, so waiting gates are not counted here (the run card shows them). A server that did not answer, an unreadable
   address, or a filtered listing adds nothing. Counts show up to `99+`.
+- **Opening `/flowstate` rebuilds what the session did not record.** The Flowfiles list and
+  this line were filled only by edits Claude made in the session, so a directory of
+  Flowfiles it never touched (a resumed session, a file edited by hand) read as empty.
+  Opening the pane now runs `flow validate` on the working directory's (and
+  `workflows/`'s) Flowfiles that no report names yet, at most 5 at a time, and redraws the
+  line. A file already reported by an edit (by its absolute path) is not checked again, and
+  `validateOnEdit: false` turns the rebuild off with the after-edit check. The line stays
+  quiet: a clean directory still prints nothing, and only a file with errors adds the `⚠`.
 - With nothing to attend to the line is empty.
   File names and addresses are cleaned and bounded like every other CLI-derived text.
 

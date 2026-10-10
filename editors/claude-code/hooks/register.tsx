@@ -229,6 +229,27 @@ const readGraph = async ($: Engine, flow: string, file: string): Promise<GraphPa
   }
 }
 
+/** A rebuild validates this many Flowfiles at most, in parallel; the rest are left for an edit or the next open. */
+const MAX_REBUILD = 5
+
+/**
+ * Fills the Flowfiles list from the working directory (and `workflows/`) for files no report
+ * names yet. Nothing here throws, a file that cannot be checked is reported as such, and a
+ * report an edit wrote while this ran is never overwritten.
+ */
+const rebuildReports = async ($: Engine, flow: string): Promise<void> => {
+  // An edit records the absolute path the tool was given; the listing is relative to the directory.
+  const have = (await read($, reports)).map(r => r.file)
+  const named = (f: string) => have.some(h => h === f || h.endsWith(`/${f}`))
+  const missing = (await listFlowfiles($)).files.filter(f => !named(f)).slice(0, MAX_REBUILD)
+  if (missing.length === 0) return
+  const fresh = await Promise.all(missing.map(f => validate($, flow, f)))
+  await update($, reports, list => {
+    const named = new Set(list.map(r => r.file))
+    return [...fresh.filter(r => !named.has(r.file)), ...list].slice(-MAX_REPORTS)
+  })
+}
+
 /** The first Flowfile in the session's working directory, if it has one and can be listed. */
 const findInCwd = async ($: Engine): Promise<string | undefined> => {
   try {
@@ -315,6 +336,11 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'flowstate' }, async $ => {
+    // The Flowfiles list and the status line were only filled by this session's edits, so opening the pane in a
+    // directory of Flowfiles Claude never touched (a resumed session, a file edited by hand) read "nothing checked".
+    // Rebuild them from the working directory: only files not already reported, at most MAX_REBUILD of them.
+    if (isEnabled) await rebuildReports($, flow).catch(() => undefined)
+    await refreshStatus($, nudges, heard)
     await $.ui.open({ id: PANE, title: 'Flowstate' })
     return { text: 'Flowstate pane opened.' }
   })
