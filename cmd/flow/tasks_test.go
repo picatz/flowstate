@@ -642,8 +642,8 @@ func TestTasksExpressionsIsItsOwnPage(t *testing.T) {
 // TestTasksShowsTheSentenceWrittenOverAField pins that the schema's own prose
 // reaches the terminal: a built-in's from the compiled-in comments, read through
 // the one mechanism the editor's hover reads. Expectations are derived from
-// protodoc so a reworded comment does not break it, and the `log` message is
-// named by hand so a build where every comment had gone missing fails here.
+// protodoc so a reworded comment does not break it, and the count guards a build
+// where every comment had gone missing.
 func TestTasksShowsTheSentenceWrittenOverAField(t *testing.T) {
 	t.Parallel()
 
@@ -655,17 +655,26 @@ func TestTasksShowsTheSentenceWrittenOverAField(t *testing.T) {
 	})))
 
 	var described int
-	for _, field := range v1.Inputs(def) {
-		if field.Description == "" {
-			continue
-		}
+	for name, comment := range fieldProse(def.Inputs) {
 		described++
 
-		assert.Contains(t, rendered, collapse(protodoc.FirstSentence(field.Description)),
-			"`flow tasks log` does not carry the sentence written over %q", field.Name)
+		assert.Contains(t, rendered, collapse(protodoc.FirstSentence(comment)),
+			"`flow tasks log` does not carry the sentence written over %q", name)
 	}
 
 	assert.NotZero(t, described, "no `log` input carries prose, so nothing here was exercised")
+}
+
+// renderProse draws one input group with the given prose at a width.
+func renderProse(t *testing.T, width int, fields []v1.InputField, prose map[string]string) string {
+	t.Helper()
+
+	var out strings.Builder
+	surface := ui.ForCapabilities(&out, &out, ui.Capabilities{Width: width}, ui.Capabilities{Width: width})
+	require.NoError(t, writeFields(&out, surface.Theme, width,
+		[]fieldGroup{{label: "inputs", fields: fields, prose: prose}}))
+
+	return out.String()
 }
 
 // TestTasksPrintsNothingForAFieldWithoutProse is the other direction: a field
@@ -673,18 +682,42 @@ func TestTasksShowsTheSentenceWrittenOverAField(t *testing.T) {
 func TestTasksPrintsNothingForAFieldWithoutProse(t *testing.T) {
 	t.Parallel()
 
-	fields := []v1.InputField{
+	rendered := renderProse(t, 120, []v1.InputField{
 		{Name: "url", Type: "string", Required: true},
-		{Name: "method", Type: "string", Description: "HTTP method to use. Defaults to GET."},
-	}
+		{Name: "method", Type: "string"},
+	}, map[string]string{"method": "HTTP method to use. Defaults to GET."})
 
-	var out strings.Builder
-	surface := ui.ForCapabilities(&out, &out, ui.Capabilities{Width: 120}, ui.Capabilities{Width: 120})
-	require.NoError(t, writeFields(&out, surface.Theme, 120, []fieldGroup{{label: "inputs", fields: fields}}))
-
-	lines := strings.Split(strings.TrimRight(out.String(), "\n"), "\n")
-	require.Len(t, lines, 3, "one row for the bare field, a row and a sentence for the other:\n%s", out.String())
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+	require.Len(t, lines, 3, "one row for the bare field, a row and a sentence for the other:\n%s", rendered)
 	assert.Contains(t, lines[0], "url*")
 	assert.Equal(t, "HTTP method to use.", strings.TrimSpace(lines[2]),
 		"only the first sentence belongs under the row")
+}
+
+// TestTasksEscapesControlCharactersInFieldProse pins that prose, which a
+// third-party plugin's descriptor supplies, cannot drive the terminal.
+func TestTasksEscapesControlCharactersInFieldProse(t *testing.T) {
+	t.Parallel()
+
+	rendered := renderProse(t, 120, []v1.InputField{{Name: "x", Type: "string"}},
+		map[string]string{"x": "Evil \x1b[2J bell \a and ‮gnp.exe."})
+
+	for _, raw := range []string{"\x1b", "\a", "‮"} {
+		assert.NotContains(t, rendered, raw, "raw %q reached the terminal", raw)
+	}
+	assert.Contains(t, rendered, `\x1b[2J`)
+}
+
+// TestTasksBoundsFieldProseWithoutASentenceEnd pins that a period-less comment
+// is cut rather than printed whole, and still wraps inside a narrow terminal.
+func TestTasksBoundsFieldProseWithoutASentenceEnd(t *testing.T) {
+	t.Parallel()
+
+	rendered := renderProse(t, 80, []v1.InputField{{Name: "x", Type: "string"}},
+		map[string]string{"x": strings.Repeat("word ", 100000)})
+
+	assert.Less(t, len(rendered), 2000, "unbounded prose reached the terminal")
+	for line := range strings.SplitSeq(rendered, "\n") {
+		assert.LessOrEqual(t, lipgloss.Width(line), 80, "line overflows 80 columns: %q", line)
+	}
 }
