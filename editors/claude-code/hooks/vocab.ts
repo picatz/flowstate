@@ -136,6 +136,13 @@ export const middleTruncate = (id: unknown, max = 24): string => {
   return `${text.slice(0, head)}…${tail > 0 ? text.slice(-tail) : ''}`
 }
 
+/** `a.flow.yaml`: a path's last component, cleaned; an overlong one keeps its tail (the extension) behind a leading `…`. */
+export const baseName = (path: unknown, max = 28): string => {
+  const name = clean(path, 512).replace(/^.*[\\/]/, '').replaceAll('`', "'")
+  const limit = Math.max(2, Math.trunc(max) || 28)
+  return name.length <= limit ? name : `…${name.slice(-(limit - 1))}`
+}
+
 /** What `story` needs; the pane derives it from `flow list` and `flow timeline`. */
 export interface RunFacts {
   name?: string

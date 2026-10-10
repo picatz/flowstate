@@ -1,3 +1,4 @@
+import type { FileReport } from '../types'
 import { MAX_ENTRIES } from './context'
 import { isFlowfile } from './flowfile'
 import { MAX_COMMAND, basename, tokenize } from './guard'
@@ -22,16 +23,34 @@ export const MAX_EDITED = 20
 const MAX_PATH = 200
 const MAX_NAMED = 5
 
+/** A path as `edited` stores it. */
+const shown = (path: string): string => clean(path, MAX_PATH).replaceAll('`', "'")
+
 /** An edit of a Flowfile (by the guard's own `isFlowfile`, nothing else) is unverified until a check passes. */
 export const recordEdit = (state: Verify, path: unknown): Verify => {
   if (typeof path !== 'string' || !isFlowfile(path)) return state
-  const shown = clean(path, MAX_PATH).replaceAll('`', "'")
+  const name = shown(path)
   return {
     ...state,
-    edited: [...state.edited.filter(p => p !== shown), shown].slice(-MAX_EDITED),
+    edited: [...state.edited.filter(p => p !== name), name].slice(-MAX_EDITED),
     validated: false,
     tested: false,
   }
+}
+
+/**
+ * The mod's own validate-after-edit is a `flow validate`: when every edited
+ * Flowfile has a report that is clean (no diagnostics, no failure), the
+ * validate leg is met. A missing, failed or erroring report earns nothing, and
+ * `tested` is never touched. Pure and idempotent, so it may run after either
+ * the report or the edit is recorded.
+ */
+export const creditValidated = (state: Verify, reports: readonly Pick<FileReport, 'file' | 'diagnostics' | 'failure'>[]): Verify => {
+  if (state.validated || state.edited.length === 0) return state
+  const clean = state.edited.every(path =>
+    reports.some(r => typeof r.file === 'string' && shown(r.file) === path && r.diagnostics.length === 0 && r.failure === undefined),
+  )
+  return clean ? { ...state, validated: true } : state
 }
 
 /** Flags that make `flow validate` or `flow test` exit 0 having checked nothing (or never exit), with or without `=value`. */
