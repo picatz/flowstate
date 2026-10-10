@@ -31,24 +31,25 @@ plugins:
       # namespace; a literal is refused before durable history, and a step that
       # writes its own `token:` overrides this one.
       bot_token: ${secret('env:SLACK_BOT_TOKEN')}
+use:
+  lib:
+    path: ./lib.yaml
 inputs:
   channel:
-    type: string
+    type: lib.ChannelId
     required: true
     description: stable Slack conversation ID, not a channel name
     example: C123APPROVAL
   request_message_key:
-    type: string
+    type: lib.MessageKey
     required: true
     description: UUID chosen once for this approval card
     example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
-    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
   change:
-    type: string
+    type: lib.Change
     required: true
     description: bounded human-readable change being approved
     example: deploy api v1.4.2 to production
-    must: size(this) > 0 && size(this) <= 1000
   request_id:
     type: string
     required: true
@@ -99,7 +100,7 @@ steps:
               value: ${inputs.request_id}
       channel: ${inputs.channel}
       idempotency_key: ${inputs.request_message_key}
-      text: '${"Approval required: " + inputs.change}'
+      text: ${lib.headline("Approval required", inputs.change)}
   - id: gate
     wait_for_signal:
       name: clicked
@@ -109,10 +110,8 @@ steps:
         approved: ${payload.?decision.orValue("") == "approve"}
         response_url: ${payload.?response_url.orValue("")}
         timed_out: ${timed_out}
-  - id: decided_title
-    value: '${steps.gate.approved ? "Approval granted" : "Approval refused"}'
-  - id: outcome_title
-    value: '${steps.gate.timed_out ? "Approval timed out" : steps.decided_title.value}'
+  - id: outcome
+    value: ${lib.outcome(steps.gate.approved, steps.gate.timed_out)}
   # A click carries a response_url; a timeout does not, and the card is edited
   # with the bot token instead.
   - id: answer_click
@@ -120,31 +119,31 @@ steps:
     slack.respond:
       card:
         status:
-          state: '${steps.gate.approved ? "ok" : "failed"}'
+          state: ${steps.outcome.value.state}
           title:
-            plain: ${steps.outcome_title.value}
+            plain: ${steps.outcome.value.title}
           detail:
             markup:
               template: "Change: *{what}*"
               args:
                 what: ${inputs.change}
       response_url: ${steps.gate.response_url}
-      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      text: ${lib.headline(steps.outcome.value.title, inputs.change)}
   - id: answer_timeout
     if: ${steps.gate.response_url == ""}
     slack.update:
       card:
         status:
-          state: warn
+          state: ${steps.outcome.value.state}
           title:
-            plain: ${steps.outcome_title.value}
+            plain: ${steps.outcome.value.title}
           detail:
             markup:
               template: "Change: *{what}*"
               args:
                 what: ${inputs.change}
       channel: ${steps.notify.channel}
-      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      text: ${lib.headline(steps.outcome.value.title, inputs.change)}
       ts: ${steps.notify.ts}
 outputs:
   approved:

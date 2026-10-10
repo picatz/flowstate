@@ -1,0 +1,41 @@
+# The vocabulary the Slack examples share: what a Slack input must look like, and the
+# computations they would otherwise each write out by hand.
+#
+# A module has no steps, so it cannot run; each example names it under `use:` and the
+# compiler inlines what it calls, so both drivers see plain CEL. A card's structure
+# (`plain:`, a markup template) stays written out in each file, because the plugin
+# reads a card field as a literal; what is shared here is the text that goes into it.
+edition: v2026.4
+name: slack-lib
+description: Slack identifiers and card text shared by the Slack plugin examples.
+types:
+  ChannelId:
+    description: A stable Slack conversation ID, never a channel name.
+    type: string
+    must: this.matches("^[CDG][A-Z0-9]{8,}$")
+    example: C123APPROVAL
+  MessageKey:
+    description: A UUID chosen once for one logical message and reused unchanged only for it.
+    type: string
+    must: this.matches("^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+    example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+  Change:
+    description: A bounded, human-readable change being approved.
+    type: string
+    must: size(this) > 0 && size(this) <= 1000
+    example: deploy api v1.4.2 to production
+functions:
+  headline:
+    description: The notification text for a card, which is also what a screen reader says.
+    params:
+      title: string
+      change: string
+    returns: string
+    body: '${title + ": " + change}'
+  outcome:
+    description: How an approval ended, as the card title and status state that show it.
+    params:
+      approved: bool
+      timed_out: bool
+    returns: map(string, string)
+    body: '${timed_out ? {"title": "Approval timed out", "state": "warn"} : (approved ? {"title": "Approval granted", "state": "ok"} : {"title": "Approval refused", "state": "failed"})}'

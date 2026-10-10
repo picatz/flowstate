@@ -1,0 +1,41 @@
+# Cases for lib.yaml, a module: see ../../lib/ids.test.yaml for the shape.
+edition: v2026.4
+defaults:
+  workflow: ./lib.yaml
+tests:
+  - name: headline joins a title and the change
+    expect:
+      check:
+        - 'headline("Approval required", "deploy api") == "Approval required: deploy api"'
+
+  - name: outcome names how an approval ended
+    expect:
+      check:
+        - outcome(true, false).state == "ok"
+        - outcome(true, false).title == "Approval granted"
+        - outcome(false, false).state == "failed"
+        - outcome(false, false).title == "Approval refused"
+        - that: outcome(true, true).state == "warn"
+          because: a timeout wins over whatever the unanswered payload would have said
+        - outcome(false, true).title == "Approval timed out"
+
+  - name: ChannelId is a conversation ID, not a name
+    expect:
+      types:
+        ChannelId:
+          admits: [C123APPROVAL, D0123456789, G01234ABCDE]
+          refuses: [general, "#general", c123approval, C123, "", 42]
+
+  - name: MessageKey is a lowercase UUID
+    expect:
+      types:
+        MessageKey:
+          admits: [018f0e6c-7b42-7cc1-8a31-65c0f8758f4a, 123e4567-e89b-42d3-a456-426614174000]
+          refuses: [not-a-uuid, "", 018F0E6C-7B42-7CC1-8A31-65C0F8758F4A, 018f0e6c-7b42-9cc1-8a31-65c0f8758f4a]
+
+  - name: Change is bounded text
+    expect:
+      types:
+        Change:
+          admits: [deploy api v1.4.2 to production, x]
+          refuses: [""]

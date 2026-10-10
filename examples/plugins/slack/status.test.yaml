@@ -30,3 +30,16 @@ tests:
       ran: [started, canary, canary_done, half, half_done, full, finished]
       outputs:
         message_ts: "1503435956.000247"
+
+  - name: a channel name is not a conversation ID
+    workflow: ./status.yaml
+    inputs:
+      channel: deploys
+      status_idempotency_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4b
+      service: api
+      version: v1.4.2
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    expect:
+      failed: true
+      error_contains: channel
