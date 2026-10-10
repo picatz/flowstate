@@ -32,7 +32,7 @@ tests:
           decision: approve
           response_url: https://hooks.slack.com/actions/T0001/123/abcdef
     expect:
-      ran: [notify, gate, outcome_title, answer_click]
+      ran: [notify, gate, outcome, answer_click]
       skipped: [answer_timeout]
       outputs:
         approved: true
@@ -48,7 +48,7 @@ tests:
           decision: reject
           response_url: https://hooks.slack.com/actions/T0001/123/abcdef
     expect:
-      ran: [notify, gate, outcome_title, answer_click]
+      ran: [notify, gate, outcome, answer_click]
       outputs:
         approved: false
 
@@ -92,7 +92,7 @@ tests:
     secrets:
       env:SLACK_BOT_TOKEN: not-a-real-token
     expect:
-      ran: [notify, gate, outcome_title, answer_timeout]
+      ran: [notify, gate, outcome, answer_timeout]
       skipped: [answer_click]
       outputs:
         approved: false

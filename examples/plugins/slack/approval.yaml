@@ -9,6 +9,10 @@ plugins:
       # namespace; a literal is refused before durable history, and a step that
       # writes its own `token:` overrides this one.
       bot_token: ${secret('env:SLACK_BOT_TOKEN')}
+# The identifier rules and the card text helpers every Slack example shares.
+use:
+  lib:
+    path: ./lib.yaml
 inputs:
   channel:
     type: string
@@ -16,23 +20,20 @@ inputs:
     description: stable Slack conversation ID, not a channel name
     example: C123APPROVAL
   request_message_key:
-    type: string
+    type: lib.MessageKey
     required: true
     description: UUID chosen once for this approval card and reused unchanged only for the same logical message
     example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
-    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
   outcome_message_key:
-    type: string
+    type: lib.MessageKey
     required: true
     description: distinct UUID chosen once for the in-thread outcome notification
     example: 018f0e6c-80aa-7550-972a-7bc69716cc3b
-    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
   change:
-    type: string
+    type: lib.Change
     required: true
     description: bounded human-readable change being approved
     example: deploy api v1.4.2 to production
-    must: size(this) > 0 && size(this) <= 1000
   expected_approver:
     type: string
     required: true
@@ -87,7 +88,7 @@ steps:
       idempotency_key: ${inputs.request_message_key}
       # The notification text and what a screen reader says. The card below is
       # the message people see.
-      text: '${"Approval required: " + inputs.change}'
+      text: ${lib.headline("Approval required", inputs.change)}
   - id: approval
     wait_for_signal:
       name: change-approved
@@ -96,23 +97,18 @@ steps:
       outputs:
         approved: ${payload.?approved.orValue(false)}
         timed_out: ${timed_out}
-  - id: approval_decision
-    value: '${steps.approval.approved ? "approved" : "refused"}'
+  # One decision, read twice: the card shows its title and state.
   - id: outcome
-    value: '${steps.approval.timed_out ? "timed_out" : steps.approval_decision.value}'
-  - id: outcome_title
-    value: '${{"timed_out": "Approval timed out", "approved": "Approval granted", "refused": "Approval refused"}[steps.outcome.value]}'
-  - id: outcome_state
-    value: '${{"timed_out": "warn", "approved": "ok", "refused": "failed"}[steps.outcome.value]}'
+    value: ${lib.outcome(steps.approval.approved, steps.approval.timed_out)}
   # slack.update is idempotent on its target message, so unlike slack.post it is
   # safe for the step's retry policy to repeat.
   - id: report
     slack.update:
       card:
         status:
-          state: ${steps.outcome_state.value}
+          state: ${steps.outcome.value.state}
           title:
-            plain: ${steps.outcome_title.value}
+            plain: ${steps.outcome.value.title}
           detail:
             markup:
               template: "*{change}*"
@@ -123,7 +119,7 @@ steps:
               value:
                 plain: ${inputs.expected_approver}
       channel: ${steps.notify.channel}
-      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      text: ${lib.headline(steps.outcome.value.title, inputs.change)}
       ts: ${steps.notify.ts}
   # Editing a card does not notify anyone, so the outcome is also posted in the
   # card's thread, under its own key so a retry cannot post it twice.
@@ -131,7 +127,7 @@ steps:
     slack.post:
       channel: ${steps.notify.channel}
       idempotency_key: ${inputs.outcome_message_key}
-      text: '${steps.outcome_title.value + ": " + inputs.change}'
+      text: ${lib.headline(steps.outcome.value.title, inputs.change)}
       thread_ts: ${steps.notify.ts}
 outputs:
   approved:

@@ -30,7 +30,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	}
 
 	source := pluginreachtest.ReadFile(t, examplePath)
-	before, err := flowfile.ValidateSource(source)
+	before, err := flowfile.ValidateSourceAt(source, examplePath)
 	if err != nil {
 		t.Fatalf("validating before registration: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		t.Fatalf("registering plugin: %v", err)
 	}
 
-	after, err := flowfile.ValidateSource(source)
+	after, err := flowfile.ValidateSourceAt(source, examplePath)
 	if err != nil {
 		t.Fatalf("validating registered example: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	// The binding is a reference and nothing else: a literal there is refused
 	// where it is written, without echoing it.
 	literal := strings.Replace(string(source), "${secret('env:SLACK_BOT_TOKEN')}", "literal-token", 1)
-	diags, err := flowfile.ValidateSource([]byte(literal))
+	diags, err := flowfile.ValidateSourceAt([]byte(literal), examplePath)
 	// The compiler refuses the binding itself, so the refusal arrives as the
 	// error and not as a validation diagnostic.
 	if err == nil {
@@ -82,7 +82,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	// at the binding and at a step's own input, naming the declaration and not the
 	// target written.
 	federated := strings.Replace(string(source), "${secret('env:SLACK_BOT_TOKEN')}", "${credential('leaky-target')}", 1)
-	_, err = flowfile.ValidateSource([]byte(federated))
+	_, err = flowfile.ValidateSourceAt([]byte(federated), examplePath)
 	if err == nil {
 		t.Fatal("a credential reference was accepted for a credential the plugin does not declare federated")
 	}
@@ -97,7 +97,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	if override == string(source) {
 		t.Fatal("the override mutation did not apply to the example")
 	}
-	diags, err = flowfile.ValidateSource([]byte(override))
+	diags, err = flowfile.ValidateSourceAt([]byte(override), examplePath)
 	if err != nil {
 		t.Fatalf("validating literal override mutation: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 	}
 
 	credentialOverride := strings.Replace(override, "token: literal-token", "token: ${credential('leaky-target')}", 1)
-	diags, err = flowfile.ValidateSource([]byte(credentialOverride))
+	diags, err = flowfile.ValidateSourceAt([]byte(credentialOverride), examplePath)
 	if err != nil {
 		t.Fatalf("validating credential override mutation: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestTheSlackApprovalFlowReachesTheRealPluginContract(t *testing.T) {
 		"      idempotency_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a\n" +
 		"      blocks:\n        - sectoin: {text: {plain: hi}}\n" +
 		"      token: ${secret('env:SLACK_BOT_TOKEN')}\n"
-	diags, err = flowfile.ValidateSource([]byte(literalBlocks))
+	diags, err = flowfile.ValidateSourceAt([]byte(literalBlocks), examplePath)
 	if err != nil {
 		t.Fatalf("validating misspelt block member: %v", err)
 	}

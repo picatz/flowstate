@@ -1,13 +1,27 @@
 edition: v2026.4
+defaults:
+  workflow: ./approval.yaml
+  inputs:
+    channel: C123APPROVAL
+    request_message_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
+    outcome_message_key: 018f0e6c-80aa-7550-972a-7bc69716cc3b
+    change: deploy api v1.4.2 to production
+    expected_approver: sre-lead@example.com
+  stubs:
+    - step: notify
+      returns:
+        channel: C123APPROVAL
+        ts: "1503435956.000247"
+    - step: report
+      returns:
+        channel: C123APPROVAL
+        ts: "1503435956.000247"
+    - step: announce
+      returns:
+        channel: C123APPROVAL
+        ts: "1503435957.000100"
 tests:
   - name: an authorized approver is recorded on the approval card
-    workflow: ./approval.yaml
-    inputs:
-      channel: C123APPROVAL
-      request_message_key: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4a
-      outcome_message_key: 018f0e6c-80aa-7550-972a-7bc69716cc3b
-      change: deploy api v1.4.2 to production
-      expected_approver: sre-lead@example.com
     secrets:
       env:SLACK_BOT_TOKEN: not-a-real-token
     starter:
@@ -22,21 +36,59 @@ tests:
           issuer: https://issuer.example.com
           claims:
             team: release-managers
-    stubs:
-      - step: notify
-        returns:
-          channel: C123APPROVAL
-          ts: "1503435956.000247"
-      - step: report
-        returns:
-          channel: C123APPROVAL
-          ts: "1503435956.000247"
-      - step: announce
-        returns:
-          channel: C123APPROVAL
-          ts: "1503435957.000100"
     expect:
-      ran: [notify, approval, approval_decision, outcome, outcome_title, outcome_state, report, announce]
+      ran: [notify, approval, outcome, report, announce]
       outputs:
         approved: true
         request_message_ts: "1503435956.000247"
+
+  - name: a refusal is recorded and is not an approval
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    signals:
+      - name: change-approved
+        payload:
+          approved: false
+        sender:
+          subject: sre-lead@example.com
+          issuer: https://issuer.example.com
+          claims:
+            team: release-managers
+    expect:
+      ran: [notify, approval, outcome, report, announce]
+      outputs:
+        approved: false
+        request_message_ts: "1503435956.000247"
+
+  - name: no answer times the card out
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    starter:
+      subject: release-requester@example.com
+      issuer: https://issuer.example.com
+    expect:
+      ran: [notify, approval, outcome, report, announce]
+      outputs:
+        approved: false
+        request_message_ts: "1503435956.000247"
+
+  - name: a message key that is not a UUID is refused
+    inputs:
+      request_message_key: not-a-uuid
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    expect:
+      failed: true
+      error_contains: request_message_key
+
+  - name: an empty change is refused before anything is posted
+    inputs:
+      change: ""
+    secrets:
+      env:SLACK_BOT_TOKEN: not-a-real-token
+    expect:
+      failed: true
+      error_contains: change

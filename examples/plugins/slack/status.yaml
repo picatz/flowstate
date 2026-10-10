@@ -9,6 +9,9 @@ plugins:
       # namespace; a literal is refused before durable history, and a step that
       # writes its own `token:` overrides this one.
       bot_token: ${secret('env:SLACK_BOT_TOKEN')}
+use:
+  lib:
+    path: ./lib.yaml
 inputs:
   channel:
     type: string
@@ -16,11 +19,10 @@ inputs:
     description: stable Slack conversation ID, not a channel name
     example: C123DEPLOYS
   status_idempotency_key:
-    type: string
+    type: lib.MessageKey
     required: true
     description: UUID chosen once for this rollout's status message
     example: 018f0e6c-7b42-7cc1-8a31-65c0f8758f4b
-    must: this.matches(r'^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
   service:
     type: string
     required: true
