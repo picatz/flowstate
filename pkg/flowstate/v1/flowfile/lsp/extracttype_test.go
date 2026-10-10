@@ -253,3 +253,29 @@ func TestExtractTypeBoundsVerificationAttempts(t *testing.T) {
 	assert.Empty(t, actions)
 	assert.Equal(t, 1+maxExtractVerifications, parses, "failed attempts count against the bound")
 }
+
+func TestExtractTypeInAModuleWithNoTrailingNewline(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: " + flowfile.CurrentEdition + "\nname: ids\ntypes:\n  Rec:\n    fields:\n      slug:\n        type: string\n        must: size(this) > 2"
+	actions := extractActionsAt(t, src, lineOf(t, src, "slug:"))
+	require.Len(t, actions, 1)
+	edits := actions[0].Edit.Changes["file:///extract.yaml"]
+	ix := newLineIndex(src)
+	for _, e := range edits {
+		assert.Less(t, e.Range.End.Line, ix.lineCount(), "%v is inside the document", e.Range)
+		assert.LessOrEqual(t, e.Range.End.Character, utf16Len(ix.line(e.Range.End.Line)), "%v is inside its line", e.Range)
+	}
+	assert.Contains(t, applyExtract(t, src, actions[0]), "  Slug:\n    type: string\n")
+}
+
+func TestExtractTypeRefusesAFileThatAlreadyFailsItsOwnRule(t *testing.T) {
+	t.Parallel()
+
+	src := extractHeader + "inputs:\n  port:\n    type: string\n    must: size(this) > 2\n    default: a\n" + extractSteps
+	doc := newDocument("file:///extract.yaml", 0, src, nil)
+	_, _, ds, err := flowfile.ParseAndValidateSourceAt([]byte(src), "")
+	require.NoError(t, err)
+	require.NotEmpty(t, ds, "the fixture is invalid: its default breaks its rule")
+	assert.Empty(t, extractTypeActions(doc, codeActionParams{Range: wholeOf(src)}))
+}

@@ -358,10 +358,7 @@ func extractEdits(doc *document, group []*extractSite, name string) ([]lsp.TextE
 				},
 				NewText: name,
 			},
-			lsp.TextEdit{Range: lsp.Range{
-				Start: lsp.Position{Line: s.mustLine},
-				End:   lsp.Position{Line: s.mustLine + 1},
-			}},
+			removeLine(doc, s.mustLine),
 		)
 	}
 	slices.SortStableFunc(edits, func(a, b lsp.TextEdit) int {
@@ -376,6 +373,20 @@ func extractEdits(doc *document, group []*extractSite, name string) ([]lsp.TextE
 	}
 
 	return edits, true
+}
+
+// removeLine deletes a whole line with its terminator. The last line of a file
+// with no trailing newline has no terminator and no next line to end at, so only
+// its content goes; an end position past the document is not a position.
+func removeLine(doc *document, line int) lsp.TextEdit {
+	if line+1 >= doc.index.lineCount() {
+		return lsp.TextEdit{Range: lsp.Range{
+			Start: lsp.Position{Line: line},
+			End:   lsp.Position{Line: line, Character: utf16Len(doc.index.line(line))},
+		}}
+	}
+
+	return lsp.TextEdit{Range: lsp.Range{Start: lsp.Position{Line: line}, End: lsp.Position{Line: line + 1}}}
 }
 
 // declarationEdit is the insertion of the new type as the first entry of `types:`,
@@ -440,16 +451,14 @@ func extractVerified(doc *document, edits []lsp.TextEdit, name, path string, par
 	if err != nil || after == nil {
 		return false
 	}
-	messages := func(ds flowfile.Diagnostics) []string {
-		out := make([]string, 0, len(ds))
-		for _, d := range ds {
-			out = append(out, d.Message)
-		}
-		slices.Sort(out)
-
-		return out
+	// Both documents have to be clean. Equal diagnostics would only prove the
+	// rewrite preserves an existing fault (a literal default that breaks its own
+	// rule keeps breaking it), which is no reason to offer it. A module is told it
+	// cannot be run, and that one refusal is not a fault of its declarations.
+	clean := func(ds flowfile.Diagnostics) bool {
+		return !slices.ContainsFunc(ds, func(d flowfile.Diagnostic) bool { return d.Message != v1.ErrModule.Error() })
 	}
-	if !slices.Equal(messages(beforeDiags), messages(afterDiags)) {
+	if !clean(beforeDiags) || !clean(afterDiags) {
 		return false
 	}
 
