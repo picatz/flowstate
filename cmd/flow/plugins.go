@@ -759,6 +759,13 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 
 		fmt.Fprintf(out, "  %s\n", theme.Muted.Render(p.GetPath()))
 
+		// The value --plugin-pin and --plugin-pins ask for, measured from the
+		// descriptor the process is exec'd from (#1326). Printed so an operator
+		// adopts it from here rather than re-deriving it with sha256sum.
+		if digest := p.GetDistributionDigest(); digest != "" {
+			fmt.Fprintf(out, "  distribution_digest: %s\n", digest)
+		}
+
 		if schemes := p.GetSecretSchemes(); len(schemes) > 0 {
 			fmt.Fprintf(out, "  secrets: %s\n", strings.Join(schemes, ", "))
 			// Launching it registers a secret provider, and a process holding one

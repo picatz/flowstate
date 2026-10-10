@@ -173,10 +173,12 @@ take part in the decision to admit it. It is opt-in per name: an unpinned
 name launches exactly as it always has, so pinning is adopted one plugin at a
 time rather than as a flag day for a whole fleet (`pkg/flowstate/v1/plugin/config.go`).
 
-Compute the digest to pin the same way the host measures one at launch —
-`sha256sum` over the installed binary, prefixed `sha256:` — which is also
-what the worker's own log line for a launched plugin already reports
-(`distribution` in the "loaded plugin" line):
+Read the digest to pin from `flow plugins --plugin-dir DIR`, which prints it
+as `distribution_digest:` under each plugin (`flow plugins -o json` carries the
+same value as `distribution_digest`). It is the value the host measures at
+launch, and the worker's own "loaded plugin" log line reports it as
+`distribution`. To check it independently, `sha256sum` over the installed
+binary, prefixed `sha256:`, gives the same value:
 
 ```console
 $ echo "sha256:$(sha256sum /usr/local/lib/flowstate/plugins/flowstate-plugin-github | cut -d' ' -f1)"

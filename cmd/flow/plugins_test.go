@@ -456,6 +456,29 @@ func TestPluginCatalogRendersTheClaimsWithSecurityWeight(t *testing.T) {
 		"quiet_task declares no secret_inputs and the rendering invented one")
 }
 
+// TestPluginCatalogRendersTheDistributionDigest keeps the value an operator
+// pins visible in the human output (#1326), and prints nothing for a plugin
+// whose descriptor carries none.
+func TestPluginCatalogRendersTheDistributionDigest(t *testing.T) {
+	t.Parallel()
+
+	digest := "sha256:" + strings.Repeat("ab", 32)
+	catalog := &v1.PluginCatalog{
+		Plugins: []*v1.PluginDescription{
+			{Name: "git", Path: "/p/flowstate-plugin-git", DistributionDigest: digest},
+			{Name: "bare", Path: "/p/flowstate-plugin-bare"},
+		},
+	}
+
+	var out bytes.Buffer
+	require.NoError(t, writePluginCatalog(ui.Plain(&out, &bytes.Buffer{}), catalog))
+
+	rendered := out.String()
+	assert.Contains(t, rendered, "distribution_digest: "+digest)
+	assert.Equal(t, 1, strings.Count(rendered, "distribution_digest:"),
+		"a plugin with no digest must not print an empty line")
+}
+
 // TestPluginCatalogRendersCredentialDeclarations keeps a declared credential and
 // the input that takes it visible to an operator, and a plugin without any quiet.
 func TestPluginCatalogRendersCredentialDeclarations(t *testing.T) {
