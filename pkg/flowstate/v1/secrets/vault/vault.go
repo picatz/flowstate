@@ -510,7 +510,8 @@ const maxCABundleBytes = 1 << 20
 // The file is read when the provider is constructed, so an unreadable or
 // certificate-free bundle fails at startup rather than at the first TLS handshake.
 // It must be a regular file of at most 1 MiB: a FIFO or device is refused rather
-// than blocking construction, and an oversize file rather than read into memory.
+// than blocking construction, and an oversize file is refused rather than read
+// into memory.
 func WithRootCAsFile(path string) Option {
 	return func(p *Provider) error {
 		if path == "" {
