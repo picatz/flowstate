@@ -149,7 +149,8 @@ func NewProtectedResource(cfg ProtectedResourceConfig, policy *Policy, opts ...P
 				"policy with %q among its accepted audiences; add (or extend) a kind: oidc entry for it "+
 				"in --auth-policy, or remove it from --authorization-server — advertising an authorization "+
 				"server whose tokens this deployment's own verifier would refuse for this resource makes a "+
-				"client trust a document promising an audience no token will ever satisfy", as, cfg.Resource)
+				"client trust a document promising an audience no token will ever satisfy",
+				urlWithoutCredentials(as, true), cfg.Resource)
 		}
 	}
 
@@ -568,9 +569,16 @@ func validateResourceURI(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("resource is required")
 	}
 
+	// Every refusal below quotes shown, never raw: a credential in the
+	// identifier must not reach an operator-facing diagnostic. The search is
+	// the whole-remainder one because each refusal that can quote a URL
+	// rejects it, and a fragment is checked before ValidateHTTPSURL has seen
+	// the userinfo at all.
+	shown := urlWithoutCredentials(raw, true)
+
 	if strings.Contains(raw, "#") {
 		return nil, fmt.Errorf("resource %q must not include a fragment (RFC 8707 section 2 names the "+
-			"resource identifier as fragment-free)", raw)
+			"resource identifier as fragment-free)", shown)
 	}
 
 	parsed, err := ValidateHTTPSURL(raw, "resource")
@@ -594,12 +602,12 @@ func validateResourceURI(raw string) (*url.URL, error) {
 			"resource identifier should not carry one, and this deployment cannot serve one "+
 			"faithfully — the surface mounts itself at the identifier's path, and routing does "+
 			"not distinguish one query from another, so the identifier would answer at URIs it "+
-			"does not name. Use a path segment instead", raw)
+			"does not name. Use a path segment instead", shown)
 	}
 
 	if strings.HasSuffix(parsed.Path, "/") {
 		return nil, fmt.Errorf("resource %q must not end in a trailing slash: it would leave the audience "+
-			"a token names ambiguous against the same resource written without one", raw)
+			"a token names ambiguous against the same resource written without one", shown)
 	}
 
 	// The resource's path becomes part of an [http.ServeMux] registration
@@ -612,7 +620,7 @@ func validateResourceURI(raw string) (*url.URL, error) {
 	if strings.ContainsAny(parsed.Path, "{}") {
 		return nil, fmt.Errorf(`resource %q must not contain "{" or "}" in its path: that syntax is `+
 			"reserved by Go's http.ServeMux for wildcard route segments, and this resource's path becomes "+
-			"part of the pattern the metadata route is registered under", raw)
+			"part of the pattern the metadata route is registered under", shown)
 	}
 
 	// ServeMux redirects a request for a non-canonical path (repeated
@@ -625,7 +633,7 @@ func validateResourceURI(raw string) (*url.URL, error) {
 		if cleaned := path.Clean(parsed.Path); cleaned != parsed.Path {
 			return nil, fmt.Errorf("resource %q has a non-canonical path %q: write it as %q, or "+
 				"http.ServeMux's own redirect-to-clean-path behavior means a request for it would never "+
-				"reach the registered metadata route", raw, parsed.Path, cleaned)
+				"reach the registered metadata route", shown, parsed.Path, cleaned)
 		}
 	}
 

@@ -972,7 +972,7 @@ func (p Policy) Validate() error {
 		if issuer.kind() == IssuerKindOIDC {
 			source := keySource{url: issuer.JWKSURL, file: issuer.JWKSFile}
 			if previous, seen := keySources[issuer.Issuer]; seen && previous != source {
-				return fmt.Errorf("%w: issuers[%d]: entries for issuer %q disagree on signing-key source", ErrInvalidPolicy, i, issuer.Issuer)
+				return fmt.Errorf("%w: issuers[%d]: entries for issuer %q disagree on signing-key source", ErrInvalidPolicy, i, urlWithoutCredentials(issuer.Issuer, true))
 			}
 			keySources[issuer.Issuer] = source
 		}
