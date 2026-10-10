@@ -423,14 +423,9 @@ func pluginEnvOf(envFile string, envFlags []string) (map[string][]string, error)
 func pluginPinsOf(pinsFile string, pinFlags []string) (map[string]string, error) {
 	var base map[string]string
 	if pinsFile != "" {
-		data, err := readBoundedFile(pinsFile, "a plugin pins file", maxPluginPinsBytes)
+		cfg, err := readPluginPinsFile(pinsFile)
 		if err != nil {
-			return nil, fmt.Errorf("reading plugin pins %s: %w", pinsFile, err)
-		}
-
-		cfg, err := plugin.ParsePinsConfig(data)
-		if err != nil {
-			return nil, fmt.Errorf("parsing plugin pins %s: %w", pinsFile, err)
+			return nil, err
 		}
 
 		base = cfg.Pins
@@ -697,7 +692,21 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	pinReport, err := pluginPinReportOf(cmd, format)
+	if err != nil {
+		return err
+	}
+	if pinReport.active() {
+		// Measuring is the point, so nothing is pinned for this launch: a
+		// pinned host refuses the very binary whose drift is being asked about.
+		flags.pinnedDigests = nil
+	}
+
 	if !flags.configured() {
+		if pinReport.active() {
+			return pinReport.write(surface, &v1.PluginCatalog{})
+		}
+
 		// An empty answer with two meanings — nothing installed, or nowhere to
 		// look — and only one of them is a mistake. So the machine shape carries
 		// the search path and this says which it is.
@@ -723,6 +732,10 @@ func runPlugins(cmd *cobra.Command, args []string) error {
 	}
 
 	catalog := host.Catalog()
+
+	if pinReport.active() {
+		return pinReport.write(surface, catalog)
+	}
 
 	if format.Machine() {
 		return writeJSON(surface, format, catalog)

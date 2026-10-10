@@ -1532,6 +1532,16 @@ flow plugins --plugin-dir /usr/local/lib/flowstate/plugins
 # The same thing as a document:
 flow plugins --plugin-dir /usr/local/lib/flowstate/plugins --output json
 
+# Write a pins file for what that directory holds (trust on first use: review
+# it before adopting it):
+flow plugins --plugin-dir /usr/local/lib/flowstate/plugins \
+  --emit-pins > plugin-pins.yaml
+
+# Before a restart, show how the directory differs from the pins file (exits 1
+# on drift):
+flow plugins --plugin-dir /usr/local/lib/flowstate/plugins \
+  --diff-pins plugin-pins.yaml
+
 # Which plugin provides a given task:
 flow plugins -o json \
   | jq -r '.plugins[] | select(.tasks[].name == "example.greet") | .name'
@@ -1540,6 +1550,8 @@ flow plugins -o json \
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
+| `--diff-pins <string>` | `string` | — | — | compare the digests this directory measures with a pins file and report each plugin added (unpinned), changed or missing, exiting 1 on any drift, instead of listing plugins. The plugins launch unpinned so a swapped binary is reported rather than refused |
+| `--emit-pins` | `bool` | `false` | — | write a pins file (`pins: {name: sha256:hex}`, usable as --plugin-pins) for the plugins this directory holds, instead of listing them. The digests are what this launch measured, so emitting from a directory nobody has vetted pins whatever is in it (trust on first use): review the file before adopting it |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-dir <string,...>` | `stringArray` | — | `FLOWSTATE_PLUGIN_DIR` | directory to discover plugins in, repeatable, in precedence order (default $FLOWSTATE_PLUGIN_DIR) |
