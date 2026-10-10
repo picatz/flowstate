@@ -59,6 +59,8 @@ func valueToCEL(ctx context.Context, v *Value, scope *Scope) (ref.Val, error) {
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, kind.Literal)
 	case *Value_Expr:
+		// charge:exempt task body: it runs inside the task's own activity, reached from
+		// the workflow side only as a registry function value that is never called there (#1970).
 		return DefaultEvaluator().EvalParsedBase(ctx, scope.GetProfile(), kind.Expr, scope.Activation(ctx))
 	default:
 		return nil, fmt.Errorf("unsupported value kind %T", kind)

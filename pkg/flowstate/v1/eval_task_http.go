@@ -713,6 +713,8 @@ func httpExpectSatisfied(
 	// positions are written against and what `flow fix` rewrites bare names *to*, so
 	// an iterator spelled `as: response` is shadowed here — the same precedence as
 	// before this change, which only ever adds names that could not resolve at all.
+	// charge:exempt task body: it runs inside the task's own activity, reached from
+	// the workflow side only as a registry function value that is never called there (#1970).
 	out, err := DefaultEvaluator().EvalParsed(ctx, env, parsed,
 		interpreter.NewHierarchicalActivation(scope.Activation(ctx), activation))
 	if err != nil {

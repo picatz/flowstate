@@ -615,6 +615,9 @@ func (e *StepsOutputActivation) resolveValue(v *Value) (ref.Val, error) {
 			// which is what makes it a bound on the total.
 			remaining: e.remaining,
 		}
+		// charge:exempt a stored expression resolved lazily under an outer evaluation;
+		// bounded per resolution by maxActivationEvaluations and maxActivationDepth, and
+		// its own cost is not added to the workflow-slice budget (#1970, #2627).
 		return e.evaluator().EvalParsedBase(e.context(), e.Profile, v.GetExpr(), cel.Activation(child))
 	case *Value_Literal:
 		return cel.ValueToRefValue(TypeAdapter, v.GetLiteral())
