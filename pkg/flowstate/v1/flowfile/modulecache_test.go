@@ -275,6 +275,16 @@ func TestModuleCacheIsSafeForConcurrentUse(t *testing.T) {
 }
 
 // A cycle through a module the cache already holds is still a cycle.
+func TestModuleCacheInterfaceOfAModuleNamedImporter(t *testing.T) {
+	t.Parallel()
+
+	// A module is its file's name and nothing else: one called importer.yaml has an
+	// interface like any other.
+	dir := tree(t, map[string]string{"importer.yaml": coreModule})
+	cache := flowfile.NewModuleCache(0, 0)
+	assert.NotEmpty(t, cache.Interface(filepath.Join(dir, "importer.yaml")))
+}
+
 func TestModuleCacheStillFindsACycle(t *testing.T) {
 	t.Parallel()
 

@@ -268,7 +268,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if doc, ok := s.docs.get(params.TextDocument.URI); ok {
 			s.publish(ctx, conn, doc)
 			for _, dependent := range s.dependentsToRecheck(doc) {
-				s.publish(ctx, conn, dependent)
+				s.afterQueued(ctx, dependent.uri, func(current *document) { s.publish(ctx, conn, current) })
 			}
 		}
 		return nil, nil

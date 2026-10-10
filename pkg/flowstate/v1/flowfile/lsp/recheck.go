@@ -1,8 +1,11 @@
 package lsp
 
 import (
+	"context"
 	"slices"
 	"sync"
+
+	"github.com/sourcegraph/go-lsp"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -56,6 +59,15 @@ func (m *interfaceMemo) swap(path, digest string) (previous string, known bool) 
 	return previous, known
 }
 
+// has reports whether an interface was remembered for the module at path.
+func (m *interfaceMemo) has(path string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, known := m.digests[path]
+
+	return known
+}
+
 // rememberInterface records the interface of an opened module, so that its first
 // save has something to differ from.
 func (s *FlowfileServer) rememberInterface(doc *document) {
@@ -67,12 +79,40 @@ func (s *FlowfileServer) rememberInterface(doc *document) {
 	s.interfaces.swap(canon, moduleCache.Interface(canon))
 }
 
+// afterQueued runs publish on the document open under uri once every document
+// notification already announced for uri has finished, and on the document the
+// store holds then. A republish for a save is computed on its own goroutine, and
+// without this a didChange of the same file in flight could publish its newer
+// diagnostics first and have them replaced by this older snapshot: publishDiagnostics
+// carries no version to say which is stale. Nothing is published for a document
+// that has been closed.
+func (s *FlowfileServer) afterQueued(ctx context.Context, uri lsp.DocumentURI, publish func(*document)) {
+	wait, done := s.docs.enqueue(uri)
+	defer done()
+	if wait != nil {
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return
+		}
+	}
+	if doc, ok := s.docs.get(uri); ok {
+		publish(doc)
+	}
+}
+
 // dependentsToRecheck is the open files that a save of saved changes the meaning
 // of, at most [v1.MaxModules] of them: a module's own save republishes only that
 // module, and this is who else.
 func (s *FlowfileServer) dependentsToRecheck(saved *document) []*document {
 	path, ok := saved.filesystemPath()
-	if !ok || !isModule(saved) {
+	if !ok {
+		return nil
+	}
+	// A file that was a module and no longer is (it does not parse, declares
+	// nothing, or gained steps) is the save that most needs to reach its users: its
+	// interface cannot be computed, which counts as changed.
+	if !isModule(saved) && !s.interfaces.has(canonicalPath(path)) {
 		return nil
 	}
 	walk := &interfaceWalk{memo: &s.interfaces, saved: canonicalPath(path), loads: v1.MaxModules, verdicts: map[string]bool{}}

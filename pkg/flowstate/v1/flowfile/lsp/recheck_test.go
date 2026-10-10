@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
@@ -117,6 +118,49 @@ func TestSavingAPinnedModuleRechecksItsPinnedImporter(t *testing.T) {
 
 	republished := s.docs.open(pinnedDoc.uri, 2, pinned, nil)
 	assert.Contains(t, strings.Join(messages(diagnose(republished)), "\n"), "pins module ids")
+}
+
+// A module that stops being one is the save its users most need to hear about.
+func TestSavingAFileThatStoppedBeingAModuleRechecksItsUsers(t *testing.T) {
+	t.Parallel()
+
+	for name, text := range map[string]string{
+		"invalid yaml":    "types: [\n",
+		"no declarations": "edition: " + flowfile.CurrentEdition + "\nname: ids\n",
+		"steps added":     usedModuleSource + "steps:\n  - id: noop\n    log:\n      message: hi\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			s, dir, _ := recheckServer(t)
+			assert.Equal(t, []string{"bill.yaml", "other.yaml"}, uris(s.dependentsToRecheck(save(t, s, dir, text))))
+		})
+	}
+}
+
+// A republish waits behind the notifications already announced for the file and
+// then publishes what the store holds, never the snapshot it was decided from.
+func TestARepublishPublishesTheCurrentDocumentAfterThePendingChange(t *testing.T) {
+	t.Parallel()
+
+	synctest.Test(t, func(t *testing.T) {
+		s := &FlowfileServer{Logger: discardLogger()}
+		uri := fileURI("/w/bill.yaml")
+		s.docs.open(uri, 1, "name: old\n", nil)
+
+		_, done := s.docs.enqueue(uri) // a didChange announced, not yet applied
+		var published []string
+		go s.afterQueued(t.Context(), uri, func(d *document) { published = append(published, d.text) })
+		synctest.Wait()
+		assert.Empty(t, published, "the republish must wait behind the pending change")
+
+		s.docs.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: "name: new\n"}}, nil)
+		done()
+		synctest.Wait()
+		assert.Equal(t, []string{"name: new\n"}, published)
+
+		s.docs.close(uri)
+		s.afterQueued(t.Context(), uri, func(*document) { t.Fatal("published a closed document") })
+	})
 }
 
 const workflowWithoutUse = `edition: ` + flowfile.CurrentEdition + `

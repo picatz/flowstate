@@ -177,7 +177,9 @@ func (m *ModuleCache) Interface(path string) string {
 		return ""
 	}
 	c := &compiler{
-		filePath:   filepath.Join(filepath.Dir(path), "importer.yaml"),
+		// A name that is the target's plus a suffix is never the target itself,
+		// which would be a cycle.
+		filePath:   path + ".importer",
 		callBudget: new(int),
 		session:    m.moduleSession(),
 	}
