@@ -34,7 +34,7 @@ const (
 // with a fence: indentation and sequence dashes, an optional key (plain or
 // quoted), then `${`. Group 1 is everything before the key or the scalar, which
 // is the column the line's node starts at.
-var fenceValue = regexp.MustCompile(`^(\s*(?:-\s+)*)(?:(?:"[^"]*"|'[^']*'|[^\s#'"{}\[\],:][^\s:#]*):\s+)?\$\{`)
+var fenceValue = regexp.MustCompile(`^(\s*(?:-\s+)*)(?:(?:"[^"]*"|'[^']*'|[^\s#'"{}\[\],:$][^:#${}]*?):\s+)?\$\{`)
 
 // maxQuoteHintRunes bounds the corrected line a diagnostic quotes back.
 const maxQuoteHintRunes = 160
@@ -90,8 +90,9 @@ func offerQuotedFence(data []byte, d *Diagnostic) {
 	fence := m[1] - len("${")
 	rest := line[fence:]
 	scalar := plainScalarText(rest)
-	if !strings.HasSuffix(scalar, "}") || !strings.Contains(scalar, ": ") {
-		// Either the line carries text after the fence closes, in which case
+	if scalar == "" || !strings.Contains(scalar, ": ") {
+		// Either the line carries text after the fence closes (or a fence that
+		// never closes here), in which case
 		// the mapping goccy describes is outside the expression and quoting
 		// would not be the fix, or the fence holds no `: ` and something else
 		// on the line is the key.
@@ -151,22 +152,59 @@ func sourceLine(data []byte, n int) (string, bool) {
 	return strings.TrimSuffix(lines[n-1], "\r"), true
 }
 
-// plainScalarText is the part of a line's remainder that a plain scalar
-// opening with a fence covers: through the last closing brace when only a
-// comment or nothing follows it, and otherwise the whole remainder with the
-// trailing space removed.
-//
-// A comment starts at a `#` YAML would read as one, which is a `#` after
-// whitespace; `}#tail` is part of the scalar and stays inside the quotes.
-func plainScalarText(rest string) string {
-	if brace := strings.LastIndexByte(rest, '}'); brace >= 0 {
-		after := rest[brace+1:]
-		trimmed := strings.TrimLeft(after, " \t")
-		if trimmed == "" || (len(trimmed) < len(after) && strings.HasPrefix(trimmed, "#")) {
-			return rest[:brace+1]
+// fenceEnd returns the byte index of the brace that closes the fence opening
+// rest, or -1 when there is none. Braces inside a string literal (single or
+// double quoted, with backslash escapes) do not count and nested braces do, so
+// a map literal or a `}` in a string is not mistaken for the end.
+func fenceEnd(rest string) int {
+	depth := 0
+	var quote byte
+	for i := 0; i < len(rest); i++ {
+		c := rest[i]
+		if quote != 0 {
+			switch c {
+			case '\\':
+				i++
+			case quote:
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return i
+			}
 		}
 	}
-	return strings.TrimRight(rest, " \t")
+	return -1
+}
+
+// plainScalarText is the part of a line's remainder that a plain scalar
+// opening with a fence covers: through the fence's own closing brace, when only
+// nothing or a YAML comment follows it. Anything else, a `#` with no space
+// before it, more text, or a fence that never closes on this line, is not a
+// shape quoting provably repairs, and the answer is empty.
+//
+// A comment starts at a `#` YAML would read as one, which is a `#` after
+// whitespace; `}#tail` is part of the scalar, so quoting only the fence would
+// change it.
+func plainScalarText(rest string) string {
+	end := fenceEnd(rest)
+	if end < 0 {
+		return ""
+	}
+	after := rest[end+1:]
+	trimmed := strings.TrimLeft(after, " \t")
+	if trimmed == "" || (len(trimmed) < len(after) && strings.HasPrefix(trimmed, "#")) {
+		return rest[:end+1]
+	}
+	return ""
 }
 
 // maxQuoteRepairs bounds how many plain scalars [repairQuotedFences] quotes in
@@ -237,6 +275,13 @@ func repairQuotedFences(data []byte) ([]byte, []FixChange, bool) {
 			return nil, nil, false
 		}
 		scalar := string(text[start:end])
+		// The read-back below compares against the text the author wrote, so
+		// that text is established here from the source line rather than from
+		// what the edit produced: one whole fence, quoted exactly.
+		if !strings.HasPrefix(scalar, "${") || fenceEnd(scalar) != len(scalar)-1 ||
+			change.GetNewText() != "'"+strings.ReplaceAll(scalar, "'", "''")+"'" {
+			return nil, nil, false
+		}
 		replaced := string(text[:start]) + change.GetNewText() + string(text[end:])
 		f.record(line, line, []string{replaced},
 			"quoted the expression, which YAML read as a mapping key",

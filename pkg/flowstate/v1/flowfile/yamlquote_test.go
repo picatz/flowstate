@@ -197,3 +197,76 @@ func TestFixBoundsTheRepairs(t *testing.T) {
 	_, err := fixOf(t, b.String())
 	require.Error(t, err)
 }
+
+// TestFixKeepsACommentOutsideTheQuotedExpression: the fence's own closing
+// brace ends the scalar, so a trailing comment (even one holding a `}`) stays a
+// comment, and a `#` or `}` inside a string literal stays in the expression.
+func TestFixKeepsACommentOutsideTheQuotedExpression(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct{ line, want string }{
+		"comment":            {`${true ? "a: b" : "c"} # keep`, `'${true ? "a: b" : "c"}' # keep`},
+		"comment with brace": {`${true ? "a: b" : "c"} # keep }`, `'${true ? "a: b" : "c"}' # keep }`},
+		"hash in string":     {`${true ? "a: #b" : "c"}`, `'${true ? "a: #b" : "c"}'`},
+		"brace in string":    {`${true ? "a: }" : "c"}`, `'${true ? "a: }" : "c"}'`},
+		"map literal":        {`${{"a": 1}.a}`, `'${{"a": 1}.a}'`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			head := "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    log:\n      message: "
+			result, err := fixOf(t, head+tc.line+"\n")
+			require.NoError(t, err)
+			assert.Equal(t, head+tc.want+"\n", string(result.Source))
+			_, _, err = flowfile.Parse(result.Source)
+			require.NoError(t, err)
+		})
+	}
+}
+
+// TestFixDoesNotGuessAtAnUnclosedFenceOrATrailingHash: no fence closing on the
+// line, or a `#` with no space before it, leaves the file alone.
+func TestFixDoesNotGuessAtAnUnclosedFenceOrATrailingHash(t *testing.T) {
+	t.Parallel()
+
+	head := "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    log:\n      message: "
+	for name, line := range map[string]string{
+		"unclosed":   `${true ? "a: b" : "c"`,
+		"tight hash": `${true ? "a: b" : "c"}#tail`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := fixOf(t, head+line+"\n")
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestAPlainKeyWithSpacesStillGetsTheHint: a legal plain key holding a space
+// is recognised, so the hint the old column path gave is not lost.
+func TestAPlainKeyWithSpacesStillGetsTheHint(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    http:\n      url: https://example.com\n      query:\n        full name: ${true ? \"a\" : \"b\"}\n"
+	_, _, err := flowfile.Parse([]byte(src))
+	require.Error(t, err)
+	var ds flowfile.Diagnostics
+	require.True(t, asDiagnostics(err, &ds))
+	require.Len(t, ds, 1)
+	assert.Contains(t, ds[0].Message, `quote the whole value, '${...}'`)
+	require.Len(t, ds[0].Edits, 1)
+
+	result, err := fixOf(t, src)
+	require.NoError(t, err)
+	assert.Contains(t, string(result.Source), `full name: '${true ? "a" : "b"}'`)
+}
+
+// TestFixDoesNotRepairOversizedInput: input past the size a Flowfile is read up
+// to is refused for that reason, without the repair's parses.
+func TestFixDoesNotRepairOversizedInput(t *testing.T) {
+	t.Parallel()
+
+	src := "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    log:\n      message: ${true ? \"a: b\" : \"c\"}\n# " +
+		strings.Repeat("x", 1<<20) + "\n"
+	result, err := fixOf(t, src)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "larger than")
+	assert.Empty(t, result.Source)
+}

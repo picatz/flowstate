@@ -235,11 +235,12 @@ func Fix(data []byte) (FixResult, error) {
 	source := data
 	for round := 1; ; round++ {
 		result, err := fixOnce(source, modernize)
-		if err != nil && round == 1 {
+		if err != nil && round == 1 && len(data) <= maxBytes {
 			// A document YAML refuses because a plain scalar holds a `: ` is
 			// repaired before any rule runs, since the rules read a parsed tree.
 			// The repair is all or nothing like every other: see
-			// [repairQuotedFences].
+			// [repairQuotedFences]. Only within the size a Flowfile is read up
+			// to: each repair is a parse, and oversized input is refused.
 			if repaired, changes, ok := repairQuotedFences(data); ok {
 				source, repairs = repaired, changes
 				out.Changes = slices.Clone(changes)
