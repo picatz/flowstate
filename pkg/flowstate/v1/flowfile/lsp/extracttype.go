@@ -52,7 +52,16 @@ const (
 
 	// maxExtractActions bounds how many groups one request is answered with.
 	maxExtractActions = 4
+
+	// maxExtractVerifications bounds the candidate documents one request parses,
+	// whether or not they verify, so a range over many groups costs a fixed number
+	// of compiles rather than one per declaration.
+	maxExtractVerifications = 8
 )
+
+// extractParse is how a document is compiled and validated; a parameter so a test
+// can count the parses a request pays for.
+type extractParse func(data []byte, path string) (*v1.Workflow, *flowfile.Positions, flowfile.Diagnostics, error)
 
 // extractableBases are the built-in scalar bases a constrained scalar type may have.
 var extractableBases = map[string]bool{
@@ -87,6 +96,10 @@ type extractKey struct{ base, rule string }
 // extractTypeActions offers `Extract type 'X'` for each group of identical inline
 // scalar types and rules the request touches.
 func extractTypeActions(doc *document, params codeActionParams) []codeAction {
+	return extractTypeActionsWith(doc, params, flowfile.ParseAndValidateSourceAt)
+}
+
+func extractTypeActionsWith(doc *document, params codeActionParams, parse extractParse) []codeAction {
 	if doc.parsed == nil || strings.Contains(doc.text, "<<:") {
 		return nil
 	}
@@ -101,8 +114,18 @@ func extractTypeActions(doc *document, params codeActionParams) []codeAction {
 		groups[k] = append(groups[k], s)
 	}
 
+	// Compiled once, and only when some group is in range: a document that does not
+	// compile offers nothing, at the cost of this one parse.
+	path, _ := doc.filesystemPath()
+	var (
+		before      *v1.Workflow
+		beforeDiags flowfile.Diagnostics
+		compiled    bool
+	)
+
 	taken := declaredNames(doc)
 	var actions []codeAction
+	attempts := 0
 	done := map[extractKey]bool{}
 	for _, s := range sites { // document order, so the menu is stable
 		k := extractKey{s.base, s.rule}
@@ -119,7 +142,21 @@ func extractTypeActions(doc *document, params codeActionParams) []codeAction {
 			continue
 		}
 		edits, ok := extractEdits(doc, group, name)
-		if !ok || !extractVerified(doc, edits, name) {
+		if !ok {
+			continue
+		}
+		if !compiled {
+			compiled = true
+			var err error
+			before, _, beforeDiags, err = parse([]byte(doc.text), path)
+			if err != nil || before == nil {
+				return nil
+			}
+		}
+		if attempts++; attempts > maxExtractVerifications {
+			break
+		}
+		if !extractVerified(doc, edits, name, path, parse, before, beforeDiags) {
 			continue
 		}
 		actions = append(actions, codeAction{
@@ -385,7 +422,7 @@ func declarationEdit(doc *document, first *extractSite, name, eol string) (lsp.T
 // documents' specifications. The original has to compile, and the edited document
 // has to report the same diagnostics and the same specification apart from the
 // spelling that remembers the type's name and the new declaration itself.
-func extractVerified(doc *document, edits []lsp.TextEdit, name string) bool {
+func extractVerified(doc *document, edits []lsp.TextEdit, name, path string, parse extractParse, before *v1.Workflow, beforeDiags flowfile.Diagnostics) bool {
 	text := doc.text
 	for _, e := range slices.Backward(edits) {
 		start := doc.index.offsetOfPosition(e.Range.Start)
@@ -399,12 +436,7 @@ func extractVerified(doc *document, edits []lsp.TextEdit, name string) bool {
 		return false
 	}
 
-	path, _ := doc.filesystemPath()
-	before, _, beforeDiags, err := flowfile.ParseAndValidateSourceAt([]byte(doc.text), path)
-	if err != nil || before == nil {
-		return false
-	}
-	after, _, afterDiags, err := flowfile.ParseAndValidateSourceAt([]byte(text), path)
+	after, _, afterDiags, err := parse([]byte(text), path)
 	if err != nil || after == nil {
 		return false
 	}

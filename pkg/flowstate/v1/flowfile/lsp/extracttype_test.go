@@ -1,6 +1,8 @@
 package lsp
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -207,4 +210,46 @@ func TestExtractTypeHonorsTheKindFilter(t *testing.T) {
 	for _, a := range c.codeAction(uri, wholeOf(extractBlockSource), []lsp.CodeActionKind{codeActionKindSourceFixAll}, nil) {
 		assert.NotContains(t, a.Title, "Extract type")
 	}
+}
+
+// manySites declares n inputs, each with a rule of its own.
+func manySites(n int, tail string) string {
+	var b strings.Builder
+	b.WriteString(extractHeader + "inputs:\n")
+	for i := range n {
+		fmt.Fprintf(&b, "  in%c%c:\n    type: string\n    must: size(this) > %d\n", 'a'+i/26, 'a'+i%26, i)
+	}
+	b.WriteString(tail)
+	return b.String()
+}
+
+func TestExtractTypeParsesTheOriginalOnceAndRefusesAnInvalidOne(t *testing.T) {
+	t.Parallel()
+
+	src := manySites(200, extractSteps)
+	doc := newDocument("file:///extract.yaml", 0, src, nil)
+	parses := 0
+	actions := extractTypeActionsWith(doc, codeActionParams{Range: wholeOf(src)}, func(data []byte, path string) (*v1.Workflow, *flowfile.Positions, flowfile.Diagnostics, error) {
+		parses++
+		return nil, nil, nil, errors.New("does not compile")
+	})
+	assert.Empty(t, actions)
+	assert.Equal(t, 1, parses, "an original that does not compile stops before any candidate is parsed")
+}
+
+func TestExtractTypeBoundsVerificationAttempts(t *testing.T) {
+	t.Parallel()
+
+	src := manySites(200, extractSteps)
+	doc := newDocument("file:///extract.yaml", 0, src, nil)
+	parses := 0
+	actions := extractTypeActionsWith(doc, codeActionParams{Range: wholeOf(src)}, func(data []byte, path string) (*v1.Workflow, *flowfile.Positions, flowfile.Diagnostics, error) {
+		parses++
+		if parses > 1 {
+			return nil, nil, nil, errors.New("candidate rejected")
+		}
+		return flowfile.ParseAndValidateSourceAt(data, path)
+	})
+	assert.Empty(t, actions)
+	assert.Equal(t, 1+maxExtractVerifications, parses, "failed attempts count against the bound")
 }
