@@ -19,6 +19,12 @@ import (
 // of it. See parser.go's parseMapValue in the pinned goccy version.
 const yamlMappingValue = "mapping value is not allowed in this context"
 
+// yamlFlowMappingEnd is the sentence goccy's parser gives when a flow mapping
+// meets something other than a comma or its closing brace. A fence written
+// inside one reaches it: the parser takes `$` as the entry's value and stops at
+// the `{` after it, where it expected a comma or the closing brace (#1466).
+const yamlFlowMappingEnd = "',' or '}' must be specified"
+
 // yamlUnterminatedDouble and yamlUnterminatedSingle are the sentences goccy's
 // scanner gives when the `: ` inside a string literal of an unquoted
 // expression is followed by a quote: `message: ${x + "a: "}` reads `${x + "a`
@@ -122,6 +128,38 @@ func offerQuotedFence(data []byte, d *Diagnostic) {
 	if edit := replaceSpan("quote the expression", Span{Start: start, End: advance(start, scalar)}, quoted); edit != nil {
 		d.Edits = append(d.Edits, edit)
 	}
+}
+
+// explainFenceInFlowMapping rewrites the YAML parser's refusal into this
+// language's own sentence when the token it stopped on is the `{` of a `${`
+// inside a flow-style mapping (#1466).
+//
+// `log: {message: ${steps.a.value}}` is a shape a person and a model both write.
+// YAML reads the `$` as the whole value of the entry and then meets the fence's
+// `{` where it expected a comma or the mapping's closing brace; it complains
+// about a comma, in its own voice, at a column that names nothing the author
+// wrote. The remedy is not quoting but block style, where a
+// fence is an ordinary value, so that is what this names. No edit is offered: the
+// rewrite reflows the author's mapping across lines, which is the reformatting
+// `flow fix` refuses to do to flow style.
+func explainFenceInFlowMapping(data []byte, d *Diagnostic) {
+	if d.Message != yamlFlowMappingEnd || d.Line <= 0 || d.Column < len("${") {
+		return
+	}
+	line, ok := sourceLine(data, d.Line)
+	if !ok {
+		return
+	}
+	// The token is the fence's `{`, so the `$` is the column before it.
+	runes := []rune(line)
+	if d.Column > len(runes) || !strings.HasSuffix(string(runes[:d.Column]), "${") {
+		return
+	}
+
+	d.Column--
+	d.Message = "a `${...}` expression cannot be written inside a flow-style mapping (`{...}`): YAML took " +
+		"the `$` as the entry's value and stopped at the `{` after it; write the mapping in block " +
+		"style instead, one `key: ${...}` per line, where an expression is an ordinary value"
 }
 
 // foldsContinuation reports whether a plain scalar on the given line could

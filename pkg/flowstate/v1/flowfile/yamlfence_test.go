@@ -145,3 +145,46 @@ func TestAQuotedTernaryIsOrdinary(t *testing.T) {
 		require.NoError(t, err, quoted)
 	}
 }
+
+// TestAFenceInAFlowMappingNamesBlockStyle is #1466's second trap: the fence's
+// `}` closes the flow mapping, and the parser's sentence about a comma says
+// nothing of why. The diagnostic is this language's, positioned at the fence,
+// and names block style; a flow mapping with no fence in it keeps goccy's.
+func TestAFenceInAFlowMappingNamesBlockStyle(t *testing.T) {
+	t.Parallel()
+
+	const head = "edition: v2026.4\nname: t\nsteps:\n  - id: a\n    value: 1\n  - id: b\n"
+
+	for name, tt := range map[string]struct {
+		line string
+		col  int
+	}{
+		"the only entry": {"    log: {message: ${steps.a.value}}", 20},
+		"a later entry":  {`    log: {message: "x", n: ${steps.a.value}, k: 1}`, 28},
+		"an expression":  {"    log: {message: ${steps.a.value + 1}, x: 2}", 20},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := flowfile.Parse([]byte(head + tt.line + "\n"))
+			require.Error(t, err)
+			var ds flowfile.Diagnostics
+			require.True(t, asDiagnostics(err, &ds), "%T: %v", err, err)
+			require.Len(t, ds, 1)
+
+			assert.Equal(t, 7, ds[0].Line)
+			assert.Equal(t, tt.col, ds[0].Column, "the fence, not the brace the parser stopped on")
+			assert.Contains(t, ds[0].Message, "flow-style mapping")
+			assert.Contains(t, ds[0].Message, "stopped at the `{` after it")
+			assert.Contains(t, ds[0].Message, "block style")
+			assert.NotContains(t, ds[0].Message, "must be specified", "goccy's sentence is replaced")
+		})
+	}
+
+	t.Run("a flow mapping without a fence keeps the parser's sentence", func(t *testing.T) {
+		_, _, err := flowfile.Parse([]byte(head + "    log: {message: hi there, x\n"))
+		require.Error(t, err)
+		var ds flowfile.Diagnostics
+		require.True(t, asDiagnostics(err, &ds))
+		require.Len(t, ds, 1)
+		assert.NotContains(t, ds[0].Message, "block style")
+	})
+}

@@ -62,9 +62,11 @@ descend from are in Part I.
 | Declining a webhook delivery the workflow does not want | the trigger's `when:`, `${event.body.action == "opened"}` | an `idempotency_key:` ternary with a placeholder arm, `${... ? event.body.id : "ignored"}` | the key names the event and `when:` decides whether it is wanted; folded together every declined delivery shares one key, so one starts a phantom run and the rest join it, across event types (R11) |
 | An expression in `if:`, or in a loop's `items:` | the fenced form, `${...}` | the bare form, which also parses | one spelling per position class; the fence is what tells data from code everywhere else in the file, so the fenced form is the one that reads the same way in every position |
 | A ternary, or any expression holding `: ` | the whole value quoted, `'${a ? b : c}'` | the bare fence, `${a ? b : c}` | YAML reads a plain scalar's first `: ` as a mapping key, so the bare form is a syntax error before this language sees it; the compiler names the trap and offers the quoting (#1683) |
+| A block scalar whose content is one expression | `\|-` (or a plain scalar), `value: \|-` then `${...}` on the next line | `\|` or `>`, which keep a trailing newline | the compiler forgives the newline, so the value is the expression either way, but the forgiveness is a compiler rule and not YAML's meaning: every other YAML reader gets `"2\n"`, and every shipped example writes `\|-`; `flow lint` names it (R12, #1466) |
+| An expression inside a mapping | block style, one `key: ${...}` per line | flow style, `{key: ${...}}` | YAML takes the `$` as the entry's value and stops at the fence's `{`, so the file does not parse; the parser's diagnostic names the block-style rewrite in place of YAML's sentence about a comma (#1466) |
 
-The last row is the one place where the canonical spelling is not yet the only legal
-one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:152`) documents the
+The `if:` / `items:` row (the fenced form over the bare one) is the one place where the
+canonical spelling is not yet the only legal one. `compiler.exprValue` (`pkg/flowstate/v1/flowfile/value.go:152`) documents the
 fence as optional for expression-typed fields, and it is: a step written
 `if: inputs.amount > 1`, with no fence anywhere, validates. Every `if:` in
 `examples/` that holds an expression writes the fence anyway, which is the corpus
@@ -463,6 +465,23 @@ constant arm.
 Enforcement: tier 4, as `R11/key-as-filter` in `flow lint`, which points at the key and
 names `when:` as the replacement.
 
+### R12. A block scalar holding one expression strips its newline
+
+`value: |` over `${1 + 1}` is natural YAML for an expression that wants a line of its
+own, and in YAML it is the string `"2\n"`. The compiler reads it as the expression,
+because a newline YAML appended is not text the author wrote, so nothing is wrong at
+run time. But that is this compiler forgiving a spelling, not the spelling meaning
+what it says, and `|-` (or a plain scalar) says it without the rule. Every shipped
+example that uses a block scalar writes `|-`.
+
+The finding is exact: the block is `|` or `>` with default chomping and its whole
+content is one fence. A block with text beside the fence interpolates and its newline is
+real; `|-`, `>-`, and `|+` are the author's explicit chomping and stay silent.
+
+Enforcement: tier 4, as `R12/block-scalar-fence` in `flow lint`. There is no `flow fix`
+rewrite: tier 3 migrates between editions and a spelling the compiler already reads
+correctly is not one, so the finding is the whole of the tooling.
+
 ## Part II: the tiers
 
 Four tiers over one idea: severity is decided by *whose problem it is*.
@@ -473,7 +492,7 @@ Four tiers over one idea: severity is decided by *whose problem it is*.
 | 1. Refuse | `flow validate` and the parser | position, problem, remedy; wrong everywhere rather than merely ugly; properties of the file only, never of a deployment | R4's fence rules, R6's no dead keys |
 | 2. Normalize | `flow fmt` | one form per construct, no options, idempotent, comments preserved | R7, and the byte-level half of R8 |
 | 3. Migrate | `flow fix` plus editions | byte-safe, exact-match, refuses rather than guesses, tested by bytes or by compiling the result and never by "still validates" | R3's retirements, R4's sweep, R5's guarded-read rewrite (shipped) |
-| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; R10's signature-header check; R11's key-as-filter check; the tooling half of R8 |
+| 4. Suggest | `flow lint` | warns, never blocks; every check has a mechanical shape *and* a mechanical or name-shaped replacement; a check that fires on legitimate generated output gets fixed or deleted, because a disabled lint teaches nothing | R5's ternary, repeat and dispatch checks; R10's signature-header check; R11's key-as-filter check; R12's block-scalar-fence check; the tooling half of R8 |
 
 Wrong-everywhere is tier 1. Same-meaning-two-spellings is tier 2 or tier 3.
 Legal-but-there-is-a-better-idiom is tier 4 and only tier 4, because promoting a
@@ -605,7 +624,7 @@ readings catch a newcomer and a generating agent before the language does. A blo
 scalar written `|` on a whole-value expression keeps the newline YAML appends, so
 `if: |` over `${...}` is a string and not a bool (#1445); the canonical spelling is
 `|-`, or the plain scalar. A fence inside a flow mapping, `log: {message: ${x}}`,
-ends the mapping at the fence's own `}` (#1466); write the block form. And a plain
+does not parse, because YAML stops at the fence's `{` (#1466); write the block form. And a plain
 scalar holding `: ` — every ternary, `${a ? b : c}`, and every string literal like
 `${"Status: " + x}` — is a mapping key to YAML (#1683); quote the whole value,
 `'${a ? b : c}'`, as the table above and every example that writes a ternary do. The
