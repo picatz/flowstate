@@ -240,6 +240,9 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 		}
 		p := &parsedWorkflow{}
 		p.workflow, p.positions, p.err = flowfile.ParseFile(identity)
+		if p.err == nil && v1.IsModule(p.workflow) {
+			p.module = newModuleUnderTest(p.workflow)
+		}
 		parsed[identity] = p
 		return p
 	}
@@ -279,6 +282,9 @@ func Run(ctx context.Context, file *File, dir string, opts RunOptions) RunResult
 			},
 			positions:    func() *flowfile.Positions { return positions },
 			deliveryPath: deliveryPathIn(dir, test),
+			module: func() *moduleUnderTest {
+				return parsedFor(identity).module
+			},
 		}, identity
 	})
 }
@@ -289,6 +295,9 @@ type parsedWorkflow struct {
 	workflow  *v1.Workflow
 	positions *flowfile.Positions
 	err       error
+	// module is set when the file is a module, which a case tests directly
+	// ([moduleUnderTest]) instead of running.
+	module *moduleUnderTest
 }
 
 // loader is one case's way of producing the workflow it runs against, plus
@@ -299,6 +308,9 @@ type loader struct {
 	load         func() (*v1.Workflow, error)
 	positions    func() *flowfile.Positions
 	deliveryPath string
+	// module, when set and answering non-nil, says the case's workflow is a
+	// module: the case is tested against its declarations, not run.
+	module func() *moduleUnderTest
 }
 
 // runSuite is the one loop every door shares: [Run] and
@@ -418,6 +430,33 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 
 		l, identity := loaderFor(&test)
+		if l.module != nil {
+			if module := l.module(); module != nil {
+				// A module has no run, so none of what follows applies: no
+				// schedules to explore, no steps for coverage or mutation, no
+				// inputs to fuzz. The case is judged against the declarations
+				// and reported through the same seam any other case is.
+				caseCtx, cancel := caseContextWithin(ctx, caseTimeout)
+				result := module.run(caseCtx, &test, fileVars{values: file.Vars, withheld: file.varsWithheld})
+				cancel()
+				posture := casePosture(&test, fileVars{values: file.Vars, withheld: file.varsWithheld})
+				suite = widenedBy(suite, posture)
+				result.Warnings = warningBudget.take(result.GetWarnings())
+				anchor.place(result.GetFailures())
+				anchor.place(result.GetWarnings())
+				if !posture.WithholdAll() {
+					result = verdictUnder(result, posture)
+				}
+				report.Cases = append(report.Cases, result)
+				transcripts = append(transcripts, nil)
+				if opts.FailFast && !result.GetPassed() {
+					failedFast = result.GetName()
+					haltedAt = result.GetName()
+				}
+
+				continue
+			}
+		}
 		caseCtx := ctx
 		cancel := func() {}
 		if opts.Debugger == nil {
@@ -973,6 +1012,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	workflow, err := load()
 	if err != nil {
 		caseError("%s", err)
+		return
+	}
+	if len(test.Expect.Types) > 0 {
+		// A claim about a module's types has nothing to be judged against in a
+		// run; passing it would be a green that checked nothing.
+		caseError("expect.types puts values to a module's scalar types, and %q is a workflow with steps to run; "+
+			"name the module as the case's `workflow:`, or give an input the type and run the workflow", test.Workflow)
 		return
 	}
 	// A `step:` stub may name a `call:` step to answer at the callee's

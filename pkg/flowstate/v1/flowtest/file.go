@@ -210,6 +210,12 @@ const (
 	// expansion can multiply them, then the effective case is checked again.
 	MaxChecksPerTest = 200
 
+	// MaxModuleValuesPerTest bounds how many values one module case may put to
+	// its scalar types (`expect.types:`, admitted and refused together). Each
+	// value is a rule evaluation under the evaluator's cost limit, so the count
+	// is the work a case can ask for.
+	MaxModuleValuesPerTest = 200
+
 	// MaxAllowUnreachedPerFile bounds how many `coverage.allow_unreached`
 	// entries one file may declare. A workflow has few branches a suite cannot
 	// reach, and a file recording hundreds is a record that has stopped meaning
@@ -1289,6 +1295,34 @@ type Expectation struct {
 	// claims all hold — where the named fields above merge by override.
 	// Predicates union naturally; values cannot.
 	Check []CheckClaim `yaml:"check"`
+
+	// Types holds claims about a module's constrained scalar types, keyed by the
+	// type's declared name: values the type must admit and values it must refuse.
+	// Only meaningful when the case's `workflow:` is a module (a file with no
+	// steps), where it and `check:` are the whole of what a case can say. See
+	// [TypeClaim]. Merges by override like the other maps: a row that states
+	// any value replaces its entry's whole map, and one that names only empty
+	// claims states nothing and inherits.
+	Types map[string]TypeClaim `yaml:"types"`
+}
+
+// TypeClaim is what a module case says about one of its scalar types.
+//
+// A value is judged exactly as an input declared with the type is: the case
+// builds the one-input declaration the compiler lowers a use of the type to (the
+// base type and the rule, with its function calls already inlined) and binds the
+// value through [v1.BindRunInputs], the call every submit path makes. There is no
+// second reading of `must:`, so a type that admits a value here admits it as an
+// input anywhere that imports it.
+type TypeClaim struct {
+	// Admits are values the type must accept. A value the type refuses fails the
+	// case and prints the refusal an input would have been given.
+	Admits []any `yaml:"admits"`
+
+	// Refuses are values the type must reject, for a failed rule or for being the
+	// wrong kind of value for the base type. A value the type accepts fails the
+	// case: the negative direction is the one that proves the rule is not vacuous.
+	Refuses []any `yaml:"refuses"`
 }
 
 // FailedClaim is what `expect.failed` says about the run: `true` or `false`,
@@ -1351,7 +1385,7 @@ func (c *FailedClaim) UnmarshalYAML(unmarshal func(any) error) error {
 func (e *Expectation) claimsNothing() bool {
 	return e.Outputs == nil && e.Inputs == nil && e.Refused == nil && e.IdempotencyKey == "" &&
 		e.Response == nil && e.Failed == nil && e.ErrorContains == "" && e.Compensated == nil && len(e.DeniedSignals) == 0 && e.Ran == nil &&
-		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0
+		e.Skipped == nil && e.Others == "" && len(e.Invocations) == 0 && len(e.Check) == 0 && typeValues(e.Types) == 0
 }
 
 // expectationProvenance is the writer of each field in an effective table
@@ -1372,6 +1406,7 @@ type expectationProvenance struct {
 	skipped        bool
 	others         bool
 	invocations    bool
+	types          bool
 }
 
 // OthersSkipped is the one accepted value of [Expectation.Others]: the whole
@@ -1709,6 +1744,19 @@ func parseSourceWith(data []byte, dd *dirDefaults, requireWorkflow bool) (*File,
 			p.report(r.in(source.path.field("expect").field("check")),
 				"test %q declares %d checks, more than the limit of %d",
 				test.Name, len(test.Expect.Check), MaxChecksPerTest)
+
+			continue
+		}
+		if name := emptyTypeClaim(test.Expect.Types); name != "" && typeValues(test.Expect.Types) > 0 {
+			p.report(r.in(source.path.field("expect").field("types").field(name)),
+				"test %q expect.types.%s names no value to admit or refuse; list the values, or remove the type", test.Name, name)
+
+			continue
+		}
+		if values := typeValues(test.Expect.Types); values > MaxModuleValuesPerTest {
+			p.report(r.in(source.path.field("expect").field("types")),
+				"test %q puts %d values to its types, more than the limit of %d",
+				test.Name, values, MaxModuleValuesPerTest)
 
 			continue
 		}
