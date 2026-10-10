@@ -1,6 +1,6 @@
 import { clean } from '../hooks/runs'
 import { outcomeOf, unknownOutcome, SIGNAL_NAME, WORKFLOW_ID, getArgv, moreText, parseGates, signalArgv, targetOf } from '../hooks/signal'
-import { expect, test } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
 const mount = ($: any) => $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
@@ -101,11 +101,14 @@ test('the first press asks and runs NOTHING; the question names the verb, the si
   const { ui, seen } = await open($, on, {})
   await ui.press({ key: 'signal:deploy-approved' })
 
-  const ask = await ui.find({ type: 'Text', text: /Send signal "deploy-approved" to run wf-1 on server prod\.example:9233\? Nothing is sent until you confirm\./ })
-  expect(ask).toBeDefined()
+  // Two short lines, not one paragraph: what is sent, to which run and where; then the promise.
+  expect(await ui.find({ type: 'Text', text: /Send deploy-approved to .*wf-1.* on prod\.example:9233\?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^ *Nothing is sent until you confirm\.$/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: /Confirm: send deploy-approved/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', text: /Cancel/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /server decides whether you may act/ })).toBeDefined()
+  // The buttons are apart, not run together.
+  expect(await texts(ui)).not.toMatch(/deploy-approvedCancel/)
+  expect(await ui.find({ type: 'Text', text: /server decides whether you may act/ })).toBeUndefined()
   expect(signals(seen)).toEqual([])
   await ui.unmount()
 })
@@ -114,7 +117,7 @@ test('without FLOWSTATE_ADDRESS the question names the default server the CLI wi
   const { ui, seen } = await open($, on, {}, 'wf-1', null)
   expect(seen.some(a => a.join(' ') === 'flow get -o json -- wf-1')).toBe(true)
   await ui.press({ key: 'signal:deploy-approved' })
-  expect(await ui.find({ type: 'Text', text: /on server localhost:9233 \(the default; FLOWSTATE_ADDRESS is unset\)/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /on localhost:9233 \(the default; FLOWSTATE_ADDRESS is unset\)/ })).toBeDefined()
   await ui.press({ key: 'confirm-signal:deploy-approved' })
   expect(signals(seen)).toEqual([['flow', 'signal', '--', 'wf-1', 'deploy-approved']])
   await ui.unmount()
@@ -142,6 +145,44 @@ test('Confirm runs exactly one flow signal with the expected argv, then the card
   expect(seen.filter(a => a[1] === 'timeline').length).toBeGreaterThan(before)
   // The question is gone: a second Confirm has nothing to confirm.
   expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('after delivery the gate and its wait timer close at once even if the next read is stale; the line goes at the next refresh and the gate returns only if the server still says so', async ($, on) => {
+  const clock = mock.clock(on, { now: 0 })
+  const longId = 'wf-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+  const { ui, seen } = await open($, on, {}, longId)
+  expect(await ui.find({ type: 'Text', text: /approval.*waiting/ })).toBeDefined()
+  await ui.press({ key: 'signal:deploy-approved' })
+  // The question names the run by a short id, never all 64+ characters.
+  expect(await texts(ui)).not.toContain(longId)
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+
+  // The stubbed server still answers "waiting" (a read from before the run moved): the card closes it anyway.
+  const now = await texts(ui)
+  expect(now).toMatch(/✓ delivered deploy-approved to wf-0123/)
+  expect(now).not.toContain(longId)
+  expect(await ui.find({ type: 'Text', text: /Gate deploy-approved/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Send signal deploy-approved/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /approval.*waiting/ })).toBeUndefined()
+  expect(signals(seen)).toHaveLength(1)
+
+  // The next refresh dismisses the delivered line; the server's account stands again after a few reads.
+  await clock.advance(3000)
+  expect(await ui.find({ type: 'Text', text: /delivered deploy-approved/ })).toBeUndefined()
+  await clock.advance(30_000)
+  expect(await ui.find({ type: 'Button', text: /Send signal deploy-approved/ })).toBeDefined()
+  expect(signals(seen)).toHaveLength(1)
+  await ui.unmount()
+})
+
+test('a refused signal closes nothing: the gate stays and the refusal stays', async ($, on) => {
+  const { ui } = await open($, on, { signal: fail('permission denied') })
+  await ui.press({ key: 'signal:deploy-approved' })
+  await ui.press({ key: 'confirm-signal:deploy-approved' })
+  expect(await ui.find({ type: 'Text', text: /Not sent: permission denied/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Send signal deploy-approved/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /approval.*waiting/ })).toBeDefined()
   await ui.unmount()
 })
 

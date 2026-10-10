@@ -8,9 +8,11 @@ import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReas
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
-import { MAX_ENTRIES, factsFor, parseTimeline, settleWaits, visibleSteps } from './detail'
+import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, leaseLine, parseTimeline, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { Poller, isLive } from './poll'
+import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
 import type { Parsed as TimelineParsed } from './detail'
-import { WORKFLOW_ID, confirmText, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
+import { WORKFLOW_ID, signalLines, getArgv, moreText, outcomeOf, parseGates, unknownOutcome, signalArgv, targetOf } from './signal'
 import type { Gates } from './signal'
 import { EMPTY, checkOf, isLoneTest, hasTestFile, missingLeg, nudgeFor, recordCheck, applyReport, applyEdit } from './verify'
 import { RERUN_TIMEOUT_MS, bandFor, bandText, failingLine, headOf, rerunArgv, applyRerun, rerunLine, rerunQuestion, summaryOf, unknownBand } from './testband'
@@ -58,7 +60,9 @@ const runResult = atom({ plugin: 'flowstate', key: 'runResult' } as const, NO_RU
 const outputsRaw = atom({ plugin: 'flowstate', key: 'outputsRaw' } as const, false)
 /** Bumped by the Graph section's Refresh so the pane draws again after the cached read is dropped. */
 const graphSeq = atom({ plugin: 'flowstate', key: 'graphSeq' } as const, 0)
-const NO_GATES: Gates = { gates: [], more: 0, atLeast: false }
+/** Bumped by the live refresh so the open run's card draws again (hooks/poll.ts); it holds nothing. */
+const pulse = atom({ plugin: 'flowstate', key: 'pulse' } as const, 0)
+const NO_GATES: Gates ={ gates: [], more: 0, atLeast: false }
 /** A CEL filter is a sentence, not a document; a longer one is refused rather than cut, since a cut filter is a different query. */
 const MAX_FILTER = 2000
 /** Bumped by every write of the band, so a slow rerun can tell the band moved while it ran. */
@@ -145,6 +149,21 @@ const readGates = async ($: Engine, flow: string, address: string, id: string): 
   }
 }
 
+/**
+ * A run's debug session, from `flow debug get`. Read only and asked only of a run whose
+ * timeline shows a debug lease; a failure to answer (no session left, no server) is no story.
+ */
+const readStory = async ($: Engine, flow: string, address: string, id: string): Promise<string[]> => {
+  const argv = debugArgv(flow, address, id)
+  if (argv === undefined) return []
+  try {
+    const ran = await $.process.run(argv, { timeoutMs: DEBUG_TIMEOUT_MS })
+    return ran.exitCode === 0 ? (storyOf(ran.stdout, ran.isStdoutTruncated === true)?.lines ?? []) : []
+  } catch {
+    return []
+  }
+}
+
 /** `FLOWSTATE_ADDRESS` as the session sees it: undefined when unset, null when the lookup fails (the target is then unknown, not the default). */
 const envAddress = async ($: Engine): Promise<string | undefined | null> => {
   try {
@@ -226,6 +245,28 @@ const readGraph = async ($: Engine, flow: string, file: string): Promise<GraphPa
   }
 }
 
+/** A rebuild validates this many Flowfiles at most, in parallel; the rest are left for an edit or the next open. */
+const MAX_REBUILD = 5
+
+/**
+ * Fills the Flowfiles list from the working directory (and `workflows/`) for files no report
+ * names yet. Nothing here throws, a file that cannot be checked is reported as such, and a
+ * report an edit wrote while this ran is never overwritten.
+ */
+const rebuildReports = async ($: Engine, flow: string): Promise<void> => {
+  // An edit records the absolute path; the listing is relative. Two relative paths are the same file only if equal.
+  const same = (a: string, b: string) => a === b || (a.startsWith('/') && !b.startsWith('/') && a.endsWith(`/${b}`)) || (b.startsWith('/') && !a.startsWith('/') && b.endsWith(`/${a}`))
+  const have = (await read($, reports)).map(r => r.file)
+  const named = (f: string) => have.some(h => same(h, f))
+  const missing = (await listFlowfiles($)).files.filter(f => !named(f)).slice(0, MAX_REBUILD)
+  if (missing.length === 0) return
+  const fresh = await Promise.all(missing.map(f => validate($, flow, f)))
+  await update($, reports, list => {
+    // Appended before the cut, so a full list drops its oldest report rather than the files just checked.
+    return [...list, ...fresh.filter(r => !list.some(l => same(l.file, r.file)))].slice(-MAX_REPORTS)
+  })
+}
+
 /** The first Flowfile in the session's working directory, if it has one and can be listed. */
 const findInCwd = async ($: Engine): Promise<string | undefined> => {
   try {
@@ -276,6 +317,21 @@ export const register: Register = (on, options) => {
   const outSchemas = new Map<string, Declared>()
   /** Graphs by file and modification time; a failed read is kept too, so a broken file is not re-read on every redraw. */
   const graphs = new Map<string, GraphParsed>()
+  /**
+   * Live refresh of the open run (hooks/poll.ts). A redraw that is not a read reuses `lastRead`,
+   * so the one-second tick moves elapsed time without starting a process. Render only writes
+   * these closure values, never state.
+   */
+  let reuse = false
+  /** Reads of the open run made so far (not local ticks), to age out what a delivery closed. */
+  let freshReads = 0
+  /** The last delivered signal: closed on the card for HOLD_READS reads, its line shown for SHOW_READS. */
+  const NO_DELIVERY = { id: '', signal: '', step: '', at: 0 }
+  let delivery = NO_DELIVERY
+  const HOLD_READS = 3
+  const SHOW_READS = 2
+  let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates; story: string[] } | undefined
+  const poller = new Poller()
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -304,6 +360,11 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'flowstate' }, async $ => {
+    // The Flowfiles list and the status line were only filled by this session's edits, so opening the pane in a
+    // directory of Flowfiles Claude never touched (a resumed session, a file edited by hand) read "nothing checked".
+    // Rebuild them from the working directory: only files not already reported, at most MAX_REBUILD of them.
+    if (isEnabled) await rebuildReports($, flow).catch(() => undefined)
+    await refreshStatus($, nudges, heard)
     await $.ui.open({ id: PANE, title: 'Flowstate' })
     return { text: 'Flowstate pane opened.' }
   })
@@ -556,22 +617,49 @@ export const register: Register = (on, options) => {
     const expr = await read($, filter)
     const id = await read($, selected)
     const memo = await read($, summary)
+    await read($, pulse)
+    poller.drawBegan()
+    // A local tick redraws from the last read of this run and filter; any other draw reads afresh.
+    const again = reuse && lastRead !== undefined && lastRead.id === id && lastRead.expr === expr ? lastRead : undefined
+    reuse = false
+    if (!again) freshReads++
+    // A signal the server just took: for a few reads its gate and wait timer read as closed, then the server's own account stands.
+    const mine = delivery.id === id && id !== '' && freshReads - delivery.at < HOLD_READS ? delivery : undefined
     // Independent legs, started together: a stalled one costs its own timeout, not both.
-    const [runs, account] = await Promise.all([
-      listRuns($, flow, expr),
-      id === '' ? Promise.resolve(undefined) : readTimeline($, flow, id),
-    ])
+    const [runs, account] = again
+      ? [again.runs, again.account]
+      : await Promise.all([
+          listRuns($, flow, expr),
+          id === '' ? Promise.resolve(undefined) : readTimeline($, flow, id),
+        ])
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
-    const unsettled = account && 'detail' in account ? account.detail : undefined
+    const rawDetail = account && 'detail' in account ? account.detail : undefined
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
     // Only a terminal status survives the press: a remembered running or waiting one is stale by now, so it reads as unknown.
     const live = ['running', 'waiting'].includes(statusOf(memo.status).kind)
     const known = row ?? (id === '' ? undefined : { workflowId: id, name: memo.name, status: live ? '' : memo.status, startTime: live ? null : memo.startTime || null, closeTime: memo.closeTime || null })
-    // A completed run has no open gate: the card and the graph overlay both read the one settled account.
-    const detail = settleWaits(unsettled, known?.status)
-    const facts = factsFor(known ?? { workflowId: id }, detail, Date.now())
-    const { shown, more } = visibleSteps(detail?.steps ?? [])
     const head = statusOf(known?.status)
+    // A completed run has no open gate (released, not succeeded); a failed or cancelled one shows closed: the card and the graph overlay both read the one settled account.
+    const settled = settleWaits(rawDetail, known?.status)
+    const detail = settled && mine ? closeWait(settled, mine.step) : settled
+    const now = Date.now()
+    const facts = factsFor(known ?? { workflowId: id }, detail, now)
+    const { shown, more } = visibleSteps(detail?.steps ?? [])
+    // Live refresh runs only while the open run is running or waiting; a final, unknown or closed run stops it.
+    const polling = id !== '' && isLive(head.kind)
+    poller.seen(fingerprint(known?.status, detail), polling)
+    if (polling) {
+      poller.start({
+        after: (ms, fn) => {
+          const t = $.clock.after(ms, fn)
+          return () => t.cancel()
+        },
+        redraw: async read => {
+          reuse = !read
+          await update($, pulse, n => n + 1)
+        },
+      })
+    }
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
     // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
@@ -581,10 +669,16 @@ export const register: Register = (on, options) => {
     if (changed) await refreshStatus($, nudges, heard)
     const parkable = id !== '' && (facts.waitingOn !== undefined || ['running', 'waiting'].includes(head.kind))
     const idOk = WORKFLOW_ID.test(id)
-    const found = parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
+    const found = again ? again.found : parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
+    // The debug story is read only for a run whose timeline shows a debug lease, and only on a read, not on a local tick.
+    const debugLines = again ? again.story : (detail?.leases.length ?? 0) > 0 && idOk && 'address' in target ? await readStory($, flow, target.address, id) : []
+    lastRead = { id, expr, runs, account, found, story: debugLines }
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
+    const gates = found.gates.filter(g => !(mine && g.signal === mine.signal))
+    /** The delivered line is shown for the refresh that follows the delivery and gone by the next. */
+    const showDelivered = delivery.id === id && delivery.signal === last.signal && freshReads - delivery.at < SHOW_READS
 
     // The run form: the Flowfiles on offer, and the selected one's declared inputs.
     const offered = await listFlowfiles($)
@@ -655,6 +749,7 @@ export const register: Register = (on, options) => {
     }
 
     const labels = labelsFor(list.map(r => r.file))
+    poller.drawEnded()
 
     return (
       <Box flexDirection="column">
@@ -704,7 +799,14 @@ export const register: Register = (on, options) => {
             <Text bold>
               <Text color={COLOR[head.tone]}>{head.symbol}</Text> {head.word} {clean(known?.name) || middleTruncate(id)}
             </Text>
-            <Text dimColor>  id {clean(id, 256)}</Text>
+            <Box>
+              <Text dimColor>  id {middleTruncate(id, 24)}  </Text>
+              <Button key="copy-id" label="Copy id" plain onPress={async () => {
+                await $.ui.copy({ text: id, surface: e.surface }).catch(() => undefined)
+              }}>
+                Copy id
+              </Button>
+            </Box>
             <Text>  {story(facts)}</Text>
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
             {account && 'error' in account ? (
@@ -723,7 +825,7 @@ export const register: Register = (on, options) => {
                       <Text color={COLOR[s.status.tone]}>{s.status.symbol}</Text> {s.name}{' '}
                       <Text dimColor>
                         {s.status.word}
-                        {s.durationMs !== undefined ? `  ${duration(s.durationMs)}` : ''}
+                        {stepElapsed(s, now) !== undefined ? `  ${duration(stepElapsed(s, now))}` : ''}
                         {s.attempts > 1 ? `  attempt ${s.attempts}` : ''}
                       </Text>
                     </Text>
@@ -731,12 +833,15 @@ export const register: Register = (on, options) => {
                   </Box>
                 ))}
                 {more > 0 && <Text dimColor>  and {more} more; `flow timeline` with the id above lists them all</Text>}
+                {detail?.leases.map(l => <Text>{'  '}<Text color={COLOR.active}>{leaseLine(l, polling)}</Text></Text>)}
+                {debugLines.map(l => <Text color={l.startsWith('◉') ? COLOR.active : undefined} dimColor={!l.startsWith('◉')}>{'  '}{l}</Text>)}
+                {hiddenNote(detail?.hidden ?? 0) !== '' &&<Text dimColor>  {hiddenNote(detail?.hidden ?? 0)}</Text>}
                 {detail?.truncated && <Text dimColor>  The server clipped this account; `flow timeline --help` says how to continue it (--run-id, --after-event-id).</Text>}
               </Box>
             )}
             {parkable && !idOk && <Text dimColor>  No signal button: this run's id is not a plain one.</Text>}
             {parkable && 'refused' in target && <Text dimColor>  No signal button: {target.refused}.</Text>}
-            {found.gates.map(g => {
+            {gates.map(g => {
               const asking = g.refused === '' && asked.id !== '' && asked.signal === g.signal
               return (
                 <Box flexDirection="column">
@@ -771,13 +876,12 @@ export const register: Register = (on, options) => {
                   )}
                   {asking && (
                     <Box flexDirection="column">
-                      <Text color={COLOR.wait}>      {confirmText(asked.id, asked.signal, asked.address)}</Text>
-                      <Text dimColor>      The server decides whether you may act, and says so if not.</Text>
+                      <Text color={COLOR.wait}>      {signalLines(asked.id, asked.signal, asked.address, known?.name)[0]}</Text>
+                      <Text dimColor>      {signalLines(asked.id, asked.signal, asked.address, known?.name)[1]}</Text>
                       <Box>
                         <Button
                           key={`confirm-signal:${g.signal}`}
                           label={`Confirm: send ${g.signal}`}
-                          plain
                           onPress={async () => {
                             if (sending) return
                             sending = true
@@ -796,6 +900,8 @@ export const register: Register = (on, options) => {
                               } catch (err) {
                                 result = unknownOutcome(err, c.id, c.signal)
                               }
+                              // Taken by the server: close its gate and wait timer on the card now, and let the following reads confirm or contradict it.
+                              if (result.ok) delivery = { id: c.id, signal: c.signal, step: g.step, at: freshReads }
                               await update($, outcome, () => ({ id: c.id, signal: c.signal, ...result }))
                             } finally {
                               sending = false
@@ -804,7 +910,8 @@ export const register: Register = (on, options) => {
                         >
                           Confirm: send {g.signal}
                         </Button>
-                        <Button key={`cancel-signal:${g.signal}`} label="Cancel" plain onPress={() => update($, confirm, () => NO_CONFIRM)}>
+                        <Text>{'   '}</Text>
+                        <Button key={`cancel-signal:${g.signal}`} label="Cancel" onPress={() => update($, confirm, () => NO_CONFIRM)}>
                           Cancel
                         </Button>
                       </Box>
@@ -814,7 +921,7 @@ export const register: Register = (on, options) => {
               )
             })}
             {moreText(found) !== '' && <Text dimColor>  {moreText(found)}</Text>}
-            {last.id === id && last.text !== '' && (
+            {last.id === id && last.text !== '' && (!last.ok || showDelivered) && (
               <Text color={last.ok ? COLOR.ok : COLOR.fail}>
                 {'  '}
                 {last.ok ? '✓' : '✗'} {last.text}

@@ -18,7 +18,30 @@ export interface Step {
   durationMs?: number
   /** The failure sentence of the latest failed attempt, cleaned. */
   reason: string
+  /** When the step's first row happened: a waiting step's elapsed time is counted from here, locally, between reads. */
+  startedMs?: number
 }
+
+/** A debug session the timeline shows as a timer row `debug lease <id> held by <who>`: the debugger, never a step of the workflow. */
+export interface Lease {
+  holder: string
+  startedMs?: number
+  endedMs?: number
+  /** No row has ended it yet. */
+  open: boolean
+}
+
+/** Rows the engine adds for itself; they are not steps an author wrote, so they are counted and not listed. */
+const INTERNAL = new Set(['flowstate_debug', 'task capability admission', 'run vars'])
+
+/** A timeline label as a person reads it: the backticks around ids dropped, spaces folded. */
+export const plainLabel = (label: string): string => label.replace(/`/g, '').replace(/\s+/g, ' ').trim()
+
+/** The suffix the engine appends to a timer or compensation label. */
+const SUFFIX = /\s·\s(sleep|wait timeout|undo)$/
+const LEASE = /^debug lease\s+\S+\s+held by\s+(.*?)(?:\s+expires)?$/
+/** Leases kept; a card names the debugger once or twice, never a list. */
+const MAX_LEASES = 5
 
 /**
  * One execution of a step as the timeline shows it, unfolded: a retry attempt
@@ -42,8 +65,12 @@ const MAX_LABEL = 160
 export interface Detail {
   /** Every execution in the order they began (for the graph overlay; the card reads `steps`). */
   executions: Execution[]
-  /** The steps in the order they began. */
+  /** The author's steps in the order they began; engine-internal rows and the debug lease are not among them, so counts are user steps only. */
   steps: Step[]
+  /** Engine-internal rows left out of `steps`, counted by label. */
+  hidden: number
+  /** Debug sessions the rows show, as the debugger and not as steps. */
+  leases: Lease[]
   /** A run-level failure (a row with no step), cleaned. */
   runFailure: string
   /** The server clipped the account: there are more rows than were read. */
@@ -67,6 +94,8 @@ interface Raw {
   at?: number
   attempt: number
   failure: string
+  /** The row's event id, to keep declared order; infinite when the row has none. */
+  id: number
 }
 
 /**
@@ -85,7 +114,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
   if (typeof doc !== 'object' || doc === null || !Array.isArray(doc.entries)) {
     // protojson leaves `entries` out of an empty account.
-    if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) return { detail: { executions: [], steps: [], runFailure: '', truncated: doc.truncated === true } }
+    if (typeof doc === 'object' && doc !== null && !Array.isArray(doc)) return { detail: { executions: [], steps: [], hidden: 0, leases: [], runFailure: '', truncated: doc.truncated === true } }
     return { error: 'flow printed something that is not a timeline' }
   }
 
@@ -100,12 +129,17 @@ export const parseTimeline = (stdout: string): Parsed => {
       at: toMs(e.time),
       attempt: Number.isFinite(e.attempt) ? e.attempt : 0,
       failure: clean(e.failure, MAX_REASON),
+      id: typeof e.eventId === 'string' && /^\d{1,15}$/.test(e.eventId) ? Number(e.eventId) : Number.POSITIVE_INFINITY,
     })
   }
+  // History is walked in order; sorting on the event id keeps the order steps began in even when a reader hands rows back otherwise (stable: rows with no id keep their place).
+  rows.sort((a, b) => (a.id === b.id ? 0 : a.id < b.id ? -1 : 1))
 
   const byName = new Map<string, Step & { began?: number }>()
   const executions: Execution[] = []
   const lastOf = new Map<string, Execution>()
+  const leases = new Map<string, Lease>()
+  const hiddenLabels = new Set<string>()
   let runFailure = ''
   for (const r of rows) {
     if (r.kind === 'KIND_RUN_ENDED' || r.kind === 'KIND_RUN_CONTINUED' || r.step === '') {
@@ -126,9 +160,28 @@ export const parseTimeline = (stdout: string): Parsed => {
       last.status = known
       last.attempt = Math.max(last.attempt, attempt)
     }
+    // Executions stay whole (the graph overlay counts every timeline label), but the card's steps are the author's.
+    const plain = plainLabel(r.step).replace(SUFFIX, '')
+    const lease = LEASE.exec(plain)
+    if (lease !== null) {
+      // The debugger's own timer: it neither counts as a step nor reads as waiting.
+      if (leases.size < MAX_LEASES || leases.has(plain)) {
+        const held = leases.get(plain) ?? { holder: clean(lease[1], 40), startedMs: r.at, open: true }
+        if (known.kind !== 'waiting') {
+          held.open = false
+          if (r.at !== undefined) held.endedMs = r.at
+        }
+        leases.set(plain, held)
+      }
+      continue
+    }
+    if (INTERNAL.has(plain)) {
+      hiddenLabels.add(plain)
+      continue
+    }
     let step = byName.get(r.step)
     if (!step) {
-      step = { name: r.step, status: known, attempts: 0, reason: '', began: r.at }
+      step = { name: plainLabel(r.full).slice(0, 60), status: known, attempts: 0, reason: '', began: r.at, startedMs: r.at }
       byName.set(r.step, step)
     }
     step.status = known
@@ -141,7 +194,7 @@ export const parseTimeline = (stdout: string): Parsed => {
   }
 
   const steps = [...byName.values()].map(({ began: _began, ...step }) => step)
-  return { detail: { executions, steps, runFailure, truncated: doc.truncated === true || doc.entries.length > MAX_ENTRIES } }
+  return { detail: { executions, steps, hidden: hiddenLabels.size, leases: [...leases.values()], runFailure, truncated: doc.truncated === true || doc.entries.length > MAX_ENTRIES } }
 }
 
 /**
@@ -183,19 +236,45 @@ export const factsFor = (
 }
 
 /**
+ * The debugger as one line: `◉ debugger htt attached` while the run is live and nothing has ended the
+ * lease, `◉ debugger htt detached` once the run is over or a row ended it. Never a waiting step.
+ */
+export const leaseLine = (lease: Lease, runLive: boolean): string => {
+  const who = lease.holder === '' ? '' : ` ${lease.holder}`
+  return `◉ debugger${who} ${runLive && lease.open ? 'attached' : 'detached'}`
+}
+
+/** The dim note under the step list: how many engine-internal rows were left out. */
+export const hiddenNote = (hidden: number): string => (hidden > 0 ? `${hidden} internal step${hidden === 1 ? '' : 's'} hidden` : '')
+
+/**
  * A run that COMPLETED cannot still be waiting at a gate, yet the engine leaves the
  * `wait_for_signal` timer row open when the gate is released (no KIND_TIMER_FIRED).
  * So on a completed run only, each open `· wait timeout` timer is shown as
  * succeeded/`released`, on the executions (graph overlay) and the steps (card)
  * alike. `released` claims neither the signal nor the timeout; no signal row is
  * read, because it carries only a name and cannot say which gate it answered.
- * Any other run status leaves the detail exactly as the timeline said.
+ * A failed or cancelled run (the live refresh is what reads one that has just ended) is
+ * never shown as released: its open waiting or running rows read `closed`, as cancelled,
+ * since the run ended with them unanswered. A run still running, or of unknown status,
+ * leaves the detail exactly as the timeline said.
  *
  * This is the fallback for histories already written; closing the timer row at
  * the source is an engine-side fix and a separate change.
  */
 export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Detail | undefined => {
-  if (detail === undefined || statusOf(runStatus).kind !== 'succeeded') return detail
+  if (detail === undefined) return detail
+  const kind = statusOf(runStatus).kind
+  if (kind === 'failed' || kind === 'cancelled') {
+    const closed = statusFor('cancelled', 'closed')
+    const ended = (status: Status) => status.kind === 'waiting' || status.kind === 'running'
+    return {
+      ...detail,
+      executions: detail.executions.map(e => (!e.cut && ended(e.status) ? { ...e, status: closed } : e)),
+      steps: detail.steps.map(s => (ended(s.status) ? { ...s, status: closed } : s)),
+    }
+  }
+  if (kind !== 'succeeded') return detail
   const open = (label: string, status: Status) => status.kind === 'waiting' && WAIT_TIMER.test(label)
   const released = statusFor('succeeded', 'released')
   return {
@@ -204,3 +283,27 @@ export const settleWaits = (detail: Detail | undefined, runStatus: unknown): Det
     steps: detail.steps.map(s => (open(s.name, s.status) ? { ...s, status: released } : s)),
   }
 }
+
+/**
+ * The step a delivered signal released, and its wait timer (`approve · wait timeout`), read as succeeded:
+ * the server took the signal, so the row that still says waiting is a read from before it. Only waiting
+ * rows of that step change; anything else, and a run the server reads differently later, is left to it.
+ */
+export const closeWait = (detail: Detail, step: string): Detail => {
+  const name = plainLabel(step)
+  if (name === '') return detail
+  const base = (label: string) => label.split(' · ')[0]
+  const mine = (label: string) => base(label) === name || base(label).endsWith(`> ${name}`)
+  return { ...detail, steps: detail.steps.map(s => (s.status.kind === 'waiting' && mine(s.name) ? { ...s, status: statusFor('succeeded') } : s)) }
+}
+
+/** A step's time as the row shows it: its recorded duration, else for a running or waiting step the time since it began, counted against `now` so it moves between reads. */
+export const stepElapsed = (s: Step, now: number): number | undefined => {
+  if (s.durationMs !== undefined) return s.durationMs
+  if ((s.status.kind === 'waiting' || s.status.kind === 'running') && s.startedMs !== undefined && now >= s.startedMs) return now - s.startedMs
+  return undefined
+}
+
+/** What changed in a read, for the poller's backoff: status, and each step's name, status and attempts. Times are left out, they always move. */
+export const fingerprint = (status: unknown, detail: Detail | undefined): string =>
+  `${clean(status, 40)}|${(detail?.steps ?? []).map(s => `${s.name}:${s.status.kind}:${s.attempts}`).join(',')}|${detail?.truncated === true}`

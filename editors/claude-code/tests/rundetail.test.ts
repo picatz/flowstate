@@ -356,9 +356,22 @@ test('a RUNNING run with an open timer and an unrelated signal row is still wait
   expect(factsFor({ workflowId: 'wf' }, s).waitingOn).toBe('approve · wait timeout')
 })
 
-test('a FAILED, cancelled, terminated, timed-out or unknown run is left exactly as the timeline said', () => {
+test('a running or unknown run is left exactly as the timeline said', () => {
   const d = parsed(T('approve', 0))
-  for (const st of ['STATUS_FAILED', 'STATUS_CANCELED', 'STATUS_TERMINATED', 'STATUS_TIMED_OUT', '', undefined]) expect(settleWaits(d, st)).toEqual(d)
+  for (const st of ['STATUS_RUNNING', '', undefined]) expect(settleWaits(d, st)).toEqual(d)
+})
+
+test('a FAILED, cancelled, terminated or timed-out run shows its open waits as closed, never as released or succeeded', () => {
+  const d = parsed(T('approve', 0), row('TIMER_STARTED', 'sleep', {}, 1), row('STEP_SCHEDULED', 'work', {}, 2))
+  for (const st of ['STATUS_FAILED', 'STATUS_CANCELED', 'STATUS_TERMINATED', 'STATUS_TIMED_OUT']) {
+    const s = settleWaits(d, st)!
+    expect(s.steps.map(x => x.status.word)).toEqual(['closed', 'closed', 'closed'])
+    expect(s.steps.some(x => x.status.kind === 'succeeded')).toBe(false)
+    expect(s.executions.some(x => x.status.kind === 'waiting' || x.status.kind === 'running')).toBe(false)
+  }
+  // A step that already ended keeps what the timeline said.
+  const ended = parsed(row('STEP_SCHEDULED', 'a', {}, 0), row('STEP_FAILED', 'a', { failure: 'boom' }, 1))
+  expect(settleWaits(ended, 'STATUS_FAILED')!.steps[0].status.kind).toBe('failed')
 })
 
 test('a timer that fired, and a step that is not a wait timeout, are unchanged on a COMPLETED run', () => {

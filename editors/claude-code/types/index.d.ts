@@ -40,6 +40,8 @@ declare module 'claude-code' {
       outputsRaw: boolean
       /** Bumped by the Graph section's Refresh so the pane draws again (hooks/graph.ts); the graph itself is not stored. */
       graphSeq: number
+      /** Bumped by the live refresh (hooks/poll.ts) so the open run's card draws again; it holds nothing else. */
+      pulse: number
       /** A Rerun press on a failing band case awaiting its Confirm: the case's file and name as the question named them. Nothing runs while this is set; empty file for none. */
       rerunConfirm: { file: string; name: string }
       /** The `flow test` band above the prompt (hooks/testband.ts); null for none. Cleared when a Flowfile or test file is edited. */

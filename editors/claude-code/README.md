@@ -50,8 +50,10 @@ because `flow timeline` names only the waiting step, never the signal name that
 run, or a `flow get` that fails or prints something else shows none.
 
 A gate offers one button, `Send signal <name>`. Pressing it only asks: the pane
-shows `Send signal "<name>" to run <id> on server <address>? Nothing is sent
-until you confirm.` with `Confirm: send <name>` and `Cancel`. Only Confirm runs
+shows two short lines, `Send <name> to <run name> (<short id>) on <address>?` and
+`Nothing is sent until you confirm.`, with `Confirm: send <name>` and `Cancel` as
+spaced buttons. The full id stays in the argv, not in the question; the server's own
+decision on who may act is shown only if it refuses. Only Confirm runs
 `flow signal`, once, as one argv with no shell:
 `flow signal [--address=<address>] -- <workflow-id> <signal-name>`. The address
 is `FLOWSTATE_ADDRESS` when set (and then passed explicitly, so the argv targets
@@ -85,11 +87,79 @@ timeline before sending again. Who may act is decided by the server, from the
 workflow's `signals:` policy and the caller's credentials; the mod enforces
 nothing of its own and shows the server's refusal as it is. On success the card
 says `delivered` and refreshes from the timeline and `flow get`; "delivered"
-means the server took the signal, not that the workflow has acted on it.
+means the server took the signal, not that the workflow has acted on it. So the card
+does not keep a stale picture, the delivered signal's gate and the waiting step's timer
+(`approve · wait timeout`) read as closed at once, for the next three reads; the
+delivered line (ids shortened) goes at the read after the first, and if the server still
+reports the gate after that (a quorum not yet met, say) it is shown again as the server
+says. A refused or unknown delivery closes nothing. The run id on the card is shortened,
+with a `Copy id` button.
 
 The pane's Send/Confirm replaces the Bash guard's question for this one action
 only. The `guardServerActions` guard still asks before Claude runs `flow signal`
 in a Bash command, and turning it off does not remove the pane's confirm step.
+
+## Live refresh
+
+While a run is open in the pane and is running or waiting, the pane reads
+`flow list` and `flow timeline` again by itself and stops when the run ends
+(`hooks/poll.ts`, pure and tested).
+
+- **Schedule.** A one-second tick redraws the card from its last read, so a
+  waiting step's elapsed time (`settle · sleep  2m 53s`, counted from its first
+  timeline row) moves without starting a process. A read is due every 2 seconds at
+  first and backs off to every 10 seconds while nothing changes (2 s three times,
+  then 4 s, 8 s, 10 s); a change in the run's status or steps takes it back to 2 s.
+  The timeline does not carry a timer's length, so a sleep shows the time waited, not
+  the time left.
+- **Bounded.** One redraw at a time (a tick that finds a draw in flight skips it,
+  and the next tick is scheduled only after the redraw settled), a generation
+  guard so a stale timer does nothing, and a hard stop after 60 reads in a row
+  with no change.
+- **Stops.** On a succeeded, failed, cancelled or unknown status, when the run is
+  closed or another is opened, and when the pane has not drawn for 5 seconds (it
+  was closed; opening it again starts the poll if the run is still live).
+  Nothing is left running after any of these.
+- **A finished run settles its waits** (`settleWaits`, one function for the card and
+  the graph overlay): a COMPLETED run shows each open `wait timeout` gate timer as
+  `released` (so the bar fills); a failed, cancelled, terminated or timed-out run shows
+  its open waiting or running rows as `closed`, never as released or succeeded. A run
+  still running, or of unknown status, is left as the timeline said. The refresh is what
+  lets the card see the run's final status and timeline without being reopened.
+
+## Steps the card shows
+
+The card lists the steps the workflow's author wrote, in the order they began
+(rows are ordered by their event id, so a reader that hands them back out of
+order does not reorder the card).
+
+- **Engine rows are hidden and counted.** `flowstate_debug`, `task capability
+  admission` and `run vars` are the engine's own; a dim `2 internal steps hidden`
+  stands for them, and they are in neither the step count nor the progress bar
+  (`4/4 steps`, not `5 of 6`). Only an exact label is hidden: a step of yours
+  that merely mentions one is a step.
+- **The debug lease is the debugger.** A timer row `debug lease <id> held by <who>` is
+  drawn as `◉ debugger <who> attached` while the run is live and `detached` once
+  the run is over or a row ended the lease. It is never a waiting step, so a completed
+  run no longer reads as waiting; the holder is cleaned and cut to 40
+  characters, and at most 5 leases are read.
+- **Plain labels.** The backticks the engine puts around ids are dropped from every label
+  shown (`orders > charge`); the graph overlay still matches on the engine's own label.
+- **The debug story.** For a run whose timeline shows a debug lease, the card also reads
+  `flow debug get -o json [--address=...] -- <id>` (5 s, read only, `hooks/debug.ts`), the
+  schema's `DebugSnapshot`, and draws what it says now: `◉ paused orders[1]/charge · breakpoint
+  · 1 breakpoint hit`, `◉ debug session running <where>`, or `◉ debug session detached · last at
+  <where>`, then up to three dim notes from the snapshot's notice, log, failed, tolerated and
+  waiting observations, and a failure stop's redacted sentence. Everything is cleaned and
+  bounded (256 KiB document, 80-character address, 120-character notes); a read that fails
+  (no session is left, no server) or prints something else adds no line. **What does not
+  exist:** the timeline has no row for a breakpoint hit or a resume, and the snapshot is
+  the current state with no history of earlier pauses, so a pause that was resumed cannot be
+  shown (`... · resumed`), and the inspected value at a pause (`amount=900`) is not in the
+  snapshot (`flow debug history --inspect` evaluates an expression the caller chooses, and
+  the pane does not run it). Those lines are not invented.
+- Loop iterations are not shown: a timeline row names no iteration (`orders[1]`), so
+  `orders > charge` is one row however many times it ran (`attempt N` counts retries).
 
 ## Run a Flowfile
 
@@ -340,6 +410,14 @@ state the mod already holds, and drawing it starts no process:
   (`FLOWSTATE_ADDRESS`, else the default) and the time it was read, since the line
   is redrawn on events, not by a clock. `flow list` reports a run parked on a signal or timer as running, so waiting gates are not counted here (the run card shows them). A server that did not answer, an unreadable
   address, or a filtered listing adds nothing. Counts show up to `99+`.
+- **Opening `/flowstate` rebuilds what the session did not record.** The Flowfiles list and
+  this line were filled only by edits Claude made in the session, so a directory of
+  Flowfiles it never touched (a resumed session, a file edited by hand) read as empty.
+  Opening the pane now runs `flow validate` on the working directory's (and
+  `workflows/`'s) Flowfiles that no report names yet, at most 5 at a time, and redraws the
+  line. A file already reported by an edit (by its absolute path) is not checked again, and
+  `validateOnEdit: false` turns the rebuild off with the after-edit check. The line stays
+  quiet: a clean directory still prints nothing, and only a file with errors adds the `⚠`.
 - With nothing to attend to the line is empty.
   File names and addresses are cleaned and bounded like every other CLI-derived text.
 
