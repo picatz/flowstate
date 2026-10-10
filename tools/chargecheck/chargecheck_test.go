@@ -56,13 +56,11 @@ func TestTheRepositoryExemptionsAreTheAudited(t *testing.T) {
 		got = append(got, s.File)
 	}
 	assert.Equal(t, []string{
-		"pkg/flowstate/v1/eval.go",               // stored output expressions, bounded by their own counter
 		"pkg/flowstate/v1/eval_task_http.go",     // http task body, runs in the task's activity
 		"pkg/flowstate/v1/eval_task_http_run.go", // http task body: outputs block
 		"pkg/flowstate/v1/eval_task_http_run.go", // http task body: per-output expressions
 		"pkg/flowstate/v1/nodes.go",              // ResolveTaskInputs, paced by the activity that follows
 		"pkg/flowstate/v1/protoliterals.go",      // task input population, runs in the task's activity
-		"pkg/flowstate/v1/wait.go",               // wait expressions, paced by the park that follows
 	}, got)
 }
 

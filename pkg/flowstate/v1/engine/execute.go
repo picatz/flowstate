@@ -781,8 +781,11 @@ func (e *executor) chargeValueCost(cost uint64) {
 // chargeWorkflowCost records the deterministic workflow-side CEL that version 2
 // of [workflowSliceCostChange] added to the budget: a step's or a loop's
 // condition, a step's `vars:`, a `switch:`'s subject, a `for_each`'s `items:`,
-// a `call:`'s arguments and its callee's declared `outputs:`, and a loop's
-// `initial:` and `update:`.
+// a `call:`'s arguments and its callee's declared `outputs:`, a loop's
+// `initial:` and `update:`, a wait's expressions (a sleep, `wait_until:`,
+// `timeout:`, `prompt:`, a quorum's `veto:` and `exclude:`, and the shaping
+// `outputs:`), and the stored expressions an activation resolves lazily while
+// one of those evaluates.
 //
 // Those are the paths that a loop can repeat without scheduling anything, which
 // is what the budget is for. The list is not what holds the bound: `go test
@@ -791,10 +794,11 @@ func (e *executor) chargeValueCost(cost uint64) {
 // call, so a path absent here is either charged or says why it is not where it
 // is written.
 //
-// [v1.ResolveTaskInputs] and `wait.go`'s own expressions do say otherwise: each
-// is immediately followed by the activity, durable timer, or signal park that
-// consumes it, so they are paced by a history event and a yield rather than by
-// this budget. [v1.EvalRunOutputs] is charged through the `call:` boundary and
+// [v1.ResolveTaskInputs] says otherwise: it is immediately followed by the
+// activity that consumes it, so it is paced by a history event and a yield rather
+// than by this budget. A wait's expressions are charged, because a zero sleep, a
+// past `wait_until:` or a zero signal timeout returns without parking and leaves
+// nothing to pace them. [v1.EvalRunOutputs] is charged through the `call:` boundary and
 // not at the end of a run, where it is evaluated exactly once.
 //
 // Silent below version 2, and that is the point of the split: a history
