@@ -23,6 +23,13 @@ func TestVerbsThatRunNothingLoadPluginsQuietly(t *testing.T) {
 	require.NotContains(t, output, "loaded plugin",
 		"validate runs nothing, so the load line belongs to the debug stream")
 
+	// `tasks` prints an answer, so the line stays out of it (#1541).
+	output, err = runFlowCapturing(t, bin, "tasks", "example.greet", "--plugin-dir", dir)
+	require.NoError(t, err, output)
+	require.NotContains(t, output, "loaded plugin",
+		"tasks prints the task, so the load line belongs to the debug stream")
+	require.Contains(t, output, "example.greet")
+
 	// Debug is a stream, not a bin: the reader who asks for it gets the line.
 	output, err = runFlowCapturing(t, bin, "validate", "--verbose", "--plugin-dir", dir, exampleGreetWorkflow)
 	require.NoError(t, err, output)

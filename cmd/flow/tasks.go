@@ -58,6 +58,9 @@ const expressionsFlag = "expressions"
 // described here by the same code that describes `http` — down to the example
 // step, built from descriptors the plugin shipped.
 //
+// The "loaded plugin" line goes to the debug stream, as `flow plugins` does:
+// this command prints an answer, and a log line ahead of it is not part of it.
+//
 // A plugin that fails to launch fails this command rather than being quietly
 // left out of the listing, which is the same decision [runValidate] makes for
 // the same reason: a catalog missing what somebody asked to see, printed as
@@ -70,7 +73,7 @@ func runTasks(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	catalog, closePlugins, err := startPlugins(cmd, nil)
+	catalog, closePlugins, err := startPluginsQuietly(cmd, nil)
 	if err != nil {
 		// See [runValidate]: a refusal made before anything launched is a wrong
 		// command line, not a plugin that would not start.
