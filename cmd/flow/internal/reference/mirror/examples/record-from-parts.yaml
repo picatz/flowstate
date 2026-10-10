@@ -1,0 +1,35 @@
+# Reuse, by what is being reused. An expression is a function, a shape is a type, a
+# record built from parts is a function that returns a type, and a sequence of steps is
+# a workflow another one `call:`s (`use:` takes only step-less modules of functions and types). There is no
+# template for steps: a repeated sequence is a process with a contract, so it is a
+# child workflow.
+#
+# This file builds a message from parts. `blocks.yaml` declares the `Message` and
+# `Block` records and the functions that return them; the output is typed `Message`, so
+# a missing field, a field the record does not declare, or a value of the wrong type is
+# refused with the path to it before the run completes, on both drivers.
+#
+#   flow run local examples/record-from-parts/workflow.yaml \
+#       --input service=checkout --input note="rolled out"
+edition: v2026.4
+name: record-from-parts
+use:
+  blocks:
+    path: ./blocks.yaml
+inputs:
+  service:
+    type: string
+    required: true
+  note:
+    type: string
+    required: true
+steps:
+  - id: summary
+    value: ${"deployed " + inputs.service}
+  - id: announce
+    log:
+      message: ${steps.summary.value}
+outputs:
+  message:
+    value: ${blocks.message("#deploys", [blocks.section(steps.summary.value), blocks.divider(), blocks.section(inputs.note)])}
+    type: blocks.Message

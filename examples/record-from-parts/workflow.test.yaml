@@ -1,0 +1,30 @@
+# The functions build the record and the output's type holds it: a good message is the
+# record the parts make, and a block the record refuses fails the run with the path.
+edition: v2026.4
+defaults:
+  workflow: ./workflow.yaml
+  stubs:
+    - task: log
+      returns: {}
+tests:
+  - name: a message is built from sections and a divider
+    inputs:
+      service: checkout
+      note: rolled out
+    expect:
+      ran: [summary, announce]
+      outputs:
+        message:
+          channel: '#deploys'
+          blocks:
+            - {type: section, text: deployed checkout}
+            - {type: divider}
+            - {type: section, text: rolled out}
+
+  - name: a block the record refuses fails the run, naming where
+    inputs:
+      service: checkout
+      note: ''
+    expect:
+      failed: true
+      error_contains: blocks[2]

@@ -327,6 +327,7 @@ var examplesNeedingAFile = map[string]bool{
 	"lib":                            true,
 	"pinned-call":                    true,
 	"progressive-rollout":            true,
+	"record-from-parts":              true,
 	"use-modules":                    true,
 }
 

@@ -43,6 +43,7 @@ headings below, not this list.*
   - [A file with no steps is a module *(landed)*](#a-file-with-no-steps-is-a-module-landed)
   - [`use:`: a module imported by an alias *(landed)*](#use-a-module-imported-by-an-alias-landed)
   - [Composition, end to end: choosing a mechanism and evolving it safely *(landed)*](#composition-end-to-end-choosing-a-mechanism-and-evolving-it-safely-landed)
+  - [Reuse: which mechanism *(landed)*](#reuse-which-mechanism-landed)
   - [Testing a module *(landed)*](#testing-a-module-landed)
   - [`vars:`, and the shadowing rule that ships with it *(landed)*](#vars-and-the-shadowing-rule-that-ships-with-it-landed)
   - [`for_each` reads `as:` *(landed)*](#for_each-reads-as-landed)
@@ -1719,6 +1720,47 @@ used; a use may add a `must:` of its own and both hold. An input, an output and 
 field all take the type. A module is validated, formatted and linted like any other
 file, and `flow run` refuses it by name, so the examples corpus checks the module files
 it ships and never runs them.
+
+### Reuse: which mechanism *(landed)*
+
+Issue #2624 asked for a way to share a repeated sequence of steps and a way to build a
+record from parts. Neither needs a new construct, and the first is refused on purpose:
+invariant 2 is one mechanism per concept, and a second step-sequence template beside
+`call:` would be a second spelling of a unit of work. Ask what is repeating:
+
+| What repeats | The mechanism | What a run sees |
+| --- | --- | --- |
+| An expression | a function (`functions:`) | its body, inlined at each call |
+| A shape | a type (`types:`) | the record or the base type and its rule |
+| A record built from parts | a function that `returns:` a type | a map, held to the type where it is bound |
+| A sequence of steps | a child workflow, by `call:` (a `use:` module has no steps; it shares functions and types) | the callee's steps, with a contract |
+
+A record is a map at run time, so a function returns one with a map literal and names the
+record in `returns:`. The record's rules are held where the value is bound, not where the
+literal is written: an output (checked when the run completes) or the callee's input at a `call:` (checked when the call starts). A literal that omits a
+required field, adds one the record does not declare, or carries a value of the wrong
+type is refused with the path to it (`computed the field at .blocks[2].text must be at
+least 1 character(s) long`; `computed a field "oops" that Block does not declare; it
+declares "type", "text"`), on both drivers, and a type from a module (`blocks.Message`)
+holds the same way. The check runs during the run, at those points, and not at `flow validate`:
+a function body or a literal that omits a required field validates, and fails when the value is
+bound, because the compiler judges only what it can prove and a function's arguments are not
+known at the definition.
+
+```yaml
+use:
+  blocks:
+    path: ./blocks.yaml                 # types Block and Message; functions section, divider, message
+outputs:
+  message:
+    type: blocks.Message
+    value: ${blocks.message("#deploys", [blocks.section(steps.summary.value), blocks.divider()])}
+```
+
+[`examples/record-from-parts/`](../examples/record-from-parts) is the complete pair, with a
+test that a good message is the record its parts make and that a block the record refuses
+fails the run. A repeated sequence of steps is a process with its own contract (inputs,
+outputs, failure kinds), which is what [`call:`](../examples/call-a-workflow) already is.
 
 ### Testing a module *(landed)*
 
