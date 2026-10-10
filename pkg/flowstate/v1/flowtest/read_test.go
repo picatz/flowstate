@@ -68,7 +68,7 @@ tests:
 
 	report := flowtest.RunFile(dir + "/x.test.yaml")
 	require.Len(t, report.GetCases(), 1)
-	assert.Contains(t, report.GetCases()[0].GetError(), "is not a regular file")
+	assert.Contains(t, report.GetCases()[0].GetError(), "is a directory")
 }
 
 // TestATestFileThatIsNotARegularFileIsRefused: `Load` had the identical shape,

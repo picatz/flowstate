@@ -16,6 +16,38 @@ import (
 // parser would accept rather than what the process would allocate: a file
 // larger than the limit was fully resident before anything refused it.
 //
+// OpenRegular opens path for reading and refuses anything but a regular file,
+// so every caller that bounds a read of a path it did not choose (this
+// package's readers, `flow validate`'s directory walk) shares one mechanism.
+//
+// O_NONBLOCK so that opening a FIFO returns at once instead of waiting for a
+// writer; the descriptor's kind is checked before any read. The kind is asked
+// of the open file, never the path, so there is no second lookup for a
+// replacement, or a symlink to something with no size like /dev/zero, to land
+// in between.
+func OpenRegular(path string) (*os.File, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if info.Mode().IsDir() {
+		f.Close()
+		return nil, fmt.Errorf("%s is a directory; name the Flowfile inside it", path)
+	}
+	if !info.Mode().IsRegular() {
+		f.Close()
+		return nil, fmt.Errorf(
+			"%s is not a regular file (%s); name a regular file instead",
+			path, fileKind(info.Mode()))
+	}
+	return f, nil
+}
+
 // readBoundedSource is the fix, in the shape [pkg/flowstate/v1/flowtest]'s
 // readBounded already established for the same failure: open once, ask the
 // *open file* what it is (never the path — a second lookup is a window for a
@@ -29,30 +61,11 @@ import (
 // implementation shape, kept local to where the cycle otherwise happens to
 // be. See CLAUDE.md, "Bound anything that consumes untrusted input".
 func readBoundedSource(path string) ([]byte, error) {
-	// O_NONBLOCK so that opening a FIFO returns at once instead of waiting for a
-	// writer; the descriptor's kind is checked next, before any read.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := OpenRegular(path)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-
-	// Asked of the descriptor rather than of the path, so what is described is
-	// what will be read: there is no second lookup for a replacement — or a
-	// symlink to something with no size at all, like /dev/zero — to land in
-	// between.
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if info.Mode().IsDir() {
-		return nil, fmt.Errorf("%s is a directory; name the Flowfile inside it", path)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf(
-			"%s is not a regular file (%s); name a regular file instead",
-			path, fileKind(info.Mode()))
-	}
 
 	// maxBytes+1, so a file of exactly the limit is accepted and one byte more
 	// is visibly too large rather than quietly cut short. Nothing here trusts
