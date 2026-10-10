@@ -77,6 +77,12 @@ This is the one place the rule is stated; the agents link here.
   server unless the task is about auth. "Without asking" means no extra
   question in chat: the host's permission prompt for `flow run` and similar
   commands may still appear, so proceed through it, never around it.
+  Start a durable run with `flow run --detach <path>`, which returns once the
+  run has started; a plain `flow run` follows it to the end and holds your turn.
+  Then follow it in a bounded way: `flow get <id>`, `flow timeline <id>`, or
+  `timeout 60 flow watch <id>` (`gtimeout` on macOS; without either, only `flow get` or `flow timeline`), repeated if needed, never an unbounded attached
+  follow. Send `flow signal` the same way, as a short command, then read the
+  result with `flow get` or `flow timeline`.
 - **Ask first** for a shared or remote server, for anything that cannot be
   undone (deleting data, terminating production-like runs, publishing), and for
   any change that loosens policy: an egress allow list,
