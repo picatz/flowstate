@@ -1208,6 +1208,20 @@ func TestMCPSessionLimiterSettlesBeforeTheClientCanReadTheStatus(t *testing.T) {
 
 		require.Equal(t, 0, l.open())
 	})
+
+	t.Run("a silent DELETE is an implicit 200 and frees the slot", func(t *testing.T) {
+		t.Parallel()
+
+		l := newLimiter()
+		open(l, "one")
+
+		l.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})).
+			ServeHTTP(httptest.NewRecorder(), deleteOf("one"))
+
+		require.Equal(t, 0, l.open())
+		open(l, "two")
+		require.True(t, mcpLimiterHasSession(l, "two"), "the next initialize at the limit must be admitted")
+	})
 }
 
 // TestMCPServeAtABareOriginServesOnlyTheRootPath is Codex's other finding on

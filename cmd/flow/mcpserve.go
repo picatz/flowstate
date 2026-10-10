@@ -775,8 +775,9 @@ func (r *mcpSessionRecorder) run() {
 }
 
 // finish runs onStatus for a handler that returned without committing a
-// status, so the accounting still settles.
-func (r *mcpSessionRecorder) finish() { r.run() }
+// status, so the accounting still settles. net/http answers such a handler
+// with an implicit 200, so that is the status settled on.
+func (r *mcpSessionRecorder) finish() { r.commit(http.StatusOK) }
 
 // WriteHeader records the status on its way through. An informational 1xx is
 // not the final status and settles nothing.
