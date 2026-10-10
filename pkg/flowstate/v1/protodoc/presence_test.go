@@ -455,7 +455,7 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 		}
 	}
 
-	// 265 since TimelineEntry.Kind gained KIND_TIMER_CANCELED, so a timer closed without elapsing is told from one that fired; 264 since MutationReport and MutationSurvivor (two messages and twelve fields) joined with TestReport.mutation to carry what `flow test --mutate` found; 250 since HeldFailure.expression joined to carry a held failure's structured account across continuation; 249 since CheckpointInfo (a message and its six fields) joined so a run segment can say what it started from; 242 since Checkpoint and CheckpointOrigin joined to make a run state a public, versioned resume point (two messages and eight fields); 232 since ScheduleDivergenceReport.swarm joined to say a replay needs --swarm; 231 since GatePage (waits, last_seq, more, incomplete) joined and run.proto grew by that message; 226 since FuzzFinding.absent, changed, shrink_runs and minimal joined to say how far a finding's inputs were shrunk; 222 since FuzzReport, FuzzFinding and TestReport.fuzz joined to carry what
+	// 271 since TimelineEntry gained KIND_DEBUG_PAUSED, KIND_DEBUG_RESUMED, session_id, actor, end_reason and occurrence so a timeline reports debugger pauses and a step's ordinal; 265 since TimelineEntry.Kind gained KIND_TIMER_CANCELED, so a timer closed without elapsing is told from one that fired; 264 since MutationReport and MutationSurvivor (two messages and twelve fields) joined with TestReport.mutation to carry what `flow test --mutate` found; 250 since HeldFailure.expression joined to carry a held failure's structured account across continuation; 249 since CheckpointInfo (a message and its six fields) joined so a run segment can say what it started from; 242 since Checkpoint and CheckpointOrigin joined to make a run state a public, versioned resume point (two messages and eight fields); 232 since ScheduleDivergenceReport.swarm joined to say a replay needs --swarm; 231 since GatePage (waits, last_seq, more, incomplete) joined and run.proto grew by that message; 226 since FuzzFinding.absent, changed, shrink_runs and minimal joined to say how far a finding's inputs were shrunk; 222 since FuzzReport, FuzzFinding and TestReport.fuzz joined to carry what
 	// `--fuzz` found; 210 since ScheduleExploration.fault_draws joined, so a search that only injected
 	// faults is told from one that explored nothing; 209 since ScheduleDivergenceReport.fired_faults, shrink_runs and shrunk_minimal
 	// joined to say how far a violating seed's fault list was shrunk; 206 since RunAddress.started_at joined, so a run can say when it began; 205
@@ -471,8 +471,8 @@ func TestRunAndReportsProseIsPresent(t *testing.T) {
 	// that holds them. The count is pinned so that adding a declaration is a
 	// deliberate act with its prose written at the same moment, rather than
 	// something the walk silently absorbs.
-	if checked != 265 {
-		t.Errorf("run/report walk checked %d declarations; want 265", checked)
+	if checked != 271 {
+		t.Errorf("run/report walk checked %d declarations; want 271", checked)
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)

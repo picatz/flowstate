@@ -1457,6 +1457,45 @@ func init() {
 				" believing they have all of it.\n",
 		},
 		{
+			Name: "flowstate.v1.TimelineEntry.session_id",
+			Leading: " SessionId is the debug lease's session, on KIND_DEBUG_PAUSED and\n" +
+				" KIND_DEBUG_RESUMED rows and empty elsewhere. It is read from the lease\n" +
+				" timer's summary, the same text the timeline already reported as the step;\n" +
+				" no signal or activity payload is decoded to fill it.\n",
+		},
+		{
+			Name: "flowstate.v1.TimelineEntry.actor",
+			Leading: " Actor is the holder of the debug lease, on KIND_DEBUG_PAUSED and\n" +
+				" KIND_DEBUG_RESUMED rows and empty elsewhere. It is exactly the holder text\n" +
+				" the timeline already showed inside the lease timer's step label (an\n" +
+				" attested issuer and subject, cut to a bound), moved into a field of its own\n" +
+				" and cut again to a server-side bound. The sender of a debug ask is not\n" +
+				" reported here or anywhere on the timeline.\n",
+		},
+		{
+			Name: "flowstate.v1.TimelineEntry.end_reason",
+			Leading: " EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: \"released\"\n" +
+				" when the lease timer was cancelled, \"lapsed\" when it fired. Empty on every\n" +
+				" other row.\n",
+		},
+		{
+			Name: "flowstate.v1.TimelineEntry.occurrence",
+			Leading: " Occurrence is the 1-based ordinal of this execution among the\n" +
+				" KIND_STEP_SCHEDULED rows in this run's history that carry the same step\n" +
+				" label, counted in history order. A scheduling, and the completion, failure,\n" +
+				" timeout or cancellation joined to it by `scheduled_event_id`, all carry the\n" +
+				" same number. Zero on rows that are not about a step's work.\n" +
+				"\n" +
+				" It is an ordinal of scheduling and not the loop index. Under a concurrent\n" +
+				" `for_each` or `parallel` the order in which iterations are scheduled need\n" +
+				" not be the order of their items, and the count restarts at 1 after\n" +
+				" Continue-As-New because it is derived from one segment's history. The\n" +
+				" debugger's `id[3]` address is the exact answer to which iteration this was;\n" +
+				" this number is a hint for reading a timeline where the same label appears\n" +
+				" more than once. Past a bound on distinct labels per request the number is\n" +
+				" left at zero rather than guessed.\n",
+		},
+		{
 			Name: "flowstate.v1.TimelineEntry.Kind",
 			Leading: " Kind is what happened, as the small set a reader is actually asking about.\n" +
 				"\n" +
@@ -1562,6 +1601,33 @@ func init() {
 				"\n" +
 				" Appended last, so an older client that does not know the value skips the\n" +
 				" row as an unknown kind and is no worse off than before it existed.\n",
+		},
+		{
+			Name: "flowstate.v1.TimelineEntry.KIND_DEBUG_PAUSED",
+			Leading: " KIND_DEBUG_PAUSED is a debugger taking the run: the lease timer an\n" +
+				" attached debug session holds, reported as what it means rather than as a\n" +
+				" timer. It replaces the KIND_TIMER_STARTED row that same history event\n" +
+				" used to produce, carrying `session_id` and `actor`. A pacing timer (the\n" +
+				" run reading a backlog of asks) is not a pause and stays an ordinary\n" +
+				" timer, as does any timer whose label is not a lease's.\n" +
+				"\n" +
+				" Derived from the timer's summary alone, the same label the timeline\n" +
+				" already showed. A summary that does not parse as a lease's falls back to\n" +
+				" KIND_TIMER_STARTED, so an unrecognised label is never mis-reported as a\n" +
+				" pause.\n" +
+				"\n" +
+				" Appended last, so an older client that does not know the value skips the\n" +
+				" row as an unknown kind.\n",
+		},
+		{
+			Name: "flowstate.v1.TimelineEntry.KIND_DEBUG_RESUMED",
+			Leading: " KIND_DEBUG_RESUMED is that lease ending, with `end_reason` saying how:\n" +
+				" \"released\" when the timer was cancelled (the holder let go, or the\n" +
+				" session ended) and \"lapsed\" when it fired (the lease ran out). It\n" +
+				" replaces the KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing\n" +
+				" event used to produce, and carries the same `session_id` and `actor` as\n" +
+				" the pause it closes. Only the lease timer's end becomes one: the cause\n" +
+				" beyond those two is not recorded in history.\n",
 		},
 	})
 }

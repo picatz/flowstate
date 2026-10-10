@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"connectrpc.com/connect"
 	enums "go.temporal.io/api/enums/v1"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/picatz/flowstate/internal/textbound"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 )
 
 // Reading a run's own account of itself.
@@ -230,6 +232,11 @@ func (s *FlowstateServer) getTimeline(
 	// path, charged to whoever asked.
 	inFlight := map[int64]*activityInFlight{}
 
+	// Schedulings seen per step label, for [v1.TimelineEntry.Occurrence]. Held
+	// for the whole walk since an ordinal counts every earlier scheduling, and
+	// bounded by [maxTimelineLabels].
+	occurrences := map[string]int32{}
+
 	history := temporal.GetWorkflowHistory(ctx, execution.GetWorkflowId(), execution.GetRunId(),
 		// Never a long poll. Waiting for a new event would turn a read into a
 		// held connection, on the one verb meant to be safe to point an agent
@@ -264,7 +271,7 @@ func (s *FlowstateServer) getTimeline(
 			out.NextRunId = next
 		}
 
-		entry := s.timelineEntry(event, inFlight)
+		entry := s.timelineEntryCounted(event, inFlight, occurrences)
 		if entry == nil {
 			continue
 		}
@@ -365,9 +372,43 @@ func segmentClosed(status enums.WorkflowExecutionStatus) bool {
 // at all — so a failed row left to itself cannot say which try failed, which is
 // exactly what [v1.TimelineEntry.Attempt] promises and exactly what makes a
 // stuck run legible (Codex, #1119).
+//
+// occurrence is the label's ordinal among the schedulings the walk has seen,
+// carried so an ending reports the same number as its scheduling; zero when
+// the walk was not counting or had reached [maxTimelineLabels]. lease is set on
+// a timer that is a debug lease, so its ending is reported as the lease ending.
 type activityInFlight struct {
-	label   string
-	attempt int32
+	label      string
+	attempt    int32
+	occurrence int32
+	lease      *debugLeaseTimer
+}
+
+// debugLeaseTimer is what a lease timer's summary names, kept until the timer
+// closes so the closing row carries it too.
+type debugLeaseTimer struct {
+	session string
+	actor   string
+}
+
+const (
+	// maxTimelineLabels bounds the distinct step labels one walk counts
+	// occurrences for. The walk is already bounded by [maxTimelineScan] events;
+	// this keeps the counting map to a fixed size regardless of how many
+	// distinct labels a history holds. Labels past it are reported with
+	// occurrence zero rather than guessed.
+	maxTimelineLabels = 4096
+
+	// maxTimelineActorBytes and maxTimelineSessionBytes bound the lease text
+	// lifted out of a timer summary. The writer already bounds the holder; a
+	// history can also come from another writer, so the read bounds again.
+	maxTimelineActorBytes   = 320
+	maxTimelineSessionBytes = 128
+)
+
+// boundedLeaseText cleans and cuts one value lifted from a lease summary.
+func boundedLeaseText(s string, limit int) string {
+	return textbound.Cut(strings.ToValidUTF8(s, ""), limit)
 }
 
 // timelineEntry maps one history event to an entry, or to nil where the event
@@ -379,6 +420,15 @@ type activityInFlight struct {
 // would read a run's own scheduling as things the workload did.
 func (s *FlowstateServer) timelineEntry(
 	event *historypb.HistoryEvent, inFlight map[int64]*activityInFlight,
+) *v1.TimelineEntry {
+	return s.timelineEntryCounted(event, inFlight, nil)
+}
+
+// timelineEntryCounted is [FlowstateServer.timelineEntry] that also numbers
+// each step's schedulings by label in occurrences, a map owned by the walk. A
+// nil map counts nothing and leaves every occurrence zero.
+func (s *FlowstateServer) timelineEntryCounted(
+	event *historypb.HistoryEvent, inFlight map[int64]*activityInFlight, occurrences map[string]int32,
 ) *v1.TimelineEntry {
 	entry := &v1.TimelineEntry{
 		EventId: event.GetEventId(),
@@ -398,6 +448,7 @@ func (s *FlowstateServer) timelineEntry(
 		entry.ScheduledEventId = scheduled
 		if work, ok := inFlight[scheduled]; ok {
 			entry.Step = work.label
+			entry.Occurrence = work.occurrence
 			if attempted {
 				entry.Attempt = work.attempt
 			}
@@ -419,7 +470,15 @@ func (s *FlowstateServer) timelineEntry(
 		entry.Attempt = 1
 		// Recorded for the events that report how this work ended, which carry
 		// a reference here and nothing else about it.
-		inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step, attempt: 1}
+		work := &activityInFlight{label: entry.Step, attempt: 1}
+		if occurrences != nil {
+			if _, seen := occurrences[entry.Step]; seen || len(occurrences) < maxTimelineLabels {
+				occurrences[entry.Step]++
+				work.occurrence = occurrences[entry.Step]
+			}
+		}
+		entry.Occurrence = work.occurrence
+		inFlight[event.GetEventId()] = work
 
 	case enums.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
 		entry.Kind = v1.TimelineEntry_KIND_STEP_COMPLETED
@@ -473,6 +532,7 @@ func (s *FlowstateServer) timelineEntry(
 		work, known := inFlight[scheduled]
 		if known {
 			entry.Step = work.label
+			entry.Occurrence = work.occurrence
 			work.attempt = attrs.GetAttempt()
 		}
 		entry.ScheduledEventId = scheduled
@@ -512,13 +572,30 @@ func (s *FlowstateServer) timelineEntry(
 		// Recorded under this event's own id, which is what a TimerFired
 		// refers back to — the same join an activity's ending makes.
 		if entry.Step != "" {
-			inFlight[event.GetEventId()] = &activityInFlight{label: entry.Step}
+			work := &activityInFlight{label: entry.Step}
+			// A debug lease is told from every other timer by its summary
+			// alone, parsed with the engine's own spelling of it. A summary
+			// that does not parse stays an ordinary timer.
+			if session, holder, ok := engine.ParseDebugLeaseSummary(entry.Step); ok {
+				work.lease = &debugLeaseTimer{
+					session: boundedLeaseText(session, maxTimelineSessionBytes),
+					actor:   boundedLeaseText(holder, maxTimelineActorBytes),
+				}
+				entry.Kind = v1.TimelineEntry_KIND_DEBUG_PAUSED
+				entry.SessionId = work.lease.session
+				entry.Actor = work.lease.actor
+			}
+			inFlight[event.GetEventId()] = work
 		}
 
 	case enums.EVENT_TYPE_TIMER_FIRED:
 		entry.Kind = v1.TimelineEntry_KIND_TIMER_FIRED
 		if work, ok := inFlight[event.GetTimerFiredEventAttributes().GetStartedEventId()]; ok {
 			entry.Step = work.label
+			if work.lease != nil {
+				entry.Kind = v1.TimelineEntry_KIND_DEBUG_RESUMED
+				entry.SessionId, entry.Actor, entry.EndReason = work.lease.session, work.lease.actor, "lapsed"
+			}
 			delete(inFlight, event.GetTimerFiredEventAttributes().GetStartedEventId())
 		}
 
@@ -534,6 +611,10 @@ func (s *FlowstateServer) timelineEntry(
 		started := event.GetTimerCanceledEventAttributes().GetStartedEventId()
 		if work, ok := inFlight[started]; ok {
 			entry.Step = work.label
+			if work.lease != nil {
+				entry.Kind = v1.TimelineEntry_KIND_DEBUG_RESUMED
+				entry.SessionId, entry.Actor, entry.EndReason = work.lease.session, work.lease.actor, "released"
+			}
 			delete(inFlight, started)
 		}
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -915,8 +916,47 @@ func debugLeaseSummary(lease *v1.DebugSession) string {
 	holder := v1.QualifiedSubject(
 		lease.GetAttachedBy().GetPrincipal().GetIssuer(), lease.GetAttachedBy().GetPrincipal().GetSubject())
 
-	return fmt.Sprintf("debug lease %s held by %s expires",
+	return fmt.Sprintf(debugLeaseSummaryFormat,
 		lease.GetSessionId(), boundSummaryText(holder))
+}
+
+// debugLeaseSummaryFormat is the one spelling of the lease timer's summary,
+// shared by [debugLeaseSummary] and [ParseDebugLeaseSummary] so the reader that
+// recognises a lease in history cannot drift from the writer.
+const debugLeaseSummaryFormat = "debug lease %s held by %s expires"
+
+const (
+	debugLeaseSummaryPrefix = "debug lease "
+	debugLeaseSummaryMid    = " held by "
+	debugLeaseSummarySuffix = " expires"
+)
+
+// ParseDebugLeaseSummary recognises the summary [debugLeaseSummary] writes onto
+// a debug lease's expiry timer and returns the session id and the holder text
+// it names. ok is false for anything else, including the pacing timer's
+// summary, so a reader can tell a lease from every other timer by the label
+// alone without decoding any payload.
+//
+// The session id is the text before the first " held by ": a session id never
+// contains whitespace, whereas a holder is free text and may contain the
+// separator itself.
+func ParseDebugLeaseSummary(summary string) (sessionID, holder string, ok bool) {
+	rest, found := strings.CutPrefix(summary, debugLeaseSummaryPrefix)
+	if !found {
+		return "", "", false
+	}
+
+	rest, found = strings.CutSuffix(rest, debugLeaseSummarySuffix)
+	if !found {
+		return "", "", false
+	}
+
+	sessionID, holder, found = strings.Cut(rest, debugLeaseSummaryMid)
+	if !found || sessionID == "" || holder == "" || strings.ContainsAny(sessionID, " \t\r\n") {
+		return "", "", false
+	}
+
+	return sessionID, holder, true
 }
 
 // debugBacklogSummary is what the pacing timer says about itself in history.

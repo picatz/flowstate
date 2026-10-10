@@ -403,6 +403,29 @@ const (
 	// Appended last, so an older client that does not know the value skips the
 	// row as an unknown kind and is no worse off than before it existed.
 	TimelineEntry_KIND_TIMER_CANCELED TimelineEntry_Kind = 11
+	// KIND_DEBUG_PAUSED is a debugger taking the run: the lease timer an
+	// attached debug session holds, reported as what it means rather than as a
+	// timer. It replaces the KIND_TIMER_STARTED row that same history event
+	// used to produce, carrying `session_id` and `actor`. A pacing timer (the
+	// run reading a backlog of asks) is not a pause and stays an ordinary
+	// timer, as does any timer whose label is not a lease's.
+	//
+	// Derived from the timer's summary alone, the same label the timeline
+	// already showed. A summary that does not parse as a lease's falls back to
+	// KIND_TIMER_STARTED, so an unrecognised label is never mis-reported as a
+	// pause.
+	//
+	// Appended last, so an older client that does not know the value skips the
+	// row as an unknown kind.
+	TimelineEntry_KIND_DEBUG_PAUSED TimelineEntry_Kind = 12
+	// KIND_DEBUG_RESUMED is that lease ending, with `end_reason` saying how:
+	// "released" when the timer was cancelled (the holder let go, or the
+	// session ended) and "lapsed" when it fired (the lease ran out). It
+	// replaces the KIND_TIMER_CANCELED or KIND_TIMER_FIRED row the closing
+	// event used to produce, and carries the same `session_id` and `actor` as
+	// the pause it closes. Only the lease timer's end becomes one: the cause
+	// beyond those two is not recorded in history.
+	TimelineEntry_KIND_DEBUG_RESUMED TimelineEntry_Kind = 13
 )
 
 // Enum value maps for TimelineEntry_Kind.
@@ -420,6 +443,8 @@ var (
 		9:  "KIND_RUN_CONTINUED",
 		10: "KIND_RUN_ENDED",
 		11: "KIND_TIMER_CANCELED",
+		12: "KIND_DEBUG_PAUSED",
+		13: "KIND_DEBUG_RESUMED",
 	}
 	TimelineEntry_Kind_value = map[string]int32{
 		"KIND_UNSPECIFIED":     0,
@@ -434,6 +459,8 @@ var (
 		"KIND_RUN_CONTINUED":   9,
 		"KIND_RUN_ENDED":       10,
 		"KIND_TIMER_CANCELED":  11,
+		"KIND_DEBUG_PAUSED":    12,
+		"KIND_DEBUG_RESUMED":   13,
 	}
 )
 
@@ -2821,7 +2848,38 @@ type TimelineEntry struct {
 	// budget too, and says that it stopped. A cut message says so in its own
 	// text, because a diagnosis silently shortened is one a reader may act on
 	// believing they have all of it.
-	Failure       string `protobuf:"bytes,6,opt,name=failure,proto3" json:"failure,omitempty"`
+	Failure string `protobuf:"bytes,6,opt,name=failure,proto3" json:"failure,omitempty"`
+	// SessionId is the debug lease's session, on KIND_DEBUG_PAUSED and
+	// KIND_DEBUG_RESUMED rows and empty elsewhere. It is read from the lease
+	// timer's summary, the same text the timeline already reported as the step;
+	// no signal or activity payload is decoded to fill it.
+	SessionId string `protobuf:"bytes,8,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Actor is the holder of the debug lease, on KIND_DEBUG_PAUSED and
+	// KIND_DEBUG_RESUMED rows and empty elsewhere. It is exactly the holder text
+	// the timeline already showed inside the lease timer's step label (an
+	// attested issuer and subject, cut to a bound), moved into a field of its own
+	// and cut again to a server-side bound. The sender of a debug ask is not
+	// reported here or anywhere on the timeline.
+	Actor string `protobuf:"bytes,9,opt,name=actor,proto3" json:"actor,omitempty"`
+	// EndReason is why a debug pause ended, on KIND_DEBUG_RESUMED rows: "released"
+	// when the lease timer was cancelled, "lapsed" when it fired. Empty on every
+	// other row.
+	EndReason string `protobuf:"bytes,10,opt,name=end_reason,json=endReason,proto3" json:"end_reason,omitempty"`
+	// Occurrence is the 1-based ordinal of this execution among the
+	// KIND_STEP_SCHEDULED rows in this run's history that carry the same step
+	// label, counted in history order. A scheduling, and the completion, failure,
+	// timeout or cancellation joined to it by `scheduled_event_id`, all carry the
+	// same number. Zero on rows that are not about a step's work.
+	//
+	// It is an ordinal of scheduling and not the loop index. Under a concurrent
+	// `for_each` or `parallel` the order in which iterations are scheduled need
+	// not be the order of their items, and the count restarts at 1 after
+	// Continue-As-New because it is derived from one segment's history. The
+	// debugger's `id[3]` address is the exact answer to which iteration this was;
+	// this number is a hint for reading a timeline where the same label appears
+	// more than once. Past a bound on distinct labels per request the number is
+	// left at zero rather than guessed.
+	Occurrence    int32 `protobuf:"varint,11,opt,name=occurrence,proto3" json:"occurrence,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2903,6 +2961,34 @@ func (x *TimelineEntry) GetFailure() string {
 		return x.Failure
 	}
 	return ""
+}
+
+func (x *TimelineEntry) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *TimelineEntry) GetActor() string {
+	if x != nil {
+		return x.Actor
+	}
+	return ""
+}
+
+func (x *TimelineEntry) GetEndReason() string {
+	if x != nil {
+		return x.EndReason
+	}
+	return ""
+}
+
+func (x *TimelineEntry) GetOccurrence() int32 {
+	if x != nil {
+		return x.Occurrence
+	}
+	return 0
 }
 
 var File_flowstate_v1_run_proto protoreflect.FileDescriptor
@@ -3098,7 +3184,7 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x04step\x18\x04 \x01(\tR\x04step\x12\x1b\n" +
 	"\tspec_hash\x18\x05 \x01(\tR\bspecHash\x12\x1d\n" +
 	"\n" +
-	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\"\xb5\x04\n" +
+	"size_bytes\x18\x06 \x01(\x03R\tsizeBytes\"\xd8\x05\n" +
 	"\rTimelineEntry\x12\x19\n" +
 	"\bevent_id\x18\x01 \x01(\x03R\aeventId\x12.\n" +
 	"\x04time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\x04time\x12>\n" +
@@ -3106,7 +3192,16 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x04step\x18\x04 \x01(\tR\x04step\x12\x18\n" +
 	"\aattempt\x18\x05 \x01(\x05R\aattempt\x12,\n" +
 	"\x12scheduled_event_id\x18\a \x01(\x03R\x10scheduledEventId\x12\x18\n" +
-	"\afailure\x18\x06 \x01(\tR\afailure\"\xa2\x02\n" +
+	"\afailure\x18\x06 \x01(\tR\afailure\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\b \x01(\tR\tsessionId\x12\x14\n" +
+	"\x05actor\x18\t \x01(\tR\x05actor\x12\x1d\n" +
+	"\n" +
+	"end_reason\x18\n" +
+	" \x01(\tR\tendReason\x12\x1e\n" +
+	"\n" +
+	"occurrence\x18\v \x01(\x05R\n" +
+	"occurrence\"\xd1\x02\n" +
 	"\x04Kind\x12\x14\n" +
 	"\x10KIND_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13KIND_STEP_SCHEDULED\x10\x01\x12\x17\n" +
@@ -3120,7 +3215,9 @@ const file_flowstate_v1_run_proto_rawDesc = "" +
 	"\x12KIND_RUN_CONTINUED\x10\t\x12\x12\n" +
 	"\x0eKIND_RUN_ENDED\x10\n" +
 	"\x12\x17\n" +
-	"\x13KIND_TIMER_CANCELED\x10\vB\xa7\x01\n" +
+	"\x13KIND_TIMER_CANCELED\x10\v\x12\x15\n" +
+	"\x11KIND_DEBUG_PAUSED\x10\f\x12\x16\n" +
+	"\x12KIND_DEBUG_RESUMED\x10\rB\xa7\x01\n" +
 	"\x10com.flowstate.v1B\bRunProtoP\x01Z8github.com/picatz/flowstate/pkg/flowstate/v1;flowstatev1\xa2\x02\x03FXX\xaa\x02\fFlowstate.V1\xca\x02\fFlowstate\\V1\xe2\x02\x18Flowstate\\V1\\GPBMetadata\xea\x02\rFlowstate::V1b\x06proto3"
 
 var (

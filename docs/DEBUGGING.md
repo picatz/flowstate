@@ -1277,9 +1277,22 @@ ordered in history with everything else the run hears, and `flow timeline`
 shows each one and each lease:
 
 ```text
-10:53:09Z  waiting  debug lease c9a7… held by https://flowstate.local/dev#sre@example.com expires …
-10:53:09Z  signal   flowstate_debug
+10:53:09Z  debug paused  debug lease c9a7… held by https://flowstate.local/dev#sre@example.com expires
+10:53:09Z  signal        flowstate_debug
+10:58:09Z  debug resumed (released)  debug lease c9a7… held by https://flowstate.local/dev#sre@example.com expires
 ```
+
+A lease is a `debug paused` row, and its end is `debug resumed (released)` when
+the holder let go or `debug resumed (lapsed)` when the lease ran out. `-o json`
+carries `sessionId`, `actor` (the holder text the label already showed) and
+`endReason` on those rows. Pacing timers stay ordinary `waiting` rows, and a
+signal's payload and sender are still not on the timeline.
+
+A step scheduled more than once in a run shows `#N` after its label from the
+second execution on (`occurrence` in `-o json`). It counts schedulings of that
+label in history order: it is not the loop index, is not stable under a
+concurrent `for_each` or `parallel`, and restarts after Continue-As-New. The
+debugger's `id[3]` address is the exact answer.
 
 The earlier untyped hold still works for a run whose workflow declares `debug:`:
 `flow signal <workflow-id> flowstate_debug --data '{"verb": "pause", "lease": "5m"}'`
