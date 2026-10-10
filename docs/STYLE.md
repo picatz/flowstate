@@ -329,7 +329,11 @@ Two files that mean the same thing are byte-identical after formatting, and a
 reviewer never spends a comment on layout. `gofmt`'s one transferable lesson is that
 the value is the absence of the argument, and a single option destroys it.
 
-The one form is chosen to be the one an author writes. A task's inputs come out in
+The one form is chosen to be the one an author writes. A step's keys come out as
+`id`, `description`, `if`, `vars`, `async`, `timeout`, `total_timeout`, `retry`,
+`continue_on_error`, then the work (`exec:`, `http:`, `for_each:`, ...), so a step reads
+as who it is, when it runs, what bounds it, and what it does
+(`pkg/flowstate/v1/flowfile/marshal.go`, `stepToYAML`). A task's inputs come out in
 the order `flow tasks` lists them (required first, then the schema's; a task the
 registry does not know is sorted), a list of
 plain scalars that fits in 60 characters stays on one line (`argv: [make, build]`),
