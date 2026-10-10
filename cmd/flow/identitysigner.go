@@ -129,6 +129,9 @@ func parseIdentitySigner(raw string, policy *auth.Policy) (vaulttransit.Config, 
 	switch {
 	case tokenFile != "" && role != "":
 		return vaulttransit.Config{}, fmt.Errorf("configure one Vault authentication method, not both a token file and kubernetes_role")
+	case role != "" && os.Getenv(secretVaultTokenEnv) != "":
+		// A static token beside a role used to be dropped without a word.
+		return vaulttransit.Config{}, fmt.Errorf("configure one Vault authentication method, not both $%s and kubernetes_role", secretVaultTokenEnv)
 	case tokenFile != "":
 		// Re-read when Vault rejects the token, so an agent's rotated sink is
 		// picked up without a restart.
