@@ -261,75 +261,37 @@ func walkExprTree(e *expr.Expr, visit func(*expr.Expr)) {
 // enumOrigins answers which task's outputs an operand reads, so a comparison is
 // judged only against an enum that task's answer holds.
 type enumOrigins struct {
-	steps     map[string]*v1.Node
-	iterators map[string]*expr.Expr
-	perStep   map[string]*v1.OutputEnums
+	steps   map[string]*v1.Node
+	perStep map[string]*v1.OutputEnums
 }
 
 func newEnumOrigins(wf *v1.Workflow) *enumOrigins {
-	o := &enumOrigins{
-		steps:     map[string]*v1.Node{},
-		iterators: map[string]*expr.Expr{},
-		perStep:   map[string]*v1.OutputEnums{},
-	}
+	o := &enumOrigins{steps: map[string]*v1.Node{}, perStep: map[string]*v1.OutputEnums{}}
 
 	seen := map[string]int{}
-	ambiguous := map[string]bool{}
 	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
 		seen[node.GetId()]++
 		o.steps[node.GetId()] = node
-
-		if each := node.GetForEach(); each != nil {
-			name := v1.IteratorName(each)
-			if _, again := o.iterators[name]; again || each.GetItems().GetExpr() == nil {
-				ambiguous[name] = true
-			}
-			o.iterators[name] = each.GetItems().GetExpr().GetExpr()
-		}
 	}})
 	for id, count := range seen {
 		if count > 1 {
 			delete(o.steps, id)
 		}
 	}
-	for name := range ambiguous {
-		delete(o.iterators, name)
-	}
 
 	return o
-}
-
-// rangesIn are the lists the comprehensions in e iterate, by variable name; a
-// name two comprehensions bind to different lists is dropped.
-func rangesIn(e *expr.Expr) map[string]*expr.Expr {
-	ranges := map[string]*expr.Expr{}
-	dropped := map[string]bool{}
-	walkExprTree(e, func(node *expr.Expr) {
-		c := node.GetComprehensionExpr()
-		if c == nil || c.GetIterVar() == "" {
-			return
-		}
-		if _, again := ranges[c.GetIterVar()]; again {
-			dropped[c.GetIterVar()] = true
-		}
-		ranges[c.GetIterVar()] = c.GetIterRange()
-	})
-	for name := range dropped {
-		delete(ranges, name)
-	}
-
-	return ranges
 }
 
 // maxOriginDepth bounds how many `value:` steps are followed back to a task.
 const maxOriginDepth = 4
 
 // of is the enums of the task whose output e reads, false when e is not
-// provably a read of one: rooted at `steps.<id>` for a task step, through a
-// `value:` step that is itself such a read, through indexing, a comprehension's
-// list, or the iterator of a `for_each` over one. Anything rooted elsewhere (an
-// input, a var, a declared type) is not.
-func (o *enumOrigins) of(e *expr.Expr, ranges map[string]*expr.Expr, depth int) (*v1.OutputEnums, bool) {
+// provably a read of one. It follows only a chain written down in e itself:
+// rooted at `steps.<id>` for a task step, through a `value:` step that is itself
+// such a chain, field selection, indexing, and `filter(...)`, which keeps the
+// elements. It never resolves a bare identifier, so a comprehension variable, an
+// iterator, a var or an input is not judged, and neither is anything `map` built.
+func (o *enumOrigins) of(e *expr.Expr, depth int) (*v1.OutputEnums, bool) {
 	if depth > maxOriginDepth {
 		return nil, false
 	}
@@ -340,23 +302,35 @@ func (o *enumOrigins) of(e *expr.Expr, ranges map[string]*expr.Expr, depth int) 
 			return o.step(kind.SelectExpr.GetField(), depth)
 		}
 
-		return o.of(kind.SelectExpr.GetOperand(), ranges, depth)
-	case *expr.Expr_IdentExpr:
-		if list, ok := ranges[kind.IdentExpr.GetName()]; ok {
-			return o.of(list, ranges, depth+1)
-		}
-		if list, ok := o.iterators[kind.IdentExpr.GetName()]; ok {
-			return o.of(list, ranges, depth+1)
-		}
+		return o.of(kind.SelectExpr.GetOperand(), depth)
 	case *expr.Expr_CallExpr:
 		if kind.CallExpr.GetFunction() == "_[_]" && len(kind.CallExpr.GetArgs()) == 2 {
-			return o.of(kind.CallExpr.GetArgs()[0], ranges, depth)
+			return o.of(kind.CallExpr.GetArgs()[0], depth)
 		}
 	case *expr.Expr_ComprehensionExpr:
-		return o.of(kind.ComprehensionExpr.GetIterRange(), ranges, depth)
+		if keepsElements(kind.ComprehensionExpr) {
+			return o.of(kind.ComprehensionExpr.GetIterRange(), depth)
+		}
 	}
 
 	return nil, false
+}
+
+// keepsElements reports whether c is the expansion of `list.filter(v, cond)`: its
+// step appends the iteration variable itself, unchanged, to the accumulator.
+func keepsElements(c *expr.Expr_Comprehension) bool {
+	step := c.GetLoopStep().GetCallExpr()
+	if step == nil || step.GetFunction() != "_?_:_" || len(step.GetArgs()) != 3 {
+		return false
+	}
+	appended := step.GetArgs()[1].GetCallExpr()
+	if appended == nil || appended.GetFunction() != "_+_" || len(appended.GetArgs()) != 2 {
+		return false
+	}
+	elements := appended.GetArgs()[1].GetListExpr().GetElements()
+
+	return len(elements) == 1 && elements[0].GetIdentExpr().GetName() == c.GetIterVar() &&
+		appended.GetArgs()[0].GetIdentExpr().GetName() == c.GetAccuVar()
 }
 
 func (o *enumOrigins) step(id string, depth int) (*v1.OutputEnums, bool) {
@@ -377,7 +351,7 @@ func (o *enumOrigins) step(id string, depth int) (*v1.OutputEnums, bool) {
 	case *v1.Node_Value:
 		root := node.GetValue().GetExpr().GetExpr()
 
-		return o.of(root, rangesIn(root), depth+1)
+		return o.of(root, depth+1)
 	}
 
 	return nil, false
@@ -405,8 +379,6 @@ func enumComparisonErrors(wf *v1.Workflow) Diagnostics {
 		if parsed == nil {
 			return
 		}
-		ranges := rangesIn(parsed.GetExpr())
-
 		walkExprTree(parsed.GetExpr(), func(node *expr.Expr) {
 			call := node.GetCallExpr()
 			if call == nil || len(call.GetArgs()) != 2 || (call.GetFunction() != "_==_" && call.GetFunction() != "_!=_") {
@@ -418,7 +390,7 @@ func enumComparisonErrors(wf *v1.Workflow) Diagnostics {
 				if selected == nil || literal == nil {
 					continue
 				}
-				enums, ok := origins.of(selected.GetOperand(), ranges, 0)
+				enums, ok := origins.of(selected.GetOperand(), 0)
 				if !ok {
 					continue
 				}

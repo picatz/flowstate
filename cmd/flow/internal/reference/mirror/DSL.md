@@ -3272,9 +3272,10 @@ differently is not offered. A comparison of an output field with a string, with 
 number the enum does not define, or with a misspelled name is a compile-time
 diagnostic with the near miss. The field check is by field name, because the
 checker does not yet type what is inside a task's answer: it judges only an operand
-that provably reads one task's output (rooted at that step, through indexing, a
-comprehension's list, a `for_each` iterator or a `value:` step that does), never an
-input, a var or a record field, and only when every output field of that name in
+that is written as a chain from one task's output (`steps.<id>`, through field
+selection, indexing, `filter(...)` or a `value:` step that is itself such a chain),
+never a bare name (an input, a var, an iterator or a comprehension variable), a
+record, or anything `map` built, and only when every output field of that name in
 that task is the same enum. `flow fmt` and Marshal write the author's name back:
 the number is what the specification evaluates, and the name is kept beside it. The cost is
 that a file naming an enum needs the plugin's descriptors wherever it is
