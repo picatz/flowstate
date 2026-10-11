@@ -491,7 +491,7 @@ func wellKnown(name protoreflect.FullName) bool {
 // It is the companion to declaring an output field as
 // google.api.expr.v1alpha1.Value: that says "this output can be anything", and
 // this is how a plugin says what it is this time. Maps, slices, and the ordinary
-// scalars all work, nested to any depth:
+// scalars all work, nested to a depth no real output approaches (8192; deeper yields an error value):
 //
 //	outputs, err := sdk.EncodeOutputs(&examplev1.QueryOutputs{
 //		Rows:  sdk.Literal([]any{map[string]any{"id": 1, "name": "a"}}),
@@ -512,8 +512,11 @@ func wellKnown(name protoreflect.FullName) bool {
 func Literal(v any) *expr.Value {
 	value := flowstatev1.NewValue(v)
 	if literal := value.GetLiteral(); literal != nil {
-		if !markUnrepresentable(literal, map[*expr.Value]bool{}) {
+		switch markUnrepresentable(literal, map[*expr.Value]bool{}, 0) {
+		case walkCyclic:
 			return errorLiteral("flowstatev1: a cyclic value cannot be represented")
+		case walkTooDeep:
+			return errorLiteral("flowstatev1: a value nested too deeply cannot be represented")
 		}
 		return literal
 	}
@@ -533,35 +536,62 @@ func unrepresentableType(v any) string {
 	return name
 }
 
+// maxLiteralDepth bounds how deep [Literal] follows a literal. It is far past
+// the nesting a plugin emits (the decode side stops at 16 and the output side at
+// 32 messages), and still keeps the walk, and the marshaling of its result, well
+// inside the stack.
+const maxLiteralDepth = 1 << 13
+
+// walkResult is how a [markUnrepresentable] walk ended.
+type walkResult int
+
+const (
+	walkDone walkResult = iota
+	walkCyclic
+	walkTooDeep
+)
+
 // markUnrepresentable replaces what [flowstatev1.NewValue] left out of a list or
-// a map, an element it had no literal for, with an error value, and reports
-// false when the literal contains itself.
+// a map, an element, key or value it had no literal for, with an error value. It
+// reports a literal that contains itself, or nests past [maxLiteralDepth], so
+// the caller can refuse it whole.
 //
 // The literal may be a caller-supplied tree, so the walk keeps a visit state per
 // node: a node reached again while still open is a cycle, which cannot be
-// marshaled and is refused whole, and one reached again after it was finished
-// is skipped, so the work is linear in the nodes and no node budget can leave
-// part of the tree unpatched. Nil entries are skipped.
-func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool) bool {
+// marshaled, and one reached again after it was finished is skipped, so the work
+// is linear in the nodes and nothing is left unpatched. Map keys are walked like
+// values, since a key can hold a list that holds the map.
+func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool, depth int) walkResult {
 	if literal == nil {
-		return true
+		return walkDone
 	}
 	if open, seen := state[literal]; seen {
-		return !open
+		if open {
+			return walkCyclic
+		}
+		return walkDone
+	}
+	if depth > maxLiteralDepth {
+		return walkTooDeep
 	}
 	state[literal] = true
 	defer func() { state[literal] = false }()
+
+	// child walks one nested value, replacing a nil one through set.
+	child := func(value *expr.Value, set func(*expr.Value)) walkResult {
+		if value == nil {
+			set(errorLiteral(""))
+			return walkDone
+		}
+		return markUnrepresentable(value, state, depth+1)
+	}
 
 	switch kind := literal.GetKind().(type) {
 	case *expr.Value_ListValue:
 		values := kind.ListValue.GetValues()
 		for i, element := range values {
-			if element == nil {
-				values[i] = errorLiteral("")
-				continue
-			}
-			if !markUnrepresentable(element, state) {
-				return false
+			if result := child(element, func(v *expr.Value) { values[i] = v }); result != walkDone {
+				return result
 			}
 		}
 	case *expr.Value_MapValue:
@@ -569,16 +599,15 @@ func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool) bool {
 			if entry == nil {
 				continue
 			}
-			if entry.Value == nil {
-				entry.Value = errorLiteral("")
-				continue
+			if result := child(entry.Key, func(v *expr.Value) { entry.Key = v }); result != walkDone {
+				return result
 			}
-			if !markUnrepresentable(entry.Value, state) {
-				return false
+			if result := child(entry.Value, func(v *expr.Value) { entry.Value = v }); result != walkDone {
+				return result
 			}
 		}
 	}
-	return true
+	return walkDone
 }
 
 // errorLiteral is the error value [Literal] yields.

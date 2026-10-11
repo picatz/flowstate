@@ -65,17 +65,39 @@ func TestLiteralWalkIsBoundedAndNilSafe(t *testing.T) {
 	key := &expr.Value{Kind: &expr.Value_StringValue{StringValue: "k"}}
 	cycleMap.Entries = []*expr.MapValue_Entry{{Key: key, Value: self}, {Key: key, Value: self}}
 
+	// A map whose key is a list that holds the map.
+	keyCycle := &expr.MapValue{}
+	keyed := &expr.Value{Kind: &expr.Value_MapValue{MapValue: keyCycle}}
+	keyCycle.Entries = []*expr.MapValue_Entry{{
+		Key:   &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{keyed}}}},
+		Value: key,
+	}}
+
 	start := time.Now()
 	for name, input := range map[string]any{
-		"cyclic list":     &expr.Value{Kind: &expr.Value_ListValue{ListValue: cycleList}},
-		"cyclic wide map": self,
-		"cycle in a map":  map[string]any{"x": self},
+		"cycle through a key": keyed,
+		"cyclic list":         &expr.Value{Kind: &expr.Value_ListValue{ListValue: cycleList}},
+		"cyclic wide map":     self,
+		"cycle in a map":      map[string]any{"x": self},
 	} {
 		got := Literal(input)
 		requireErrorLiteral(t, input, got)
 		if _, err := proto.Marshal(got); err != nil {
 			t.Errorf("%s: the result does not marshal: %v", name, err)
 		}
+	}
+
+	// A nil key, and a nil element inside a list used as a key, are patched.
+	nilKey := &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: []*expr.MapValue_Entry{
+		{Value: key},
+		{Key: &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{nil}}}}, Value: key},
+	}}}}
+	patched := Literal(nilKey)
+	entries := patched.GetMapValue().GetEntries()
+	requireErrorLiteral(t, "nil key", entries[0].GetKey())
+	requireErrorLiteral(t, "nil key element", entries[1].GetKey().GetListValue().GetValues()[0])
+	if _, err := proto.Marshal(patched); err != nil {
+		t.Errorf("nil keys: the result does not marshal: %v", err)
 	}
 
 	for name, input := range map[string]any{
