@@ -1574,7 +1574,7 @@ func (s *Server) breakpointLocations(request inbound) {
 		// The columns bound the first and last line of the range only; a
 		// step starting before column or at endColumn or after is outside.
 		column := toClient(location.GetRange().GetStartColumn(), columnBase)
-		if column != 0 && ((line == from && asked.Column != nil && column < *asked.Column) ||
+		if location.GetRange().GetStartColumn() != 0 && ((line == from && asked.Column != nil && column < *asked.Column) ||
 			(line == askedTo && asked.EndColumn != nil && column >= *asked.EndColumn)) {
 			continue
 		}

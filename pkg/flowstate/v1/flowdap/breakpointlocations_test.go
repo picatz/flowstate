@@ -188,3 +188,28 @@ func TestBreakpointLocationsAreBounded(t *testing.T) {
 	// A range over the work bound is refused, not truncated.
 	assert.Equal(t, false, locate(t, c, 4, map[string]any{"source": src, "line": 1, "endLine": 3*steps + 3})["success"])
 }
+
+// A client whose columns start at 0 sees the source's fifth column as 4, and
+// column 0 is a real column there, not an unknown one: the filter keys off the
+// source map's column, and the response always carries the column.
+func TestBreakpointLocationsFilterByColumnForAZeroBasedClient(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launchedWith(t, "located.yaml", locatedFlowfile, nil)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "linesStartAt1": false, "columnsStartAt1": false})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	src := map[string]any{"path": program}
+
+	// Source line 6 is client line 5; the step starts at client column 4.
+	all := locate(t, c, 3, map[string]any{"source": src, "line": 0, "endLine": 20})
+	require.Equal(t, true, all["success"], all)
+	assert.Equal(t, []int{5, 9}, locatedLines(all))
+	assert.Equal(t, float64(4), body(all)["breakpoints"].([]any)[0].(map[string]any)["column"])
+
+	assert.Equal(t, []int{5}, locatedLines(locate(t, c, 4, map[string]any{"source": src, "line": 5, "column": 4, "endLine": 5, "endColumn": 5})))
+	assert.Empty(t, locatedLines(locate(t, c, 5, map[string]any{"source": src, "line": 5, "column": 5, "endLine": 5})))
+	assert.Empty(t, locatedLines(locate(t, c, 6, map[string]any{"source": src, "line": 5, "endLine": 5, "endColumn": 4})))
+	assert.Empty(t, locatedLines(locate(t, c, 7, map[string]any{"source": src, "line": 5, "endLine": 5, "endColumn": 0})))
+}

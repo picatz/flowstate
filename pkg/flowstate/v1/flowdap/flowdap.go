@@ -203,7 +203,7 @@ type breakpointLocationsBody struct {
 // bases, so a zero-based first line is sent rather than omitted.
 type breakpointLocation struct {
 	Line   int `json:"line"`
-	Column int `json:"column,omitempty"`
+	Column int `json:"column"`
 }
 
 type stackTraceBody struct {
