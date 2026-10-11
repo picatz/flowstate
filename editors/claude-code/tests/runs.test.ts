@@ -1,4 +1,4 @@
-import { clean } from '../hooks/runs'
+import { clean, reason } from '../hooks/runs'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -93,4 +93,28 @@ test('clean strips controls and bounds server text', () => {
   expect(out).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
   expect(out.length).toBe(100)
   expect(clean(42)).toBe('')
+})
+
+test('a long transport error keeps its cause, which comes last', () => {
+  const why = reason('rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:9233: connect: connection refused"')
+  expect(why.length).toBeLessThanOrEqual(100)
+  expect(why).toMatch(/^rpc error: code = Unavailable/)
+  expect(why).toMatch(/connection refused"?$/)
+  expect(reason('short one')).toBe('short one')
+  expect(reason('')).toBe('no server answered')
+})
+
+test('a very long error still ends in its cause, and a cut never splits a character', () => {
+  const long = `rpc error: ${'x'.repeat(900)} connection refused`
+  expect(reason(long)).toMatch(/connection refused$/)
+  const emoji = `${'😀'.repeat(120)} end`
+  const cut = reason(emoji)
+  expect(Array.from(cut).every(c => c.codePointAt(0)! < 0xd800 || c.codePointAt(0)! > 0xdfff)).toBe(true)
+  expect(cut).toMatch(/ end$/)
+  expect(cut).toContain(' … ')
+  expect(Array.from(cut).length).toBeLessThanOrEqual(100)
+  expect(reason('a'.repeat(100))).toBe('a'.repeat(100))
+  expect(reason('a'.repeat(101))).toContain(' … ')
+  const huge = reason(`start ${'y'.repeat(50_000)} the real cause`)
+  expect(huge).toMatch(/the real cause$/)
 })

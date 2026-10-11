@@ -19,7 +19,27 @@ export const clean = (value: unknown, max = 80): string =>
 /** The first line of what `flow list` said when it could not reach a server. */
 export const reason = (stderr: string): string => {
   const lines = stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR')
-  return clean(lines[0], 100) || 'no server answered'
+  // A runaway line is cut to its start and its end before anything walks it: the cause comes last, and the work stays bounded.
+  const first = lines[0] ?? ''
+  const line = clean(first.length > MAX_LINE ? `${first.slice(0, MAX_LINE / 2)} ${first.slice(first.length - MAX_LINE / 2)}` : first, Number.MAX_SAFE_INTEGER)
+  return line === '' ? 'no server answered' : shortCause(line)
+}
+
+/** The longest a one-line reason gets before its middle is dropped. */
+const MAX_REASON = 100
+/** How much of the start survives; the rest of the budget is the tail. */
+const HEAD = 35
+/** The most of one stderr line that is read; anything longer keeps its start and its end. */
+const MAX_LINE = 4000
+
+/**
+ * A transport error names its cause last (`rpc error: code = Unavailable desc = ... dial tcp ...: connection
+ * refused`), so a long line keeps its head and its tail rather than losing the cause to a cut at the end.
+ */
+export const shortCause = (line: string): string => {
+  const cells = Array.from(line)
+  if (cells.length <= MAX_REASON) return line
+  return `${cells.slice(0, HEAD).join('').trimEnd()} … ${cells.slice(cells.length - (MAX_REASON - HEAD - 3)).join('').trimStart()}`
 }
 
 /**
