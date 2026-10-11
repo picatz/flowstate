@@ -9,7 +9,7 @@ import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from '.
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
-import { PaneNotes } from './panenotes'
+import { PaneNotes, debugCommand } from './panenotes'
 import { Poller, isLive } from './poll'
 import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
 import type { Parsed as TimelineParsed } from './detail'
@@ -810,6 +810,15 @@ export const register: Register = (on, options) => {
               }}>
                 Copy id
               </Button>
+              {head.kind === 'failed' && debugCommand(id) !== undefined && (
+                <Button key="debug-this" label="Debug this" plain onPress={async () => {
+                  // The note says what reached the clipboard, so a refused copy leaves none.
+                  const copied = await $.ui.copy({ text: debugCommand(id)!, surface: e.surface }).then(() => true, () => false)
+                  if (copied) paneNotes.debugAsked(id, facts.failedStep)
+                }}>
+                  Debug this
+                </Button>
+              )}
             </Box>
             <Text>  {story(facts)}</Text>
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}

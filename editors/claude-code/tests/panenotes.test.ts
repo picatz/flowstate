@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { MAX_NOTES, PaneNotes } from '../hooks/panenotes'
+import { MAX_NOTES, PaneNotes, debugCommand } from '../hooks/panenotes'
 
 test('a delivered signal is one fenced note, and it is said once', () => {
   const n = new PaneNotes()
@@ -26,4 +26,14 @@ test('a pane left open keeps only the newest notes', () => {
   expect(block).not.toContain('sent s0 ')
   expect(block).toContain(`s${MAX_NOTES + 2} `)
   expect(block.split('\n').filter(l => l.startsWith('pane:'))).toHaveLength(MAX_NOTES)
+})
+
+test('the debug command is the id as is, and an id that is not a run id gets none', () => {
+  expect(debugCommand('run-1:abc')).toBe('/flowstate:debug run-1:abc')
+  for (const bad of ['x; rm -rf /\n', '../etc/passwd', '/abs/path', '.hidden', 'a b', ''])
+    expect(debugCommand(bad)).toBeUndefined()
+  const n = new PaneNotes()
+  n.debugAsked('run-1', 'build')
+  expect(n.take()).toContain('copied /flowstate:debug for run run-1 (failed in build)')
+  expect(n.take()).toBeUndefined()
 })
