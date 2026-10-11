@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
-	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,13 +45,9 @@ const (
 // fuzzSchema is one descriptor with every field shape the bridge converts, built
 // without generated code so the targets do not depend on a plugin's own protos.
 //
-// withValues keeps the four fields typed as a CEL or flowstate value (any, anys,
-// many, val). Without them the schema is the one the encode direction can be
-// held to: EncodeOutputs recognises a value-typed field by asserting the Go
-// type of its message, which a dynamic message is not, so a dynamic descriptor
-// with such a field is encoded as an ordinary message. Generated code, which is
-// what a plugin ships, takes the intended path, and FuzzLiteral covers that one
-// with a generated message.
+// The four fields typed as a CEL or flowstate value (any, anys, many, val) are
+// matched by full name, so a dynamic message with them takes the same path as
+// generated code.
 //
 //	enum Color { COLOR_UNSPECIFIED = 0; RED = 1; GREEN = 2; }
 //	message Node { string name = 1; Node child = 2; repeated Node kids = 3; }
@@ -73,7 +68,7 @@ const (
 //	  flowstate.v1.Value val = 30;
 //	  google.protobuf.Timestamp ts = 31;
 //	}
-func fuzzSchema(tb testing.TB, withValues bool) (rich, node protoreflect.MessageDescriptor) {
+func fuzzSchema(tb testing.TB) (rich, node protoreflect.MessageDescriptor) {
 	tb.Helper()
 
 	str := descriptorpb.FieldDescriptorProto_TYPE_STRING
@@ -183,17 +178,6 @@ func fuzzSchema(tb testing.TB, withValues bool) (rich, node protoreflect.Message
 		},
 	}
 
-	if !withValues {
-		rich := fdp.MessageType[1]
-		rich.Field = slices.DeleteFunc(rich.Field, func(f *descriptorpb.FieldDescriptorProto) bool {
-			return slices.Contains([]string{"any", "anys", "many", "val"}, f.GetName())
-		})
-		rich.NestedType = slices.DeleteFunc(rich.NestedType, func(m *descriptorpb.DescriptorProto) bool {
-			return m.GetName() == "ManyEntry"
-		})
-		fdp.Dependency = []string{"google/protobuf/timestamp.proto"}
-	}
-
 	file, err := protodesc.NewFile(fdp, protoregistry.GlobalFiles)
 	if err != nil {
 		tb.Fatalf("building the fuzz schema: %v", err)
@@ -280,7 +264,7 @@ func (g *fuzzGen) literal(depth int) *expr.Value {
 	case 2:
 		return &expr.Value{Kind: &expr.Value_Int64Value{Int64Value: g.integer()}}
 	case 3:
-		return &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: uint64(g.integer())}}
+		return &expr.Value{Kind: &expr.Value_Uint64Value{Uint64Value: fuzzUnsigned(g)}}
 	case 4:
 		return &expr.Value{Kind: &expr.Value_DoubleValue{DoubleValue: g.double()}}
 	case 5:
@@ -420,8 +404,7 @@ func acceptableDecodeRefusal(err error) bool {
 //   - What decodes survives an encode and a decode: EncodeOutputs of an accepted
 //     message, fed back to DecodeInputs, rebuilds an equal message.
 func FuzzDecodeInputs(f *testing.F) {
-	rich, _ := fuzzSchema(f, true)
-	lean, _ := fuzzSchema(f, false)
+	rich, _ := fuzzSchema(f)
 
 	for _, depth := range []int{0, 1, fuzzMaxDecodeDepth - 1, fuzzMaxDecodeDepth, fuzzMaxDecodeDepth + 1, 64, 300} {
 		for _, width := range []int{0, 1, fuzzMaxDecodeElements - 1, fuzzMaxDecodeElements, fuzzMaxDecodeElements + 1} {
@@ -459,11 +442,9 @@ func FuzzDecodeInputs(f *testing.F) {
 			checkWithinDecodeBounds(t, decoded)
 		}
 
-		// The round trip runs on the schema without value-typed fields, which the
-		// encode direction can be held to; see [fuzzSchema].
-		leanDecoded := dynamicpb.NewMessage(lean)
-		if err := DecodeInputs(inputs, leanDecoded); err == nil {
-			checkRoundTrip(t, leanDecoded, lean)
+		// The round trip covers every field, value-typed ones included.
+		if err == nil {
+			checkRoundTrip(t, decoded, rich)
 		}
 
 		// The nested chain, alone, so its verdict is exact. A chain of n messages
@@ -630,7 +611,7 @@ func checkRoundTrip(t *testing.T, decoded protoreflect.Message, rich protoreflec
 //     the decode bounds (the round trip is checked inside [FuzzDecodeInputs]
 //     for what the generator builds; here, for what a typed message holds).
 func FuzzEncodeOutputs(f *testing.F) {
-	rich, _ := fuzzSchema(f, false)
+	rich, _ := fuzzSchema(f)
 
 	for _, chain := range []int{0, 1, fuzzMaxEncodeDepth - 1, fuzzMaxEncodeDepth, fuzzMaxEncodeDepth + 1, 100, 2000} {
 		f.Add([]byte{}, uint16(chain), false)
@@ -746,8 +727,7 @@ func populate(g *fuzzGen, msg *dynamicpb.Message) {
 }
 
 // fuzzElement builds one value of a field's type. An enum takes a number the
-// schema defines and a uint64 one the conversion accepts: see the note on
-// [fuzzUnsigned].
+// schema defines and a uint64 one over its whole range.
 func fuzzElement(g *fuzzGen, fd protoreflect.FieldDescriptor, fresh func() protoreflect.Value) protoreflect.Value {
 	switch fd.Kind() {
 	case protoreflect.StringKind:
@@ -772,6 +752,36 @@ func fuzzElement(g *fuzzGen, fd protoreflect.FieldDescriptor, fresh func() proto
 		return protoreflect.ValueOfEnum(protoreflect.EnumNumber(g.next() % 3))
 	case protoreflect.MessageKind:
 		node := fresh().Message()
+		// A value-typed field holds a literal that is not null: an empty or null
+		// one encodes as null, which decodes back as an absent field, the same
+		// documented loss of presence as an unset optional.
+		if full := fd.Message().FullName(); isValueMessage(full) {
+			literal := g.literal(0)
+			if _, null := literal.GetKind().(*expr.Value_NullValue); null {
+				literal = &expr.Value{Kind: &expr.Value_StringValue{StringValue: g.text()}}
+			}
+			var held proto.Message = literal
+			if full == flowstateValueName {
+				held = fuzzLiteralValue(literal)
+			}
+			wire, err := proto.Marshal(held)
+			if err != nil {
+				// Random bytes are not always valid UTF-8, which a message that
+				// holds the literal cannot carry; a plain string stands in.
+				held = &expr.Value{Kind: &expr.Value_StringValue{StringValue: "x"}}
+				if full == flowstateValueName {
+					held = fuzzLiteralValue(held.(*expr.Value))
+				}
+				wire, err = proto.Marshal(held)
+			}
+			if err == nil {
+				err = proto.Unmarshal(wire, node.Interface())
+			}
+			if err != nil {
+				panic("fuzz value does not round trip through the wire: " + err.Error())
+			}
+			return protoreflect.ValueOfMessage(node)
+		}
 		if name := node.Descriptor().Fields().ByName("name"); name != nil {
 			node.Set(name, protoreflect.ValueOfString(g.text()))
 		}
@@ -780,14 +790,13 @@ func fuzzElement(g *fuzzGen, fd protoreflect.FieldDescriptor, fresh func() proto
 	panic("fuzz schema has a kind fuzzElement does not build: " + fd.Kind().String())
 }
 
-// fuzzUnsigned is an unsigned 64-bit value the decoder accepts back. A uint64
-// above [math.MaxInt64] encodes as a CEL uint but does not decode, because the
-// conversion reads every integer through int64, so the round trip is not whole
-// for that range (recorded in the pull request that added this target). The
-// generator keeps to the half that is whole, so the property stays assertable
-// and the gap stays a stated one.
+// fuzzUnsigned is an unsigned 64-bit value over the whole range, including the
+// half above [math.MaxInt64] that a signed read cannot hold.
 func fuzzUnsigned(g *fuzzGen) uint64 {
-	return g.word() &^ (1 << 63)
+	if b := g.next(); b < 4 {
+		return [...]uint64{1 << 63, math.MaxUint64, math.MaxInt64, 0}[b]
+	}
+	return g.word()
 }
 
 // goValue builds a Go value of the kinds [Literal] documents, from fuzz bytes:
@@ -797,7 +806,7 @@ func (g *fuzzGen) goValue(depth int) any {
 	if g.nodes > fuzzMaxGenNodes || depth > 24 {
 		return nil
 	}
-	switch g.next() % 13 {
+	switch g.next() % 16 {
 	case 0:
 		return nil
 	case 1:
@@ -826,6 +835,12 @@ func (g *fuzzGen) goValue(depth int) any {
 			out[i] = g.goValue(depth + 1)
 		}
 		return out
+	case 13:
+		return fuzzUnsigned(g)
+	case 14:
+		return errors.New("fuzz")
+	case 15:
+		return make(chan int)
 	default:
 		out := make(map[string]any, 4)
 		for range int(g.next() % 5) {
@@ -844,16 +859,15 @@ func (g *fuzzGen) goValue(depth int) any {
 // The invariants under fuzz:
 //
 //   - No panic, at any depth the fuzzer reaches.
-//   - Every documented kind yields a non-nil literal (the kinds Literal cannot
-//     represent are left out: it returns nil for them although its doc promises
-//     an error value, recorded in the pull request that added this target), and the literal keeps the
-//     shape of its input: the same lengths of every list, the same keys of every
+//   - Every input yields a non-nil literal, an error value for the kinds Literal
+//     cannot represent (an error, a channel, a uint64 above MaxInt64), and the
+//     literal keeps the shape of its input: the same lengths of every list, the same keys of every
 //     map, and an integer, string, bool or bytes holding what went in.
 //   - The result is usable as an output: EncodeOutputs of a message carrying it
 //     succeeds and returns it unchanged, and DecodeInputs of it into a cel Value
 //     field succeeds.
 func FuzzLiteral(f *testing.F) {
-	rich, _ := fuzzSchema(f, true)
+	rich, _ := fuzzSchema(f)
 
 	for _, nest := range []int{0, 1, 16, 17, 33, 1000} {
 		f.Add([]byte{}, uint16(nest))
@@ -875,7 +889,7 @@ func FuzzLiteral(f *testing.F) {
 
 		got := Literal(input)
 		if got == nil {
-			t.Fatalf("Literal(%T) returned nil for a documented kind", input)
+			t.Fatalf("Literal(%T) returned nil", input)
 		}
 		checkLiteralShape(t, input, got)
 
@@ -894,6 +908,21 @@ func FuzzLiteral(f *testing.F) {
 			t.Fatalf("DecodeInputs refused a Literal into a cel Value field: %v", err)
 		}
 	})
+}
+
+// requireErrorLiteral requires the error value Literal yields for what it cannot
+// represent: an object holding a flowstate error, never nil and never null.
+func requireErrorLiteral(t *testing.T, in any, out *expr.Value) {
+	t.Helper()
+
+	object, ok := out.GetKind().(*expr.Value_ObjectValue)
+	if !ok {
+		t.Fatalf("%T %v became %v, want an error value", in, in, out)
+	}
+	var failure flowstatev1.Value_Error
+	if err := object.ObjectValue.UnmarshalTo(&failure); err != nil || failure.GetMessage() == "" {
+		t.Fatalf("%T became %v, which is not an error value with a message (%v)", in, out, err)
+	}
 }
 
 // checkLiteralShape compares a literal with the Go value it was built from.
@@ -921,6 +950,14 @@ func checkLiteralShape(t *testing.T, in any, out *expr.Value) {
 		if _, ok := out.GetKind().(*expr.Value_Int64Value); !ok {
 			t.Fatalf("%T %v became %v", v, v, out)
 		}
+	case uint64:
+		if v > math.MaxInt64 {
+			requireErrorLiteral(t, v, out)
+		} else if got, ok := out.GetKind().(*expr.Value_Int64Value); !ok || uint64(got.Int64Value) != v {
+			t.Fatalf("uint64 %v became %v", v, out)
+		}
+	case error, chan int:
+		requireErrorLiteral(t, v, out)
 	case float32, float64:
 		if _, ok := out.GetKind().(*expr.Value_DoubleValue); !ok {
 			t.Fatalf("%T %v became %v", v, v, out)
@@ -954,7 +991,7 @@ func checkLiteralShape(t *testing.T, in any, out *expr.Value) {
 // at each boundary and one either side, so a fuzz target that quietly stopped
 // asserting the real bound cannot pass.
 func TestFuzzBoundsAreTheDocumentedOnes(t *testing.T) {
-	rich, _ := fuzzSchema(t, true)
+	rich, _ := fuzzSchema(t)
 	decode := func(name string, l *expr.Value) error {
 		return DecodeInputs(map[string]*flowstatev1.Value{name: fuzzLiteralValue(l)}, dynamicpb.NewMessage(rich))
 	}
@@ -1021,7 +1058,7 @@ func TestFuzzBoundsAreTheDocumentedOnes(t *testing.T) {
 // past every bound and requires an answer in bounded time: the depth bound has
 // to stop the walk, not merely report after it.
 func TestHostileValuesTerminateQuickly(t *testing.T) {
-	rich, _ := fuzzSchema(t, true)
+	rich, _ := fuzzSchema(t)
 
 	start := time.Now()
 	err := DecodeInputs(map[string]*flowstatev1.Value{"node": fuzzLiteralValue(fuzzChain(20_000))}, dynamicpb.NewMessage(rich))

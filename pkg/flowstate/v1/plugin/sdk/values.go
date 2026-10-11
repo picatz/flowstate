@@ -8,6 +8,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -324,9 +325,18 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value, 
 		// nothing to convert, because it is already the representation a step
 		// output is made of.
 		case celValueName:
-			if v, ok := value.Message().Interface().(*expr.Value); ok {
-				return v, nil
+			// An unset field is an absent output, the same null an unset message of
+			// any other type produces, rather than an empty literal that only reads
+			// as null by accident of how the engine treats a literal with no kind.
+			message := value.Message()
+			if !message.IsValid() {
+				return nullValue(), nil
 			}
+			v, err := asMessage[*expr.Value](message)
+			if err != nil {
+				return nil, err
+			}
+			return v, nil
 
 		// flowstate's own wrapper around the same thing, provided it holds a
 		// literal. An output carrying an unevaluated expression or a secret
@@ -334,9 +344,9 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value, 
 		// supposed to evaluate, and the second must never become a step output at
 		// all, since step outputs are written to workflow history.
 		case flowstateValueName:
-			v, ok := value.Message().Interface().(*flowstatev1.Value)
-			if !ok {
-				break
+			v, err := asMessage[*flowstatev1.Value](value.Message())
+			if err != nil {
+				return nil, err
 			}
 			if literal := v.GetLiteral(); literal != nil {
 				return literal, nil
@@ -439,6 +449,26 @@ const (
 	flowstateValueName = "flowstate.v1.Value"
 )
 
+// asMessage returns a message as the generated type T. A generated message is
+// returned as it is; any other implementation of the same protobuf type, such
+// as a dynamicpb message, is copied through its wire form, which is what makes
+// the match by full name the comment above promises rather than by Go type.
+func asMessage[T proto.Message](message protoreflect.Message) (T, error) {
+	var zero T
+	if v, ok := message.Interface().(T); ok {
+		return v, nil
+	}
+	wire, err := proto.Marshal(message.Interface())
+	if err != nil {
+		return zero, fmt.Errorf("holds a %s that cannot be read: %w", message.Descriptor().FullName(), err)
+	}
+	out := zero.ProtoReflect().New().Interface().(T)
+	if err := proto.Unmarshal(wire, out); err != nil {
+		return zero, fmt.Errorf("holds a %s that cannot be read: %w", message.Descriptor().FullName(), err)
+	}
+	return out, nil
+}
+
 // isValueMessage reports whether a message type carries a value directly, rather
 // than being a message this package converts field by field.
 func isValueMessage(name protoreflect.FullName) bool {
@@ -470,11 +500,61 @@ func wellKnown(name protoreflect.FullName) bool {
 // A workflow then reads it the way it reads anything else —
 // `${steps.query.rows[0].name}` — with no step in between to parse it.
 //
-// A type it cannot represent yields an error value rather than a panic, so a
-// plugin that hands it something unexpected produces a diagnosable output instead
-// of taking the process down.
+// A type it cannot represent, a channel, an error, or an unsigned integer above
+// [math.MaxInt64], yields an error value rather than a panic or a nil, so a
+// plugin that hands it something unexpected produces a diagnosable output
+// instead of taking the process down. A literal has no error arm, so the error
+// value is an object value holding a [flowstatev1.Value_Error]: the engine does
+// not read it as data, and reading it fails naming the kind rather than
+// yielding null. The same holds for such a value nested in a list or a map,
+// which becomes an error value in its place.
 func Literal(v any) *expr.Value {
-	return flowstatev1.NewValue(v).GetLiteral()
+	value := flowstatev1.NewValue(v)
+	if literal := value.GetLiteral(); literal != nil {
+		return markUnrepresentable(literal)
+	}
+	return errorLiteral(value.GetError().GetMessage())
+}
+
+// markUnrepresentable replaces what [flowstatev1.NewValue] left out of a list or
+// a map, an element it had no literal for, with an error value.
+func markUnrepresentable(literal *expr.Value) *expr.Value {
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_ListValue:
+		for i, element := range kind.ListValue.GetValues() {
+			if element == nil {
+				kind.ListValue.Values[i] = errorLiteral("")
+				continue
+			}
+			markUnrepresentable(element)
+		}
+	case *expr.Value_MapValue:
+		for _, entry := range kind.MapValue.GetEntries() {
+			if entry.GetValue() == nil {
+				entry.Value = errorLiteral("")
+				continue
+			}
+			markUnrepresentable(entry.Value)
+		}
+	}
+	return literal
+}
+
+// errorLiteral is the error value [Literal] yields.
+func errorLiteral(message string) *expr.Value {
+	if message == "" {
+		message = "flowstatev1: a value nested here is of a type Literal cannot represent"
+	}
+	packed, err := anypb.New(&flowstatev1.Value_Error{
+		Message: message,
+		Code:    flowstatev1.Value_Error_CODE_INTERNAL,
+	})
+	if err != nil {
+		// Marshaling a message of two plain fields cannot fail; a string that
+		// still names the cause beats a panic if it somehow did.
+		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: message}}
+	}
+	return &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: packed}}
 }
 
 // nullValue is the absent answer: a field a message does not hold.
