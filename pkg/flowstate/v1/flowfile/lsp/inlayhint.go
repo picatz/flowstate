@@ -19,13 +19,15 @@ import (
 // descriptor's output fields — and there is no second evaluator here. Nothing
 // is run: a hint reads declarations, never a secret and never a value.
 //
-// The answer is bounded three ways, because a hint request arrives on every
-// scroll: a document above [maxDocumentBytes] has no parsed model and so no
-// hints, only hints inside the visible range are built, and no more than
-// [maxInlayHints] are returned.
+// A hint request arrives on every scroll, so the work is bounded: a document
+// above [maxDocumentBytes] has no parsed model and so no hints, only hints
+// inside the visible range are built, and the checker's table is built once per
+// request however many loops are asked about. At most [maxInlayHints] are
+// returned; that caps the response, not the work.
 
-// maxInlayHints caps one response. It is the work limit as well as the
-// reporting limit: the walk stops at it rather than building and trimming.
+// maxInlayHints caps one response. It bounds what is reported, not the work: a
+// loop that cannot be typed costs a lookup and yields no hint. The work is
+// bounded by one type-table build per request and the document size limit.
 const maxInlayHints = 200
 
 // maxHintOutputs is how many of a step's outputs one hint names before it
@@ -53,23 +55,35 @@ type inlayHint struct {
 // nil, and it is empty for a document that does not parse: a hint positioned
 // from a model the text no longer matches would sit on the wrong line.
 func inlayHints(doc *document, visible lsp.Range) []inlayHint {
+	return inlayHintsWith(doc, visible, flowfile.IteratorTyper)
+}
+
+// inlayHintsWith is [inlayHints] over a chosen iterator-type source, the seam a
+// test uses to count how many times the checker table is built.
+func inlayHintsWith(doc *document, visible lsp.Range, newTyper func(*v1.Workflow) func(step, name string) (string, bool)) []inlayHint {
 	hints := []inlayHint{}
 	if doc == nil || doc.parsed == nil || !doc.speaksFlowfile() {
 		return hints
 	}
 
-	// Compiled at most once, and only when a loop is in range: compiling is the
-	// dear part and most ranges hold none.
+	// Compiled and scanned at most once per request, and only when a loop is in
+	// range: both are the dear part, and most ranges hold no loop. Every loop is
+	// then answered from the one type table.
 	var (
-		compiled bool
-		wf       *v1.Workflow
+		built bool
+		typer func(step, name string) (string, bool)
 	)
-	workflow := func() *v1.Workflow {
-		if !compiled {
-			compiled = true
-			wf = compiledWorkflow(doc)
+	iteratorType := func(step, name string) (string, bool) {
+		if !built {
+			built = true
+			if wf := compiledWorkflow(doc); wf != nil {
+				typer = newTyper(wf)
+			}
 		}
-		return wf
+		if typer == nil {
+			return "", false
+		}
+		return typer(step, name)
 	}
 
 	// The checker binds an item in the expressions of the loop's body, not of the
@@ -90,12 +104,10 @@ func inlayHints(doc *document, visible lsp.Range) []inlayHint {
 		// A for_each's item, after the `items:` that decides its type.
 		if body := firstChild[step]; body != nil && step.forEachEntry != nil && step.itemsEntry != nil && step.itemsEntry.value != nil {
 			at := step.itemsEntry.valueRange().End
-			if contains(visible, at) {
-				if w := workflow(); w != nil {
-					name := step.iteratorName()
-					if typed, ok := flowfile.IteratorType(w, body.id, name); ok {
-						hints = append(hints, typeHint(at, fmt.Sprintf("%s: %s", name, typed)))
-					}
+			if inRange(visible, at) {
+				name := step.iteratorName()
+				if typed, ok := iteratorType(body.id, name); ok {
+					hints = append(hints, typeHint(at, fmt.Sprintf("%s: %s", name, typed)))
 				}
 			}
 		}
@@ -111,7 +123,7 @@ func inlayHints(doc *document, visible lsp.Range) []inlayHint {
 		}
 		at := step.idEntry.valueRange().End
 		fields := def.Outputs.Fields()
-		if !contains(visible, at) || fields.Len() == 0 {
+		if !inRange(visible, at) || fields.Len() == 0 {
 			continue
 		}
 		parts := make([]string, 0, maxHintOutputs+1)
@@ -126,6 +138,17 @@ func inlayHints(doc *document, visible lsp.Range) []inlayHint {
 	}
 
 	return hints[:min(len(hints), maxInlayHints)]
+}
+
+// inRange reports whether at is inside r the way LSP means a range: the start is
+// in and the end is out. [contains] is end-inclusive, which is right for a
+// cursor resting at the end of a token and wrong here, where a hint exactly at
+// the visible range's end belongs to the next screen.
+func inRange(r lsp.Range, at lsp.Position) bool {
+	before := func(a, b lsp.Position) bool {
+		return a.Line < b.Line || a.Line == b.Line && a.Character < b.Character
+	}
+	return !before(at, r.Start) && before(at, r.End)
 }
 
 func typeHint(at lsp.Position, label string) inlayHint {

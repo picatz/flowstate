@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -143,4 +145,70 @@ func TestInlayHintOverTheWire(t *testing.T) {
 		assert.NotEmpty(t, result)
 		return
 	}
+}
+
+func TestInlayHintRangeIsEndExclusive(t *testing.T) {
+	t.Parallel()
+
+	full := hintsFor(t, inlaySource, wholeDocument())
+	require.NotEmpty(t, full)
+	at := full[0].Position
+
+	atStart := hintsFor(t, inlaySource, lsp.Range{Start: at, End: lsp.Position{Line: 1 << 20}})
+	assert.Contains(t, hintPositions(atStart), at, "a hint at range.start is included")
+
+	atEnd := hintsFor(t, inlaySource, lsp.Range{End: at})
+	assert.NotContains(t, hintPositions(atEnd), at, "a hint at range.end is excluded")
+}
+
+func hintPositions(hs []inlayHint) []lsp.Position {
+	var out []lsp.Position
+	for _, h := range hs {
+		out = append(out, h.Position)
+	}
+	return out
+}
+
+func TestInlayHintsBuildTheCheckerTableOnce(t *testing.T) {
+	t.Parallel()
+
+	src := "name: loops\nsteps:\n"
+	for i := range 5 {
+		src += fmt.Sprintf("  - id: l%d\n    for_each:\n      items: \"${['a']}\"\n      steps:\n        - id: b%d\n          log:\n            message: ${item}\n", i, i)
+	}
+	src += "edition: v2026.4\n"
+
+	builds := 0
+	counting := func(wf *v1.Workflow) func(string, string) (string, bool) {
+		builds++
+		return flowfile.IteratorTyper(wf)
+	}
+	got := inlayHintsWith(newDocument("file:///loops.yaml", 1, src, nil), wholeDocument(), counting)
+
+	items := 0
+	for _, h := range got {
+		if h.Label == "item: string" {
+			items++
+		}
+	}
+	assert.Equal(t, 5, items, "every loop is hinted")
+	assert.Equal(t, 1, builds, "one table for the request, not one per loop")
+
+	// Loops the checker cannot type produce no hint, and must not each cost a
+	// scan: the table is still built once.
+	unresolved := "name: loops\nsteps:\n"
+	for i := range 300 {
+		unresolved += fmt.Sprintf("  - id: l%d\n    for_each:\n      items: \"${inputs.missing}\"\n      steps:\n        - id: b%d\n          log:\n            message: ${item}\n", i, i)
+	}
+	builds = 0
+	got = inlayHintsWith(newDocument("file:///unresolved.yaml", 1, unresolved, nil), wholeDocument(), counting)
+	assert.LessOrEqual(t, builds, 1)
+	for _, h := range got {
+		assert.NotContains(t, h.Label, "item:", "an untypable item gets no hint")
+	}
+
+	// No loop in range, no table at all.
+	builds = 0
+	inlayHintsWith(newDocument("file:///loops.yaml", 1, src, nil), lsp.Range{End: lsp.Position{Line: 2}}, counting)
+	assert.Zero(t, builds)
 }
