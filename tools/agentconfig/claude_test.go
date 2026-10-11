@@ -85,7 +85,7 @@ func TestClaudeSubagentsCarryRepositoryRubrics(t *testing.T) {
 			}
 		})
 	}
-	for _, required := range []string{"flowstate-reviewer", "flowstate-verifier", "flowstate-pr-tidy"} {
+	for _, required := range []string{"flowstate-reviewer", "flowstate-verifier", "flowstate-pr-tidy", "flowstate-scout"} {
 		if !slices.Contains(names, required) {
 			t.Errorf("subagent %q is missing; CLAUDE.md and the ship skill delegate to it", required)
 		}
@@ -453,4 +453,24 @@ func splitList(value string) []string {
 		}
 	}
 	return out
+}
+
+// TestClaudeSubagentModelsFollowDelegationSkill pins the per-role model and
+// effort that the flowstate-delegate skill teaches, so the skill and the agent
+// definitions cannot drift apart: read-only lookups run on Haiku and reviews
+// and verification on Sonnet, none of them inheriting the lead's price.
+func TestClaudeSubagentModelsFollowDelegationSkill(t *testing.T) {
+	want := map[string][2]string{
+		"flowstate-scout":    {"haiku", "low"},
+		"flowstate-verifier": {"sonnet", "low"},
+		"flowstate-pr-tidy":  {"sonnet", "low"},
+		"flowstate-reviewer": {"sonnet", "high"},
+	}
+	for name, mc := range want {
+		meta := frontmatter(t, read(t, filepath.Join(repoRoot(t), ".claude", "agents", name+".md")))
+		if meta["model"] != mc[0] || meta["effort"] != mc[1] {
+			t.Errorf("%s runs model %q effort %q; flowstate-delegate teaches %q and %q",
+				name, meta["model"], meta["effort"], mc[0], mc[1])
+		}
+	}
 }

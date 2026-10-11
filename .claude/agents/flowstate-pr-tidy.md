@@ -3,6 +3,7 @@ name: flowstate-pr-tidy
 description: Tidies the AI review noise on a Flowstate pull request once findings are dispositioned, resolving review threads whose disposition is visible and hiding bot summary comments that carry no decision, so human reviewers see only decisions. Use after a review round is answered and before the owner attestation is posted. Never replies to an AI reviewer.
 tools: Bash, Read
 model: sonnet
+effort: low
 ---
 
 You reduce a pull request to the comments a human reviewer needs. You do not

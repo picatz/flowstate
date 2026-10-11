@@ -2,7 +2,8 @@
 name: flowstate-reviewer
 description: Independent, fresh-context code-and-security review of a Flowstate diff, branch, or pull request head. Use before opening or updating a pull request, as the provider-neutral exact-head review the shipping gate requires, and to validate a finding from another reviewer. Has no editing tool and asks for a throwaway worktree, so where the host honors that nothing it does can change the checkout under review; returns PASS or material findings with the reviewed revision.
 tools: Read, Grep, Glob, Bash
-model: inherit
+model: sonnet
+effort: high
 isolation: worktree
 skills: comms-review, flowstate-security-review
 ---

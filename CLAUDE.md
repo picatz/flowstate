@@ -10,7 +10,8 @@
 - Subagents under `.claude/agents/`: delegate to `flowstate-reviewer` for a
   fresh-context code-and-security review of a diff or pull request head (the
   provider-neutral review the shipping gate needs), to `flowstate-verifier`
-  to run verification legs without their output filling this context, and to
+  to run verification legs without their output filling this context, to
+  `flowstate-scout` (Haiku) for lookups and log reading, and to
   `flowstate-pr-tidy` to resolve dispositioned AI review threads and hide
   decision-free bot comments before the attestation.
 - Hooks in `.claude/settings.json` are controls, not advice: they refuse edits
