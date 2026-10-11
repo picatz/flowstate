@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -227,6 +228,55 @@ func TestABreakpointConditionIsAnInspection(t *testing.T) {
 			EntityKey: "debug-door", Workflow: entity, Name: v1.DebugSignal, Payload: payload,
 		}))
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "SignalWithStart delivered onto the reserved debug channel")
+}
+
+// TestADebugSessionIdOutsideTheGrammarIsRefusedAtTheEdge: the session id is
+// quoted into the lease's timer label (`debug lease <session> held by <holder>
+// expires`), so one holding whitespace or ` held by ` is refused where it
+// arrives (#2648), on DebugAttach and on a raw Signal onto the debug channel
+// alike. The refusal is at the edge, never in the run, so no recorded history
+// replays differently.
+func TestADebugSessionIdOutsideTheGrammarIsRefusedAtTheEdge(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTenantFixture(t)
+	started, err := fixture.teamA.Run(t.Context(), connect.NewRequest(&v1.RunRequest{Workflow: debuggableWorkflow()}))
+	require.NoError(t, err)
+	workflowID := started.Msg.GetWorkflowId()
+	waitUntilParkedAtTheGate(t, fixture.temporal, workflowID)
+
+	sre := as(t.Context(), "sre-1@example.com", "workload.debug", "workload.signal")
+	tooLong := strings.Repeat("a", v1.MaxDebugEdgeSessionIDBytes+1)
+
+	for _, bad := range []string{"mine held by someone", "tab\there", "semi;colon", tooLong} {
+		_, err = fixture.teamA.DebugAttach(sre, connect.NewRequest(&v1.DebugAttachRequest{
+			WorkflowId: workflowID, SessionId: bad, RequestId: "attach", Lease: durationpb.New(time.Minute),
+		}))
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "DebugAttach accepted session id %q", bad)
+
+		payload, perr := v1.NewTypedDebugAsk(&v1.DebugAsk{Verb: v1.DebugVerbPause, Session: bad, Request: "raw", Lease: time.Minute})
+		require.NoError(t, perr)
+		_, err = fixture.teamA.Signal(sre, connect.NewRequest(&v1.SignalRequest{
+			WorkflowId: workflowID, Name: v1.DebugSignal, Payload: payload,
+		}))
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "a raw signal carried session id %q", bad)
+	}
+
+	// The permitted direction: a plain id reaches the run through the same door, and a caller
+	// without the debug action is still refused as it was, before the id is looked at.
+	payload, err := v1.NewTypedDebugAsk(&v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "plain-1", Request: "raw", Lease: time.Minute})
+	require.NoError(t, err)
+	_, err = fixture.teamA.Signal(sre, connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: v1.DebugSignal, Payload: payload,
+	}))
+	require.NoError(t, err, "a session id inside the grammar is delivered")
+
+	badPayload, err := v1.NewTypedDebugAsk(&v1.DebugAsk{Verb: v1.DebugVerbPause, Session: "x held by y", Request: "raw", Lease: time.Minute})
+	require.NoError(t, err)
+	_, err = fixture.teamA.Signal(as(t.Context(), "sre-1@example.com", "workload.signal"), connect.NewRequest(&v1.SignalRequest{
+		WorkflowId: workflowID, Name: v1.DebugSignal, Payload: badPayload,
+	}))
+	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "the channel is refused before the id is read")
 }
 
 // TestBreakpointExpressionsAreWithheldWithoutTheInspectAction: setting a

@@ -3,6 +3,7 @@ package flowstatev1
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"time"
 	"unicode/utf8"
@@ -84,6 +85,29 @@ const (
 	MaxDebugRequestIDBytes      = 128
 	MaxDebugReceiptMessageBytes = 1024
 )
+
+// MaxDebugEdgeSessionIDBytes is the longest session id the server edge accepts,
+// the bound `proto/flowstate/v1/debug.proto` gives a session id on every typed
+// debug RPC. It is tighter than [MaxDebugSessionIDBytes], which is what the run
+// itself will read from a history already recorded.
+const MaxDebugEdgeSessionIDBytes = 128
+
+// debugSessionIDGrammar is the grammar every typed debug RPC gives a session id
+// in the schema (`pattern` on `session_id`), kept in step with it by a test.
+var debugSessionIDGrammar = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+
+// ValidDebugSessionID reports whether id is one the server edge lets reach a
+// run: the schema's grammar, at most [MaxDebugEdgeSessionIDBytes]. A session id
+// is quoted into the debug lease's timer label (`debug lease <session> held by
+// <holder> expires`), so one holding whitespace or ` held by ` would make the
+// label ambiguous.
+//
+// This is checked where a request arrives, never in code a run replays: refusing
+// an id inside the interpreter would change how an already recorded history
+// replays.
+func ValidDebugSessionID(id string) bool {
+	return id != "" && len(id) <= MaxDebugEdgeSessionIDBytes && debugSessionIDGrammar.MatchString(id)
+}
 
 // DebugAsk is one typed debug ask.
 type DebugAsk struct {
