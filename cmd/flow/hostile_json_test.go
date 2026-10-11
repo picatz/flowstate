@@ -14,6 +14,7 @@ import (
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	"github.com/picatz/flowstate/internal/termsafe"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
 )
 
 // hostileJSON is text a plugin could carry to a terminal through `-o json`: a
@@ -160,6 +161,20 @@ func TestJSONEscapesEveryOtherEncoderPath(t *testing.T) {
 		require.NoError(t, writeSchema(hostilePlain(&out), FormatJSON, map[string]any{"title": hostileJSON("schema")}))
 		requireTerminalSafeJSON(t, out.String(), "schema")
 	})
+}
+
+// TestJSONEscapesDriveResultCommand covers the hand-assembled debug-remote
+// document, whose command field is the caller's own text.
+func TestJSONEscapesDriveResultCommand(t *testing.T) {
+	t.Parallel()
+
+	for _, format := range []OutputFormat{FormatJSON, FormatJSONL} {
+		var out strings.Builder
+		require.NoError(t, writeDriveResult(&out, format, "step "+hostileJSON("cmd"), &flowdebug.DriveResult{
+			Receipt: &v1.DebugReceipt{},
+		}))
+		requireTerminalSafeJSON(t, out.String(), "cmd")
+	}
 }
 
 // TestJSONLeavesOrdinaryTextAlone pins that the rewrite is narrow: text in any

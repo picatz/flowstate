@@ -61,7 +61,8 @@ import (
 //     path is the one the file itself writes — listed in [runDocumentNames] and
 //     pinned by a test that fails if the schema stops having it.
 //
-// Everything outside those three rules is protojson's own output, verbatim — not
+// Everything outside those three rules is protojson's own output, verbatim (bar the
+// terminal-safe \uXXXX spelling of unsafe runes, [termsafe.EscapeJSON]) — not
 // re-derived, but literally the bytes protojson produced, carried through by
 // [projectValue] returning the raw subtree for any message that contains nothing to
 // project. That is what keeps `EmitUnpopulated`, int64-as-string, enum spellings,
@@ -118,9 +119,10 @@ const flowstatePackage protoreflect.FullName = "flowstate.v1"
 
 // marshalRunDocument renders a run's answer in the vocabulary the DSL taught.
 //
-// raw writes protojson unchanged, which is what `--raw` asks for: the exact wire
-// shape, for a consumer that wants the schema's nouns because it is generating
-// against the schema.
+// raw writes the schema's protojson as it is, which is what `--raw` asks for: the
+// wire shape, for a consumer that wants the schema's nouns because it is generating
+// against the schema. The one difference is the terminal-safe \uXXXX spelling of C1,
+// bidi and line-separator runes inside strings, which decodes to the same text (#2693).
 // MarshalSchemaJSON renders a message the way the schema describes it.
 //
 // protojson rather than encoding/json, so the field names are the schema's and an

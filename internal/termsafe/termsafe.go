@@ -47,8 +47,10 @@ func EscapeJSON(encoded []byte) []byte {
 			continue
 		}
 
+		// No preallocation derived from len(encoded): append grows the buffer
+		// as the output needs it, so no size arithmetic can overflow.
 		if out == nil {
-			out = make([]byte, 0, len(encoded)+32)
+			out = []byte{}
 		}
 		out = append(out, encoded[copied:i]...)
 		out = append(out, '\\', 'u',

@@ -2,6 +2,7 @@ package termsafe
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -47,5 +48,16 @@ func TestEscapeJSONDecodesToOriginal(t *testing.T) {
 	}
 	if decoded[original] != original {
 		t.Fatalf("round trip changed the string: %q", decoded[original])
+	}
+}
+
+func TestEscapeJSONLargeInput(t *testing.T) {
+	t.Parallel()
+
+	const n = 1 << 20
+	in := []byte(`"` + strings.Repeat("\u0085", n) + `"`)
+	got := EscapeJSON(in)
+	if want := 2 + 6*n; len(got) != want {
+		t.Fatalf("len = %d, want %d", len(got), want)
 	}
 }
