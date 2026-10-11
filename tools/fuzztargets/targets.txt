@@ -96,3 +96,11 @@ FuzzDecodeNeverPanicsOrEchoes pkg/flowstate/v1/payloadcodec/envelope    deep
 FuzzValueTokensAreLossless pkg/flowstate/v1/flowdebug deep
 FuzzRefRoundTrip             pkg/flowstate/v1/graph         deep
 FuzzParseRefNeverPanics      pkg/flowstate/v1/graph         deep
+
+# The plugin SDK's value bridge (#1538): the code that turns an Execute request's
+# named values into a plugin's typed message and back, which a gateway serving
+# the plugin protocol to workers it does not run (#1524) must treat as peer
+# input. Deep only, for the budget reason the header gives.
+FuzzDecodeInputs             pkg/flowstate/v1/plugin/sdk    deep
+FuzzEncodeOutputs            pkg/flowstate/v1/plugin/sdk    deep
+FuzzLiteral                  pkg/flowstate/v1/plugin/sdk    deep
