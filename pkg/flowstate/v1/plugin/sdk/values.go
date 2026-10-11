@@ -510,7 +510,7 @@ func wellKnown(name protoreflect.FullName) bool {
 // yielding null. The same holds for such a value nested in a list or a map,
 // which becomes an error value in its place.
 //
-// A value that nests past 4096 levels, or contains itself, also yields an error
+// A value that nests past 2048 levels, or contains itself, also yields an error
 // value. That guarantee holds for an already-built *expr.Value; native Go
 // values nested millions deep are converted by [flowstatev1.NewValue] before
 // any bound applies.
@@ -543,10 +543,11 @@ func unrepresentableType(v any) string {
 
 // maxLiteralDepth bounds how deep [Literal] follows a literal. Real nesting is
 // far lower (the decode side stops at 16 and the output side at 32 messages).
-// Each list or map level is two messages, so 4096 levels stay under protobuf's
-// own limit of about 10000 messages when the result is unmarshaled, and keep the
+// A list level is two messages and a map level three (Value, MapValue and
+// entry), so 2048 levels stay under protobuf's own limit of about 10000 messages
+// when the result is unmarshaled, and keep the
 // walk and the marshaling inside the stack.
-const maxLiteralDepth = 1 << 12
+const maxLiteralDepth = 1 << 11
 
 // walkResult is how a [markUnrepresentable] walk ended.
 type walkResult int

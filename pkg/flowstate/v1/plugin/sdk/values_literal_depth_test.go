@@ -48,6 +48,39 @@ func TestLiteralRefusesAChainPastTheDepthCap(t *testing.T) {
 	requireErrorLiteral(t, inside, Literal(listOf(listOf(inside))))
 }
 
+// mapOf wraps a literal in a one-entry map, as the value or as the key.
+func mapOf(inner *expr.Value, asKey bool) *expr.Value {
+	entry := &expr.MapValue_Entry{Key: &expr.Value{Kind: &expr.Value_StringValue{StringValue: "k"}}, Value: inner}
+	if asKey {
+		entry = &expr.MapValue_Entry{Key: inner, Value: &expr.Value{Kind: &expr.Value_NullValue{}}}
+	}
+	return &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: []*expr.MapValue_Entry{entry}}}}
+}
+
+// TestLiteralMapChainAtTheCapSurvivesTheWire holds that a map level, which is
+// three messages, still unmarshals at the cap, through values and through keys.
+func TestLiteralMapChainAtTheCapSurvivesTheWire(t *testing.T) {
+	for name, asKey := range map[string]bool{"values": false, "keys": true} {
+		chain := &expr.Value{Kind: &expr.Value_NullValue{}}
+		for range maxLiteralDepth - 1 {
+			chain = mapOf(chain, asKey)
+		}
+		got := Literal(chain)
+		if got != chain {
+			t.Fatalf("%s: a map chain inside the cap was not returned as it was", name)
+		}
+		raw, err := proto.Marshal(got)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if err := proto.Unmarshal(raw, &expr.Value{}); err != nil {
+			t.Errorf("%s: a map chain at the cap does not unmarshal: %v", name, err)
+		}
+
+		requireErrorLiteral(t, chain, Literal(mapOf(mapOf(chain, asKey), asKey)))
+	}
+}
+
 // TestLiteralRefusesDepthBuiltFromSharedNodes holds that the depth cap counts
 // what a node shared by many parents adds: segments that each end in the
 // previous segment's top, with a root listing every top, are linear to walk and
