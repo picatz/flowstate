@@ -493,15 +493,7 @@ func calleeRange(doc *document, path string) lsp.Range {
 	}
 
 	text := string(data)
-	type calleeParse struct {
-		file *parsedFile
-		err  error
-	}
-	cp := underDoc(doc, func() calleeParse {
-		file, err := parseFlowfile(text, newLineIndex(text))
-		return calleeParse{file, err}
-	})
-	parsed, err := cp.file, cp.err
+	parsed, err := parseFlowfile(doc.env, text, newLineIndex(text))
 	if err != nil || parsed == nil || parsed.nameEntry == nil {
 		return documentStart
 	}

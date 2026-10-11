@@ -630,15 +630,8 @@ func hoverBareName(doc *document, from *parsedStep, name string, clock, shaping 
 		// the validator judges the body with.
 		typeSentence := "Its type is whatever the loop's `items` expression yields an element of. "
 		if wf := compiledWorkflow(doc); wf != nil {
-			type typed struct {
-				name string
-				ok   bool
-			}
-			if t := underDoc(doc, func() typed {
-				name, ok := flowfile.IteratorType(wf, from.id, name)
-				return typed{name, ok}
-			}); t.ok {
-				typeSentence = fmt.Sprintf("Its type is `%s`, the element type of the loop's `items` expression. ", t.name)
+			if iterName, ok := doc.env.IteratorType(wf, from.id, name); ok {
+				typeSentence = fmt.Sprintf("Its type is `%s`, the element type of the loop's `items` expression. ", iterName)
 			}
 		}
 
@@ -973,7 +966,7 @@ func hoverStepOutput(doc *document, from *parsedStep, ref reference, rng lsp.Ran
 	// it, which is also what makes the wait-shaped and loop-shaped answers
 	// agree with the validator and the engine by construction.
 	if constructKindNode := constructOutputNode(target); constructKindNode != nil {
-		return hoverConstructOutput(target, constructKindNode, ref, rng)
+		return hoverConstructOutput(doc, target, constructKindNode, ref, rng)
 	}
 
 	if ref.output == "" {
@@ -1136,8 +1129,8 @@ func constructOutputNode(target *parsedStep) *v1.Node {
 //
 // kind is what [constructOutputNode] built; the caller has already checked it
 // is non-nil.
-func hoverConstructOutput(target *parsedStep, kind *v1.Node, ref reference, rng lsp.Range) *lsp.Hover {
-	names := underBase(func() []v1.NamedOutput { n, _ := v1.OutputNames(kind, nil); return n })
+func hoverConstructOutput(doc *document, target *parsedStep, kind *v1.Node, ref reference, rng lsp.Range) *lsp.Hover {
+	names, _ := v1.OutputNames(kind, doc.tasks)
 
 	label := target.kind()
 	if label == "" {

@@ -11,6 +11,7 @@ import (
 	"github.com/sourcegraph/go-lsp"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // maxDocumentBytes bounds how much of a document the server will analyze.
@@ -104,10 +105,16 @@ type document struct {
 	// registry a server answers from is the server's — see [FlowfileServer.Tasks].
 	tasks *v1.Registry
 
-	// lock is the plugin lock's tasks that tasks adds to the base, owned by this
-	// document so that releasing the scope's retained copy does not change what a
-	// request already holding the document compiles.
-	lock []v1.TaskDef
+	// env is the environment every compile, parse, validation, rewrite and type
+	// question about this document runs in: the registry above, as a
+	// [flowfile.Env]. A document that holds a plugin lock's tasks resolves them
+	// through it and nowhere else, so no other document, and not the process
+	// default registry, ever sees them.
+	//
+	// Owned by the document, like tasks: a request holding a document that has
+	// since been closed (and whose lock's scope entry has been released with it)
+	// still compiles it against the registry it was opened with.
+	env flowfile.Env
 
 	index *lineIndex
 
@@ -196,7 +203,7 @@ func isWindowsDrive(s string) bool {
 // recomputing them.
 func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Registry) *document {
 	if tasks == nil {
-		tasks = v1.DefaultRegistry()
+		tasks = defaultTasks()
 	}
 	doc := &document{
 		uri:      uri,
@@ -204,6 +211,7 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 		text:     text,
 		kind:     kindOfURI(uri),
 		tasks:    tasks,
+		env:      flowfile.WithRegistry(tasks),
 		index:    newLineIndex(text),
 		tooLarge: len(text) > maxDocumentBytes,
 	}
@@ -211,18 +219,8 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 		return doc
 	}
 	// Under the document's own registry: the positional model decides which keys
-	// of a step name a task, and a lock's tasks are known to the compiler only
-	// while [underDoc] holds them.
-	type parsed struct {
-		file *parsedFile
-		err  error
-	}
-	doc.lock = overlayOf(tasks)
-	p := underDoc(doc, func() parsed {
-		file, err := parseFlowfile(text, doc.index)
-		return parsed{file, err}
-	})
-	doc.parsed, doc.parseErr = p.file, p.err
+	// of a step name a task.
+	doc.parsed, doc.parseErr = parseFlowfile(doc.env, text, doc.index)
 	return doc
 }
 

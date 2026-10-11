@@ -97,17 +97,7 @@ type extractKey struct{ base, rule string }
 // scalar types and rules the request touches.
 func extractTypeActions(doc *document, params codeActionParams) []codeAction {
 	return extractTypeActionsWith(doc, params, func(data []byte, path string) (*v1.Workflow, *flowfile.Positions, flowfile.Diagnostics, error) {
-		type parsed struct {
-			wf  *v1.Workflow
-			pos *flowfile.Positions
-			ds  flowfile.Diagnostics
-			err error
-		}
-		p := underDoc(doc, func() parsed {
-			wf, pos, ds, err := flowfile.ParseAndValidateSourceAt(data, path)
-			return parsed{wf, pos, ds, err}
-		})
-		return p.wf, p.pos, p.ds, p.err
+		return doc.env.ParseAndValidateSourceAt(data, path)
 	})
 }
 

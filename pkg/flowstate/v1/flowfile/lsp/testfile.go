@@ -62,7 +62,7 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		if !ok {
 			path = string(doc.uri)
 		}
-		err := underDoc(doc, func() error { return flowtest.LoadDirDefaultsSource([]byte(doc.text), path) })
+		err := flowtest.LoadDirDefaultsSource([]byte(doc.text), path)
 		if err == nil {
 			return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
 		}
@@ -87,18 +87,15 @@ func diagnoseTestPublications(doc, includedDefaults *document) []diagnosticPubli
 		defaultsPath = filepath.Join(filepath.Dir(path), flowtest.DirDefaultsName)
 		defaultsURI = siblingDocumentURI(doc.uri, flowtest.DirDefaultsName)
 	}
-	err := underDoc(doc, func() error {
-		var err error
-		switch {
-		case !hasPath:
-			_, err = flowtest.LoadSource([]byte(doc.text))
-		case includedDefaults != nil:
-			_, err = flowtest.LoadSourceAtWithDefaults([]byte(doc.text), path, []byte(includedDefaults.text))
-		default:
-			_, err = flowtest.LoadSourceAt([]byte(doc.text), path)
-		}
-		return err
-	})
+	var err error
+	switch {
+	case !hasPath:
+		_, err = flowtest.LoadSource([]byte(doc.text))
+	case includedDefaults != nil:
+		_, err = flowtest.LoadSourceAtWithDefaults([]byte(doc.text), path, []byte(includedDefaults.text))
+	default:
+		_, err = flowtest.LoadSourceAt([]byte(doc.text), path)
+	}
 	if err == nil {
 		return []diagnosticPublication{{uri: doc.uri, diagnostics: []lsp.Diagnostic{}}}
 	}

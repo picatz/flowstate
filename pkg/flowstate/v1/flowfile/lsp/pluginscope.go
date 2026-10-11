@@ -9,6 +9,7 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // PluginLock is the plugin tasks one plugins.lock.json declares, as the
@@ -35,8 +36,11 @@ const MaxPluginLocks = 8
 //
 // A document is diagnosed, completed and hovered against the registry of the lock
 // that governs it: the server's base registry plus that lock's tasks, built with
-// the one [v1.Registry] type and handed to the document the way the base is. No
-// document's lock is registered anywhere another document can read it.
+// the one [v1.Registry] type and handed to the document the way the base is. The
+// document turns it into its own [flowfile.Env] (see [document.env]), so the
+// compiler resolves task names against that registry and no other. No document's
+// lock is registered anywhere another document can read it, and nothing here
+// touches [v1.DefaultRegistry].
 type pluginScopes struct {
 	mu      sync.Mutex
 	entries map[string]*pluginScope
@@ -75,7 +79,6 @@ func (p *pluginScopes) acquire(uri lsp.DocumentURI, base *v1.Registry, lock *Plu
 			p.byDoc = map[lsp.DocumentURI]string{}
 		}
 		p.entries[key] = entry
-		setOverlay(registry, lock.Tasks)
 	}
 	entry.refs++
 	p.byDoc[uri] = key
@@ -112,7 +115,6 @@ func (p *pluginScopes) releaseLocked(uri lsp.DocumentURI) {
 	}
 	if entry.refs--; entry.refs <= 0 {
 		delete(p.entries, key)
-		clearOverlay(entry.registry)
 	}
 }
 
@@ -143,6 +145,18 @@ func (s *FlowfileServer) tasksFor(uri lsp.DocumentURI) *v1.Registry {
 
 	return s.tasks()
 }
+
+// defaultTasks is the one place this package names the process default registry:
+// the registry a server answers from when [FlowfileServer.Tasks] is nil, and a
+// document built with no registry. TestNoRegistryReaderEscapesTheDocumentEnv holds
+// every other file to that.
+func defaultTasks() *v1.Registry { return v1.DefaultRegistry() }
+
+// baseEnv is the [flowfile.Env] for work that belongs to no document: a module's
+// interface, which the server remembers per path. It resolves against the
+// server's base registry, never a document's lock, so a module that uses a
+// lock-only task has no interface here, which a caller takes as changed.
+func (s *FlowfileServer) baseEnv() flowfile.Env { return flowfile.WithRegistry(s.tasks()) }
 
 // discoverPluginCatalog runs the [FlowfileServer.PluginCatalog] hook for one
 // document, gives the document the registry of the lock it found, and says so
@@ -180,88 +194,4 @@ func (s *FlowfileServer) discoverPluginCatalog(ctx context.Context, conn *jsonrp
 	}
 
 	return base
-}
-
-// The compiler (package flowfile) resolves task names against
-// [v1.DefaultRegistry]; it takes no registry. A document whose registry holds
-// lock tasks therefore compiles with those tasks added to the default registry
-// for the duration of the call and removed after, under a lock that excludes
-// every other compile in this package. Documents with no lock share the lock for
-// reading, so they see only what the default registry holds.
-//
-// Nothing else in `flow lsp` reads the default registry outside these calls, so
-// the added tasks are visible to this document's compile alone.
-var (
-	compileMu sync.RWMutex
-	overlays  sync.Map // *v1.Registry -> []v1.TaskDef
-)
-
-func setOverlay(registry *v1.Registry, tasks []v1.TaskDef) {
-	if len(tasks) > 0 {
-		overlays.Store(registry, tasks)
-	}
-}
-
-func clearOverlay(registry *v1.Registry) { overlays.Delete(registry) }
-
-// overlayOf is the lock tasks registry adds to the compiler's view.
-func overlayOf(registry *v1.Registry) []v1.TaskDef {
-	tasks, _ := overlays.Load(registry)
-	defs, _ := tasks.([]v1.TaskDef)
-
-	return defs
-}
-
-// underDoc runs compile with doc's lock tasks visible to the compiler. It, and
-// [underBase], are the only way this package reaches the compiler or any other
-// reader of the default registry; TestNoCompilerCallEscapesTheRegistryScope
-// holds the rest of the package to that.
-//
-// The tasks are the document's own (see [document.lock]), copied from the scope
-// when the document was built, so a request holding a document that has since
-// been closed still compiles it as it was opened.
-//
-// Not re-entrant: compile must not call underDoc or underBase.
-func underDoc[T any](doc *document, compile func() T) T {
-	return underLock(doc.lock, compile)
-}
-
-// underBase is [underDoc] for work that belongs to no document (a module's
-// interface, read through the shared byte-keyed cache): it sees the default
-// registry as the host left it and never an overlay.
-func underBase[T any](compile func() T) T {
-	return underLock(nil, compile)
-}
-
-func underLock[T any](defs []v1.TaskDef, compile func() T) T {
-	if len(defs) == 0 {
-		compileMu.RLock()
-		defer compileMu.RUnlock()
-
-		return compile()
-	}
-
-	// compileMu first, then the registry's own compound-mutation lock, always in
-	// that order.
-	compileMu.Lock()
-	defer compileMu.Unlock()
-	defer v1.LockDefaultRegistry()()
-	defaults := v1.DefaultRegistry()
-	for _, def := range defs {
-		prior, had := defaults.Lookup(def.Name)
-		if err := defaults.Replace(def); err != nil {
-			// Registered into this document's registry already, so the same
-			// validation passed once; a failure leaves the task unknown.
-			continue
-		}
-		defer func() {
-			if had {
-				_ = defaults.Replace(prior)
-			} else {
-				defaults.Unregister(def.Name)
-			}
-		}()
-	}
-
-	return compile()
 }

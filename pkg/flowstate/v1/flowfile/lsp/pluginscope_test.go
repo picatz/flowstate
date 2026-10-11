@@ -175,9 +175,7 @@ func TestClosingOrChangingOneLocksDoesNotChangeAnotherDocument(t *testing.T) {
 	// A lock's tasks reach no one through the process: the default registry is
 	// exactly what it was.
 	for _, name := range []string{"alpha.run", "beta.run", "gamma.run"} {
-		compileMu.RLock() // another test's compile may hold its overlay right now
 		_, known := v1.DefaultRegistry().Lookup(name)
-		compileMu.RUnlock()
 		assert.False(t, known, "%s was left in the default registry", name)
 	}
 }

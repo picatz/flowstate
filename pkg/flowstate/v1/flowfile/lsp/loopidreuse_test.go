@@ -246,7 +246,7 @@ func TestOneReferenceHasOneVisibleTarget(t *testing.T) {
 	t.Parallel()
 
 	ix := newLineIndex(loopIDReuseFile)
-	parsed, err := parseFlowfile(loopIDReuseFile, ix)
+	parsed, err := parseFlowfile(flowfile.Env{}, loopIDReuseFile, ix)
 	require.NoError(t, err)
 	require.NotEmpty(t, parsed.steps)
 

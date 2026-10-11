@@ -145,27 +145,14 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		ds  flowfile.Diagnostics
 		err error
 	)
-	type validated struct {
-		ds  flowfile.Diagnostics
-		err error
+	// Through the shared module cache, whose key includes the registry the module
+	// was compiled against: a module compiled with one lock's tasks is never served
+	// to a document under another.
+	if path, ok := doc.filesystemPath(); ok {
+		ds, err = doc.env.ValidateSourceAtCached(moduleCache, []byte(doc.text), path)
+	} else {
+		ds, err = doc.env.ValidateSource([]byte(doc.text))
 	}
-	v := underDoc(doc, func() validated {
-		var v validated
-		path, ok := doc.filesystemPath()
-		switch {
-		case !ok:
-			v.ds, v.err = flowfile.ValidateSource([]byte(doc.text))
-		case len(doc.lock) > 0:
-			// Not the shared module cache: it is keyed by bytes, and a module
-			// compiled with this lock's tasks must not be served to a document
-			// that has not got them.
-			v.ds, v.err = flowfile.ValidateSourceAt([]byte(doc.text), path)
-		default:
-			v.ds, v.err = moduleCache.ValidateSourceAt([]byte(doc.text), path)
-		}
-		return v
-	})
-	ds, err = v.ds, v.err
 	if err != nil {
 		// A failure to compile now arrives as positioned diagnostics, so it is
 		// placed exactly like a validation diagnostic rather than dumped at the
