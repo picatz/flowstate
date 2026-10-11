@@ -16,7 +16,7 @@ import (
 // row. Each field under test gets its own tag, so one field's escaped copy
 // cannot satisfy the check for another.
 func hostile(tag string) string {
-	return tag + "\x1b[2J\a‮\nforged"
+	return tag + "\x1b[2J\a\u202e\nforged"
 }
 
 // hostilePlain is unstyled, so any ESC in the output is the plugin's and the
@@ -30,7 +30,7 @@ func hostilePlain(out *strings.Builder) *ui.UI {
 func requireEscaped(t *testing.T, rendered, tag string) {
 	t.Helper()
 
-	for _, raw := range []string{"\x1b", "\a", "‮", "\nforged"} {
+	for _, raw := range []string{"\x1b", "\a", "\u202e", "\nforged"} {
 		assert.NotContains(t, rendered, raw, "raw %q reached the terminal", raw)
 	}
 	assert.Contains(t, rendered, tag+`\x1b[2J`, "the %s payload did not render escaped, so this proves nothing", tag)
