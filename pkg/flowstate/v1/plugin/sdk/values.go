@@ -512,19 +512,16 @@ func wellKnown(name protoreflect.FullName) bool {
 func Literal(v any) *expr.Value {
 	value := flowstatev1.NewValue(v)
 	if literal := value.GetLiteral(); literal != nil {
-		budget := maxLiteralWalkNodes
-		return markUnrepresentable(literal, &budget)
+		if !markUnrepresentable(literal, map[*expr.Value]bool{}) {
+			return errorLiteral("flowstatev1: a cyclic value cannot be represented")
+		}
+		return literal
 	}
 	// Only the Go type is kept. The text of an error, or of whatever else
 	// NewValue refused, can carry a secret from upstream, and a step output is
 	// written to workflow history.
 	return errorLiteral(fmt.Sprintf("flowstatev1: a value of type %s cannot be represented", unrepresentableType(v)))
 }
-
-// Bounds on the walk [markUnrepresentable] makes over a literal, which may be a
-// caller-supplied tree that is deeper than any real output or even cyclic. Past
-// either, the rest is returned as it is.
-const maxLiteralWalkNodes = 1 << 14
 
 // unrepresentableType names the Go type of a refused value, with only
 // characters a type name has, so nothing from the value reaches the output.
@@ -537,14 +534,23 @@ func unrepresentableType(v any) string {
 }
 
 // markUnrepresentable replaces what [flowstatev1.NewValue] left out of a list or
-// a map, an element it had no literal for, with an error value. It is bounded by
-// the node budget, which also stops a cycle, and tolerates nil
-// entries, since the literal may hold a caller-supplied tree.
-func markUnrepresentable(literal *expr.Value, budget *int) *expr.Value {
-	if literal == nil || *budget <= 0 {
-		return literal
+// a map, an element it had no literal for, with an error value, and reports
+// false when the literal contains itself.
+//
+// The literal may be a caller-supplied tree, so the walk keeps a visit state per
+// node: a node reached again while still open is a cycle, which cannot be
+// marshaled and is refused whole, and one reached again after it was finished
+// is skipped, so the work is linear in the nodes and no node budget can leave
+// part of the tree unpatched. Nil entries are skipped.
+func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool) bool {
+	if literal == nil {
+		return true
 	}
-	*budget--
+	if open, seen := state[literal]; seen {
+		return !open
+	}
+	state[literal] = true
+	defer func() { state[literal] = false }()
 
 	switch kind := literal.GetKind().(type) {
 	case *expr.Value_ListValue:
@@ -554,7 +560,9 @@ func markUnrepresentable(literal *expr.Value, budget *int) *expr.Value {
 				values[i] = errorLiteral("")
 				continue
 			}
-			markUnrepresentable(element, budget)
+			if !markUnrepresentable(element, state) {
+				return false
+			}
 		}
 	case *expr.Value_MapValue:
 		for _, entry := range kind.MapValue.GetEntries() {
@@ -565,10 +573,12 @@ func markUnrepresentable(literal *expr.Value, budget *int) *expr.Value {
 				entry.Value = errorLiteral("")
 				continue
 			}
-			markUnrepresentable(entry.Value, budget)
+			if !markUnrepresentable(entry.Value, state) {
+				return false
+			}
 		}
 	}
-	return literal
+	return true
 }
 
 // errorLiteral is the error value [Literal] yields.

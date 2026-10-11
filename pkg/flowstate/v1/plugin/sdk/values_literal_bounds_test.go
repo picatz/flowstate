@@ -67,9 +67,18 @@ func TestLiteralWalkIsBoundedAndNilSafe(t *testing.T) {
 
 	start := time.Now()
 	for name, input := range map[string]any{
-		"cyclic list":      &expr.Value{Kind: &expr.Value_ListValue{ListValue: cycleList}},
-		"cyclic wide map":  self,
-		"cycle in a map":   map[string]any{"x": self},
+		"cyclic list":     &expr.Value{Kind: &expr.Value_ListValue{ListValue: cycleList}},
+		"cyclic wide map": self,
+		"cycle in a map":  map[string]any{"x": self},
+	} {
+		got := Literal(input)
+		requireErrorLiteral(t, input, got)
+		if _, err := proto.Marshal(got); err != nil {
+			t.Errorf("%s: the result does not marshal: %v", name, err)
+		}
+	}
+
+	for name, input := range map[string]any{
 		"nil map entry":    &expr.Value{Kind: &expr.Value_MapValue{MapValue: &expr.MapValue{Entries: []*expr.MapValue_Entry{nil, {Key: key}}}}},
 		"nil list element": &expr.Value{Kind: &expr.Value_ListValue{ListValue: &expr.ListValue{Values: []*expr.Value{nil}}}},
 		"nil list":         &expr.Value{Kind: &expr.Value_ListValue{}},
