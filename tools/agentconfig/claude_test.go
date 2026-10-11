@@ -85,7 +85,7 @@ func TestClaudeSubagentsCarryRepositoryRubrics(t *testing.T) {
 			}
 		})
 	}
-	for _, required := range []string{"flowstate-reviewer", "flowstate-verifier", "flowstate-pr-tidy"} {
+	for _, required := range []string{"flowstate-reviewer", "flowstate-verifier", "flowstate-pr-tidy", "flowstate-scout"} {
 		if !slices.Contains(names, required) {
 			t.Errorf("subagent %q is missing; CLAUDE.md and the ship skill delegate to it", required)
 		}
@@ -453,4 +453,44 @@ func splitList(value string) []string {
 		}
 	}
 	return out
+}
+
+// TestClaudeSubagentModelsFollowDelegationSkill derives each subagent's model
+// and effort from the routing table in the flowstate-delegate skill and
+// requires the agent definition to match, so the skill and the definitions
+// cannot drift apart: read-only lookups run on Haiku and reviews and
+// verification on Sonnet, none of them inheriting the lead's price.
+func TestClaudeSubagentModelsFollowDelegationSkill(t *testing.T) {
+	root := repoRoot(t)
+	skill := string(read(t, filepath.Join(root, ".agents", "skills", "flowstate-delegate", "SKILL.md")))
+	rows := 0
+	for line := range strings.SplitSeq(skill, "\n") {
+		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+		if len(cells) != 3 || !strings.HasPrefix(strings.TrimSpace(cells[0]), "`flowstate-") {
+			continue
+		}
+		name := strings.Trim(strings.TrimSpace(cells[0]), "`")
+		model, effort := strings.TrimSpace(cells[1]), strings.TrimSpace(cells[2])
+		rows++
+		meta := frontmatter(t, read(t, filepath.Join(root, ".claude", "agents", name+".md")))
+		if meta["model"] != model || meta["effort"] != effort {
+			t.Errorf("%s runs model %q effort %q; flowstate-delegate teaches %q and %q",
+				name, meta["model"], meta["effort"], model, effort)
+		}
+	}
+	if rows < 4 {
+		t.Fatalf("flowstate-delegate routing table lists %d agents; want every subagent", rows)
+	}
+}
+
+// TestClaudeScoutHasNoEditingTools pins the scout's read-only claim to its
+// tool list: it runs on a small model at low effort, so the dedicated editing
+// tools stay withheld and only its prompt forbids a write through Bash.
+func TestClaudeScoutHasNoEditingTools(t *testing.T) {
+	meta := frontmatter(t, read(t, filepath.Join(repoRoot(t), ".claude", "agents", "flowstate-scout.md")))
+	for _, tool := range splitList(meta["tools"]) {
+		if slices.Contains([]string{"Edit", "MultiEdit", "Write", "NotebookEdit"}, tool) {
+			t.Errorf("flowstate-scout is read-only but is given %q", tool)
+		}
+	}
 }

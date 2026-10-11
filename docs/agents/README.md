@@ -14,7 +14,7 @@ software rather than prose for checks that can be deterministic.
 | `.agents/skills/*/SKILL.md` | Portable task workflows for Amp and Codex | Name and description are advertised; the body loads when selected |
 | `.claude/skills/*/SKILL.md` | Claude Code mirrors of the portable skills | The body loads when selected |
 | `.claude/settings.json` | Claude-specific hooks, the allow list that stops the repository's own verification commands from prompting, and the two official security plugins the repository enables for every clone and cloud session, pinned to the Anthropic-owned marketplace they resolve from | Enforced by Claude Code |
-| `.claude/agents/*.md` | Fresh-context subagents carrying the review, verification, and review-hygiene rubrics (`flowstate-reviewer`, `flowstate-verifier`, `flowstate-pr-tidy`) | Claude Code delegates on the description; the body and preloaded skills load in the subagent's own context |
+| `.claude/agents/*.md` | Fresh-context subagents carrying the review, verification, and review-hygiene rubrics (`flowstate-reviewer`, `flowstate-verifier`, `flowstate-pr-tidy`, `flowstate-scout`), each pinned to a model and effort by the `flowstate-delegate` skill | Claude Code delegates on the description; the body and preloaded skills load in the subagent's own context |
 | `.claude/rules/*.md` | Path-scoped procedures, currently only the agent-configuration maintenance rule | Loaded when Claude Code reads or edits a file matching the rule's `paths` |
 | `REVIEW.md` | The `comms-review` rubric in the one form Anthropic's hosted Code Review can read: what Important means here, the nit cap, the generated surfaces to skip, and the disposition rule that keeps a re-review from relitigating | Read by Code Review on a pull request |
 | `.claude/claude-security-guidance.md` | Flowstate's trust boundaries and the four invariants a security reviewer most often gets wrong here, for the `security-guidance` plugin's model-backed reviews | Loaded by the plugin's model-backed reviews |
@@ -326,11 +326,15 @@ and whether a deterministic mechanism can prevent it more reliably.
   `git worktree list`, restricts itself to read-only commands, and says so.
   Its prompt forbids writing in either case. The verifier runs on the `sonnet` alias
   because running and summarizing tests needs less reasoning than reviewing
-  them; the reviewer inherits the session model. `flowstate-pr-tidy`, also on
-  `sonnet`, resolves
+  them; the reviewer is pinned to `sonnet` at `high` effort, since review is
+  read-heavy with a small report, and a change to authentication, policy,
+  secrets, or durability overrides it to `opus` for that call. The
+  `flowstate-scout` runs on `haiku` for lookups and log reading. The
+  `flowstate-delegate` skill holds the routing and `tools/agentconfig` pins
+  it. `flowstate-pr-tidy`, also on `sonnet`, resolves
   review threads whose disposition is visible and hides decision-free bot
   comments so human reviewers see decisions rather than AI traffic; it never
-  replies to an AI reviewer and runs before the attestation. All three are
+  replies to an AI reviewer and runs before the attestation. All four are
   bounded and checked by `tools/agentconfig`.
 - Auto memory is on by default and lives outside the repository. Session
   learnings go there; do not add them to `CLAUDE.md`. `/skill-doctor` reports

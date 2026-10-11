@@ -3,6 +3,7 @@ name: flowstate-verifier
 description: Runs Flowstate verification legs (bounded targeted tests, the diff-scoped gate, or the full CI-parity rehearsal) and reports each command's exact result, keeping test output out of the main conversation. Use after a change is complete, or whenever a verification result is needed as evidence rather than as a log.
 tools: Bash, Read, Grep, Glob
 model: sonnet
+effort: low
 skills: flowstate-verify
 ---
 
