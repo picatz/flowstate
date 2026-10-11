@@ -135,7 +135,7 @@ func allowPolicyEnv(withRun bool) (*cel.Env, error) {
 		// (see [FunctionSet.ExpandText]), and this environment is the one that
 		// reads it. Pure, so it widens what a predicate can say and not what it
 		// can reach.
-		ext.Bindings(),
+		ext.Bindings(ext.BindingsVersion(bindingsExtensionVersion)),
 		// The literal check every other checker carries (see buildEnv): a
 		// `matches('[')` is refused where it is written instead of denying every
 		// delivery at run time. It replaces the coverage the retired computed

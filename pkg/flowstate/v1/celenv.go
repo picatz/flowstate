@@ -835,23 +835,47 @@ const stringsExtensionVersion = 5
 // describes.
 const listsExtensionVersion = 3
 
+// The remaining version-gated libraries are pinned for the reason
+// [stringsExtensionVersion] records, and raising any of them is the same
+// reviewed decision it describes: a new function arriving through a raised pin
+// is a profile question first (see the admission rule at profiles), and the
+// raise belongs in a diff with its own reasoning, not in a `go get -u`.
+//
+// Each value is the highest version cel-go v0.31.0 gates anything on, read from
+// that release's source (`version >= N` in the library), so each pin matches
+// today's unpinned behaviour and the generated docs/reference/cel.md does not
+// move. Four libraries (comprehensions, protos, regex and sets) accept a
+// version option but gate nothing on it in v0.31.0, so their pin is zero: the
+// version a library has before it grows its first gate, which keeps whatever
+// a later cel-go introduces at version 1 out of the profile until reviewed.
+const (
+	bindingsExtensionVersion       = 1 // ext.BindingsVersion
+	comprehensionsExtensionVersion = 0 // ext.TwoVarComprehensionsVersion; no gates in v0.31.0
+	encodersExtensionVersion       = 1 // ext.EncodersVersion
+	mathExtensionVersion           = 3 // ext.MathVersion
+	optionalExtensionVersion       = 2 // cel.OptionalTypesVersion
+	protosExtensionVersion         = 0 // ext.ProtosVersion; no gates in v0.31.0
+	regexExtensionVersion          = 0 // ext.RegexVersion; no gates in v0.31.0
+	setsExtensionVersion           = 0 // ext.SetsVersion; no gates in v0.31.0
+)
+
 // extensionLibraries maps the library names a workflow may enable to the
 // environment options that provide them.
 //
 // Every entry must be deterministic and free of I/O: expressions are evaluated
 // during workflow execution, where nondeterminism corrupts replay.
 var extensionLibraries = map[string][]cel.EnvOption{
-	"bindings":       {ext.Bindings()},
-	"comprehensions": {ext.TwoVarComprehensions()},
+	"bindings":       {ext.Bindings(ext.BindingsVersion(bindingsExtensionVersion))},
+	"comprehensions": {ext.TwoVarComprehensions(ext.TwoVarComprehensionsVersion(comprehensionsExtensionVersion))},
 	"digest":         {digestLibrary()},
-	"encoders":       {ext.Encoders()},
+	"encoders":       {ext.Encoders(ext.EncodersVersion(encodersExtensionVersion))},
 	"json":           {jsonLibrary()},
 	"lists":          {ext.Lists(ext.ListsVersion(listsExtensionVersion)), foldLibrary(), listRangeLibrary()},
-	"math":           {ext.Math()},
-	"optional":       {cel.OptionalTypes()},
-	"protos":         {ext.Protos()},
-	"regex":          {cel.OptionalTypes(), ext.Regex()},
-	"sets":           {ext.Sets()},
+	"math":           {ext.Math(ext.MathVersion(mathExtensionVersion))},
+	"optional":       {cel.OptionalTypes(cel.OptionalTypesVersion(optionalExtensionVersion))},
+	"protos":         {ext.Protos(ext.ProtosVersion(protosExtensionVersion))},
+	"regex":          {cel.OptionalTypes(cel.OptionalTypesVersion(optionalExtensionVersion)), ext.Regex(ext.RegexVersion(regexExtensionVersion))},
+	"sets":           {ext.Sets(ext.SetsVersion(setsExtensionVersion))},
 	"strings":        {ext.Strings(ext.StringsVersion(stringsExtensionVersion))},
 }
 
@@ -1006,7 +1030,7 @@ func ProfileNames() []string {
 // other library's reconstruction panic generically. See #1854 and the
 // upstream row tracked in #1862.
 func ProfileConfig(env *cel.Env, name string) (*celconfig.Config, error) {
-	if _, regexErr := cel.NewCustomEnv(ext.Regex()); regexErr != nil {
+	if _, regexErr := cel.NewCustomEnv(ext.Regex(ext.RegexVersion(regexExtensionVersion))); regexErr != nil {
 		if slices.Contains(env.Libraries(), "cel.lib.ext.regex") {
 			return nil, fmt.Errorf("cel: profile %q cannot be serialized: library %q does not "+
 				"construct on cel-go's isolated bare environment (%w); see #1854", name, "cel.lib.ext.regex", regexErr)
