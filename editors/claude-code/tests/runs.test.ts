@@ -123,6 +123,11 @@ test('only the CLI refusal for an unaddressable run reads as gone', () => {
   const real = 'ERROR\nno run "flowstate-workflow-3f2b9c1e-8a64-4d2e-9b7a-0c5d1e2f3a4b" is addressable: check the id, or it belongs to a tenant your credentials do not establish, or it has aged out of Temporal\'s retention\n'
   expect(isGone(real)).toBe(true)
   expect(isGone('no run "weird\\"id" is addressable: check the id')).toBe(true)
+  // not on a terminal the CLI wraps at 80 columns, which leaves a long id's `no run` alone on a line
+  const id = `flowstate-request-${'0123456789abcdef'.repeat(4)}`
+  const wrapped = `ERROR\nno run\n"${id}"\nis addressable: check the id, or it belongs to a tenant your credentials do not\nestablish, or it has aged out of Temporal's retention\n`
+  expect(isGone(wrapped)).toBe(true)
+  expect(isGone('ERROR\nno run\nsomething else entirely\n')).toBe(false)
   // a long id is cut in the one-line reason, and the answer must not depend on that
   expect(reason(real)).not.toContain('addressable')
   for (const other of [
