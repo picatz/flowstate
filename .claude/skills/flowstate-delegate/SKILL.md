@@ -37,9 +37,18 @@ when it keeps bulk output out of the lead's context.
 
 Medium is the default for the lead; raise it to high for work on an invariant
 and for verification of edge cases. Effort fixes missed edge cases, not a wrong
-approach: a wrong approach calls for a better spec or a higher tier. Roles set
-their own: reviewer high (thoroughness is the product and the report is
-small), verifier and pr-tidy and scout low.
+approach: a wrong approach calls for a better spec or a higher tier. Each
+subagent role carries its own model and effort, pinned in its definition:
+
+| Role | Model | Effort |
+| --- | --- | --- |
+| `flowstate-scout` | haiku | low |
+| `flowstate-verifier` | sonnet | low |
+| `flowstate-pr-tidy` | sonnet | low |
+| `flowstate-reviewer` | sonnet | high |
+
+The reviewer runs high because thoroughness is the product and its report is
+small.
 
 ## Keep context cheap
 
@@ -65,8 +74,9 @@ Every merge keeps its one exact-head review; risk sets the reviewer, never
 whether it happens. Default `flowstate-reviewer` (Sonnet). A change to
 authentication, policy, secrets, durability, tenancy, or egress runs it with
 `model: opus` and `flowstate-security-review`, then an adversarial pass. A
-docs or comment change is a short review, not a skipped one. After a fix push,
-re-review only when logic changed.
+docs or comment change is a short review, not a skipped one. Any push after a
+review needs a verdict on the new head; a fix that changes only formatting or
+wording gets a short delta review, a logic change a full one.
 
 ## Unattended runs
 

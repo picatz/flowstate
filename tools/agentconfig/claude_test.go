@@ -455,22 +455,30 @@ func splitList(value string) []string {
 	return out
 }
 
-// TestClaudeSubagentModelsFollowDelegationSkill pins the per-role model and
-// effort that the flowstate-delegate skill teaches, so the skill and the agent
-// definitions cannot drift apart: read-only lookups run on Haiku and reviews
-// and verification on Sonnet, none of them inheriting the lead's price.
+// TestClaudeSubagentModelsFollowDelegationSkill derives each subagent's model
+// and effort from the routing table in the flowstate-delegate skill and
+// requires the agent definition to match, so the skill and the definitions
+// cannot drift apart: read-only lookups run on Haiku and reviews and
+// verification on Sonnet, none of them inheriting the lead's price.
 func TestClaudeSubagentModelsFollowDelegationSkill(t *testing.T) {
-	want := map[string][2]string{
-		"flowstate-scout":    {"haiku", "low"},
-		"flowstate-verifier": {"sonnet", "low"},
-		"flowstate-pr-tidy":  {"sonnet", "low"},
-		"flowstate-reviewer": {"sonnet", "high"},
-	}
-	for name, mc := range want {
-		meta := frontmatter(t, read(t, filepath.Join(repoRoot(t), ".claude", "agents", name+".md")))
-		if meta["model"] != mc[0] || meta["effort"] != mc[1] {
-			t.Errorf("%s runs model %q effort %q; flowstate-delegate teaches %q and %q",
-				name, meta["model"], meta["effort"], mc[0], mc[1])
+	root := repoRoot(t)
+	skill := string(read(t, filepath.Join(root, ".agents", "skills", "flowstate-delegate", "SKILL.md")))
+	rows := 0
+	for line := range strings.SplitSeq(skill, "\n") {
+		cells := strings.Split(strings.Trim(strings.TrimSpace(line), "|"), "|")
+		if len(cells) != 3 || !strings.HasPrefix(strings.TrimSpace(cells[0]), "`flowstate-") {
+			continue
 		}
+		name := strings.Trim(strings.TrimSpace(cells[0]), "`")
+		model, effort := strings.TrimSpace(cells[1]), strings.TrimSpace(cells[2])
+		rows++
+		meta := frontmatter(t, read(t, filepath.Join(root, ".claude", "agents", name+".md")))
+		if meta["model"] != model || meta["effort"] != effort {
+			t.Errorf("%s runs model %q effort %q; flowstate-delegate teaches %q and %q",
+				name, meta["model"], meta["effort"], model, effort)
+		}
+	}
+	if rows < 4 {
+		t.Fatalf("flowstate-delegate routing table lists %d agents; want every subagent", rows)
 	}
 }

@@ -326,11 +326,15 @@ and whether a deterministic mechanism can prevent it more reliably.
   `git worktree list`, restricts itself to read-only commands, and says so.
   Its prompt forbids writing in either case. The verifier runs on the `sonnet` alias
   because running and summarizing tests needs less reasoning than reviewing
-  them; the reviewer inherits the session model. `flowstate-pr-tidy`, also on
-  `sonnet`, resolves
+  them; the reviewer is pinned to `sonnet` at `high` effort, since review is
+  read-heavy with a small report, and a change to authentication, policy,
+  secrets, or durability overrides it to `opus` for that call. The
+  `flowstate-scout` runs on `haiku` for lookups and log reading. The
+  `flowstate-delegate` skill holds the routing and `tools/agentconfig` pins
+  it. `flowstate-pr-tidy`, also on `sonnet`, resolves
   review threads whose disposition is visible and hides decision-free bot
   comments so human reviewers see decisions rather than AI traffic; it never
-  replies to an AI reviewer and runs before the attestation. All three are
+  replies to an AI reviewer and runs before the attestation. All four are
   bounded and checked by `tools/agentconfig`.
 - Auto memory is on by default and lives outside the repository. Session
   learnings go there; do not add them to `CLAUDE.md`. `/skill-doctor` reports
