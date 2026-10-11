@@ -127,7 +127,7 @@ const readTimeline = async ($: Engine, flow: string, id: string): Promise<Timeli
   try {
     const argv = [flow, 'timeline', '-o', 'json', '--max-entries', String(MAX_ENTRIES), '--', id]
     const ran = await $.process.run(argv, { timeoutMs: 5000 })
-    if (ran.exitCode !== 0) return { error: reason(ran.stderr) }
+    if (ran.exitCode !== 0) return { error: reason(ran.stderr), gone: isGone(ran.stderr) }
     const parsed = parseTimeline(ran.stdout)
     const note = stderrNote(ran.stderr)
     return 'detail' in parsed && note !== '' ? { ...parsed, note } : parsed
@@ -841,7 +841,7 @@ export const register: Register = (on, options) => {
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
             {account && 'error' in account ? (
               <Text dimColor>
-                {isGone(account.error) ? '  This run is no longer on the server (a restart clears runs a dev server keeps in memory). Close it.' : `  Timeline unavailable (${account.error}).`}
+                {account.gone ? '  The server has no run with this id: it may predate a restart (a dev server keeps runs in memory), belong to another tenant, or have aged out. Close it.' : `  Timeline unavailable (${account.error}).`}
               </Text>
             ) : (
               <Box flexDirection="column">

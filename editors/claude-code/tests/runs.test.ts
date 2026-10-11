@@ -119,9 +119,19 @@ test('a very long error still ends in its cause, and a cut never splits a charac
   expect(huge).toMatch(/the real cause$/)
 })
 
-test('a timeline error that says the run is gone is told apart from one that failed to load', () => {
-  expect(isGone('workflow execution not found')).toBe(true)
-  expect(isGone('NotFound: no such workflow')).toBe(true)
-  expect(isGone('connection refused')).toBe(false)
-  expect(isGone('')).toBe(false)
+test('only the CLI refusal for an unaddressable run reads as gone', () => {
+  const real = 'ERROR\nno run "flowstate-workflow-3f2b9c1e-8a64-4d2e-9b7a-0c5d1e2f3a4b" is addressable: check the id, or it belongs to a tenant your credentials do not establish, or it has aged out of Temporal\'s retention\n'
+  expect(isGone(real)).toBe(true)
+  expect(isGone('no run "weird\\"id" is addressable: check the id')).toBe(true)
+  // a long id is cut in the one-line reason, and the answer must not depend on that
+  expect(reason(real)).not.toContain('addressable')
+  for (const other of [
+    'fork/exec flow: executable file not found in $PATH',
+    'dial tcp: lookup notfound-host: no such host',
+    'reading the timeline of "deploy-not-found": connection refused',
+    'refused while reading "no run \"x\" is addressable:": permission denied',
+    'workflow execution not found',
+    '',
+  ])
+    expect(isGone(other)).toBe(false)
 })

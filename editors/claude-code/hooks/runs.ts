@@ -105,7 +105,12 @@ export const toListing = (run: { exitCode: number; stdout: string; stderr: strin
     : { offline: filtered ? rejection(run.stderr) : reason(run.stderr) }
 
 /**
- * Whether a timeline error says the server no longer has the run, as after a restart of a server that keeps nothing between
- * sessions. A run left selected in the pane then reads as gone, not as a timeline that failed to load.
+ * Whether what `flow timeline` said on stderr is the CLI's refusal for a run the server has no record of: `no run "<id>" is
+ * addressable: ...` (`refusedRun`, cmd/flow/client.go). The id is `%q`-quoted, so it is matched as a quoted string and nothing
+ * after it is read: an id that merely contains "not found", or a transport error that quotes one, is not it. Tested on the raw
+ * line, because the one-line reason cuts the middle of a long id.
  */
-export const isGone = (error: string): boolean => /not.?found|no such (workflow|run)|does not exist/i.test(error)
+export const isGone = (stderr: string): boolean => {
+  const first = stderr.split('\n').map(l => l.trim()).find(l => l !== '' && l !== 'ERROR') ?? ''
+  return /^no run "(?:[^"\\]|\\.)*" is addressable:/.test(first)
+}
