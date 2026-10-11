@@ -949,7 +949,8 @@ func (r *WebhookReceiver) route(path string) (*webhookRoute, bool) {
 // provider's retry storm produces. Both requests reach StartWorkflowExecution;
 // the cluster admits one and answers the other with
 // [serviceerror.WorkflowExecutionAlreadyStarted] carrying the run id of the one
-// that won. There is no window, no local table, and nothing to expire.
+// that won. There is no window and no local table; the dedupe lasts as long as the
+// namespace retains the closed execution.
 //
 // A redelivery is *joined* rather than refused: the sender is told about the run
 // their event produced, with a 200, so a retry converges instead of alternating
@@ -1011,7 +1012,9 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// redelivery while the first run is still going; reuse covers one that
 	// arrives after it finished, which is the half a receiver that only thought
 	// about concurrent retries gets wrong — a provider redelivering an hour later
-	// would otherwise start a second run of a completed event.
+	// would otherwise start a second run of a completed event. Both halves end
+	// where the namespace's retention deletes the closed execution: a
+	// redelivery after that starts a new run.
 	options.WorkflowIDConflictPolicy = enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL
 	options.WorkflowIDReusePolicy = enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
 

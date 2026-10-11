@@ -888,7 +888,7 @@ func init() {
 				" `WORKFLOW_ID_CONFLICT_POLICY_FAIL` with\n" +
 				" `WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE`: a run that has *finished*\n" +
 				" releases the key, which is the difference from a webhook delivery's\n" +
-				" `REJECT_DUPLICATE`. A delivery id names one event forever; a concurrency\n" +
+				" `REJECT_DUPLICATE`. A delivery id names one event for as long as the namespace retains the closed run; a concurrency\n" +
 				" key names a resource that is free again once the run holding it ends.\n",
 		},
 		{

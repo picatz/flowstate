@@ -24,6 +24,17 @@ import (
 // id as the dedupe, and the cluster's already-started answer — carrying the
 // incumbent's run id — as the fact the server states a reuse from. See
 // [WebhookReceiver.start] for why that holds where a time-window dedupe cannot.
+//
+// The guarantee lasts as long as the namespace retains the execution. The
+// paired start policies set by the caller split the work: the conflict policy
+// (FAIL) governs an open execution, and the reuse policy (REJECT_DUPLICATE)
+// governs closed executions still inside Temporal's workflow-execution
+// retention period; once retention deletes a closed
+// execution nothing holds the id, the start succeeds, a second run begins, and
+// the answer says `reused` false. There is no table of ours to expire or
+// outlive that: the lifetime is the deployment's retention setting, and a
+// lifetime key would be a deliberately retained record needing its own design.
+// A caller must not rely on a request id beyond retention.
 
 // requestWorkflowIDPrefix keeps request-addressed runs in an id namespace of
 // their own, distinct from `flowstate-workflow-`, [v1.EntityWorkflowID]'s,

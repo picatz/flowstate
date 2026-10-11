@@ -2179,6 +2179,29 @@ than it is.
   make the worker refuse to start. Set ownership correctly instead of
   widening the mode.
 
+## Request-id and webhook deduplication follow Temporal retention
+
+A `request_id` on a submission, and the delivery key of a webhook trigger that
+starts a run, make a retry converge on the run the first attempt started. The mechanism is
+Temporal's own workflow-id uniqueness, so it holds for a running run and for a
+finished run whose closed execution the namespace still retains. It lasts as
+long as the namespace's workflow-execution retention period and no longer: once
+retention deletes the closed execution, a retry under the same key starts a new
+run and reports `reused: false` (`joined` is the flag on a webhook response).
+Temporal's minimum retention is one day; the maximum is set by the deployment,
+and Temporal Cloud caps it at its own plan limit, so check yours.
+
+Signal webhooks differ. They dedupe through the target run's
+`consumed_delivery_ids`, only signal an existing run, and are refused rather
+than restarted once that run is gone.
+
+Treat the retention period as the bound on this guarantee and size it to the
+longest redelivery you expect to absorb, such as a queue replayed after an
+outage. Clients should not rely on a `request_id` beyond it. Flowstate keeps no
+separate record, so a longer guarantee would need a deliberately retained store
+with its own retention and erasure policy. The key also deduplicates submissions
+only, not effects: it does not make a step's external call idempotent.
+
 ## Noisy neighbor
 
 A run is scheduled under a Temporal fairness key taken from its authenticated

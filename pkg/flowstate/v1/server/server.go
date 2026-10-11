@@ -1554,8 +1554,11 @@ func (s *FlowstateServer) Run(ctx context.Context, req *connect.Request[v1.RunRe
 
 	if submission != nil {
 		// The fourth pair, the webhook receiver's, and for its reason: a request
-		// id names one submission forever, so a retry arriving after the run
-		// finished must find that run rather than start a second one. Only when
+		// id names one submission for as long as the namespace retains the
+		// run, so a retry arriving after the run finished must find that run
+		// rather than start a second one. Past retention the closed execution
+		// is gone, this start succeeds, and the answer is a second run with
+		// `reused` false. Only when
 		// the request id is the address — under an entity key or a permit, the
 		// address's own pair above stays in force and the request id decides
 		// nothing about the id's lifetime.

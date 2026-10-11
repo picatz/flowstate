@@ -84,9 +84,16 @@ func init() {
 				" Unset, the run gets a generated `flowstate-workflow-<uuid>` id. Set, the\n" +
 				" workflow id is `flowstate-request-<hex>`, derived by digest from the\n" +
 				" caller's authenticated namespace and this value, and the cluster's own\n" +
-				" uniqueness on that id is the deduplication. A request id names one\n" +
-				" submission forever: a retry that arrives after the run finished is answered\n" +
-				" with the finished run.\n" +
+				" uniqueness on that id is the deduplication. That uniqueness covers a run\n" +
+				" that is still going and a run that finished while the namespace still\n" +
+				" retains its closed execution, so a retry in either state is answered with\n" +
+				" that run. It lasts as long as the namespace's workflow-execution retention\n" +
+				" period, a deployment property: once retention deletes the closed execution,\n" +
+				" nothing remembers the id, a retry starts a second run, and `reused` is\n" +
+				" false. A caller must not rely on a request id beyond that retention; one\n" +
+				" that retries later than that needs its own record of what it submitted.\n" +
+				" The id converges submissions on one run; it does not make a step's\n" +
+				" external effect idempotent.\n" +
 				"\n" +
 				" When the request also names an `entity_key`, or the workflow declares a\n" +
 				" `concurrency:` block, that address decides the run's id. This field then\n" +
@@ -1107,7 +1114,10 @@ func init() {
 				" and origin returns the run the first attempt started (`reused`) instead of\n" +
 				" starting a second one, so a lost response cannot repeat the suffix's\n" +
 				" effects. A different id is an intentional fork. Same grammar as\n" +
-				" `RunRequest.request_id`; the value is digested, never stored.\n",
+				" `RunRequest.request_id`; the value is digested, never stored. As there, it\n" +
+				" holds only while the namespace retains the execution: after retention\n" +
+				" deletes a closed resumed run, a retry starts a second one and `reused` is\n" +
+				" false, so do not rely on the id past retention.\n",
 		},
 		{
 			Name:    "flowstate.v1.ResumeRunResponse",

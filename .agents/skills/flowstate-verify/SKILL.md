@@ -26,6 +26,16 @@ GOMEMLIMIT=1GiB go test -short -timeout 120s ./...
 
 For one package or test, narrow the package and `-run` pattern further.
 
+Ask how much may run before choosing a tier, not after: `go run ./tools/fleet`
+computes how many lanes this machine can hold right now and `-env` prints what
+each lane must export (`GOMAXPROCS`, `GOFLAGS=-p`, `GOMEMLIMIT`). Run it before
+dispatching concurrent lanes or a wide suite, and take its numbers rather than
+restating them. A lane on a busy machine caps itself with that environment
+instead of saturating the box or idling until it is quiet. A failure seen under
+contention (timeouts, "condition never satisfied", `race detected` in an
+unrelated package) is re-run alone on its package before it is reported; one
+that vanishes alone is contention, not a defect in the diff.
+
 The packages that share a Temporal dev server (`engine`, `server`,
 `temporalclient`, `cmd/flow`) each boot one in `TestMain`, about eleven seconds
 before the first test runs. Without `-short`, `engine`'s own suite alone runs

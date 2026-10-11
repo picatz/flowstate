@@ -18,10 +18,10 @@ regardless of judgment in tools, hooks, and CI.
 
 - The checked-out revision is authoritative; memory, old examples, and archived
   notes are not. When a claim depends on `main`, a pull request, an issue, or
-  generated output, inspect the current object and name the revision you used.
+  generated output, inspect the current object and name its revision.
 - Search for the repository's existing spelling before adding a type, policy
-  key, command, helper, or abstraction. Derive from one source of truth rather
-  than maintaining a second representation.
+  key, command, helper, or abstraction. Derive from one source of truth, not a
+  second representation.
 - [AGENT_FIELD_NOTES.md](AGENT_FIELD_NOTES.md) indexes historical incidents.
   Search it for one topic when the tree and current documentation do not
   answer; do not preload it.
@@ -86,7 +86,7 @@ The complete rationale lives in
   satisfied without asking again. Ask only when an action is materially
   destructive, irreversible, externally consequential, or out of scope.
 - Preserve provenance without inventing it: no hard-coded model name, and no
-  hand-written attribution footer or session link in a body or commit message.
+  hand-written attribution footer or session link in a body or commit.
 
 ## Communication
 
@@ -107,19 +107,19 @@ reporting contract.
 GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...  # bounded targeted run
 go run ./tools/gate                                                  # diff-scoped gate; the default before a PR
 make check                                                           # full CI-parity rehearsal
+go run ./tools/fleet                                                 # lanes allowed now; run before a wide suite
 ```
 
 Gotchas the tree does not announce:
 
-- `make fmt`, never a bare `gofmt`: a `gofmt` resolved from `PATH` can be a
-  different binary from the pinned toolchain's and disagree with CI on a clean
-  tree.
-- Kill the PID you started, never a pattern: on a shared machine `pkill -f`
-  matches every sibling agent's processes, and once ended its own shell.
-- In a shared checkout another agent may be editing beside you: re-read a
-  file before changing it, and verify the pushed revision, not a dirty tree.
-- A skipped, unavailable, timed-out, or silently omitted leg is **not
-  verified**. Report exactly what ran and its result.
+- `make fmt`, never a bare `gofmt`: one from `PATH` can differ from the pinned
+  toolchain's and disagree with CI on a clean tree.
+- Kill the PID you started, never a pattern: `pkill -f` matches every sibling
+  agent's processes, and once ended its own shell.
+- In a shared checkout another agent may be editing: re-read a file before
+  changing it, and verify the pushed revision, not a dirty tree.
+- A skipped, unavailable, timed-out, or omitted leg is **not verified**.
+  Report exactly what ran and its result.
 
 ## Shipping
 
