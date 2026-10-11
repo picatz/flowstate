@@ -1130,7 +1130,7 @@ func constructOutputNode(target *parsedStep) *v1.Node {
 // kind is what [constructOutputNode] built; the caller has already checked it
 // is non-nil.
 func hoverConstructOutput(target *parsedStep, kind *v1.Node, ref reference, rng lsp.Range) *lsp.Hover {
-	names, _ := v1.OutputNames(kind, nil)
+	names := underBase(func() []v1.NamedOutput { n, _ := v1.OutputNames(kind, nil); return n })
 
 	label := target.kind()
 	if label == "" {

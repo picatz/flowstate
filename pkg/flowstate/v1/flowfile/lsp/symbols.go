@@ -369,18 +369,18 @@ func siblingFlowfile(doc *document, target string) []lsp.Location {
 		// there anyway would say the call works.
 		return nil
 	}
-	return flowfileLocation(located.Path)
+	return flowfileLocation(doc, located.Path)
 }
 
 // flowfileLocation is where go-to-definition arrives for a Flowfile at path: its
 // `name:`, provided the path is a regular file. Anything else is nil, because a
 // [lsp.Location] naming a path that is not there opens an editor on nothing.
-func flowfileLocation(path string) []lsp.Location {
+func flowfileLocation(doc *document, path string) []lsp.Location {
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
 		return nil
 	}
-	return []lsp.Location{{URI: fileURI(path), Range: calleeRange(path)}}
+	return []lsp.Location{{URI: fileURI(path), Range: calleeRange(doc, path)}}
 }
 
 // testDefinition resolves the `workflow:` value of a test case, or of a
@@ -432,7 +432,7 @@ func testDefinition(doc *document, pos lsp.Position) []lsp.Location {
 	if !filepath.IsAbs(literal) {
 		literal = filepath.Join(filepath.Dir(testPath), literal)
 	}
-	return flowfileLocation(literal)
+	return flowfileLocation(doc, literal)
 }
 
 // scalarSpan is how many bytes of rest are the YAML scalar it begins with: a
@@ -486,14 +486,22 @@ func scalarSpan(rest string) int {
 // an open document gets. Nothing about being on the other end of a `call:` makes
 // a file smaller, and a definition request must not turn into an unbounded read
 // of whatever the path happens to name.
-func calleeRange(path string) lsp.Range {
+func calleeRange(doc *document, path string) lsp.Range {
 	data, ok := readCalleeSource(path)
 	if !ok {
 		return documentStart
 	}
 
 	text := string(data)
-	parsed, err := parseFlowfile(text, newLineIndex(text))
+	type calleeParse struct {
+		file *parsedFile
+		err  error
+	}
+	cp := underDoc(doc, func() calleeParse {
+		file, err := parseFlowfile(text, newLineIndex(text))
+		return calleeParse{file, err}
+	})
+	parsed, err := cp.file, cp.err
 	if err != nil || parsed == nil || parsed.nameEntry == nil {
 		return documentStart
 	}

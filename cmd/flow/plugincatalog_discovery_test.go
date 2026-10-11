@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -233,5 +235,8 @@ func TestDiscoverLockReturnsTheLockItFound(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	assert.Equal(t, lock, got.Path)
-	assert.NotEmpty(t, got.Version)
+	data, err := os.ReadFile(lock)
+	require.NoError(t, err)
+	sum := sha256.Sum256(data)
+	assert.Equal(t, hex.EncodeToString(sum[:]), got.Version, "the version is a digest of the bytes parsed")
 }

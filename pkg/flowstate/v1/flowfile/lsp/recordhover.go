@@ -171,25 +171,23 @@ func compiledWorkflow(doc *document) *v1.Workflow {
 
 // compiledText is [compiledWorkflow] over text standing in for the document's.
 func compiledText(doc *document, text string) *v1.Workflow {
-	return underTasks(doc.tasks, func() *v1.Workflow { return compileText(doc, text) })
-}
+	return underDoc(doc, func() *v1.Workflow {
+		if path, ok := doc.filesystemPath(); ok {
+			wf, _, err := flowfile.ParseAt([]byte(text), path)
+			if err != nil {
+				return nil
+			}
 
-func compileText(doc *document, text string) *v1.Workflow {
-	if path, ok := doc.filesystemPath(); ok {
-		wf, _, err := flowfile.ParseAt([]byte(text), path)
+			return wf
+		}
+
+		wf, err := flowfile.Unmarshal([]byte(text))
 		if err != nil {
 			return nil
 		}
 
 		return wf
-	}
-
-	wf, err := flowfile.Unmarshal([]byte(text))
-	if err != nil {
-		return nil
-	}
-
-	return wf
+	})
 }
 
 // wordAt returns where the run of identifier characters and dots around cursor

@@ -14,8 +14,8 @@ import (
 // PluginLock is the plugin tasks one plugins.lock.json declares, as the
 // [FlowfileServer.PluginCatalog] hook reads them. It carries descriptors only.
 type PluginLock struct {
-	// Path identifies the lock file, and Version its content (a size and
-	// modification time is enough). Two documents under the same Path and
+	// Path identifies the lock file, and Version its content (a digest of the
+	// bytes the Tasks were read from). Two documents under the same Path and
 	// Version share one registry; a lock edited between two opens is a new
 	// version, so opening a document after the edit does not change the answers
 	// of one opened before it.
@@ -212,9 +212,28 @@ func overlayOf(registry *v1.Registry) []v1.TaskDef {
 	return defs
 }
 
-// underTasks runs compile with registry's lock tasks visible to the compiler.
-func underTasks[T any](registry *v1.Registry, compile func() T) T {
-	defs := overlayOf(registry)
+// underDoc runs compile with doc's lock tasks visible to the compiler. It, and
+// [underBase], are the only way this package reaches the compiler or any other
+// reader of the default registry; TestNoCompilerCallEscapesTheRegistryScope
+// holds the rest of the package to that.
+//
+// The tasks are the document's own (see [document.lock]), copied from the scope
+// when the document was built, so a request holding a document that has since
+// been closed still compiles it as it was opened.
+//
+// Not re-entrant: compile must not call underDoc or underBase.
+func underDoc[T any](doc *document, compile func() T) T {
+	return underLock(doc.lock, compile)
+}
+
+// underBase is [underDoc] for work that belongs to no document (a module's
+// interface, read through the shared byte-keyed cache): it sees the default
+// registry as the host left it and never an overlay.
+func underBase[T any](compile func() T) T {
+	return underLock(nil, compile)
+}
+
+func underLock[T any](defs []v1.TaskDef, compile func() T) T {
 	if len(defs) == 0 {
 		compileMu.RLock()
 		defer compileMu.RUnlock()
@@ -222,8 +241,11 @@ func underTasks[T any](registry *v1.Registry, compile func() T) T {
 		return compile()
 	}
 
+	// compileMu first, then the registry's own compound-mutation lock, always in
+	// that order.
 	compileMu.Lock()
 	defer compileMu.Unlock()
+	defer v1.LockDefaultRegistry()()
 	defaults := v1.DefaultRegistry()
 	for _, def := range defs {
 		prior, had := defaults.Lookup(def.Name)

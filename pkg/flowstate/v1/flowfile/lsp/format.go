@@ -36,30 +36,27 @@ func formatEdits(doc *document) []lsp.TextEdit {
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}
-	// Compiled and written back under one hold of the document's registry: Format
-	// reads task definitions as the compiler does.
-	type written struct {
-		text []byte
-		ok   bool
-	}
-	out := underTasks(doc.tasks, func() written {
-		workflow := compileText(doc, doc.text)
-		if workflow == nil {
-			return written{}
-		}
-		text, err := flowfile.Format([]byte(doc.text), workflow)
-		return written{text, err == nil}
-	})
-	if !out.ok {
-		// Neither a document that does not compile nor a workflow this build
-		// compiled but cannot write back out — an expression built from a macro,
-		// a literal `${`, a comment the rewrite cannot keep — has a shape a
-		// formatter can produce an edit for. `flow fmt` reports the latter as a
-		// refusal on the file; here there is no stream to report it on, so the
-		// honest answer is the one a parse failure gets: nothing.
+	workflow := compiledWorkflow(doc)
+	if workflow == nil {
 		return nil
 	}
-	formatted := out.text
+	type written struct {
+		text []byte
+		err  error
+	}
+	w := underDoc(doc, func() written {
+		text, err := flowfile.Format([]byte(doc.text), workflow)
+		return written{text, err}
+	})
+	if w.err != nil {
+		// A workflow this build itself just compiled but cannot write back out —
+		// an expression built from a macro, a literal `${`, a comment the rewrite
+		// cannot keep — has no shape a formatter can produce an edit for. `flow fmt`
+		// reports it as a refusal on the file; here there is no stream to report
+		// it on, so the honest answer is the one a parse failure gets: nothing.
+		return nil
+	}
+	formatted := w.text
 
 	if string(formatted) == doc.text {
 		return []lsp.TextEdit{}

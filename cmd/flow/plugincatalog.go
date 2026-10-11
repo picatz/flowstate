@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -139,7 +141,7 @@ func loadPluginCatalog(cmd *cobra.Command, anchors ...string) (*v1.PluginCatalog
 // registered by this one function, so a discovered lock can be no more than a
 // named one is.
 func registerPluginCatalog(path string) (*v1.PluginCatalog, error) {
-	catalog, defs, err := readPluginCatalogTasks(path)
+	catalog, defs, _, err := readPluginCatalogTasks(path)
 	if err != nil {
 		return nil, err
 	}
@@ -155,11 +157,12 @@ func registerPluginCatalog(path string) (*v1.PluginCatalog, error) {
 
 // readPluginCatalogTasks reads one catalog document and rebuilds its tasks
 // without registering them anywhere: the read half of [registerPluginCatalog],
-// which `flow lsp` uses to give each document its own lock's tasks.
-func readPluginCatalogTasks(path string) (*v1.PluginCatalog, []v1.TaskDef, error) {
-	catalog, err := readPluginCatalog(path)
+// which `flow lsp` uses to give each document its own lock's tasks. The digest
+// is of the bounded bytes that were parsed.
+func readPluginCatalogTasks(path string) (*v1.PluginCatalog, []v1.TaskDef, string, error) {
+	catalog, digest, err := readPluginCatalog(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
 	// The same Config a launch runs under, with no field set: the defaults are
@@ -167,10 +170,10 @@ func readPluginCatalogTasks(path string) (*v1.PluginCatalog, []v1.TaskDef, error
 	// host would refuse is the asymmetry #854 spent a boundary test on.
 	defs, err := plugin.TaskDefsFromCatalog(catalog, plugin.Config{})
 	if err != nil {
-		return nil, nil, fmt.Errorf("%s: %w", path, err)
+		return nil, nil, "", fmt.Errorf("%s: %w", path, err)
 	}
 
-	return catalog, defs, nil
+	return catalog, defs, digest, nil
 }
 
 // readPluginCatalog reads and parses one catalog document.
@@ -180,11 +183,12 @@ func readPluginCatalogTasks(path string) (*v1.PluginCatalog, []v1.TaskDef, error
 // binary encoding is that a very large catalog travels as base64 in a JSON
 // document rather than as bytes; the benefit is that there is one document
 // shape, one writer, and no content sniffing between two of them.
-func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
+func readPluginCatalog(path string) (*v1.PluginCatalog, string, error) {
 	data, err := readBoundedFile(path, "a plugin catalog", maxPluginCatalogBytes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	sum := sha256.Sum256(data)
 
 	catalog := &v1.PluginCatalog{}
 
@@ -195,12 +199,12 @@ func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
 	// The claims schema version [plugin.TaskDefsFromCatalog] checks is the same
 	// guard from the other direction.
 	if err := protojson.Unmarshal(data, catalog); err != nil {
-		return nil, fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s is not a plugin catalog: %w; a catalog is what `flow plugins --plugin-dir <dir> "+
 				"--output json` writes", path, err)
 	}
 
-	return catalog, nil
+	return catalog, hex.EncodeToString(sum[:]), nil
 }
 
 // errPluginCatalogAndLaunch is the refusal for a command line that names both a
@@ -430,18 +434,14 @@ func discoverLock(docPath string) (*lsp.PluginLock, error) {
 	if err != nil || lock == "" {
 		return nil, err
 	}
-	info, err := os.Lstat(lock)
-	if err != nil {
-		return nil, err
-	}
-	_, defs, err := readPluginCatalogTasks(lock)
+	_, defs, digest, err := readPluginCatalogTasks(lock)
 	if err != nil {
 		return nil, err
 	}
 
 	return &lsp.PluginLock{
 		Path:    lock,
-		Version: fmt.Sprintf("%d@%d", info.Size(), info.ModTime().UnixNano()),
+		Version: digest,
 		Tasks:   defs,
 	}, nil
 }

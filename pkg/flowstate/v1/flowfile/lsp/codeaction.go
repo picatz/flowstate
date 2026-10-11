@@ -267,7 +267,7 @@ func migrationActions(doc *document, params codeActionParams) []codeAction {
 		result flowfile.FixResult
 		err    error
 	}
-	f := underTasks(doc.tasks, func() fixed {
+	f := underDoc(doc, func() fixed {
 		result, err := flowfile.Fix([]byte(doc.text))
 		return fixed{result, err}
 	})

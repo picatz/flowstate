@@ -113,7 +113,7 @@ func callee(doc *document, target string) (calledWorkflow, bool) {
 		workflow *v1.Workflow
 		err      error
 	}
-	p := underTasks(doc.tasks, func() parsed {
+	p := underDoc(doc, func() parsed {
 		workflow, _, err := flowfile.ParseAt(data, located.Path)
 		return parsed{workflow, err}
 	})

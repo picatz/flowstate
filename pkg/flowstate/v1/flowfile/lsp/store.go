@@ -104,6 +104,11 @@ type document struct {
 	// registry a server answers from is the server's — see [FlowfileServer.Tasks].
 	tasks *v1.Registry
 
+	// lock is the plugin lock's tasks that tasks adds to the base, owned by this
+	// document so that releasing the scope's retained copy does not change what a
+	// request already holding the document compiles.
+	lock []v1.TaskDef
+
 	index *lineIndex
 
 	// parsed is the positional model, nil when the text does not parse.
@@ -207,12 +212,13 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 	}
 	// Under the document's own registry: the positional model decides which keys
 	// of a step name a task, and a lock's tasks are known to the compiler only
-	// while [underTasks] holds them.
+	// while [underDoc] holds them.
 	type parsed struct {
 		file *parsedFile
 		err  error
 	}
-	p := underTasks(tasks, func() parsed {
+	doc.lock = overlayOf(tasks)
+	p := underDoc(doc, func() parsed {
 		file, err := parseFlowfile(text, doc.index)
 		return parsed{file, err}
 	})

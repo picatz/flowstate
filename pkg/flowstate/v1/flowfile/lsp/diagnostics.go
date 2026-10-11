@@ -149,13 +149,13 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		ds  flowfile.Diagnostics
 		err error
 	}
-	v := underTasks(doc.tasks, func() validated {
+	v := underDoc(doc, func() validated {
 		var v validated
 		path, ok := doc.filesystemPath()
 		switch {
 		case !ok:
 			v.ds, v.err = flowfile.ValidateSource([]byte(doc.text))
-		case len(overlayOf(doc.tasks)) > 0:
+		case len(doc.lock) > 0:
 			// Not the shared module cache: it is keyed by bytes, and a module
 			// compiled with this lock's tasks must not be served to a document
 			// that has not got them.
