@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
 )
 
 // sensitiveScheduledWorkflow declares two bound inputs, one marked
@@ -133,22 +134,11 @@ func TestDescribeScheduleFailsClosedWhenSpecIsUnavailable(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, created.Msg.GetSchedule().GetPaused())
 
-	// Find the Temporal-side schedule id this server chose. The encoding is
-	// deliberately unexported (scheduleIDFor), so this test does what any other
-	// caller would: it lists what Temporal has and finds the one this test just
-	// created, rather than reimplementing the id scheme.
-	var scheduleID string
-	list, err := fixture.temporal.ScheduleClient().List(t.Context(), client.ScheduleListOptions{})
-	require.NoError(t, err)
-	for list.HasNext() {
-		entry, err := list.Next()
-		require.NoError(t, err)
-		if idHasSuffix(entry.ID, "_undecodable") {
-			scheduleID = entry.ID
-			break
-		}
-	}
-	require.NotEmpty(t, scheduleID, "could not find the schedule this test just created")
+	// Address the schedule by id, derived from the same inputs the server used.
+	// Temporal's schedule listing is served from visibility, which lags a create,
+	// so listing for the schedule just created is racy (#2675); a handle reads
+	// the schedule directly and is consistent with the create that returned.
+	scheduleID := server.ScheduleIDForTest(teamANamespace, "undecodable")
 
 	handle := fixture.temporal.ScheduleClient().GetHandle(t.Context(), scheduleID)
 
@@ -189,11 +179,4 @@ func TestDescribeScheduleFailsClosedWhenSpecIsUnavailable(t *testing.T) {
 	wire, err := proto.Marshal(described.Msg)
 	require.NoError(t, err)
 	assert.NotContains(t, string(wire), theSecretValue)
-}
-
-func idHasSuffix(id, suffix string) bool {
-	if len(id) < len(suffix) {
-		return false
-	}
-	return id[len(id)-len(suffix):] == suffix
 }
