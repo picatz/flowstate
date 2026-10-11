@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/known/anypb"
 
 	"github.com/picatz/flowstate/internal/textbound"
 	flowstatev1 "github.com/picatz/flowstate/pkg/flowstate/v1"
@@ -324,9 +326,18 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value, 
 		// nothing to convert, because it is already the representation a step
 		// output is made of.
 		case celValueName:
-			if v, ok := value.Message().Interface().(*expr.Value); ok {
-				return v, nil
+			// An unset field is an absent output, the same null an unset message of
+			// any other type produces, rather than an empty literal that only reads
+			// as null by accident of how the engine treats a literal with no kind.
+			message := value.Message()
+			if !message.IsValid() {
+				return nullValue(), nil
 			}
+			v, err := asMessage[*expr.Value](message)
+			if err != nil {
+				return nil, err
+			}
+			return v, nil
 
 		// flowstate's own wrapper around the same thing, provided it holds a
 		// literal. An output carrying an unevaluated expression or a secret
@@ -334,9 +345,9 @@ func encodeScalar(field protoreflect.FieldDescriptor, value protoreflect.Value, 
 		// supposed to evaluate, and the second must never become a step output at
 		// all, since step outputs are written to workflow history.
 		case flowstateValueName:
-			v, ok := value.Message().Interface().(*flowstatev1.Value)
-			if !ok {
-				break
+			v, err := asMessage[*flowstatev1.Value](value.Message())
+			if err != nil {
+				return nil, err
 			}
 			if literal := v.GetLiteral(); literal != nil {
 				return literal, nil
@@ -439,6 +450,26 @@ const (
 	flowstateValueName = "flowstate.v1.Value"
 )
 
+// asMessage returns a message as the generated type T. A generated message is
+// returned as it is; any other implementation of the same protobuf type, such
+// as a dynamicpb message, is copied through its wire form, which is what makes
+// the match by full name the comment above promises rather than by Go type.
+func asMessage[T proto.Message](message protoreflect.Message) (T, error) {
+	var zero T
+	if v, ok := message.Interface().(T); ok {
+		return v, nil
+	}
+	wire, err := proto.Marshal(message.Interface())
+	if err != nil {
+		return zero, fmt.Errorf("holds a %s that cannot be read: %w", message.Descriptor().FullName(), err)
+	}
+	out := zero.ProtoReflect().New().Interface().(T)
+	if err := proto.Unmarshal(wire, out); err != nil {
+		return zero, fmt.Errorf("holds a %s that cannot be read: %w", message.Descriptor().FullName(), err)
+	}
+	return out, nil
+}
+
 // isValueMessage reports whether a message type carries a value directly, rather
 // than being a message this package converts field by field.
 func isValueMessage(name protoreflect.FullName) bool {
@@ -460,7 +491,7 @@ func wellKnown(name protoreflect.FullName) bool {
 // It is the companion to declaring an output field as
 // google.api.expr.v1alpha1.Value: that says "this output can be anything", and
 // this is how a plugin says what it is this time. Maps, slices, and the ordinary
-// scalars all work, nested to any depth:
+// scalars all work, nested to any depth a real output reaches:
 //
 //	outputs, err := sdk.EncodeOutputs(&examplev1.QueryOutputs{
 //		Rows:  sdk.Literal([]any{map[string]any{"id": 1, "name": "a"}}),
@@ -470,11 +501,149 @@ func wellKnown(name protoreflect.FullName) bool {
 // A workflow then reads it the way it reads anything else —
 // `${steps.query.rows[0].name}` — with no step in between to parse it.
 //
-// A type it cannot represent yields an error value rather than a panic, so a
-// plugin that hands it something unexpected produces a diagnosable output instead
-// of taking the process down.
+// A type it cannot represent, a channel, an error, or an unsigned integer above
+// [math.MaxInt64], yields an error value rather than a panic or a nil, so a
+// plugin that hands it something unexpected produces a diagnosable output
+// instead of taking the process down. A literal has no error arm, so the error
+// value is an object value holding a [flowstatev1.Value_Error]: the engine does
+// not read it as data, and reading it fails naming the kind rather than
+// yielding null. The same holds for such a value nested in a list or a map,
+// which becomes an error value in its place.
+//
+// A value that nests past 2048 levels, or contains itself, also yields an error
+// value. That guarantee holds for an already-built *expr.Value; native Go
+// values nested millions deep are converted by [flowstatev1.NewValue] before
+// any bound applies.
 func Literal(v any) *expr.Value {
-	return flowstatev1.NewValue(v).GetLiteral()
+	value := flowstatev1.NewValue(v)
+	if literal := value.GetLiteral(); literal != nil {
+		switch result, _ := markUnrepresentable(literal, map[*expr.Value]int{}, 0); result {
+		case walkCyclic:
+			return errorLiteral("flowstatev1: a cyclic value cannot be represented")
+		case walkTooDeep:
+			return errorLiteral("flowstatev1: a value nested too deeply cannot be represented")
+		}
+		return literal
+	}
+	// Only the Go type is kept. The text of an error, or of whatever else
+	// NewValue refused, can carry a secret from upstream, and a step output is
+	// written to workflow history.
+	return errorLiteral(fmt.Sprintf("flowstatev1: a value of type %s cannot be represented", unrepresentableType(v)))
+}
+
+// unrepresentableType names the Go type of a refused value, with only
+// characters a type name has, so nothing from the value reaches the output.
+func unrepresentableType(v any) string {
+	name := fmt.Sprintf("%T", v)
+	if len(name) > 128 || !utf8.ValidString(name) {
+		return "(unnamed)"
+	}
+	return name
+}
+
+// maxLiteralDepth bounds how deep [Literal] follows a literal. Real nesting is
+// far lower (the decode side stops at 16 and the output side at 32 messages).
+// A list level is two messages and a map level three (Value, MapValue and
+// entry), so 2048 levels stay under protobuf's own limit of about 10000 messages
+// when the result is unmarshaled, and keep the
+// walk and the marshaling inside the stack.
+const maxLiteralDepth = 1 << 11
+
+// walkResult is how a [markUnrepresentable] walk ended.
+type walkResult int
+
+const (
+	walkDone walkResult = iota
+	walkCyclic
+	walkTooDeep
+)
+
+// openNode marks a node the walk is inside of; a finished node holds its
+// height, the number of levels below it.
+const openNode = -1
+
+// markUnrepresentable replaces what [flowstatev1.NewValue] left out of a list or
+// a map, an element, key or value it had no literal for, with an error value. It
+// reports a literal that contains itself, or nests past [maxLiteralDepth], so
+// the caller can refuse it whole, and the height of the literal.
+//
+// The literal may be a caller-supplied tree, so the walk keeps a state per node:
+// a node reached again while still open is a cycle, which cannot be marshaled.
+// One reached again after it was finished is not walked again, so the work is
+// linear in the nodes, but its recorded height is added to the depth it is
+// reached at, since a node shared by many parents can make a tree far deeper
+// than any one path through the walk shows. Map keys are walked like values,
+// since a key can hold a list that holds the map.
+func markUnrepresentable(literal *expr.Value, state map[*expr.Value]int, depth int) (walkResult, int) {
+	if literal == nil {
+		return walkDone, 0
+	}
+	if height, seen := state[literal]; seen {
+		switch {
+		case height == openNode:
+			return walkCyclic, 0
+		case depth+height > maxLiteralDepth:
+			return walkTooDeep, 0
+		}
+		return walkDone, height
+	}
+	if depth > maxLiteralDepth {
+		return walkTooDeep, 0
+	}
+	state[literal] = openNode
+
+	height := 0
+	// child walks one nested value, replacing a nil one through set.
+	child := func(value *expr.Value, set func(*expr.Value)) walkResult {
+		if value == nil {
+			set(errorLiteral(""))
+			return walkDone
+		}
+		result, below := markUnrepresentable(value, state, depth+1)
+		height = max(height, below+1)
+		return result
+	}
+
+	switch kind := literal.GetKind().(type) {
+	case *expr.Value_ListValue:
+		values := kind.ListValue.GetValues()
+		for i, element := range values {
+			if result := child(element, func(v *expr.Value) { values[i] = v }); result != walkDone {
+				return result, 0
+			}
+		}
+	case *expr.Value_MapValue:
+		for _, entry := range kind.MapValue.GetEntries() {
+			if entry == nil {
+				continue
+			}
+			if result := child(entry.Key, func(v *expr.Value) { entry.Key = v }); result != walkDone {
+				return result, 0
+			}
+			if result := child(entry.Value, func(v *expr.Value) { entry.Value = v }); result != walkDone {
+				return result, 0
+			}
+		}
+	}
+	state[literal] = height
+	return walkDone, height
+}
+
+// errorLiteral is the error value [Literal] yields.
+func errorLiteral(message string) *expr.Value {
+	if message == "" {
+		message = "flowstatev1: a value nested here is of a type Literal cannot represent"
+	}
+	packed, err := anypb.New(&flowstatev1.Value_Error{
+		Message: message,
+		Code:    flowstatev1.Value_Error_CODE_INTERNAL,
+	})
+	if err != nil {
+		// Unreachable for a fixed message of valid text; a literal that still
+		// names nothing of the value beats a panic if it somehow happened.
+		return &expr.Value{Kind: &expr.Value_NullValue{}}
+	}
+	return &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: packed}}
 }
 
 // nullValue is the absent answer: a field a message does not hold.

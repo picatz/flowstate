@@ -192,8 +192,8 @@ func (d *literalDecoder) scalar(field protoreflect.FieldDescriptor, value *expr.
 			return protoreflect.ValueOfUint32(uint32(n)), nil
 		}
 	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
-		if n, ok := integer(value); ok && n >= 0 {
-			return protoreflect.ValueOfUint64(uint64(n)), nil
+		if n, ok := unsigned(value); ok {
+			return protoreflect.ValueOfUint64(n), nil
 		}
 	case protoreflect.FloatKind:
 		if f, ok := number(value); ok && !overflowsFloat32(f) {
@@ -343,6 +343,30 @@ func integer(value *expr.Value) (int64, bool) {
 		// would turn a workflow author's mistake into a plausible result.
 		if n := int64(v.DoubleValue); float64(n) == v.DoubleValue {
 			return n, true
+		}
+	}
+	return 0, false
+}
+
+// unsigned reads a literal as an unsigned 64-bit integer, which [integer]
+// cannot: it reads through int64, so a CEL uint above [math.MaxInt64] would be
+// refused although a uint64 field holds it. A negative value is still refused,
+// and a double only when it is exactly an integer in range.
+func unsigned(value *expr.Value) (uint64, bool) {
+	switch v := value.GetKind().(type) {
+	case *expr.Value_Uint64Value:
+		return v.Uint64Value, true
+	case *expr.Value_Int64Value:
+		if v.Int64Value >= 0 {
+			return uint64(v.Int64Value), true
+		}
+	case *expr.Value_DoubleValue:
+		// 1<<64 is exactly representable as a float64 and is the first value out
+		// of range; converting it would be undefined, so it is refused first.
+		if v.DoubleValue >= 0 && v.DoubleValue < 1<<64 {
+			if n := uint64(v.DoubleValue); float64(n) == v.DoubleValue {
+				return n, true
+			}
 		}
 	}
 	return 0, false

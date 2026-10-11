@@ -17,7 +17,7 @@ import (
 // themselves, so a regression in repeated nested-message encoding or in numeric
 // conversion fails here with the seeds alone, and then the round trip.
 func TestRepeatedNestedMessagesRoundTrip(t *testing.T) {
-	rich, node := fuzzSchema(t, false)
+	rich, node := fuzzSchema(t)
 	field := func(name protoreflect.Name) protoreflect.FieldDescriptor { return rich.Fields().ByName(name) }
 	newNode := func(name string) *dynamicpb.Message {
 		n := dynamicpb.NewMessage(node)
@@ -39,7 +39,7 @@ func TestRepeatedNestedMessagesRoundTrip(t *testing.T) {
 	msg.Set(field("i32"), protoreflect.ValueOfInt32(math.MinInt32))
 	msg.Set(field("i64"), protoreflect.ValueOfInt64(math.MaxInt64))
 	msg.Set(field("u32"), protoreflect.ValueOfUint32(math.MaxUint32))
-	msg.Set(field("u64"), protoreflect.ValueOfUint64(math.MaxInt64))
+	msg.Set(field("u64"), protoreflect.ValueOfUint64(math.MaxUint64))
 	msg.Set(field("fl"), protoreflect.ValueOfFloat32(0.1))
 	msg.Set(field("db"), protoreflect.ValueOfFloat64(0.1))
 	msg.Set(field("color"), protoreflect.ValueOfEnum(2))
@@ -80,7 +80,7 @@ func TestRepeatedNestedMessagesRoundTrip(t *testing.T) {
 		"i32":   {Kind: &expr.Value_Int64Value{Int64Value: math.MinInt32}},
 		"i64":   {Kind: &expr.Value_Int64Value{Int64Value: math.MaxInt64}},
 		"u32":   {Kind: &expr.Value_Uint64Value{Uint64Value: math.MaxUint32}},
-		"u64":   {Kind: &expr.Value_Uint64Value{Uint64Value: math.MaxInt64}},
+		"u64":   {Kind: &expr.Value_Uint64Value{Uint64Value: math.MaxUint64}},
 		"fl":    {Kind: &expr.Value_DoubleValue{DoubleValue: float64(float32(0.1))}},
 		"db":    {Kind: &expr.Value_DoubleValue{DoubleValue: 0.1}},
 		"color": {Kind: &expr.Value_Int64Value{Int64Value: 2}},
