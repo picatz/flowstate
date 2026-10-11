@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -81,7 +81,7 @@ func TestLockedFeaturesNeverTouchTheDefaultRegistry(t *testing.T) {
 					return
 				}
 			}
-			time.Sleep(time.Millisecond)
+			runtime.Gosched()
 		}
 	})
 

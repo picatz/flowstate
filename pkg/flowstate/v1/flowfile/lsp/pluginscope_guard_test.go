@@ -133,6 +133,27 @@ var (
 	registryTaking = map[string]bool{"OutputNames": true, "OutputEnumsOf": true}
 )
 
+// defaultTasksCallers are the functions that may fall back to the process
+// default registry: the server's base registry, a document built with none, and
+// the nil-registry shaping lookup. Everything else is handed a registry.
+var defaultTasksCallers = []string{"tasks", "newDocument", "registryShapesOutputs"}
+
+func isFlowfileEnv(e ast.Expr) bool {
+	sel, ok := e.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+
+	return ok && pkg.Name == "flowfile" && sel.Sel.Name == "Env"
+}
+
+// insideAnyFunc reports whether the innermost node sits in a declared function
+// named one of names.
+func insideAnyFunc(stack []ast.Node, names []string) bool {
+	return slices.ContainsFunc(names, func(name string) bool { return insideFunc(stack, name) })
+}
+
 // registryViolations are the places in one file that read a registry the
 // document did not hand it, and the allowed names the file uses.
 func registryViolations(t *testing.T, file string, src []byte, delegators, readers map[string]bool) (violations []string, used map[string]bool) {
@@ -186,9 +207,20 @@ func registryViolations(t *testing.T, file string, src []byte, delegators, reade
 				fail(n, "%s compiles against the default registry; use Env.ValidateSourceAtCached, ValidateSourceFileCached or ModuleInterface", name)
 			}
 		case *ast.CompositeLit:
-			if sel, ok := n.Type.(*ast.SelectorExpr); ok {
-				if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "flowfile" && sel.Sel.Name == "Env" {
-					fail(n, "flowfile.Env{} is the default registry; build an Env with flowfile.WithRegistry where a document or the server is made")
+			if isFlowfileEnv(n.Type) {
+				fail(n, "flowfile.Env{} is the default registry; build an Env with flowfile.WithRegistry where a document or the server is made")
+			}
+		case *ast.ValueSpec:
+			if isFlowfileEnv(n.Type) {
+				fail(n, "a declared flowfile.Env is the zero Env, the default registry; build it with flowfile.WithRegistry")
+			}
+		case *ast.CallExpr:
+			if id, ok := n.Fun.(*ast.Ident); ok {
+				switch {
+				case id.Name == "new" && len(n.Args) == 1 && isFlowfileEnv(n.Args[0]):
+					fail(n, "new(flowfile.Env) is the zero Env, the default registry; build it with flowfile.WithRegistry")
+				case id.Name == "defaultTasks" && !insideAnyFunc(stack, defaultTasksCallers):
+					fail(n, "defaultTasks() names the process default registry; only %s may fall back to it", strings.Join(defaultTasksCallers, ", "))
 				}
 			}
 		}
@@ -236,11 +268,12 @@ func TestTheRegistryGuardRefusesTheCallsItIsFor(t *testing.T) {
 
 	delegators := zeroEnvDelegators(t)
 	readers := defaultReaders(t)
-	scan := func(file, body string) []string {
-		v, _ := registryViolations(t, file, []byte("package lsp\nfunc f() {\n"+body+"\n}\n"), delegators, readers)
+	scanIn := func(file, fn, body string) []string {
+		v, _ := registryViolations(t, file, []byte("package lsp\nfunc "+fn+"() {\n"+body+"\n}\n"), delegators, readers)
 
 		return v
 	}
+	scan := func(file, body string) []string { return scanIn(file, "f", body) }
 
 	for _, bad := range []string{
 		`_, _, _ = flowfile.ParseAt(nil, "")`,
@@ -261,6 +294,11 @@ func TestTheRegistryGuardRefusesTheCallsItIsFor(t *testing.T) {
 		`_ = moduleCache.Interface("")`,
 		`_, _ = moduleCache.ValidateSourceAt(nil, "")`,
 		`_ = flowfile.Env{}`,
+		`var e flowfile.Env; _ = e`,
+		`_ = new(flowfile.Env)`,
+		`_ = &flowfile.Env{}`,
+		`_ = defaultTasks()`,
+		`_, _ = defaultTasks().Lookup("x")`,
 	} {
 		assert.NotEmpty(t, scan("hover.go", bad), "the guard let this through: %s", bad)
 	}
@@ -278,6 +316,9 @@ func TestTheRegistryGuardRefusesTheCallsItIsFor(t *testing.T) {
 			file = "store.go"
 		}
 		assert.Empty(t, scan(file, ok), "the guard refused this: %s", ok)
+	}
+	for _, fn := range defaultTasksCallers {
+		assert.Empty(t, scanIn("server.go", fn, `_ = defaultTasks()`), "the guard refused the fallback in %s", fn)
 	}
 	assert.NotEmpty(t, scan("hover.go", `_ = flowfile.WithRegistry(nil)`), "an Env built outside its construction points")
 	assert.NotEmpty(t, scan("store.go", `_ = v1.DefaultRegistry()`), "the default registry named outside defaultTasks")
