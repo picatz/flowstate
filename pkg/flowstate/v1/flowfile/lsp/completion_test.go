@@ -11,10 +11,12 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// builtinTaskNames is the tasks this build ships, sorted: the half of the task menu
-// no other test can change. The process default also holds whatever a parallel
-// test registers for its own duration, and a want list read from it at table
-// construction can name a task that is gone when the menu is asked for.
+// builtinTaskNames is the built-in tasks registered in the process default,
+// sorted. It strips what other tests register for their own duration, which a
+// want list read from the default at table construction could name after the task
+// is gone. It does not detect a built-in missing from the default registry: that
+// is absent from both sides of the comparison, and the engine's own tests cover
+// it. TestCompletionOffersTheCoreBuiltinTasks pins exec, http and log.
 func builtinTaskNames() []string {
 	return slices.DeleteFunc(v1.TaskNames(), func(name string) bool { return !v1.IsBuiltinTask(name) })
 }
