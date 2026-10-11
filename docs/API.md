@@ -114,7 +114,9 @@ plain JSON (`.runOutputs.greeting` is `"hello, curl"`) and renames
 
 Set `requestId` on any `Run` a client might retry. A second request with the
 same `requestId` in the same tenant is answered with the run the first one
-started (`"reused": true`), even after that run has finished. A reused
+started (`"reused": true`), including after that run has finished, for as long as
+the Temporal namespace retains the closed execution. Past retention a retry
+starts a second run and reports `"reused": false`. A reused
 `requestId` with a different workflow or inputs is refused with
 `already_exists`. `flow run` sends a fresh one on every invocation, or yours
 with `--request-id`.

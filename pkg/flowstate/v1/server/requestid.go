@@ -26,8 +26,10 @@ import (
 // [WebhookReceiver.start] for why that holds where a time-window dedupe cannot.
 //
 // The guarantee lasts as long as the namespace retains the execution. The
-// reuse policy sees running executions and closed ones inside Temporal's
-// workflow-execution retention period; once retention deletes a closed
+// paired start policies set by the caller split the work: the conflict policy
+// (FAIL) governs an open execution, and the reuse policy (REJECT_DUPLICATE)
+// governs closed executions still inside Temporal's workflow-execution
+// retention period; once retention deletes a closed
 // execution nothing holds the id, the start succeeds, a second run begins, and
 // the answer says `reused` false. There is no table of ours to expire or
 // outlive that: the lifetime is the deployment's retention setting, and a

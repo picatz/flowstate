@@ -1114,7 +1114,10 @@ func init() {
 				" and origin returns the run the first attempt started (`reused`) instead of\n" +
 				" starting a second one, so a lost response cannot repeat the suffix's\n" +
 				" effects. A different id is an intentional fork. Same grammar as\n" +
-				" `RunRequest.request_id`; the value is digested, never stored.\n",
+				" `RunRequest.request_id`; the value is digested, never stored. As there, it\n" +
+				" holds only while the namespace retains the execution: after retention\n" +
+				" deletes a closed resumed run, a retry starts a second one and `reused` is\n" +
+				" false, so do not rely on the id past retention.\n",
 		},
 		{
 			Name:    "flowstate.v1.ResumeRunResponse",

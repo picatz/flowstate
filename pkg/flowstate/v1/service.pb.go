@@ -2669,7 +2669,10 @@ type ResumeRunRequest struct {
 	// and origin returns the run the first attempt started (`reused`) instead of
 	// starting a second one, so a lost response cannot repeat the suffix's
 	// effects. A different id is an intentional fork. Same grammar as
-	// `RunRequest.request_id`; the value is digested, never stored.
+	// `RunRequest.request_id`; the value is digested, never stored. As there, it
+	// holds only while the namespace retains the execution: after retention
+	// deletes a closed resumed run, a retry starts a second one and `reused` is
+	// false, so do not rely on the id past retention.
 	RequestId     *string `protobuf:"bytes,6,opt,name=request_id,json=requestId,proto3,oneof" json:"request_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

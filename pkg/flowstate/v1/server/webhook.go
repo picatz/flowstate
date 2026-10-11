@@ -949,7 +949,8 @@ func (r *WebhookReceiver) route(path string) (*webhookRoute, bool) {
 // provider's retry storm produces. Both requests reach StartWorkflowExecution;
 // the cluster admits one and answers the other with
 // [serviceerror.WorkflowExecutionAlreadyStarted] carrying the run id of the one
-// that won. There is no window, no local table, and nothing to expire.
+// that won. There is no window and no local table; the dedupe lasts as long as the
+// namespace retains the closed execution.
 //
 // A redelivery is *joined* rather than refused: the sender is told about the run
 // their event produced, with a 200, so a retry converges instead of alternating
