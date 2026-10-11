@@ -623,6 +623,14 @@ func (s *FlowstateServer) authorizeDebugChannel(ctx context.Context, workflowID 
 	if err := s.requireDebugAction(ctx, "Signal", workflowID, v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG, detail); err != nil {
 		return err
 	}
+	// The session id is quoted into the lease's timer label, so one outside the
+	// schema's grammar is refused here, after the caller is known to be allowed
+	// the channel, and never inside the run, where a refusal would change how a
+	// recorded history replays (#2648).
+	if session := payload.GetNamedValues()[v1.DebugSessionInput].GetLiteral().GetStringValue(); session != "" && !v1.ValidDebugSessionID(session) {
+		return connect.NewError(connect.CodeInvalidArgument,
+			fmt.Errorf("a debug session id is 1 to %d characters of letters, digits and . _ : - (%s)", v1.MaxDebugEdgeSessionIDBytes, "^[A-Za-z0-9._:-]+$"))
+	}
 	// A typed ask that cannot be read is refused by the run itself; only one
 	// that can be read carries conditions to evaluate.
 	if ask, typed, err := v1.ParseTypedDebugAsk(payload); typed && err == nil {

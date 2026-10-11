@@ -1292,8 +1292,12 @@ the resumed row is dated at the lease timer's cancel (when pacing began) and the
 pacing rows follow it in order. `-o json`
 carries `sessionId`, `actor` (the holder text the label already showed) and
 `endReason` on those rows. They are read from the lease timer's label and are
-best effort: session ids are caller-chosen, so a hostile holder can make its own
-lease's fields misattribute (cosmetic; the full label stays in `step`). Pacing timers stay ordinary `waiting` rows, and a
+best effort: session ids are caller-chosen, so a holder can make its own
+lease's fields misattribute (cosmetic; the full label stays in `step`). The
+server refuses a session id outside `^[A-Za-z0-9._:-]+$` or over 128 characters
+on `DebugAttach` and on a raw signal onto the debug channel, so a label is not
+made ambiguous by whitespace or ` held by `; a lease recorded before that check
+keeps whatever id it was given. Pacing timers stay ordinary `waiting` rows, and a
 signal's payload and sender are still not on the timeline.
 
 A step scheduled more than once in a run shows `#N` after its label from the
