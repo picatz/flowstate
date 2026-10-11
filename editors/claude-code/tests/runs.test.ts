@@ -1,4 +1,4 @@
-import { clean, reason } from '../hooks/runs'
+import { clean, isGone, reason } from '../hooks/runs'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -117,4 +117,26 @@ test('a very long error still ends in its cause, and a cut never splits a charac
   expect(reason('a'.repeat(101))).toContain(' … ')
   const huge = reason(`start ${'y'.repeat(50_000)} the real cause`)
   expect(huge).toMatch(/the real cause$/)
+})
+
+test('only the CLI refusal for an unaddressable run reads as gone', () => {
+  const real = 'ERROR\nno run "flowstate-workflow-3f2b9c1e-8a64-4d2e-9b7a-0c5d1e2f3a4b" is addressable: check the id, or it belongs to a tenant your credentials do not establish, or it has aged out of Temporal\'s retention\n'
+  expect(isGone(real)).toBe(true)
+  expect(isGone('no run "weird\\"id" is addressable: check the id')).toBe(true)
+  // not on a terminal the CLI wraps at 80 columns, which leaves a long id's `no run` alone on a line
+  const id = `flowstate-request-${'0123456789abcdef'.repeat(4)}`
+  const wrapped = `ERROR\nno run\n"${id}"\nis addressable: check the id, or it belongs to a tenant your credentials do not\nestablish, or it has aged out of Temporal's retention\n`
+  expect(isGone(wrapped)).toBe(true)
+  expect(isGone('ERROR\nno run\nsomething else entirely\n')).toBe(false)
+  // a long id is cut in the one-line reason, and the answer must not depend on that
+  expect(reason(real)).not.toContain('addressable')
+  for (const other of [
+    'fork/exec flow: executable file not found in $PATH',
+    'dial tcp: lookup notfound-host: no such host',
+    'reading the timeline of "deploy-not-found": connection refused',
+    'refused while reading "no run \"x\" is addressable:": permission denied',
+    'workflow execution not found',
+    '',
+  ])
+    expect(isGone(other)).toBe(false)
 })

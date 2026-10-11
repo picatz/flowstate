@@ -103,3 +103,16 @@ export const toListing = (run: { exitCode: number; stdout: string; stderr: strin
   run.exitCode === 0
     ? { runs: parsePage(run.stdout).runs.slice(0, MAX_RUNS) }
     : { offline: filtered ? rejection(run.stderr) : reason(run.stderr) }
+
+/**
+ * Whether what `flow timeline` said on stderr is the CLI's refusal for a run the server has no record of: `no run "<id>" is
+ * addressable: ...` (`refusedRun`, cmd/flow/client.go). The id is `%q`-quoted, so it is matched as a quoted string and nothing
+ * after it is read: an id that merely contains "not found", or a transport error that quotes one, is not it. Tested on the raw
+ * stderr, because the one-line reason cuts the middle of a long id.
+ */
+export const isGone = (stderr: string): boolean => {
+  // The CLI wraps its error at 80 columns when it is not on a terminal, so a long id (a request-addressed run's is 82 characters)
+  // leaves `no run` alone on the first line. Words are only split at spaces, so joining the lines restores the sentence.
+  const text = stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR').join(' ')
+  return /^no run "(?:[^"\\]|\\.)*" is addressable:/.test(text)
+}

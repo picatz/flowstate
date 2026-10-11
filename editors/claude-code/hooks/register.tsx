@@ -6,7 +6,7 @@ import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
-import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
+import { MAX_PAGES, MAX_RUNS, clean, isGone, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { CHIPS, LastGood, chipFor, chipText } from './chips'
@@ -127,7 +127,7 @@ const readTimeline = async ($: Engine, flow: string, id: string): Promise<Timeli
   try {
     const argv = [flow, 'timeline', '-o', 'json', '--max-entries', String(MAX_ENTRIES), '--', id]
     const ran = await $.process.run(argv, { timeoutMs: 5000 })
-    if (ran.exitCode !== 0) return { error: reason(ran.stderr) }
+    if (ran.exitCode !== 0) return { error: reason(ran.stderr), gone: isGone(ran.stderr) }
     const parsed = parseTimeline(ran.stdout)
     const note = stderrNote(ran.stderr)
     return 'detail' in parsed && note !== '' ? { ...parsed, note } : parsed
@@ -840,7 +840,9 @@ export const register: Register = (on, options) => {
             <Text>  {story(facts)}</Text>
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
             {account && 'error' in account ? (
-              <Text dimColor>  Timeline unavailable ({account.error}).</Text>
+              <Text dimColor>
+                {account.gone ? '  The server has no run with this id: it may predate a restart (a dev server keeps runs in memory), belong to another tenant, or have aged out. Close it.' : `  Timeline unavailable (${account.error}).`}
+              </Text>
             ) : (
               <Box flexDirection="column">
                 <Text>

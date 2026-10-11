@@ -100,6 +100,41 @@ test('a timeline that fails says so and leaves the list and the rest of the pane
   await ui.unmount()
 })
 
+test('a run the server has no record of says so and points at Close', async ($, on) => {
+  stub(on, {
+    list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']),
+    timeline: fail('ERROR\nno run "wf-1" is addressable: check the id, or it belongs to a tenant your credentials do not establish, or it has aged out of Temporal\'s retention\n'),
+  })
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  expect(await ui.find({ type: 'Text', text: /The server has no run with this id/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Close/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a refusal the CLI wrapped at 80 columns around a long id still says the run is gone', async ($, on) => {
+  const id = `flowstate-request-${'0123456789abcdef'.repeat(4)}`
+  stub(on, {
+    list: runs([id, 'STATUS_RUNNING', 'Deploy']),
+    timeline: fail(`ERROR\nno run\n"${id}"\nis addressable: check the id, or it belongs to a tenant your credentials do not\nestablish, or it has aged out of Temporal's retention\n`),
+  })
+  const ui = await mount($)
+  await ui.press({ key: `run:${id}` })
+  expect(await ui.find({ type: 'Text', text: /The server has no run with this id/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a failure that merely says "not found" is still a timeline that failed to load', async ($, on) => {
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']), timeline: fail('ERROR\nreading the timeline of "deploy-not-found": connection refused\n') })
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The server has no run with this id/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 for (const out of ['not json at all', '[1,2,3]', 'null', '"text"', '']) {
   test(`output that is not a timeline is said to be so: ${JSON.stringify(out)}`, async ($, on) => {
     stub(on, { list: runs(['wf-1', 'STATUS_RUNNING']), timeline: ok(out) })
