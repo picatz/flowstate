@@ -253,6 +253,7 @@ func TestADebugSessionIdOutsideTheGrammarIsRefusedAtTheEdge(t *testing.T) {
 			WorkflowId: workflowID, SessionId: bad, RequestId: "attach", Lease: durationpb.New(time.Minute),
 		}))
 		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "DebugAttach accepted session id %q", bad)
+		require.Contains(t, err.Error(), "session_id", "DebugAttach's refusal names the field and the rule it broke for %q", bad)
 
 		payload, perr := v1.NewTypedDebugAsk(&v1.DebugAsk{Verb: v1.DebugVerbPause, Session: bad, Request: "raw", Lease: time.Minute})
 		require.NoError(t, perr)
@@ -260,6 +261,7 @@ func TestADebugSessionIdOutsideTheGrammarIsRefusedAtTheEdge(t *testing.T) {
 			WorkflowId: workflowID, Name: v1.DebugSignal, Payload: payload,
 		}))
 		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "a raw signal carried session id %q", bad)
+		require.Contains(t, err.Error(), "A-Za-z0-9._:-", "the raw signal's refusal names the grammar for %q", bad)
 	}
 
 	// The permitted direction: a plain id reaches the run through the same door, and a caller
