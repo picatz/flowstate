@@ -154,11 +154,13 @@ func TestLockDiscoveryReportsAnInvalidLockInsteadOfIgnoringIt(t *testing.T) {
 	lock := filepath.Join(tree, pluginLockName)
 	require.NoError(t, os.WriteFile(lock, []byte(`{"nope": 1}`), 0o600))
 
-	err := (&lockDiscovery{}).discover(filepath.Join(tree, "f.yaml"))
+	_, err := discoverLock(filepath.Join(tree, "f.yaml"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), lock)
 
-	assert.NoError(t, (&lockDiscovery{}).discover(filepath.Join(t.TempDir(), "f.yaml")), "no lock is not an error")
+	none, err := discoverLock(filepath.Join(t.TempDir(), "f.yaml"))
+	assert.NoError(t, err, "no lock is not an error")
+	assert.Nil(t, none)
 }
 
 // The CLI half, through the shipped binary: the shipped plugin examples are
@@ -223,15 +225,13 @@ func TestValidateDiscoversAPluginLockNextToTheFile(t *testing.T) {
 	require.NoError(t, err, output)
 }
 
-func TestLockDiscoveryBoundsTheLocksItRegisters(t *testing.T) {
-	d := &lockDiscovery{}
-	for i := range maxDiscoveredLocks {
-		lock := writeLock(t, filepath.Join(t.TempDir(), "w"))
-		require.NoError(t, d.discover(filepath.Join(filepath.Dir(lock), "f.yaml")), "lock %d", i)
-	}
-
-	extra := writeLock(t, filepath.Join(t.TempDir(), "w"))
-	err := d.discover(filepath.Join(filepath.Dir(extra), "f.yaml"))
-	require.Error(t, err, "a lock past the cap was registered")
-	assert.Contains(t, err.Error(), extra)
+// Discovery returns the lock it found and registers nothing: the tasks go to
+// the document's own registry in the language server, never to the process's.
+func TestDiscoverLockReturnsTheLockItFound(t *testing.T) {
+	lock := writeLock(t, filepath.Join(t.TempDir(), "w"))
+	got, err := discoverLock(filepath.Join(filepath.Dir(lock), "f.yaml"))
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	assert.Equal(t, lock, got.Path)
+	assert.NotEmpty(t, got.Version)
 }

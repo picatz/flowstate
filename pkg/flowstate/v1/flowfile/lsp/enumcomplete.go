@@ -29,7 +29,7 @@ func enumValueCandidates(doc *document, pos lsp.Position, taken map[string]bool)
 		wf = compiledText(doc, withoutFenceAt(doc, pos))
 	}
 
-	enums := v1.OutputEnumsOf(wf, nil)
+	enums := underTasks(doc.tasks, func() *v1.OutputEnums { return v1.OutputEnumsOf(wf, nil) })
 	names := enums.Names()
 	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {

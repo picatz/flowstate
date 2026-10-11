@@ -171,6 +171,10 @@ func compiledWorkflow(doc *document) *v1.Workflow {
 
 // compiledText is [compiledWorkflow] over text standing in for the document's.
 func compiledText(doc *document, text string) *v1.Workflow {
+	return underTasks(doc.tasks, func() *v1.Workflow { return compileText(doc, text) })
+}
+
+func compileText(doc *document, text string) *v1.Workflow {
 	if path, ok := doc.filesystemPath(); ok {
 		wf, _, err := flowfile.ParseAt([]byte(text), path)
 		if err != nil {

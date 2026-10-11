@@ -205,7 +205,18 @@ func newDocument(uri lsp.DocumentURI, version int, text string, tasks *v1.Regist
 	if doc.tooLarge {
 		return doc
 	}
-	doc.parsed, doc.parseErr = parseFlowfile(text, doc.index)
+	// Under the document's own registry: the positional model decides which keys
+	// of a step name a task, and a lock's tasks are known to the compiler only
+	// while [underTasks] holds them.
+	type parsed struct {
+		file *parsedFile
+		err  error
+	}
+	p := underTasks(tasks, func() parsed {
+		file, err := parseFlowfile(text, doc.index)
+		return parsed{file, err}
+	})
+	doc.parsed, doc.parseErr = p.file, p.err
 	return doc
 }
 

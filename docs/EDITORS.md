@@ -280,14 +280,18 @@ it opens, the way `flow validate` does; a lock that cannot be read is shown as a
 warning message instead of being ignored. It reads descriptors only and starts no
 process, so a workspace cannot make your editor execute anything this way.
 
-Every lock it discovers is registered into one process-wide registry, so with
-several workspaces open the server knows the union of their plugin tasks, and if
-two locks define the same task name the one registered last wins. A lock is read
-when a document is opened, not when the lock changes: reopen a document after
-editing a lock. Tasks are never unregistered, so a task removed from a lock
-lingers until the server restarts, and a document in one workspace can see tasks
-from another's lock. At most 8 distinct locks are registered per server; past
-that the lock is refused with a warning message.
+Each document is answered from the lock above it and from no other: completion,
+hover and diagnostics for a document see the built-in tasks, whatever the server
+launched, and that one lock's tasks. Two workspaces open in one editor do not see
+each other's plugin tasks, and if two locks define the same task name each
+document sees its own. A lock is read when a document is opened, not when the lock
+changes: reopen a document after editing a lock, and a task removed from the lock
+is then unknown to it, with no server restart. Documents under the same lock share
+one registry, which is released when the last of them closes. At most 8 distinct
+locks (or versions of one lock) are in use by open documents at once; a document
+under a ninth is refused its lock with a warning message and reads plugin tasks as
+unknown until another is closed. A lock that cannot be read or used leaves its
+document on the built-in tasks, with the same warning.
 
 `--plugin`, `--plugin-scheme` and `--allow-insecure-plugin-dir` are accepted too,
 with the meanings [CLI.md](CLI.md) gives them. A plugin that will not start —
