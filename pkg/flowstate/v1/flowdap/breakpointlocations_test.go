@@ -191,7 +191,10 @@ func TestBreakpointLocationsAreBounded(t *testing.T) {
 
 // A client whose columns start at 0 sees the source's fifth column as 4, and
 // column 0 is a real column there, not an unknown one: the filter keys off the
-// source map's column, and the response always carries the column.
+// source map's column, and the response always carries the column. A step
+// never starts at source column 1 (steps are nested in a list), so this pins
+// the zero-based filtering the guard serves, not the guard's unknown-column
+// branch itself.
 func TestBreakpointLocationsFilterByColumnForAZeroBasedClient(t *testing.T) {
 	t.Parallel()
 
