@@ -461,10 +461,22 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 	// catalog reports for it, so the step handed to an author is one a worker
 	// without the plugin refuses at submit rather than fails at the step
 	// (#1676). A task this build provides is written without one.
-	example, err := taskexample.BuildPinned(def, taskPin(def, catalog))
+	// The example is built from the descriptor too, so its name is escaped
+	// before it is spelled into a step, and every line of the result is
+	// escaped again: field names come from the same plugin.
+	shown := def
+	shown.Name = ui.EscapeControl(def.Name)
+
+	example, err := taskexample.BuildPinned(shown, taskPin(def, catalog))
 	if err != nil {
 		return err
 	}
+
+	lines := strings.Split(example, "\n")
+	for i, line := range lines {
+		lines[i] = ui.EscapeControl(line)
+	}
+	example = strings.Join(lines, "\n")
 
 	if _, err := fmt.Fprintf(out, "\n%s\n%s\n",
 		theme.Accent.Render("A step that uses it:"), example); err != nil {

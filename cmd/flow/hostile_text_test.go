@@ -12,19 +12,28 @@ import (
 )
 
 // hostile is text a plugin's descriptor could carry to drive a terminal: an
-// escape sequence, a bell, a bidi override, and a newline that fabricates a row.
-const hostile = "x\x1b[2J\a\u202e\nforged"
+// escape sequence, a bell, a bidi override, and a newline that fabricates a
+// row. Each field under test gets its own tag, so one field's escaped copy
+// cannot satisfy the check for another.
+func hostile(tag string) string {
+	return tag + "\x1b[2J\a‮\nforged"
+}
 
-// requireNoRawControl fails when any rune the terminal would act on survived.
-// Styling escapes the theme itself writes are removed first.
-func requireNoRawControl(t *testing.T, rendered, where string) {
+// hostilePlain is unstyled, so any ESC in the output is the plugin's and the
+// bytes can be inspected without stripping anything.
+func hostilePlain(out *strings.Builder) *ui.UI {
+	return ui.Plain(out, out)
+}
+
+// requireEscaped fails on any raw control byte, and requires the tagged
+// payload to appear in its escaped spelling.
+func requireEscaped(t *testing.T, rendered, tag string) {
 	t.Helper()
 
-	plain := stripANSI(rendered)
-	for _, raw := range []string{"\x1b", "\a", "\u202e"} {
-		assert.NotContains(t, plain, raw, "%s: raw %q reached the terminal", where, raw)
+	for _, raw := range []string{"\x1b", "\a", "‮", "\nforged"} {
+		assert.NotContains(t, rendered, raw, "raw %q reached the terminal", raw)
 	}
-	assert.Contains(t, plain, `\x1b[2J`, "%s: the hostile text did not render escaped, so this proves nothing", where)
+	assert.Contains(t, rendered, tag+`\x1b[2J`, "the %s payload did not render escaped, so this proves nothing", tag)
 }
 
 // TestTasksEscapesPluginTextInEveryField is #2677: a task's name, summary and
@@ -32,66 +41,118 @@ func requireNoRawControl(t *testing.T, rendered, where string) {
 func TestTasksEscapesPluginTextInEveryField(t *testing.T) {
 	t.Parallel()
 
-	field := v1.InputField{Name: hostile, Type: hostile, Constraints: []string{hostile}, Required: true}
+	fieldCases := map[string]v1.InputField{
+		"fname":       {Name: hostile("fname")},
+		"ftype":       {Name: "x", Type: hostile("ftype")},
+		"fconstraint": {Name: "x", Type: "string", Constraints: []string{hostile("fconstraint")}},
+	}
+	for tag, field := range fieldCases {
+		t.Run(tag, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("fields", func(t *testing.T) {
-		t.Parallel()
+			var out strings.Builder
+			require.NoError(t, writeFields(&out, hostilePlain(&out).Theme, 120,
+				[]fieldGroup{{label: "inputs", fields: []v1.InputField{field}}}))
+			requireEscaped(t, out.String(), tag)
+		})
+	}
 
-		requireNoRawControl(t, renderProse(t, 120, []v1.InputField{field}, nil), "writeFields")
-	})
+	taskCases := map[string]v1.TaskDef{
+		"tname":    {Name: "p." + hostile("tname"), Summary: "ok"},
+		"Tsummary": {Name: "p.t", Summary: hostile("Tsummary")},
+	}
+	for tag, def := range taskCases {
+		t.Run(tag, func(t *testing.T) {
+			t.Parallel()
 
-	t.Run("task page", func(t *testing.T) {
-		t.Parallel()
-
-		def := v1.TaskDef{Name: "p." + hostile, Summary: hostile}
-		rendered := renderTasksAt(t, 120, func(surface *ui.UI) error {
+			var out strings.Builder
 			// The example builder may refuse a descriptor-less task; the
 			// header is written before it, which is what is under test.
-			_ = writeTask(surface, def, nil)
-
-			return nil
+			_ = writeTask(hostilePlain(&out), def, nil)
+			requireEscaped(t, out.String(), tag)
 		})
-		requireNoRawControl(t, rendered, "writeTask")
-	})
+	}
 
-	t.Run("provenance", func(t *testing.T) {
+	provenanceCases := map[string]*v1.PluginDescription{
+		"pversion": {Name: "p", Version: hostile("pversion"), Path: "/x", Tasks: []*v1.TaskDescription{{Name: "p.t"}}},
+		"ppath":    {Name: "p", Version: "1", Path: hostile("ppath"), Tasks: []*v1.TaskDescription{{Name: "p.t"}}},
+		"ptask":    {Name: "p", Version: "1", Path: "/x", Tasks: []*v1.TaskDescription{{Name: "p." + hostile("ptask")}}},
+	}
+	for tag, plugin := range provenanceCases {
+		t.Run(tag, func(t *testing.T) {
+			t.Parallel()
+
+			var out strings.Builder
+			require.NoError(t, writeTaskIndex(hostilePlain(&out), &v1.PluginCatalog{Plugins: []*v1.PluginDescription{plugin}}))
+			requireEscaped(t, out.String(), tag)
+		})
+	}
+
+	t.Run("task page provenance", func(t *testing.T) {
 		t.Parallel()
 
 		catalog := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{
-			Name: "p", Version: hostile, Path: hostile,
-			Tasks: []*v1.TaskDescription{{Name: "p." + hostile}},
+			Name: "p", Version: hostile("tpv"), Path: hostile("tpp"),
 		}}}
-		rendered := renderTasksAt(t, 120, func(surface *ui.UI) error { return writeTaskIndex(surface, catalog) })
-		requireNoRawControl(t, rendered, "writeTaskIndex provenance")
+		line := taskProvenance(v1.TaskDef{Name: "p.t"}, catalog)
+		requireEscaped(t, line, "tpv")
+		assert.Contains(t, line, `tpp\x1b[2J`)
+	})
 
-		def := v1.TaskDef{Name: "p.t"}
-		assert.NotContains(t, taskProvenance(def, catalog), "\x1b")
-		assert.NotContains(t, strings.Join(taskMarkers(v1.TaskDef{Name: hostile + ".t"}), " "), "\x1b")
+	t.Run("marker", func(t *testing.T) {
+		t.Parallel()
+
+		markers := strings.Join(taskMarkers(v1.TaskDef{Name: hostile("mk") + ".t"}), " ")
+		requireEscaped(t, markers, "mk")
 	})
 }
 
-// TestPluginsEscapesPluginTextInEveryField is the same hole in `flow plugins`.
+// TestPluginsEscapesPluginTextInEveryField is the same hole in `flow plugins`,
+// one field at a time.
 func TestPluginsEscapesPluginTextInEveryField(t *testing.T) {
 	t.Parallel()
 
-	field := &v1.TaskField{Name: hostile, Type: hostile, Constraints: []string{hostile}}
-	catalog := &v1.PluginCatalog{Plugins: []*v1.PluginDescription{{
-		Name: hostile, Version: hostile, Description: hostile, Path: hostile,
-		DistributionDigest: hostile,
-		SecretSchemes:      []string{hostile},
-		Credentials:        []*v1.CredentialDeclaration{{Name: hostile, Description: hostile}},
-		Tasks: []*v1.TaskDescription{{
-			Name: hostile, Summary: hostile,
-			SecretInputs:     []string{hostile},
-			CredentialInputs: map[string]string{hostile: hostile},
-			Inputs:           []*v1.TaskField{field},
-			Outputs:          []*v1.TaskField{field},
-		}},
-	}}}
+	field := func(tag string) *v1.TaskField {
+		return &v1.TaskField{Name: "f", Type: "string", Constraints: []string{tag}}
+	}
 
-	var out strings.Builder
-	surface := ui.ForCapabilities(&out, &out, ui.Capabilities{Width: 120}, ui.Capabilities{Width: 120})
-	require.NoError(t, writePluginCatalog(surface, catalog))
+	cases := map[string]func(tag string, p *v1.PluginDescription){
+		"name":     func(tag string, p *v1.PluginDescription) { p.Name = tag },
+		"version":  func(tag string, p *v1.PluginDescription) { p.Version = tag },
+		"desc":     func(tag string, p *v1.PluginDescription) { p.Description = tag },
+		"path":     func(tag string, p *v1.PluginDescription) { p.Path = tag },
+		"digest":   func(tag string, p *v1.PluginDescription) { p.DistributionDigest = tag },
+		"scheme":   func(tag string, p *v1.PluginDescription) { p.SecretSchemes = []string{tag} },
+		"credname": func(tag string, p *v1.PluginDescription) { p.Credentials = []*v1.CredentialDeclaration{{Name: tag}} },
+		"creddesc": func(tag string, p *v1.PluginDescription) {
+			p.Credentials = []*v1.CredentialDeclaration{{Name: "c", Description: tag}}
+		},
+		"taskname": func(tag string, p *v1.PluginDescription) { p.Tasks = []*v1.TaskDescription{{Name: tag}} },
+		"tasksum":  func(tag string, p *v1.PluginDescription) { p.Tasks = []*v1.TaskDescription{{Name: "t", Summary: tag}} },
+		"secretin": func(tag string, p *v1.PluginDescription) {
+			p.Tasks = []*v1.TaskDescription{{Name: "t", SecretInputs: []string{tag}}}
+		},
+		"credinkey": func(tag string, p *v1.PluginDescription) {
+			p.Tasks = []*v1.TaskDescription{{Name: "t", CredentialInputs: map[string]string{tag: "c"}}}
+		},
+		"credinval": func(tag string, p *v1.PluginDescription) {
+			p.Tasks = []*v1.TaskDescription{{Name: "t", CredentialInputs: map[string]string{"in": tag}}}
+		},
+		"fieldconstraint": func(tag string, p *v1.PluginDescription) {
+			p.Tasks = []*v1.TaskDescription{{Name: "t", Inputs: []*v1.TaskField{field(tag)}}}
+		},
+	}
 
-	requireNoRawControl(t, out.String(), "writePluginCatalog")
+	for tag, set := range cases {
+		t.Run(tag, func(t *testing.T) {
+			t.Parallel()
+
+			p := &v1.PluginDescription{Name: "p", Version: "1", Path: "/x"}
+			set(hostile(tag), p)
+
+			var out strings.Builder
+			require.NoError(t, writePluginCatalog(hostilePlain(&out), &v1.PluginCatalog{Plugins: []*v1.PluginDescription{p}}))
+			requireEscaped(t, out.String(), tag)
+		})
+	}
 }
