@@ -10,7 +10,12 @@ import (
 // workflow. Problems are returned as [Diagnostics], one per problem, each carrying
 // the line and column it was found on.
 func Unmarshal(data []byte) (*v1.Workflow, error) {
-	workflow, _, err := Parse(data)
+	return Env{}.Unmarshal(data)
+}
+
+// Unmarshal is [Unmarshal] against this Env's registry.
+func (e Env) Unmarshal(data []byte) (*v1.Workflow, error) {
+	workflow, _, err := e.Parse(data)
 	if err != nil {
 		return nil, err
 	}

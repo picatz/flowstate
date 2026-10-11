@@ -210,7 +210,7 @@ func (c *compiler) switchSteps(n ast.Node, path string, r ref) []*v1.Node {
 	if !ok {
 		c.report(spanOfNode(n), r, "must be a list of steps, each with an id and one of %s; "+
 			"an empty list (`steps: []`) is legal and means this branch deliberately runs nothing",
-			stepKindList())
+			stepKindList(c.env))
 		return nil
 	}
 

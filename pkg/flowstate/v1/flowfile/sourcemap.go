@@ -38,6 +38,12 @@ const (
 // mapped to lines that no longer hold it, and its sites are then debugged by
 // address alone.
 func SourceMap(path string, source []byte, workflow *v1.Workflow, positions *Positions) *v1.DebugSourceMap {
+	return Env{}.SourceMap(path, source, workflow, positions)
+}
+
+// SourceMap is [SourceMap] against this Env's registry, which compiles each
+// callee the map includes.
+func (e Env) SourceMap(path string, source []byte, workflow *v1.Workflow, positions *Positions) *v1.DebugSourceMap {
 	sourceMap := &v1.DebugSourceMap{IrDigest: IRDigest(workflow)}
 
 	documents := map[string]int{}
@@ -81,7 +87,7 @@ func SourceMap(path string, source []byte, workflow *v1.Workflow, positions *Pos
 			if err != nil || v1.ContentDigest(data) != call.GetSourceDigest() {
 				continue
 			}
-			_, calleePositions, err := ParseAt(data, calleePath)
+			_, calleePositions, err := e.ParseAt(data, calleePath)
 			if err != nil {
 				continue
 			}

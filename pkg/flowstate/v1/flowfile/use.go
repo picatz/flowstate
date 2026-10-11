@@ -420,7 +420,7 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 
 	child := c.session.child()
 	c.session.cache.count(func(s *ModuleCacheStats) { s.Compiles++ })
-	module, positions, err := parse(data, resolved, ancestors, c.callBudget, child)
+	module, positions, err := parse(c.env, data, resolved, ancestors, c.callBudget, child)
 	if err != nil {
 		count := 1
 		if compiled, ok := errors.AsType[Diagnostics](err); ok {
@@ -437,7 +437,7 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 		return refuse("uses %q, which is not a module; a module declares types, functions or errors and nothing else "+"(no inputs, outputs, vars, triggers or steps)", target)
 	}
 
-	if ds := ValidateModule(module); len(ds) > 0 {
+	if ds := c.env.ValidateModule(module); len(ds) > 0 {
 		positionDiagnostics(ds, positions)
 		return refuse("uses %q, which has %d error%s; first: %s", target, len(ds), plural(len(ds)), firstProblem(ds.Error()))
 	}
@@ -445,7 +445,7 @@ func (c *compiler) loadModule(pathNode ast.Node, r ref, target string, pin *modu
 	loaded := &loadedModule{workflow: module, digest: digest, path: resolved, iface: interfaceDigest(module)}
 	c.session.loaded[resolved] = loaded
 	if cache := c.session.cache; cache != nil && !c.session.ignorePins {
-		cache.store(cache.keyFor(resolved, digest, c.session.depth+1), loaded, child.deps)
+		cache.store(cache.keyFor(c.env, resolved, digest, c.session.depth+1), loaded, child.deps)
 	}
 
 	return loaded, true

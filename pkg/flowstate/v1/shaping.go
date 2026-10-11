@@ -40,7 +40,13 @@ const ShapingInput = "outputs"
 // task is unknown there, and guessing that an unknown task shapes would stand
 // every check down on the strength of a spelling.
 func TaskShapesOutputs(taskName string) bool {
-	def, found := LookupTask(taskName)
+	return TaskShapesOutputsFrom(nil, taskName)
+}
+
+// TaskShapesOutputsFrom is [TaskShapesOutputs] against tasks, or the build's own
+// registry when tasks is nil. A task absent from that registry shapes nothing.
+func TaskShapesOutputsFrom(tasks *Registry, taskName string) bool {
+	def, found := LookupTaskFrom(tasks, taskName)
 	return found && def.ShapesOutputs
 }
 

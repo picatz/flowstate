@@ -43,8 +43,8 @@ type loweredName struct {
 }
 
 // lowerEnumNames replaces each enum value name in wf's expressions with its number.
-func lowerEnumNames(wf *v1.Workflow) {
-	enums := v1.OutputEnumsOf(wf, nil)
+func lowerEnumNames(env Env, wf *v1.Workflow) {
+	enums := v1.OutputEnumsOf(wf, env.tasks())
 	if enums.Empty() {
 		return
 	}
@@ -261,12 +261,13 @@ func walkExprTree(e *expr.Expr, visit func(*expr.Expr)) {
 // enumOrigins answers which task's outputs an operand reads, so a comparison is
 // judged only against an enum that task's answer holds.
 type enumOrigins struct {
+	env     Env
 	steps   map[string]*v1.Node
 	perStep map[string]*v1.OutputEnums
 }
 
-func newEnumOrigins(wf *v1.Workflow) *enumOrigins {
-	o := &enumOrigins{steps: map[string]*v1.Node{}, perStep: map[string]*v1.OutputEnums{}}
+func newEnumOrigins(env Env, wf *v1.Workflow) *enumOrigins {
+	o := &enumOrigins{env: env, steps: map[string]*v1.Node{}, perStep: map[string]*v1.OutputEnums{}}
 
 	seen := map[string]int{}
 	v1.WalkNodes(wf.GetSteps(), v1.Walk{Node: func(node *v1.Node) {
@@ -343,7 +344,7 @@ func (o *enumOrigins) step(id string, depth int) (*v1.OutputEnums, bool) {
 	case *v1.Node_Task:
 		enums, cached := o.perStep[id]
 		if !cached {
-			enums = v1.OutputEnumsOf(&v1.Workflow{Steps: []*v1.Node{node}}, nil)
+			enums = v1.OutputEnumsOf(&v1.Workflow{Steps: []*v1.Node{node}}, o.env.tasks())
 			o.perStep[id] = enums
 		}
 
@@ -367,11 +368,11 @@ func (o *enumOrigins) step(id string, depth int) (*v1.OutputEnums, bool) {
 // at an input, a var or a declared type is never judged, whatever it is called.
 // Within the task, the field is refused only when every output field of that name
 // is the same enum.
-func enumComparisonErrors(wf *v1.Workflow) Diagnostics {
-	if v1.OutputEnumsOf(wf, nil).Empty() {
+func enumComparisonErrors(env Env, wf *v1.Workflow) Diagnostics {
+	if v1.OutputEnumsOf(wf, env.tasks()).Empty() {
 		return nil
 	}
-	origins := newEnumOrigins(wf)
+	origins := newEnumOrigins(env, wf)
 
 	var ds Diagnostics
 	v1.WalkWorkflow(wf, v1.Walk{Value: func(site v1.ValueSite) {
@@ -488,8 +489,8 @@ func nearestEnumName(typed string, names []string) (string, bool) {
 // unknownEnumHint adds to an unknown-name message what the file's enum names
 // offer: the near miss, or the fact that a name two enums define differently
 // has no unambiguous spelling.
-func unknownEnumHint(wf *v1.Workflow, name string) string {
-	enums := v1.OutputEnumsOf(wf, nil)
+func unknownEnumHint(env Env, wf *v1.Workflow, name string) string {
+	enums := v1.OutputEnumsOf(wf, env.tasks())
 	if enums.Ambiguous(name) {
 		return fmt.Sprintf("; `%s` is a value of more than one enum among this file's tasks, so no spelling of it is unambiguous", name)
 	}

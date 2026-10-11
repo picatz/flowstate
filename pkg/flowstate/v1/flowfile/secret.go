@@ -340,8 +340,8 @@ func (c *compiler) structure(n ast.Node, path string, r ref) *v1.Value {
 		return nil
 	}
 
-	if !v1.AcceptsNestedSecret(r.task, r.input) {
-		c.report(spanOfNode(c.markerNode(n)), r, "%s%s", inStructureHelp, acceptedElsewhere(r.task))
+	if !v1.AcceptsNestedSecretFrom(c.env.tasks(), r.task, r.input) {
+		c.report(spanOfNode(c.markerNode(n)), r, "%s%s", inStructureHelp, c.env.acceptedElsewhere(r.task))
 		return nil
 	}
 
@@ -355,8 +355,8 @@ func (c *compiler) structure(n ast.Node, path string, r ref) *v1.Value {
 // rest of this package reads descriptors: an input built to take one is offered
 // here on the day it is built, and an input this build has never heard of is not
 // offered at all.
-func acceptedElsewhere(taskName string) string {
-	accepted := v1.NestedSecretInputs(taskName)
+func (e Env) acceptedElsewhere(taskName string) string {
+	accepted := v1.NestedSecretInputsFrom(e.tasks(), taskName)
 	if len(accepted) == 0 {
 		return ""
 	}

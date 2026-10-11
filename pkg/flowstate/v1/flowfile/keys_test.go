@@ -112,7 +112,7 @@ func TestKeyNamePlusDiagnosticMatchesKeyNameOf(t *testing.T) {
 
 		quiet, quietOK := keyNameOf(key)
 
-		c := &compiler{pos: newPositions()}
+		c := &compiler{pos: newPositions(Env{})}
 		loud, loudOK := c.keyName(key, ref{})
 
 		assert.Equal(t, quietOK, loudOK, "the two disagree about whether %q has a name", src)

@@ -196,6 +196,13 @@ func mergeRefusals(first, later []Diagnostic) []Diagnostic {
 // document the author is still holding, and both its refusals and the edits it
 // found are positions in that file.
 func Fix(data []byte) (FixResult, error) {
+	return Env{}.Fix(data)
+}
+
+// Fix is [Fix] against this Env's registry: which keys of a step name a task, which
+// task inputs the rewrites treat as evaluated by the task, and which plugin tasks
+// have credentials to consolidate are read from it.
+func (e Env) Fix(data []byte) (FixResult, error) {
 	out := FixResult{Source: data}
 
 	var (
@@ -234,7 +241,7 @@ func Fix(data []byte) (FixResult, error) {
 	var repairs []FixChange
 	source := data
 	for round := 1; ; round++ {
-		result, err := fixOnce(source, modernize)
+		result, err := fixOnce(e, source, modernize)
 		if err != nil && round == 1 && len(data) <= maxBytes {
 			// A document YAML refuses because a plain scalar holds a `: ` is
 			// repaired before any rule runs, since the rules read a parsed tree.
@@ -244,7 +251,7 @@ func Fix(data []byte) (FixResult, error) {
 			if repaired, changes, ok := repairQuotedFences(data); ok {
 				source, repairs = repaired, changes
 				out.Changes = slices.Clone(changes)
-				result, err = fixOnce(source, modernize)
+				result, err = fixOnce(e, source, modernize)
 			}
 		}
 		if err != nil {
@@ -284,7 +291,7 @@ func Fix(data []byte) (FixResult, error) {
 // fixOnce is one rewriting pass over a document. See [Fix], which runs it to a fixed
 // point. modernize says the document is being brought forward from an older edition,
 // which is when the optional-read rewrite runs — see [modernizesEdition].
-func fixOnce(data []byte, modernize bool) (FixResult, error) {
+func fixOnce(env Env, data []byte, modernize bool) (FixResult, error) {
 	if len(data) > maxBytes {
 		return FixResult{}, Diagnostics{{
 			Line:   1,
@@ -333,6 +340,7 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 	}
 
 	f := &fixer{
+		env:             env,
 		lines:           splitLines(data),
 		trailingNewline: bytes.HasSuffix(data, []byte("\n")),
 		terminator:      lineTerminator(data),
@@ -408,6 +416,11 @@ func fixOnce(data []byte, modernize bool) (FixResult, error) {
 // rewriter that edits as it walks has to keep an offset, and an offset is a
 // thing to get wrong.
 type fixer struct {
+	// env is the registry the rewrites resolve task names against. The same one
+	// the compiler that verifies a rewrite reads, so what is rewritten and what is
+	// proved are about one task set.
+	env Env
+
 	lines []string
 
 	// trailingNewline records whether the source ended with one, so that a file
@@ -2060,7 +2073,7 @@ func (f *fixer) expressions(n ast.Node, steps map[string]bool) {
 			// A task's key opens its inputs, so the names its own scope binds are
 			// known from here down and nowhere else.
 			if named {
-				if def, known := v1.LookupTask(name); known {
+				if def, known := f.env.lookup(name); known {
 					if def.ShapesOutputs {
 						// Promoted to the spelling that keeps its keys — the
 						// declared capability decides, so a task with an ordinary

@@ -100,7 +100,7 @@ func (f *fixer) collectCredentialSites(name string, entry *ast.MappingValueNode)
 	if !qualified || plugin == "" {
 		return
 	}
-	def, known := v1.LookupTask(name)
+	def, known := f.env.lookup(name)
 	if !known || def.Inputs == nil {
 		return
 	}
@@ -465,7 +465,7 @@ func (f *fixer) inheritingTask(entry *ast.MappingValueNode, blocked map[[2]strin
 	if !qualified || plugin == "" {
 		return
 	}
-	def, known := v1.LookupTask(name)
+	def, known := f.env.lookup(name)
 	if !known || def.Inputs == nil {
 		return
 	}
@@ -512,7 +512,7 @@ func (f *fixer) verifyCredentialConsolidation(from, to int) {
 	}
 	without := f.apply()
 
-	if sameCompiledSteps(with, without) {
+	if sameCompiledSteps(f.env, with, without) {
 		maps.Copy(f.edits, saved)
 
 		return
@@ -524,12 +524,12 @@ func (f *fixer) verifyCredentialConsolidation(from, to int) {
 
 // sameCompiledSteps reports whether both documents compile and their steps are
 // equal once bindings are expanded.
-func sameCompiledSteps(a, b []byte) bool {
-	first, _, err := Parse(a)
+func sameCompiledSteps(env Env, a, b []byte) bool {
+	first, _, err := env.Parse(a)
 	if err != nil {
 		return false
 	}
-	second, _, err := Parse(b)
+	second, _, err := env.Parse(b)
 	if err != nil {
 		return false
 	}

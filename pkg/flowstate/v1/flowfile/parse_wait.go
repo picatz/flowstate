@@ -76,7 +76,12 @@ func parseDuration(s string) (time.Duration, error) { return v1.ParseDuration(s)
 // A copy is returned because the caller must not be able to edit the DSL by
 // editing a slice header.
 func StepKinds() []string {
-	return stepKindKeys()
+	return Env{}.StepKinds()
+}
+
+// StepKinds is [StepKinds] against this Env's registry.
+func (e Env) StepKinds() []string {
+	return e.stepKindKeys()
 }
 
 // StepKindList renders the kinds a step may be as prose: "a, b, or c".
@@ -84,7 +89,12 @@ func StepKinds() []string {
 // Built from [stepKindKeys] rather than written out, so that adding a kind cannot
 // leave a diagnostic — or an editor — describing the DSL as it used to be.
 func StepKindList() string {
-	kinds := stepKindKeys()
+	return Env{}.StepKindList()
+}
+
+// StepKindList is [StepKindList] against this Env's registry.
+func (e Env) StepKindList() string {
+	kinds := e.stepKindKeys()
 	if len(kinds) < 2 {
 		return strings.Join(kinds, "")
 	}
@@ -93,7 +103,7 @@ func StepKindList() string {
 
 // stepKindList is the internal spelling, kept so the diagnostics that call it read
 // unchanged.
-func stepKindList() string { return StepKindList() }
+func stepKindList(env Env) string { return env.StepKindList() }
 
 // sleep compiles `sleep: 30s` — or `sleep: ${...}` — into a durable timer.
 func (c *compiler) sleep(n ast.Node, path string, r ref) *v1.Wait {

@@ -271,14 +271,19 @@ func validateName(wf *v1.Workflow) Diagnostics {
 // [Validate] to read. A workflow that is not a module is not ValidateModule's to
 // judge; it is passed to [Validate], which says what is missing.
 func ValidateModule(wf *v1.Workflow) Diagnostics {
+	return Env{}.ValidateModule(wf)
+}
+
+// ValidateModule is [ValidateModule] against this Env's registry.
+func (e Env) ValidateModule(wf *v1.Workflow) Diagnostics {
 	if !v1.IsModule(wf) {
-		return Validate(wf)
+		return e.Validate(wf)
 	}
 	ds := validateName(wf)
 	ds = append(ds, validateModules(wf)...)
 	ds = append(ds, validateDeclaredTypes(wf)...)
 	ds = append(ds, validateDeclaredErrors(wf)...)
-	ds = append(ds, checkExpressionTypes(wf, newTypeTable(wf))...)
+	ds = append(ds, checkExpressionTypes(wf, newTypeTable(e, wf))...)
 	ds = append(ds, checkFunctionBodies(wf)...)
 	return ds
 }
@@ -289,6 +294,11 @@ func ValidateModule(wf *v1.Workflow) Diagnostics {
 // [Parse] — the server accepts one built by hand over the API too — so nothing
 // here may assume a check [Parse] already makes was made.
 func Validate(wf *v1.Workflow) Diagnostics {
+	return Env{}.Validate(wf)
+}
+
+// Validate is [Validate] against this Env's registry.
+func (e Env) Validate(wf *v1.Workflow) Diagnostics {
 	if wf == nil {
 		return Diagnostics{{Message: "workflow is empty"}}
 	}
@@ -312,12 +322,12 @@ func Validate(wf *v1.Workflow) Diagnostics {
 	// be expanded is the finding.
 	if expanded := v1.CopyIfBindsPluginCredentials(wf); expanded != wf {
 		wf = expanded
-		if err := v1.BindPluginCredentials(wf, v1.DefaultRegistry()); err != nil {
+		if err := v1.BindPluginCredentials(wf, e.Registry()); err != nil {
 			return Diagnostics{{Field: "plugins", Message: err.Error()}}
 		}
 	}
 
-	return validateAtDepth(wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)
+	return validateAtDepth(e, wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)
 }
 
 // validateAtDepth is the whole of what [Validate] checks for one workflow, at
@@ -333,7 +343,7 @@ func Validate(wf *v1.Workflow) Diagnostics {
 // inside a `for_each` body or a `parallel` branch — a call is transparent to
 // whatever restriction already applies there, not an escape from it. See
 // [validateCallAtDepth], which does the composing.
-func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
+func validateAtDepth(env Env, wf *v1.Workflow, profile string, depth int, placement v1.UndoScope) Diagnostics {
 	var ds Diagnostics
 
 	ds = append(ds, validateName(wf)...)
@@ -377,10 +387,10 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	// beside it. Separate from the reference checks below and deliberately unaware
 	// of scope; see celcheck.go for why that is what keeps it from reporting the
 	// same mistake twice in two voices.
-	types := newTypeTable(wf)
+	types := newTypeTable(env, wf)
 	ds = append(ds, checkExpressionTypes(wf, types)...)
-	ds = append(ds, enumComparisonErrors(wf)...)
-	ds = append(ds, outputElementErrors(wf)...)
+	ds = append(ds, enumComparisonErrors(env, wf)...)
+	ds = append(ds, outputElementErrors(env, wf)...)
 	ds = append(ds, checkFunctionBodies(wf)...)
 
 	// Two sibling steps whose `if:` conditions look like they were meant to be
@@ -403,7 +413,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 	ds = append(ds, checkSensitiveFailMessage(wf)...)
 
 	// Tasks and expression references.
-	scope := newRefScope(wf)
+	scope := newRefScope(env, wf)
 	scope.types = types
 	for i, node := range wf.GetSteps() {
 		id := node.GetId()
@@ -477,7 +487,7 @@ func validateAtDepth(wf *v1.Workflow, profile string, depth int, placement v1.Un
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
-					Message: "step must have one of " + stepKindList(),
+					Message: "step must have one of " + stepKindList(env),
 				})
 			}
 			recordStepInScope(scope, node)
@@ -704,7 +714,7 @@ func validateWorkflowVars(wf *v1.Workflow) Diagnostics {
 // right, in a file that will run unchanged on a worker that has the plugin; and this
 // validator, which launches nothing, genuinely cannot tell that case from a typo.
 // Saying what it cannot know is the diagnostic here.
-func unknownTaskMessage(name string) string {
+func unknownTaskMessage(env Env, name string) string {
 	if plugin, _, dotted := strings.Cut(name, "."); dotted {
 		return fmt.Sprintf("no plugin task %q is registered here; if the %q plugin "+
 			"is installed on the worker this will run on, the file is fine and this "+
@@ -720,7 +730,7 @@ func unknownTaskMessage(name string) string {
 	// it stays one word. `flow task run` reached the same conclusion for a name
 	// typed at a shell (see [unknownTaskRunError] there), and this is that rule
 	// arriving at the other surface that reads a task name.
-	known := v1.TaskNames()
+	known := env.taskNames()
 	if suggestion, ok := nearest.Name(name, known); ok {
 		return fmt.Sprintf("unknown task %q; did you mean %q?", name, suggestion)
 	}
@@ -746,13 +756,13 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 
 	if task.GetName() == "" {
 		ds = append(ds, Diagnostic{Step: id, Message: "task has no name"})
-	} else if _, known := v1.LookupTask(task.GetName()); !known {
+	} else if _, known := scope.env.lookup(task.GetName()); !known {
 		ds = append(ds, Diagnostic{
 			Step: id,
 			// Under the flattening the task's name is a key an author wrote, so
 			// there is a token to underline rather than a whole step.
 			Kind:    task.GetName(),
-			Message: unknownTaskMessage(task.GetName()),
+			Message: unknownTaskMessage(scope.env, task.GetName()),
 			Code:    v1.DiagnosticCodeUnknownTask,
 		})
 	}
@@ -765,21 +775,21 @@ func validateTaskStep(id string, node *v1.Node, task *v1.Task, scope, inner refS
 	// reference, because the two fail differently: a reference that cannot resolve is
 	// a mistake about the workflow, and an input the task does not have is a mistake
 	// about the task.
-	ds = append(ds, validateTaskInputs(id, task)...)
+	ds = append(ds, validateTaskInputs(scope.env, id, task)...)
 
 	// A literal input is type-checked against the field by validateTaskInputs. An
 	// expression is checked here, where the workflow and its type table are in hand:
 	// a direct reference to a name this file types — `${inputs.x}`, `${vars.x}` — by
 	// that declaration (#158), and any other expression whose type the checker
 	// decides by that type (#1637). One it cannot type (`dyn`) stays unchecked.
-	ds = append(ds, checkExpressionInputTypes(id, task, wf, scope.types)...)
+	ds = append(ds, checkExpressionInputTypes(scope.env, id, task, wf, scope.types)...)
 
 	// Some inputs are evaluated by the task itself, in a scope this validator does
 	// not model — the http task's `outputs` expression references the response, not
 	// earlier steps. Checking references in those would report every correct use as
 	// an unknown step, and a false diagnostic is worse than a missing one: it trains
 	// authors to ignore the tool. The registry declares which inputs those are.
-	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+	checkable, _ := v1.ResolvableInputsFrom(scope.env.tasks(), task.GetName(), task.GetInputs())
 	for _, name := range sortedInputNames(checkable) {
 		ds = append(ds, validateInputRefs(id, name, checkable[name], inner, index, wf)...)
 	}
@@ -861,6 +871,10 @@ func recordStepInScope(scope refScope, node *v1.Node) {
 // root and a local is named bare, so neither can be mistaken for the other and
 // there is nothing left for a rule to forbid.
 type refScope struct {
+	// env is the registry every task lookup made under this scope resolves
+	// against, fixed for the whole workflow and carried into every call's callee.
+	env Env
+
 	// steps are the steps whose outputs exist at this point, reachable as
 	// `steps.<id>`, keyed by the id a reference spells.
 	//
@@ -907,7 +921,7 @@ type refScope struct {
 // The vars are in from the start rather than accumulated, because that is when they
 // exist: they are evaluated once before any step runs, so the first step sees the same
 // set as the last.
-func newRefScope(wf *v1.Workflow) refScope {
+func newRefScope(env Env, wf *v1.Workflow) refScope {
 	vars := make(map[string]bool, len(wf.GetVars()))
 	for name := range wf.GetVars() {
 		vars[name] = true
@@ -918,7 +932,7 @@ func newRefScope(wf *v1.Workflow) refScope {
 		inputs[declaration.GetName()] = true
 	}
 
-	return refScope{steps: map[string]*v1.Node{}, locals: map[string]bool{}, vars: vars, inputs: inputs}
+	return refScope{env: env, steps: map[string]*v1.Node{}, locals: map[string]bool{}, vars: vars, inputs: inputs}
 }
 
 // clone returns a copy that can be extended without disturbing the original,
@@ -926,6 +940,7 @@ func newRefScope(wf *v1.Workflow) refScope {
 // while the steps after the loop see neither.
 func (s refScope) clone() refScope {
 	out := refScope{
+		env:    s.env,
 		steps:  make(map[string]*v1.Node, len(s.steps)+1),
 		locals: make(map[string]bool, len(s.locals)+1),
 		// Shared rather than copied: nothing extends the var set after the scope is
@@ -1365,7 +1380,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
-					Message: "step must have one of " + stepKindList(),
+					Message: "step must have one of " + stepKindList(enclosing.env),
 				})
 			}
 			// The same merge the top-level walk performs: a parallel block's
@@ -1540,17 +1555,17 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 	if task.GetName() == "" {
 		return append(ds, Diagnostic{Step: id, Field: "undo", Kind: "undo", Message: "compensation has no task"})
 	}
-	if _, known := v1.LookupTask(task.GetName()); !known {
+	if _, known := scope.env.lookup(task.GetName()); !known {
 		return append(ds, Diagnostic{
 			Step:    id,
 			Field:   "undo",
 			Kind:    "undo",
-			Message: unknownTaskMessage(task.GetName()),
+			Message: unknownTaskMessage(scope.env, task.GetName()),
 			Code:    v1.DiagnosticCodeUnknownTask,
 		})
 	}
 
-	ds = append(ds, validateUndoInputs(id, task, wf, scope.types)...)
+	ds = append(ds, validateUndoInputs(scope.env, id, task, wf, scope.types)...)
 
 	// The step's own outputs, added to a copy: this scope is for the compensation
 	// and is thrown away, so nothing after the step can reference itself by having
@@ -1558,7 +1573,7 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 	self := scope.clone()
 	self.steps[id] = node
 
-	checkable, _ := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+	checkable, _ := v1.ResolvableInputsFrom(scope.env.tasks(), task.GetName(), task.GetInputs())
 	for _, name := range sortedInputNames(checkable) {
 		ds = append(ds, validateInputRefs(id, "undo", checkable[name], self, index, wf)...)
 	}
@@ -1576,8 +1591,8 @@ func validateUndo(id string, node *v1.Node, scope refScope, index int, wf *v1.Wo
 // the *step's own* task and resolve to nothing or, worse, to a same-named input of
 // it — so the field is the `undo:` key, and the input's name moves into the
 // message where it is unambiguous.
-func validateUndoInputs(id string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
-	inner := append(validateTaskInputs(id, task), checkExpressionInputTypes(id, task, wf, table)...)
+func validateUndoInputs(env Env, id string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
+	inner := append(validateTaskInputs(env, id, task), checkExpressionInputTypes(env, id, task, wf, table)...)
 
 	ds := make(Diagnostics, 0, len(inner))
 	for _, d := range inner {
@@ -1631,7 +1646,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 	// [v1.ErrorKind]'s, so a misspelled literal is refused here rather than
 	// silently taking the other branch on both drivers.
 	for _, literal := range unknownFailureKindLiterals(parsed.GetExpr(), map[string]struct{}{}, func(id string) bool {
-		return engineOwnsFailure(scope.steps[id])
+		return engineOwnsFailure(scope.env, scope.steps[id])
 	}, func(literal string) bool {
 		return v1.KnownFailureKind(wf, literal)
 	}) {
@@ -1681,7 +1696,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		}
 		// The step this scope put in scope under that id, rather than whichever
 		// step in the file happens to be spelled that way — see [refScope.steps].
-		if d, wrong := unknownStepOutput(stepID, inputName, ref, target); wrong {
+		if d, wrong := unknownStepOutput(scope.env, stepID, inputName, ref, target); wrong {
 			ds = append(ds, d)
 		}
 	}
@@ -1806,7 +1821,7 @@ func validateInputRefs(stepID, inputName string, val *v1.Value, scope refScope, 
 		if suggestion, ok := nearest.Name(ref, slices.Sorted(maps.Keys(scope.steps))); ok {
 			message += fmt.Sprintf("; did you mean `%s.%s`?", v1.StepsRoot, suggestion)
 		} else {
-			message += unknownEnumHint(wf, ref)
+			message += unknownEnumHint(scope.env, wf, ref)
 		}
 		d := Diagnostic{
 			Step: stepID, Field: inputName,
@@ -2194,17 +2209,27 @@ func sortedInputNames(inputs map[string]*v1.Value) []string {
 // is no workflow to validate, and the error already describes every problem the
 // compiler found, with positions.
 func ValidateSource(data []byte) (Diagnostics, error) {
-	return validateThroughEdition(data, "", nil)
+	return Env{}.ValidateSource(data)
+}
+
+// ValidateSource is [ValidateSource] against this Env's registry.
+func (e Env) ValidateSource(data []byte) (Diagnostics, error) {
+	return validateThroughEdition(e, data, "", nil)
 }
 
 // ValidateSourceFile is [ValidateSource] for a file read from disk, additionally
 // resolving any `call:` step relative to path's own directory — see [ParseFile].
 func ValidateSourceFile(path string) (Diagnostics, error) {
+	return Env{}.ValidateSourceFile(path)
+}
+
+// ValidateSourceFile is [ValidateSourceFile] against this Env's registry.
+func (e Env) ValidateSourceFile(path string) (Diagnostics, error) {
 	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, err
 	}
-	return validateThroughEdition(data, path, nil)
+	return validateThroughEdition(e, data, path, nil)
 }
 
 // ParseAndValidateFile compiles a Flowfile read from disk and validates what it
@@ -2225,12 +2250,17 @@ func ValidateSourceFile(path string) (Diagnostics, error) {
 // of agreeing with `flow validate` about an old file, paid only by an old
 // file.
 func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
+	return Env{}.ParseAndValidateFile(path)
+}
+
+// ParseAndValidateFile is [ParseAndValidateFile] against this Env's registry.
+func (e Env) ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	wf, _, ds, err := ParseAndValidateSourceAt(data, path)
+	wf, _, ds, err := e.ParseAndValidateSourceAt(data, path)
 
 	return wf, ds, err
 }
@@ -2239,12 +2269,17 @@ func ParseAndValidateFile(path string) (*v1.Workflow, Diagnostics, error) {
 // file's steps are written, from the same read, for a caller that reports a
 // run-time failure against the file it came from.
 func ParseAndValidateFileAt(path string) (*v1.Workflow, *Positions, Diagnostics, error) {
+	return Env{}.ParseAndValidateFileAt(path)
+}
+
+// ParseAndValidateFileAt is [ParseAndValidateFileAt] against this Env's registry.
+func (e Env) ParseAndValidateFileAt(path string) (*v1.Workflow, *Positions, Diagnostics, error) {
 	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 
-	return ParseAndValidateSourceAt(data, path)
+	return e.ParseAndValidateSourceAt(data, path)
 }
 
 // ParseAndValidateSourceAt is [ParseAndValidateFile] for bytes already read,
@@ -2253,17 +2288,23 @@ func ParseAndValidateFileAt(path string) (*v1.Workflow, *Positions, Diagnostics,
 // and where its steps are written — a debugger's source map — gets them from
 // one read, so the lines cannot belong to a different revision of the file.
 func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Positions, Diagnostics, error) {
-	wf, positions, err := parse(data, path, nil, new(int), nil)
+	return Env{}.ParseAndValidateSourceAt(data, path)
+}
+
+// ParseAndValidateSourceAt is [ParseAndValidateSourceAt] against this Env's
+// registry.
+func (e Env) ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Positions, Diagnostics, error) {
+	wf, positions, err := parse(e, data, path, nil, new(int), nil)
 	if err != nil {
 		var gate Diagnostics
 		if errors.As(err, &gate) && isEditionGate(gate) {
-			if _, verr := validateThroughEdition(data, path, nil); verr != nil {
+			if _, verr := validateThroughEdition(e, data, path, nil); verr != nil {
 				return nil, nil, nil, verr
 			}
 		}
 	}
 
-	ds, err := validateParsed(wf, positions, err)
+	ds, err := validateParsed(e, wf, positions, err)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -2283,7 +2324,12 @@ func ParseAndValidateSourceAt(data []byte, path string) (*v1.Workflow, *Position
 // path holds on disk yet — an editor's unsaved buffer — resolving a `call:`
 // step relative to path's directory all the same. See [ParseAt].
 func ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
-	return validateThroughEdition(data, path, nil)
+	return Env{}.ValidateSourceAt(data, path)
+}
+
+// ValidateSourceAt is [ValidateSourceAt] against this Env's registry.
+func (e Env) ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
+	return validateThroughEdition(e, data, path, nil)
 }
 
 // validateThroughEdition validates data, and when the only thing in the way is
@@ -2329,8 +2375,8 @@ func ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
 // an author anyway: an old file, a new binary, and a stamp to update. Any
 // rewrite that moves a line leaves the gate exactly where it was, because the
 // alternative is being helpful about the wrong line.
-func validateThroughEdition(data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
-	ds, err := parseAndValidate(data, path, cache)
+func validateThroughEdition(env Env, data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
+	ds, err := parseAndValidate(env, data, path, cache)
 	if err == nil {
 		return ds, nil
 	}
@@ -2340,7 +2386,7 @@ func validateThroughEdition(data []byte, path string, cache *ModuleCache) (Diagn
 		return nil, err
 	}
 
-	fixed, fixErr := Fix(data)
+	fixed, fixErr := env.Fix(data)
 	if fixErr != nil || !fixed.Complete() || !fixed.Changed() {
 		return nil, err
 	}
@@ -2348,7 +2394,7 @@ func validateThroughEdition(data []byte, path string, cache *ModuleCache) (Diagn
 		return nil, err
 	}
 
-	rest, restErr := parseAndValidate(fixed.Source, path, cache)
+	rest, restErr := parseAndValidate(env, fixed.Source, path, cache)
 	if restErr != nil {
 		var restDiagnostics Diagnostics
 		if !errors.As(restErr, &restDiagnostics) {
@@ -2418,11 +2464,13 @@ func isEditionDeclaration(line string) bool {
 // Calls [parse] directly rather than the public [Parse]/[ParseAt], so that when
 // the compiler reports diagnostics, the partial workflow is still available for
 // [validateParsed] to run the step-id checks against.
-func parseAndValidate(data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
-	return validateParsed(parse(data, path, nil, new(int), cache.moduleSession()))
+func parseAndValidate(env Env, data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
+	wf, positions, err := parse(env, data, path, nil, new(int), cache.moduleSession())
+
+	return validateParsed(env, wf, positions, err)
 }
 
-func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {
+func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {
 	if err != nil {
 		// When the compiler built a partial workflow alongside its
 		// diagnostics, run the step-id checks so that a CEL-unusable id
@@ -2445,9 +2493,9 @@ func validateParsed(wf *v1.Workflow, positions *Positions, err error) (Diagnosti
 	// refusal to run it belongs to the caller that is about to, not to the file.
 	var ds Diagnostics
 	if v1.IsModule(wf) {
-		ds = ValidateModule(wf)
+		ds = env.ValidateModule(wf)
 	} else {
-		ds = Validate(wf)
+		ds = env.Validate(wf)
 	}
 	positionDiagnostics(ds, positions)
 
@@ -3169,7 +3217,7 @@ func checkFailureKindComparand(field, other *expr.Expr, bound map[string]struct{
 // is named `failure`. A successful tolerated `http` step may shape `failure`
 // itself and a tolerated call may declare it, and an unknown shape is left
 // unchecked rather than guessed at.
-func engineOwnsFailure(node *v1.Node) bool {
+func engineOwnsFailure(env Env, node *v1.Node) bool {
 	if !node.GetPolicy().GetContinueOnError() {
 		return false
 	}
@@ -3178,12 +3226,12 @@ func engineOwnsFailure(node *v1.Node) bool {
 	if _, isCall := node.GetKind().(*v1.Node_Call); isCall {
 		return false
 	}
-	if shaped, replaced := shapedTaskOutputs(node.GetTask()); replaced {
+	if shaped, replaced := shapedTaskOutputs(env, node.GetTask()); replaced {
 		names, known := v1.ShapedOutputNames(shaped)
 
 		return known && !slices.Contains(names, v1.StepFailureOutput)
 	}
-	entries, _ := v1.OutputNames(node, nil)
+	entries, _ := v1.OutputNames(node, env.tasks())
 	for _, e := range entries {
 		if e.Name == "" || e.Name == v1.StepFailureOutput {
 			return false
@@ -3280,7 +3328,7 @@ func unknownTriggerKindLiteral(stepID, inputName, literal string) Diagnostic {
 // same reason this function would otherwise have to. The case this does cover is the
 // one that is never right: a step whose kind declares a fixed set, referenced by a name
 // outside it — which `log`, declaring none, makes total rather than occasional.
-func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Diagnostic, bool) {
+func unknownStepOutput(env Env, stepID, inputName string, ref stepRef, node *v1.Node) (Diagnostic, bool) {
 	if ref.Output == "" {
 		// The whole outputs mapping. Legal for any step, including one with nothing
 		// in it.
@@ -3323,7 +3371,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 			}, true
 		}
 
-		return certainStepOutput(stepID, inputName, "loop", ref, certainNames(node),
+		return certainStepOutput(stepID, inputName, "loop", ref, certainNames(env, node),
 			fmt.Sprintf("a loop step's own id exposes nothing — its outputs are not read under `%s.%s.`", v1.StepsRoot, ref.ID))
 	}
 
@@ -3344,16 +3392,16 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	//     and would read differently for one that declared even one.
 	switch node.GetKind().(type) {
 	case *v1.Node_Switch:
-		return certainStepOutput(stepID, inputName, "switch", ref, certainNames(node),
+		return certainStepOutput(stepID, inputName, "switch", ref, certainNames(env, node),
 			"a switch step's own id exposes nothing")
 	case *v1.Node_ForEach:
-		return certainStepOutput(stepID, inputName, "for_each", ref, certainNames(node),
+		return certainStepOutput(stepID, inputName, "for_each", ref, certainNames(env, node),
 			"a for_each step's own id exposes nothing")
 	case *v1.Node_Call:
-		return certainStepOutput(stepID, inputName, "call", ref, certainNames(node),
+		return certainStepOutput(stepID, inputName, "call", ref, certainNames(env, node),
 			"the called workflow declares no outputs")
 	case *v1.Node_Parallel:
-		return certainStepOutput(stepID, inputName, "parallel", ref, certainNames(node),
+		return certainStepOutput(stepID, inputName, "parallel", ref, certainNames(env, node),
 			fmt.Sprintf("a parallel step's own id exposes nothing — its branches merge into the enclosing scope, not under `%s.%s.`", v1.StepsRoot, ref.ID))
 	}
 
@@ -3474,7 +3522,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 		return Diagnostic{}, false
 	}
 
-	def, known := v1.LookupTask(task.GetName())
+	def, known := env.lookup(task.GetName())
 	if !known {
 		return Diagnostic{}, false
 	}
@@ -3490,7 +3538,7 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 	// while its executor returned exactly the outputs its descriptor declared. The
 	// validator, the editor and the runtime disagreed, and nothing could flag it
 	// because the two that agreed were the two doing the reporting (#324).
-	if shaping, replaced := shapedTaskOutputs(task); replaced {
+	if shaping, replaced := shapedTaskOutputs(env, task); replaced {
 		if d, report := unknownShapedOutput(stepID, inputName, ref, shaping, def); report {
 			return d, true
 		}
@@ -3554,8 +3602,8 @@ func unknownStepOutput(stepID, inputName string, ref stepRef, node *v1.Node) (Di
 // the second case, never the first. A node kind added to that switch without also
 // being added here is the one way this stops being true, which is exactly what
 // [TestACertainKindsAreExactlyWhatOutputNamesAnswersWithCertainty] pins.
-func certainNames(node *v1.Node) []string {
-	entries, _ := v1.OutputNames(node, nil)
+func certainNames(env Env, node *v1.Node) []string {
+	entries, _ := v1.OutputNames(node, env.tasks())
 	names := make([]string, 0, len(entries)+1)
 	for _, e := range entries {
 		if e.Name != "" {
@@ -3610,8 +3658,8 @@ func certainStepOutput(stepID, inputName, kind string, ref stepRef, produced []s
 // [v1.ShapingInput] as a replacement, and this invocation writes one. A task that
 // shapes and a step that did not ask it to is an ordinary step producing what the
 // task declares.
-func shapedTaskOutputs(task *v1.Task) (*v1.Value, bool) {
-	if !v1.TaskShapesOutputs(task.GetName()) {
+func shapedTaskOutputs(env Env, task *v1.Task) (*v1.Value, bool) {
+	if !v1.TaskShapesOutputsFrom(env.tasks(), task.GetName()) {
 		return nil, false
 	}
 	value, written := task.GetInputs()[v1.ShapingInput]

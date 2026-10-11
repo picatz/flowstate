@@ -234,7 +234,12 @@ func unfoldCompilesBack(value *v1.Value, candidate any, inSequence bool) bool {
 	// A compiler of its own, with no anchors and no file path: this document is
 	// two lines that this function just wrote, so nothing in it can resolve an
 	// alias or reach another file.
-	c := &compiler{pos: newPositions(), anchors: map[string]ast.Node{}}
+	//
+	// The zero Env is deliberate and not a leak toward the default: the compile
+	// is of a bare value under a made-up key, with no step and so no task name,
+	// and no entry point of the compiler that consults a registry is reachable
+	// from [compiler.inputValue].
+	c := &compiler{pos: newPositions(Env{}), anchors: map[string]ast.Node{}}
 	back := c.inputValue(node, "v", ref{})
 	if back == nil || len(c.diags) > 0 {
 		return false

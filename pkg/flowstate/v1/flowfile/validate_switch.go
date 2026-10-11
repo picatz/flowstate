@@ -393,7 +393,7 @@ func resolveStepOutputExpr(e *expr.Expr, enclosing refScope) (*expr.Expr, bool) 
 	// and every other node kind's names carry no Source at all, which is what
 	// keeps this exactly as narrow as the two-branch version it replaces.
 	var shaped *v1.Value
-	if names, ok := v1.OutputNames(node, nil); ok {
+	if names, ok := v1.OutputNames(node, enclosing.env.tasks()); ok {
 		for _, n := range names {
 			if n.Name == outputName && n.Source != nil {
 				shaped = n.Source
