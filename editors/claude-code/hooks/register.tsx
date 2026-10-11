@@ -9,6 +9,7 @@ import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from '.
 import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
+import { CHIPS, LastGood, chipFor, chipText } from './chips'
 import { PaneNotes, debugCommand } from './panenotes'
 import { Poller, isLive } from './poll'
 import { DEBUG_TIMEOUT_MS, debugArgv, storyOf } from './debug'
@@ -334,6 +335,7 @@ export const register: Register = (on, options) => {
   const HOLD_READS = 3
   const SHOW_READS = 2
   let lastRead: { id: string; expr: string; runs: Listing; account: TimelineParsed | undefined; found: Gates; story: string[] } | undefined
+  const lastGood = new LastGood()
   const poller = new Poller()
 
   on('session.start', async ($, e, next) => {
@@ -630,12 +632,17 @@ export const register: Register = (on, options) => {
     // A signal the server just took: for a few reads its gate and wait timer read as closed, then the server's own account stands.
     const mine = delivery.id === id && id !== '' && freshReads - delivery.at < HOLD_READS ? delivery : undefined
     // Independent legs, started together: a stalled one costs its own timeout, not both.
-    const [runs, account] = again
+    const [listed, account] = again
       ? [again.runs, again.account]
       : await Promise.all([
           listRuns($, flow, expr),
           id === '' ? Promise.resolve(undefined) : readTimeline($, flow, id),
         ])
+    // One failed read must not blank the list on screen: the last good listing under this filter stays, marked as old.
+    if ('runs' in listed) lastGood.remember(expr, listed.runs)
+    const kept = 'offline' in listed ? lastGood.recall(expr) : undefined
+    const runs: Listing = kept !== undefined ? { runs: kept } : listed
+    const staleWhy = kept !== undefined && 'offline' in listed ? listed.offline : undefined
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
     const rawDetail = account && 'detail' in account ? account.detail : undefined
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
@@ -667,7 +674,7 @@ export const register: Register = (on, options) => {
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
     // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
-    const seen = 'runs' in runs && expr === '' && 'address' in target ? seenFrom(runs.runs, target.address, Date.now()) : NO_SEEN
+    const seen = 'runs' in listed && expr === '' && 'address' in target ? seenFrom(listed.runs, target.address, Date.now()) : NO_SEEN
     const changed = seen.failed !== heard.failed || seen.address !== heard.address || seen.at - heard.at > 30_000 || (seen.at === 0) !== (heard.at === 0)
     heard = seen
     if (changed) await refreshStatus($, nudges, heard)
@@ -676,7 +683,8 @@ export const register: Register = (on, options) => {
     const found = again ? again.found : parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
     // The debug story is read only for a run whose timeline shows a debug lease, and only on a read, not on a local tick.
     const debugLines = again ? again.story : (detail?.leases.length ?? 0) > 0 && idOk && 'address' in target ? await readStory($, flow, target.address, id) : []
-    lastRead = { id, expr, runs, account, found, story: debugLines }
+    // The raw read is kept, so a local tick redraws the stale mark and the status line from what the server said.
+    lastRead = { id, expr, runs: listed, account, found, story: debugLines }
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
@@ -766,7 +774,16 @@ export const register: Register = (on, options) => {
           submitLabel="filter"
           onSubmit={v => update($, filter, () => (v.trim() === '' ? '' : v))}
         />
-        {expr !== '' && (
+        <Box>
+          <Text>  </Text>
+          {CHIPS.map(c => (
+            <Button key={`chip:${c.label}`} label={chipText(c, chipFor(expr) === c)} plain onPress={() => update($, filter, () => c.expr)}>
+              {chipText(c, chipFor(expr) === c)}{' '}
+            </Button>
+          ))}
+        </Box>
+        {staleWhy !== undefined && <Text dimColor>  Showing the last list; the server did not answer ({staleWhy}).</Text>}
+        {expr !== '' && chipFor(expr) === undefined && (
           <Box>
             <Text dimColor>  Filter: {clean(expr, 120)}  </Text>
             <Button key="clear-filter" label="Clear filter" plain onPress={() => update($, filter, () => '')}>
