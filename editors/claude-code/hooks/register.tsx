@@ -674,7 +674,7 @@ export const register: Register = (on, options) => {
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
     // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
-    const seen = 'runs' in runs && expr === '' && 'address' in target ? seenFrom(runs.runs, target.address, Date.now()) : NO_SEEN
+    const seen = 'runs' in listed && expr === '' && 'address' in target ? seenFrom(listed.runs, target.address, Date.now()) : NO_SEEN
     const changed = seen.failed !== heard.failed || seen.address !== heard.address || seen.at - heard.at > 30_000 || (seen.at === 0) !== (heard.at === 0)
     heard = seen
     if (changed) await refreshStatus($, nudges, heard)
@@ -683,7 +683,8 @@ export const register: Register = (on, options) => {
     const found = again ? again.found : parkable && idOk && 'address' in target ? await readGates($, flow, target.address, id) : NO_GATES
     // The debug story is read only for a run whose timeline shows a debug lease, and only on a read, not on a local tick.
     const debugLines = again ? again.story : (detail?.leases.length ?? 0) > 0 && idOk && 'address' in target ? await readStory($, flow, target.address, id) : []
-    lastRead = { id, expr, runs, account, found, story: debugLines }
+    // The raw read is kept, so a local tick redraws the stale mark and the status line from what the server said.
+    lastRead = { id, expr, runs: listed, account, found, story: debugLines }
     const pending = await read($, confirm)
     const last = await read($, outcome)
     const asked = 'address' in target && pending.id === id && pending.address === target.address ? pending : NO_CONFIRM
