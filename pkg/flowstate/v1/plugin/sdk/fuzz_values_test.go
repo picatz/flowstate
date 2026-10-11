@@ -879,7 +879,9 @@ func FuzzLiteral(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte, nest uint16) {
 		g := newFuzzGen(data, rich)
 		input := g.goValue(0)
-		for range min(int(nest), fuzzMaxChain) {
+		// Kept inside Literal's own depth cap, past which it yields an error value
+		// by design; the generated value adds up to 25 levels of its own.
+		for range min(int(nest), fuzzMaxChain, maxLiteralDepth-32) {
 			if g.next()&1 == 0 {
 				input = []any{input}
 			} else {

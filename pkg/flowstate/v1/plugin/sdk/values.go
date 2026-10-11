@@ -491,7 +491,7 @@ func wellKnown(name protoreflect.FullName) bool {
 // It is the companion to declaring an output field as
 // google.api.expr.v1alpha1.Value: that says "this output can be anything", and
 // this is how a plugin says what it is this time. Maps, slices, and the ordinary
-// scalars all work, nested to a depth no real output approaches (8192; deeper yields an error value):
+// scalars all work, nested to any depth a real output reaches:
 //
 //	outputs, err := sdk.EncodeOutputs(&examplev1.QueryOutputs{
 //		Rows:  sdk.Literal([]any{map[string]any{"id": 1, "name": "a"}}),
@@ -509,10 +509,15 @@ func wellKnown(name protoreflect.FullName) bool {
 // not read it as data, and reading it fails naming the kind rather than
 // yielding null. The same holds for such a value nested in a list or a map,
 // which becomes an error value in its place.
+//
+// A value that nests past 4096 levels, or contains itself, also yields an error
+// value. That guarantee holds for an already-built *expr.Value; native Go
+// values nested millions deep are converted by [flowstatev1.NewValue] before
+// any bound applies.
 func Literal(v any) *expr.Value {
 	value := flowstatev1.NewValue(v)
 	if literal := value.GetLiteral(); literal != nil {
-		switch markUnrepresentable(literal, map[*expr.Value]bool{}, 0) {
+		switch result, _ := markUnrepresentable(literal, map[*expr.Value]int{}, 0); result {
 		case walkCyclic:
 			return errorLiteral("flowstatev1: a cyclic value cannot be represented")
 		case walkTooDeep:
@@ -536,11 +541,12 @@ func unrepresentableType(v any) string {
 	return name
 }
 
-// maxLiteralDepth bounds how deep [Literal] follows a literal. It is far past
-// the nesting a plugin emits (the decode side stops at 16 and the output side at
-// 32 messages), and still keeps the walk, and the marshaling of its result, well
-// inside the stack.
-const maxLiteralDepth = 1 << 13
+// maxLiteralDepth bounds how deep [Literal] follows a literal. Real nesting is
+// far lower (the decode side stops at 16 and the output side at 32 messages).
+// Each list or map level is two messages, so 4096 levels stay under protobuf's
+// own limit of about 10000 messages when the result is unmarshaled, and keep the
+// walk and the marshaling inside the stack.
+const maxLiteralDepth = 1 << 12
 
 // walkResult is how a [markUnrepresentable] walk ended.
 type walkResult int
@@ -551,39 +557,50 @@ const (
 	walkTooDeep
 )
 
+// openNode marks a node the walk is inside of; a finished node holds its
+// height, the number of levels below it.
+const openNode = -1
+
 // markUnrepresentable replaces what [flowstatev1.NewValue] left out of a list or
 // a map, an element, key or value it had no literal for, with an error value. It
 // reports a literal that contains itself, or nests past [maxLiteralDepth], so
-// the caller can refuse it whole.
+// the caller can refuse it whole, and the height of the literal.
 //
-// The literal may be a caller-supplied tree, so the walk keeps a visit state per
-// node: a node reached again while still open is a cycle, which cannot be
-// marshaled, and one reached again after it was finished is skipped, so the work
-// is linear in the nodes and nothing is left unpatched. Map keys are walked like
-// values, since a key can hold a list that holds the map.
-func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool, depth int) walkResult {
+// The literal may be a caller-supplied tree, so the walk keeps a state per node:
+// a node reached again while still open is a cycle, which cannot be marshaled.
+// One reached again after it was finished is not walked again, so the work is
+// linear in the nodes, but its recorded height is added to the depth it is
+// reached at, since a node shared by many parents can make a tree far deeper
+// than any one path through the walk shows. Map keys are walked like values,
+// since a key can hold a list that holds the map.
+func markUnrepresentable(literal *expr.Value, state map[*expr.Value]int, depth int) (walkResult, int) {
 	if literal == nil {
-		return walkDone
+		return walkDone, 0
 	}
-	if open, seen := state[literal]; seen {
-		if open {
-			return walkCyclic
+	if height, seen := state[literal]; seen {
+		switch {
+		case height == openNode:
+			return walkCyclic, 0
+		case depth+height > maxLiteralDepth:
+			return walkTooDeep, 0
 		}
-		return walkDone
+		return walkDone, height
 	}
 	if depth > maxLiteralDepth {
-		return walkTooDeep
+		return walkTooDeep, 0
 	}
-	state[literal] = true
-	defer func() { state[literal] = false }()
+	state[literal] = openNode
 
+	height := 0
 	// child walks one nested value, replacing a nil one through set.
 	child := func(value *expr.Value, set func(*expr.Value)) walkResult {
 		if value == nil {
 			set(errorLiteral(""))
 			return walkDone
 		}
-		return markUnrepresentable(value, state, depth+1)
+		result, below := markUnrepresentable(value, state, depth+1)
+		height = max(height, below+1)
+		return result
 	}
 
 	switch kind := literal.GetKind().(type) {
@@ -591,7 +608,7 @@ func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool, depth 
 		values := kind.ListValue.GetValues()
 		for i, element := range values {
 			if result := child(element, func(v *expr.Value) { values[i] = v }); result != walkDone {
-				return result
+				return result, 0
 			}
 		}
 	case *expr.Value_MapValue:
@@ -600,14 +617,15 @@ func markUnrepresentable(literal *expr.Value, state map[*expr.Value]bool, depth 
 				continue
 			}
 			if result := child(entry.Key, func(v *expr.Value) { entry.Key = v }); result != walkDone {
-				return result
+				return result, 0
 			}
 			if result := child(entry.Value, func(v *expr.Value) { entry.Value = v }); result != walkDone {
-				return result
+				return result, 0
 			}
 		}
 	}
-	return walkDone
+	state[literal] = height
+	return walkDone, height
 }
 
 // errorLiteral is the error value [Literal] yields.
