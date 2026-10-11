@@ -616,8 +616,14 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 					l.release(id)
 				}
 			}}
+			// A handler that panics never answered, so nothing is read as the
+			// implicit 200 a normal return means: an established session keeps
+			// its slot (a DELETE that did not complete is not a close). The
+			// panic keeps propagating.
+			returned := false
+			defer func() { recorder.settleExit(returned) }()
 			next.ServeHTTP(recorder, r)
-			recorder.finish()
+			returned = true
 
 			return
 		}
@@ -638,8 +644,14 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 		// client that has read the response can already use the session.
 		recorder := &mcpSessionRecorder{ResponseWriter: w}
 		recorder.onStatus = func(int) { l.settle(recorder.Header().Get(mcpSessionHeader)) }
+		// A panic before any status was committed opened no session, so the
+		// reservation is given back rather than leaked; the panic keeps
+		// propagating.
+		recorder.onAbort = func() { l.settle("") }
+		returned := false
+		defer func() { recorder.settleExit(returned) }()
 		next.ServeHTTP(recorder, r)
-		recorder.finish()
+		returned = true
 	})
 }
 
@@ -755,7 +767,10 @@ type mcpSessionRecorder struct {
 	// is passed to the underlying writer, or from finish when the handler
 	// never committed one.
 	onStatus func(status int)
-	fired    bool
+	// onAbort, when set, runs instead of onStatus if the handler panicked
+	// before committing a status.
+	onAbort func()
+	fired   bool
 }
 
 // commit records the status and runs onStatus the first time.
@@ -778,6 +793,24 @@ func (r *mcpSessionRecorder) run() {
 // status, so the accounting still settles. net/http answers such a handler
 // with an implicit 200, so that is the status settled on.
 func (r *mcpSessionRecorder) finish() { r.commit(http.StatusOK) }
+
+// settleExit settles a request on its way out: finish after a normal return,
+// and, after a panic, only onAbort, so an uncommitted response is never read
+// as a success.
+func (r *mcpSessionRecorder) settleExit(returned bool) {
+	if returned {
+		r.finish()
+
+		return
+	}
+	if r.fired {
+		return
+	}
+	r.fired = true
+	if r.onAbort != nil {
+		r.onAbort()
+	}
+}
 
 // WriteHeader records the status on its way through. An informational 1xx is
 // not the final status and settles nothing.

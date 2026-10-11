@@ -1875,3 +1875,49 @@ func TestMCPServeRefusesAnUnusablePluginCatalogBeforeServing(t *testing.T) {
 		})
 	}
 }
+
+// TestMCPSessionLimiterSettlesAPanickingHandlerConservatively is #2678: a
+// handler that panics before answering must not leak the reservation of a
+// session it was creating, and must not be read as a successful DELETE that
+// closes an established session. The panic keeps propagating either way.
+func TestMCPSessionLimiterSettlesAPanickingHandlerConservatively(t *testing.T) {
+	t.Parallel()
+
+	serve := func(handler http.Handler, req *http.Request) (recovered any) {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		return nil
+	}
+	panicking := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") })
+
+	t.Run("a session-creating request frees its reservation", func(t *testing.T) {
+		t.Parallel()
+
+		limiter := newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, time.Now)
+
+		require.Equal(t, "boom", serve(limiter.wrap(panicking), httptest.NewRequest(http.MethodPost, "/mcp", nil)),
+			"the panic must keep propagating")
+		require.Equal(t, 0, limiter.open())
+		require.True(t, limiter.reserve(), "the panicking request leaked its reservation, so a new session is refused")
+	})
+
+	t.Run("a DELETE that panics keeps an established session", func(t *testing.T) {
+		t.Parallel()
+
+		limiter := newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, time.Now)
+		opened := limiter.wrap(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set(mcpSessionHeader, "session-one")
+			w.WriteHeader(http.StatusOK)
+		}))
+		opened.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/mcp", nil))
+		require.Equal(t, 1, limiter.open())
+
+		del := httptest.NewRequest(http.MethodDelete, "/mcp", nil)
+		del.Header.Set(mcpSessionHeader, "session-one")
+
+		require.Equal(t, "boom", serve(limiter.wrap(panicking), del), "the panic must keep propagating")
+		require.True(t, mcpLimiterHasSession(limiter, "session-one"),
+			"a DELETE that never answered was read as a close and released a live session")
+	})
+}

@@ -195,15 +195,15 @@ func writePluginProvenance(b *strings.Builder, theme ui.Theme, width int, catalo
 	for _, p := range catalog.GetPlugins() {
 		names := make([]string, 0, len(p.GetTasks()))
 		for _, task := range p.GetTasks() {
-			names = append(names, task.GetName())
+			names = append(names, ui.EscapeControl(task.GetName()))
 		}
 
 		// The version and the path on the same line as the tasks, because the
 		// three are one fact: this build of this plugin, from this file, added
 		// these names to the catalog above.
 		entries = append(entries, column{
-			name: p.GetName(),
-			text: strings.Join(names, ", ") + " — " + p.GetVersion() + ", " + p.GetPath(),
+			name: ui.EscapeControl(p.GetName()),
+			text: strings.Join(names, ", ") + " — " + ui.EscapeControl(p.GetVersion()) + ", " + ui.EscapeControl(p.GetPath()),
 		})
 	}
 
@@ -257,12 +257,12 @@ func writeTaskIndex(surface *ui.UI, catalog *v1.PluginCatalog) error {
 
 	entries := make([]column, 0, len(defs))
 	for _, def := range defs {
-		text := sentence(def.Summary)
+		text := ui.EscapeControl(sentence(def.Summary))
 		if markers := taskMarkers(def); len(markers) > 0 {
 			text = strings.TrimSuffix(text, " ") + " [" + strings.Join(markers, ", ") + "]"
 		}
 
-		entries = append(entries, column{name: def.Name, text: text})
+		entries = append(entries, column{name: ui.EscapeControl(def.Name), text: text})
 	}
 
 	section(&b, theme, "tasks")
@@ -311,7 +311,7 @@ func taskMarkers(def v1.TaskDef) []string {
 		// tasks at once (#724): "from a plugin" in a list where four of them are
 		// tells a reader that the ones with dots have dots.
 		if plugin, ok := pluginNameOf(def.Name); ok {
-			markers = append(markers, "from the "+plugin+" plugin")
+			markers = append(markers, "from the "+ui.EscapeControl(plugin)+" plugin")
 		} else {
 			markers = append(markers, "from a plugin")
 		}
@@ -339,8 +339,11 @@ func taskProvenance(def v1.TaskDef, catalog *v1.PluginCatalog) string {
 		return ""
 	}
 
+	// Everything below came from the plugin's descriptor or its path.
+	name = ui.EscapeControl(name)
+
 	for _, p := range catalog.GetPlugins() {
-		if p.GetName() != name {
+		if ui.EscapeControl(p.GetName()) != name {
 			continue
 		}
 
@@ -348,11 +351,11 @@ func taskProvenance(def v1.TaskDef, catalog *v1.PluginCatalog) string {
 			// A saved catalog deliberately carries no path (#1498): nothing was
 			// launched, so claiming a launch directory would be false.
 			return fmt.Sprintf("Provided by the %s plugin, %s, as described by a saved catalog; nothing was launched.",
-				name, p.GetVersion())
+				name, ui.EscapeControl(p.GetVersion()))
 		}
 
 		return fmt.Sprintf("Provided by the %s plugin, %s, launched from %s.",
-			name, p.GetVersion(), p.GetPath())
+			name, ui.EscapeControl(p.GetVersion()), ui.EscapeControl(p.GetPath()))
 	}
 
 	return fmt.Sprintf("Provided by the %s plugin, not by this build of flow.", name)
@@ -391,8 +394,8 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 	inputs := v1.Inputs(def)
 	outputs := v1.Outputs(def)
 
-	if _, err := fmt.Fprintf(out, "%s\n  %s\n\n", theme.Accent.Render(def.Name),
-		wrap(sentence(def.Summary), width-2)); err != nil {
+	if _, err := fmt.Fprintf(out, "%s\n  %s\n\n", theme.Accent.Render(ui.EscapeControl(def.Name)),
+		wrap(ui.EscapeControl(sentence(def.Summary)), width-2)); err != nil {
 		return err
 	}
 
@@ -428,7 +431,7 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 	if len(def.DeferredInputs) > 0 {
 		names := slices.Sorted(slices.Values(def.DeferredInputs))
 		if _, err := fmt.Fprintf(out, "\n%s\n%s\n",
-			theme.Accent.Render("Evaluated by the task, not by the engine: "+strings.Join(names, ", ")),
+			theme.Accent.Render("Evaluated by the task, not by the engine: "+ui.EscapeControl(strings.Join(names, ", "))),
 			wrap("The engine resolves an expression before it schedules the step, which is why an "+
 				"ordinary input cannot name something that does not exist yet. These the task "+
 				"evaluates itself, in its own scope, after it has run far enough to have one: it "+
@@ -447,8 +450,8 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 			lines = append(lines, fmt.Sprintf("`%s` receives the plugin's `%s` credential.", input, claimed[input]))
 		}
 		if _, err := fmt.Fprintf(out, "\n%s\n%s\n",
-			theme.Accent.Render("Needs a credential: "+strings.Join(slices.Compact(slices.Sorted(maps.Values(claimed))), ", ")),
-			wrap(strings.Join(lines, " ")+" Bind it once under the plugin's entry in `plugins:`, or write the input "+
+			theme.Accent.Render("Needs a credential: "+ui.EscapeControl(strings.Join(slices.Compact(slices.Sorted(maps.Values(claimed))), ", "))),
+			wrap(ui.EscapeControl(strings.Join(lines, " "))+" Bind it once under the plugin's entry in `plugins:`, or write the input "+
 				"on a step to override the binding there.", width)); err != nil {
 			return err
 		}
@@ -458,10 +461,22 @@ func writeTask(surface *ui.UI, def v1.TaskDef, catalog *v1.PluginCatalog) error 
 	// catalog reports for it, so the step handed to an author is one a worker
 	// without the plugin refuses at submit rather than fails at the step
 	// (#1676). A task this build provides is written without one.
-	example, err := taskexample.BuildPinned(def, taskPin(def, catalog))
+	// The example is built from the descriptor too, so its name is escaped
+	// before it is spelled into a step, and every line of the result is
+	// escaped again: field names come from the same plugin.
+	shown := def
+	shown.Name = ui.EscapeControl(def.Name)
+
+	example, err := taskexample.BuildPinned(shown, taskPin(def, catalog))
 	if err != nil {
 		return err
 	}
+
+	lines := strings.Split(example, "\n")
+	for i, line := range lines {
+		lines[i] = ui.EscapeControl(line)
+	}
+	example = strings.Join(lines, "\n")
 
 	if _, err := fmt.Fprintf(out, "\n%s\n%s\n",
 		theme.Accent.Render("A step that uses it:"), example); err != nil {
@@ -698,7 +713,7 @@ func writeFields(w io.Writer, theme ui.Theme, width int, groups []fieldGroup) er
 				describe = append(describe, "evaluated by the task")
 			}
 
-			described := strings.Join(describe, ", ")
+			described := ui.EscapeControl(strings.Join(describe, ", "))
 
 			lines := strings.Split(wrap(described, textWidth), "\n")
 
@@ -765,10 +780,10 @@ func fieldProse(md protoreflect.MessageDescriptor) map[string]string {
 // fieldName is how a field is written, with the marker a required one carries.
 func fieldName(field v1.InputField) string {
 	if field.Required {
-		return field.Name + "*"
+		return ui.EscapeControl(field.Name) + "*"
 	}
 
-	return field.Name
+	return ui.EscapeControl(field.Name)
 }
 
 // pad returns n spaces, never fewer than none.
