@@ -96,7 +96,19 @@ type extractKey struct{ base, rule string }
 // extractTypeActions offers `Extract type 'X'` for each group of identical inline
 // scalar types and rules the request touches.
 func extractTypeActions(doc *document, params codeActionParams) []codeAction {
-	return extractTypeActionsWith(doc, params, flowfile.ParseAndValidateSourceAt)
+	return extractTypeActionsWith(doc, params, func(data []byte, path string) (*v1.Workflow, *flowfile.Positions, flowfile.Diagnostics, error) {
+		type parsed struct {
+			wf  *v1.Workflow
+			pos *flowfile.Positions
+			ds  flowfile.Diagnostics
+			err error
+		}
+		p := underDoc(doc, func() parsed {
+			wf, pos, ds, err := flowfile.ParseAndValidateSourceAt(data, path)
+			return parsed{wf, pos, ds, err}
+		})
+		return p.wf, p.pos, p.ds, p.err
+	})
 }
 
 func extractTypeActionsWith(doc *document, params codeActionParams, parse extractParse) []codeAction {

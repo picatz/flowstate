@@ -263,7 +263,15 @@ func rangeOfSourceRange(doc *document, r *v1.SourceRange) (lsp.Range, bool) {
 // Nil when there is nothing to migrate: a document Fix leaves byte-identical, or
 // one whose only findings are refusals.
 func migrationActions(doc *document, params codeActionParams) []codeAction {
-	result, err := flowfile.Fix([]byte(doc.text))
+	type fixed struct {
+		result flowfile.FixResult
+		err    error
+	}
+	f := underDoc(doc, func() fixed {
+		result, err := flowfile.Fix([]byte(doc.text))
+		return fixed{result, err}
+	})
+	result, err := f.result, f.err
 	if err != nil || !result.Changed() {
 		return nil
 	}

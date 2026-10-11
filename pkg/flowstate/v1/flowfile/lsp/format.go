@@ -3,7 +3,6 @@ package lsp
 import (
 	"github.com/sourcegraph/go-lsp"
 
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -37,29 +36,27 @@ func formatEdits(doc *document) []lsp.TextEdit {
 	if !doc.speaksFlowfile() {
 		return nil // see [document.speaksFlowfile]
 	}
-	var (
-		workflow *v1.Workflow
-		err      error
-	)
-	if path, ok := doc.filesystemPath(); ok {
-		workflow, _, err = flowfile.ParseAt([]byte(doc.text), path)
-	} else {
-		workflow, err = flowfile.Unmarshal([]byte(doc.text))
-	}
-	if err != nil {
+	workflow := compiledWorkflow(doc)
+	if workflow == nil {
 		return nil
 	}
-
-	formatted, err := flowfile.Format([]byte(doc.text), workflow)
-	if err != nil {
+	type written struct {
+		text []byte
+		err  error
+	}
+	w := underDoc(doc, func() written {
+		text, err := flowfile.Format([]byte(doc.text), workflow)
+		return written{text, err}
+	})
+	if w.err != nil {
 		// A workflow this build itself just compiled but cannot write back out —
-		// an expression built from a macro, or a literal `${` — is not a shape a
-		// formatter can produce an edit for either, and neither is a document
-		// holding a comment the rewrite cannot keep. `flow fmt` reports this as a
-		// refusal on the file; here there is no stream to report it on, so the
-		// honest answer is the same one a parse failure gets: nothing.
+		// an expression built from a macro, a literal `${`, a comment the rewrite
+		// cannot keep — has no shape a formatter can produce an edit for. `flow fmt`
+		// reports it as a refusal on the file; here there is no stream to report
+		// it on, so the honest answer is the one a parse failure gets: nothing.
 		return nil
 	}
+	formatted := w.text
 
 	if string(formatted) == doc.text {
 		return []lsp.TextEdit{}

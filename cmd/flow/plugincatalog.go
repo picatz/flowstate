@@ -1,20 +1,21 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sync"
 	"syscall"
-	"time"
 
 	"connectrpc.com/connect"
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile/lsp"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowstatev1connect"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/plugin"
 )
@@ -140,17 +141,9 @@ func loadPluginCatalog(cmd *cobra.Command, anchors ...string) (*v1.PluginCatalog
 // registered by this one function, so a discovered lock can be no more than a
 // named one is.
 func registerPluginCatalog(path string) (*v1.PluginCatalog, error) {
-	catalog, err := readPluginCatalog(path)
+	catalog, defs, _, err := readPluginCatalogTasks(path)
 	if err != nil {
 		return nil, err
-	}
-
-	// The same Config a launch runs under, with no field set: the defaults are
-	// the worker's, and a catalog reader that admitted a descriptor a launching
-	// host would refuse is the asymmetry #854 spent a boundary test on.
-	defs, err := plugin.TaskDefsFromCatalog(catalog, plugin.Config{})
-	if err != nil {
-		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
 	for _, def := range defs {
@@ -162,6 +155,27 @@ func registerPluginCatalog(path string) (*v1.PluginCatalog, error) {
 	return catalog, nil
 }
 
+// readPluginCatalogTasks reads one catalog document and rebuilds its tasks
+// without registering them anywhere: the read half of [registerPluginCatalog],
+// which `flow lsp` uses to give each document its own lock's tasks. The digest
+// is of the bounded bytes that were parsed.
+func readPluginCatalogTasks(path string) (*v1.PluginCatalog, []v1.TaskDef, string, error) {
+	catalog, digest, err := readPluginCatalog(path)
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// The same Config a launch runs under, with no field set: the defaults are
+	// the worker's, and a catalog reader that admitted a descriptor a launching
+	// host would refuse is the asymmetry #854 spent a boundary test on.
+	defs, err := plugin.TaskDefsFromCatalog(catalog, plugin.Config{})
+	if err != nil {
+		return nil, nil, "", fmt.Errorf("%s: %w", path, err)
+	}
+
+	return catalog, defs, digest, nil
+}
+
 // readPluginCatalog reads and parses one catalog document.
 //
 // protojson, and only protojson, because that is the one shape anything in this
@@ -169,11 +183,12 @@ func registerPluginCatalog(path string) (*v1.PluginCatalog, error) {
 // binary encoding is that a very large catalog travels as base64 in a JSON
 // document rather than as bytes; the benefit is that there is one document
 // shape, one writer, and no content sniffing between two of them.
-func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
+func readPluginCatalog(path string) (*v1.PluginCatalog, string, error) {
 	data, err := readBoundedFile(path, "a plugin catalog", maxPluginCatalogBytes)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
+	sum := sha256.Sum256(data)
 
 	catalog := &v1.PluginCatalog{}
 
@@ -184,12 +199,12 @@ func readPluginCatalog(path string) (*v1.PluginCatalog, error) {
 	// The claims schema version [plugin.TaskDefsFromCatalog] checks is the same
 	// guard from the other direction.
 	if err := protojson.Unmarshal(data, catalog); err != nil {
-		return nil, fmt.Errorf(
+		return nil, "", fmt.Errorf(
 			"%s is not a plugin catalog: %w; a catalog is what `flow plugins --plugin-dir <dir> "+
 				"--output json` writes", path, err)
 	}
 
-	return catalog, nil
+	return catalog, hex.EncodeToString(sum[:]), nil
 }
 
 // errPluginCatalogAndLaunch is the refusal for a command line that names both a
@@ -405,58 +420,28 @@ func nearestPluginLock(anchor string) (string, error) {
 	return "", nil
 }
 
-// lockDiscovery is discovery for a long-lived process, `flow lsp`, which sees
-// documents one at a time instead of a command line: each file it is asked
-// about is looked up with [nearestPluginLock], and a lock is registered once
-// per (size, modification time), so a keystroke-rate caller does not re-read
-// an unchanged document and an edited lock is picked up without a restart.
-// Registration is the one loader, [registerPluginCatalog]. The registry is
-// the process's, so locks found for different documents accumulate; an
-// editor with two repositories open sees the union, which the one-shot verbs
-// refuse ([discoverPluginLock]) because they have a definite answer to give.
-type lockDiscovery struct {
-	mu   sync.Mutex
-	seen map[string]lockStamp
-}
-
-// maxDiscoveredLocks bounds how many distinct locks one server registers. Tasks
-// registered from a lock are never removed (the registry has no per-document
-// scope), so the union must not be unbounded.
-const maxDiscoveredLocks = 8
-
-type lockStamp struct {
-	size int64
-	mod  time.Time
-}
-
-func (d *lockDiscovery) discover(docPath string) error {
+// discoverLock is discovery for a long-lived process, `flow lsp`, which sees
+// documents one at a time instead of a command line: the file it is asked about
+// is looked up with [nearestPluginLock] and the lock found is read with
+// [readPluginCatalogTasks], the one loader [registerPluginCatalog] also uses.
+// The tasks are returned and registered nowhere: the language server gives them
+// to that document's own registry, so two repositories open in one editor do not
+// see each other's plugins and a task removed from a lock is unknown to the next
+// document opened under it. How many such registries are kept is the server's
+// bound ([lsp.MaxPluginLocks]).
+func discoverLock(docPath string) (*lsp.PluginLock, error) {
 	lock, err := nearestPluginLock(docPath)
 	if err != nil || lock == "" {
-		return err
+		return nil, err
 	}
-	info, err := os.Lstat(lock)
+	_, defs, digest, err := readPluginCatalogTasks(lock)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	stamp := lockStamp{size: info.Size(), mod: info.ModTime()}
 
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.seen[lock] == stamp {
-		return nil
-	}
-	if _, known := d.seen[lock]; !known && len(d.seen) >= maxDiscoveredLocks {
-		return fmt.Errorf("%s is not used: this server has already registered %d plugin locks into its one "+
-			"registry, and registering more would grow it without bound; restart the server to start over",
-			lock, maxDiscoveredLocks)
-	}
-	if _, err := registerPluginCatalog(lock); err != nil {
-		return err
-	}
-	if d.seen == nil {
-		d.seen = map[string]lockStamp{}
-	}
-	d.seen[lock] = stamp
-
-	return nil
+	return &lsp.PluginLock{
+		Path:    lock,
+		Version: digest,
+		Tasks:   defs,
+	}, nil
 }

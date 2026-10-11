@@ -34,6 +34,13 @@ import (
 // document leaves in it cannot make another's answer wrong, and it is bounded.
 var moduleCache = flowfile.NewModuleCache(0, 0)
 
+// moduleInterface is the interface of the module at path through the shared
+// cache, compiled against the default registry as the host left it: the cache is
+// keyed by bytes, so nothing compiled with a document's lock tasks may reach it.
+func moduleInterface(path string) string {
+	return underBase(func() string { return moduleCache.Interface(path) })
+}
+
 // maxInterfaceMemo bounds the interfaces a server remembers. Past it the memo is
 // forgotten whole, and every module is then unknown, which is changed.
 const maxInterfaceMemo = 4 * v1.MaxModules
@@ -76,7 +83,7 @@ func (s *FlowfileServer) rememberInterface(doc *document) {
 		return
 	}
 	canon := canonicalPath(path)
-	s.interfaces.swap(canon, moduleCache.Interface(canon))
+	s.interfaces.swap(canon, moduleInterface(canon))
 }
 
 // afterQueued runs publish on the document open under uri once every document
@@ -179,7 +186,7 @@ func (w *interfaceWalk) changed(path string, depth int) bool {
 		}
 	}
 
-	now := moduleCache.Interface(path)
+	now := moduleInterface(path)
 	previous, known := w.memo.swap(path, now)
 	verdict := now == "" || !known || previous != now
 	w.verdicts[path] = verdict

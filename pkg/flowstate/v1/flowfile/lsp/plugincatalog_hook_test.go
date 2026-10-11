@@ -20,15 +20,15 @@ func TestThePluginCatalogHookIsAskedAboutFileDocumentsAndItsFailureIsShown(t *te
 		mu    sync.Mutex
 		asked []string
 	)
-	server := &FlowfileServer{Logger: discardLogger(), PluginCatalog: func(path string) error {
+	server := &FlowfileServer{Logger: discardLogger(), PluginCatalog: func(path string) (*PluginLock, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		asked = append(asked, path)
 		if len(asked) == 2 {
-			return errors.New("lock is not a plugin catalog")
+			return nil, errors.New("lock is not a plugin catalog")
 		}
 
-		return nil
+		return nil, nil
 	}}
 	c := newClientFor(t, server)
 	c.initialize()

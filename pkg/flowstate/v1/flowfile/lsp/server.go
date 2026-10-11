@@ -50,23 +50,30 @@ type FlowfileServer struct {
 	// which is the same answer `flow validate` gives in a process that launched
 	// nothing.
 	//
-	// The server itself never writes the registry. Only the host does: at start-up,
-	// and through [FlowfileServer.PluginCatalog], which registers descriptors a
-	// plugin catalog carries and is safe for concurrent use.
+	// The server never writes this registry. Only the host does, at start-up; a
+	// lock's tasks found by [FlowfileServer.PluginCatalog] go to a registry of
+	// that document's own, built on this one.
 	Tasks *v1.Registry
 
 	// PluginCatalog, when set, is asked about the file behind each document as
-	// it is opened, before the document is built, so that a plugin catalog
-	// found next to the file (plugins.lock.json, as `flow validate` finds it)
-	// can teach [FlowfileServer.Tasks] the plugin tasks the file names. It is
-	// given the file's filesystem path and reads descriptors only; it launches
-	// nothing. A document with no filesystem path is not asked.
+	// it is opened, before the document is built, for the plugin catalog found
+	// next to the file (plugins.lock.json, as `flow validate` finds it). It is
+	// given the file's filesystem path, reads descriptors only, and launches
+	// nothing; a nil lock means there is none. A document with no filesystem
+	// path is not asked.
 	//
-	// A returned error is shown to the person as a window message and logged,
-	// and the document is built from what the registry already knows: a lock
-	// that is present but unreadable is reported, never silently ignored.
-	// The hook registers into the registry, which is safe for concurrent use.
-	PluginCatalog func(path string) error
+	// The lock's tasks are visible to that document alone: it is answered from
+	// [FlowfileServer.Tasks] plus the lock's tasks, in a registry that is shared
+	// only with other open documents under the same lock version and released
+	// when the last of them closes. At most [MaxPluginLocks] are retained.
+	//
+	// A returned error, or a lock past that bound, is shown to the person as a
+	// window message and logged, and the document is built from
+	// [FlowfileServer.Tasks] alone, where its plugin tasks read as unknown: a
+	// lock that is present but unusable is reported, never silently ignored.
+	PluginCatalog func(path string) (*PluginLock, error)
+
+	scopes pluginScopes
 
 	docs documentStore
 
@@ -248,8 +255,8 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		s.discoverPluginCatalog(ctx, conn, params.TextDocument.URI)
-		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, s.tasks())
+		tasks := s.discoverPluginCatalog(ctx, conn, params.TextDocument.URI)
+		doc := s.docs.open(params.TextDocument.URI, params.TextDocument.Version, params.TextDocument.Text, tasks)
 		s.publish(ctx, conn, doc)
 		s.rememberInterface(doc)
 		return nil, nil
@@ -259,7 +266,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		if err := decode(req, &params); err != nil {
 			return nil, err
 		}
-		doc := s.docs.change(params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges, s.tasks())
+		doc := s.docs.change(params.TextDocument.URI, params.TextDocument.Version, params.ContentChanges, s.tasksFor(params.TextDocument.URI))
 		if doc == nil {
 			// A stale edit, already superseded. Publishing diagnostics computed
 			// from it would replace the newer document's report with an older one.
@@ -294,6 +301,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		doc, wasOpen := s.docs.get(params.TextDocument.URI)
 		s.docs.close(params.TextDocument.URI)
+		s.scopes.release(params.TextDocument.URI)
 		if wasOpen && doc.isTestDocument() {
 			promoted := s.clearTestDiagnostics(ctx, conn, params.TextDocument.URI)
 			if suite, ok := s.docs.get(promoted); ok {
@@ -359,7 +367,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		list := completeAt(doc, params.Position)
 		if s.snippets.Load() {
-			snippetizeTasks(doc, list, s.tasks())
+			snippetizeTasks(doc, list, doc.tasks)
 			return withAdjustedIndentation(list), nil
 		}
 		return list, nil
@@ -1054,29 +1062,6 @@ func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bo
 func (s *FlowfileServer) notify(ctx context.Context, conn *jsonrpc2.Conn, params lsp.PublishDiagnosticsParams) {
 	if err := conn.Notify(ctx, "textDocument/publishDiagnostics", params); err != nil {
 		s.logger().Warn("publishing diagnostics failed", "uri", params.URI, "error", err)
-	}
-}
-
-// discoverPluginCatalog runs the [FlowfileServer.PluginCatalog] hook for one
-// document and says so loudly when it fails.
-func (s *FlowfileServer) discoverPluginCatalog(ctx context.Context, conn *jsonrpc2.Conn, uri lsp.DocumentURI) {
-	if s.PluginCatalog == nil {
-		return
-	}
-	path, ok := (&document{uri: uri}).filesystemPath()
-	if !ok {
-		return
-	}
-	err := s.PluginCatalog(path)
-	if err == nil {
-		return
-	}
-	s.logger().Error("plugin catalog next to a document could not be used", "uri", uri, "error", err)
-	if nerr := conn.Notify(ctx, "window/showMessage", lsp.ShowMessageParams{
-		Type:    lsp.MTWarning,
-		Message: "Plugin catalog not used, so plugin tasks may read as unknown: " + err.Error(),
-	}); nerr != nil {
-		s.logger().Warn("showing plugin catalog message failed", "error", nerr)
 	}
 }
 

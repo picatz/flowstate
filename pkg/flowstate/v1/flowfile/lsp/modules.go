@@ -811,7 +811,15 @@ func repinActions(doc *document, params codeActionParams) []codeAction {
 	if len(covered) == 0 {
 		return nil
 	}
-	result, err := flowfile.RepinUses(path, []byte(doc.text))
+	type repinned struct {
+		result flowfile.FixResult
+		err    error
+	}
+	r := underDoc(doc, func() repinned {
+		result, err := flowfile.RepinUses(path, []byte(doc.text))
+		return repinned{result, err}
+	})
+	result, err := r.result, r.err
 	if err != nil || len(result.Changes) == 0 || string(result.Source) == doc.text {
 		return nil
 	}

@@ -2285,16 +2285,16 @@ func runLSP(cmd *cobra.Command, args []string) error {
 	// --plugin-catalog is read once here, and fails the command naming the file
 	// for the reason a plugin that will not come up does. Without it, and
 	// without --plugin-dir, the lock found next to each document is read as
-	// that document opens ([lockDiscovery]); a lock decides nothing the
+	// that document opens ([discoverLock]); a lock decides nothing the
 	// Flowfile beside it does not already decide, and it executes nothing, so
 	// it does not breach the rule above about what a workspace may choose.
-	var discover func(string) error
+	var discover func(string) (*lsp.PluginLock, error)
 	if pluginCatalogPath(cmd) != "" {
 		if _, err := loadPluginCatalog(cmd); err != nil {
 			return fmt.Errorf("--%s could not be read: %w", pluginCatalogFlag, err)
 		}
 	} else if dirs, _ := cmd.Flags().GetStringArray("plugin-dir"); len(dirs) == 0 {
-		discover = (&lockDiscovery{}).discover
+		discover = discoverLock
 	}
 
 	// A person who follows the root help's own example (`flow lsp`) gets

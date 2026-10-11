@@ -67,7 +67,7 @@ func (s *outlineStep) shapes(tasks *v1.Registry) bool {
 // already means by it (see [newDocument]).
 func registryShapesOutputs(tasks *v1.Registry, taskName string) bool {
 	if tasks == nil {
-		return v1.TaskShapesOutputs(taskName)
+		return underBase(func() bool { return v1.TaskShapesOutputs(taskName) })
 	}
 	def, found := tasks.Lookup(taskName)
 	return found && def.ShapesOutputs
