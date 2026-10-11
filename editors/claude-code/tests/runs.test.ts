@@ -1,4 +1,4 @@
-import { clean } from '../hooks/runs'
+import { clean, reason } from '../hooks/runs'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -93,4 +93,13 @@ test('clean strips controls and bounds server text', () => {
   expect(out).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/)
   expect(out.length).toBe(100)
   expect(clean(42)).toBe('')
+})
+
+test('a long transport error keeps its cause, which comes last', () => {
+  const why = reason('rpc error: code = Unavailable desc = connection error: desc = "transport: Error while dialing: dial tcp 127.0.0.1:9233: connect: connection refused"')
+  expect(why.length).toBeLessThanOrEqual(100)
+  expect(why).toMatch(/^rpc error: code = Unavailable/)
+  expect(why).toMatch(/connection refused"?$/)
+  expect(reason('short one')).toBe('short one')
+  expect(reason('')).toBe('no server answered')
 })

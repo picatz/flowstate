@@ -19,8 +19,19 @@ export const clean = (value: unknown, max = 80): string =>
 /** The first line of what `flow list` said when it could not reach a server. */
 export const reason = (stderr: string): string => {
   const lines = stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR')
-  return clean(lines[0], 100) || 'no server answered'
+  const line = clean(lines[0], 400)
+  return line === '' ? 'no server answered' : shortCause(line)
 }
+
+/** The longest a one-line reason gets before its middle is dropped. */
+const MAX_REASON = 100
+
+/**
+ * A transport error names its cause last (`rpc error: code = Unavailable desc = ... dial tcp ...: connection
+ * refused`), so a long line keeps its head and its tail rather than losing the cause to a cut at the end.
+ */
+export const shortCause = (line: string): string =>
+  line.length <= MAX_REASON ? line : `${line.slice(0, 35).trimEnd()} … ${line.slice(line.length - (MAX_REASON - 40)).trimStart()}`
 
 /**
  * The CLI's whole message for a rejected filter: its error wraps over several
