@@ -108,6 +108,105 @@ func TestEveryStringsExtensionIsVersionPinned(t *testing.T) {
 		"fewer ext.Strings call sites than expected were found, so this walked the wrong tree")
 }
 
+// TestEveryProfileLibraryIsVersionPinned holds the profile's own library table
+// to the rule [stringsExtensionVersion] states for every version-gated cel-go
+// library, not only strings: an unpinned constructor means "whatever a future
+// cel-go adds", and no evaluation test can see that against today's cel-go.
+//
+// It reads the `extensionLibraries` literal in celenv.go and requires each
+// cel-go constructor in it to carry its own `<Name>Version(...)` option whose
+// argument is a named `*ExtensionVersion` constant, so a pin cannot be a bare
+// number that bypasses the one reviewed place the values live. The table of
+// constructors below is the audit: a library cel-go gives a version knob
+// appears here, or this fails when a new constructor shows up unpinned.
+func TestEveryProfileLibraryIsVersionPinned(t *testing.T) {
+	t.Parallel()
+
+	// constructor -> its version option, for every versioned library in the table.
+	versioned := map[string]string{
+		"ext.Bindings":             "ext.BindingsVersion",
+		"ext.TwoVarComprehensions": "ext.TwoVarComprehensionsVersion",
+		"ext.Encoders":             "ext.EncodersVersion",
+		"ext.Lists":                "ext.ListsVersion",
+		"ext.Math":                 "ext.MathVersion",
+		"cel.OptionalTypes":        "cel.OptionalTypesVersion",
+		"ext.Protos":               "ext.ProtosVersion",
+		"ext.Regex":                "ext.RegexVersion",
+		"ext.Sets":                 "ext.SetsVersion",
+		"ext.Strings":              "ext.StringsVersion",
+	}
+
+	file, err := parser.ParseFile(token.NewFileSet(), "celenv.go", nil, 0)
+	require.NoError(t, err)
+
+	selectorName := func(expr ast.Expr) string {
+		selector, ok := expr.(*ast.SelectorExpr)
+		if !ok {
+			return ""
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok {
+			return ""
+		}
+
+		return pkg.Name + "." + selector.Sel.Name
+	}
+
+	var table *ast.CompositeLit
+	ast.Inspect(file, func(node ast.Node) bool {
+		spec, ok := node.(*ast.ValueSpec)
+		if !ok || len(spec.Names) != 1 || spec.Names[0].Name != "extensionLibraries" || len(spec.Values) != 1 {
+			return true
+		}
+		table, _ = spec.Values[0].(*ast.CompositeLit)
+
+		return false
+	})
+	require.NotNil(t, table, "extensionLibraries literal not found in celenv.go")
+
+	seen := map[string]bool{}
+	ast.Inspect(table, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		name := selectorName(call.Fun)
+		option, isVersioned := versioned[name]
+		if !isVersioned {
+			if strings.HasSuffix(name, "Version") {
+				return true
+			}
+			if strings.HasPrefix(name, "ext.") || strings.HasPrefix(name, "cel.Optional") {
+				require.Failf(t, "unaudited cel-go library",
+					"%s is in extensionLibraries but not in this test's audit table; "+
+						"find its version option in cel-go and pin it, or record that it has none", name)
+			}
+
+			return true
+		}
+
+		seen[name] = true
+		var pinned bool
+		for _, arg := range call.Args {
+			optionCall, ok := arg.(*ast.CallExpr)
+			if !ok || selectorName(optionCall.Fun) != option || len(optionCall.Args) != 1 {
+				continue
+			}
+			constant, ok := optionCall.Args[0].(*ast.Ident)
+			pinned = ok && strings.HasSuffix(constant.Name, "ExtensionVersion")
+		}
+		require.True(t, pinned,
+			"%s is built without %s(<name>ExtensionVersion), so an expression stored "+
+				"today could gain functions after a cel-go bump", name, option)
+
+		return true
+	})
+
+	for name := range versioned {
+		require.True(t, seen[name], "%s is not constructed in extensionLibraries; the audit table is stale", name)
+	}
+}
+
 // celExtLocalName returns the name the cel-go ext package is imported under in
 // a file, and whether it was dot-imported.
 //
