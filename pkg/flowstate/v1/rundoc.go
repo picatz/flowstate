@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/picatz/flowstate/internal/termsafe"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -60,7 +61,8 @@ import (
 //     path is the one the file itself writes — listed in [runDocumentNames] and
 //     pinned by a test that fails if the schema stops having it.
 //
-// Everything outside those three rules is protojson's own output, verbatim — not
+// Everything outside those three rules is protojson's own output, verbatim (bar the
+// terminal-safe \uXXXX spelling of unsafe runes, [termsafe.EscapeJSON]) — not
 // re-derived, but literally the bytes protojson produced, carried through by
 // [projectValue] returning the raw subtree for any message that contains nothing to
 // project. That is what keeps `EmitUnpopulated`, int64-as-string, enum spellings,
@@ -117,9 +119,10 @@ const flowstatePackage protoreflect.FullName = "flowstate.v1"
 
 // marshalRunDocument renders a run's answer in the vocabulary the DSL taught.
 //
-// raw writes protojson unchanged, which is what `--raw` asks for: the exact wire
-// shape, for a consumer that wants the schema's nouns because it is generating
-// against the schema.
+// raw writes the schema's protojson as it is, which is what `--raw` asks for: the
+// wire shape, for a consumer that wants the schema's nouns because it is generating
+// against the schema. The one difference is the terminal-safe \uXXXX spelling of C1,
+// bidi and line-separator runes inside strings, which decodes to the same text (#2693).
 // MarshalSchemaJSON renders a message the way the schema describes it.
 //
 // protojson rather than encoding/json, so the field names are the schema's and an
@@ -135,7 +138,14 @@ func MarshalSchemaJSON(message proto.Message, indent bool) ([]byte, error) {
 		options.Indent = "  "
 	}
 
-	return options.Marshal(message)
+	encoded, err := options.Marshal(message)
+	if err != nil {
+		return nil, err
+	}
+
+	// Every schema document a terminal-bound caller prints passes here, so the
+	// rewrite of C1, bidi and line-separator runes lives once (#2693).
+	return termsafe.EscapeJSON(encoded), nil
 }
 
 // MarshalRunDocument is the one rendering of a run document that leaves this
@@ -613,7 +623,9 @@ func encodeJSON(tree any, indent bool) ([]byte, error) {
 	}
 
 	// Encode appends a newline; every caller writes its own.
-	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
+	// The tree was decoded from escaped text, so its strings hold the raw runes
+	// again; rewrite them as MarshalSchemaJSON does (#2693).
+	return termsafe.EscapeJSON(bytes.TrimRight(buffer.Bytes(), "\n")), nil
 }
 
 // orderedObject is a JSON object that remembers the order its keys arrived in.

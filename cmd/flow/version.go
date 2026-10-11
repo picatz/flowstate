@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"runtime"
 	"runtime/debug"
 
@@ -191,6 +192,6 @@ func writeVersionJSON(surface *ui.UI, format OutputFormat, info versionInfo) err
 		return fmt.Errorf("rendering version: %w", err)
 	}
 
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	_, err = fmt.Fprintf(surface.Out, "%s\n", termsafe.EscapeJSON(encoded))
 	return err
 }

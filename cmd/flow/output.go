@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"maps"
 	"os"
 	"slices"
@@ -151,7 +152,7 @@ func addRawOutputFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool("raw", false,
 		"write the schema's own protojson instead of the run document: `stepValues`, "+
 			"`namedValues` and CEL's tagged encoding of every value, exactly as the RPC "+
-			"surface spells them. For a consumer generated against the schema")
+			"surface spells them, except that C1, bidi and line-separator characters in strings are written as \\uXXXX so they cannot drive a terminal. For a consumer generated against the schema")
 }
 
 // resolveRawOutput reads --raw off the command being run, per [resolveOutputFormat]
@@ -177,7 +178,7 @@ func writeSchema(surface *ui.UI, format OutputFormat, schema map[string]any) err
 		return fmt.Errorf("rendering the schema as %s: %w", format, err)
 	}
 
-	_, err := fmt.Fprint(surface.Out, buffer.String())
+	_, err := surface.Out.Write(termsafe.EscapeJSON([]byte(buffer.String())))
 
 	return err
 }

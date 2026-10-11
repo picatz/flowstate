@@ -3,8 +3,8 @@ package ui
 import (
 	"strconv"
 	"strings"
-	"unicode"
 
+	"github.com/picatz/flowstate/internal/termsafe"
 	"github.com/picatz/flowstate/internal/textbound"
 )
 
@@ -19,9 +19,10 @@ import (
 // A `flow timeline` row promising one event per line, or a `flow get` line
 // promising one retrying step, is a promise the text can otherwise break.
 //
-// Text only. A machine-readable answer (`-o json`) carries the value as it is,
-// because a consumer parsing JSON is not a terminal interpreting bytes, and
-// escaping there would hand back something that is not what the run produced.
+// Text only. A machine-readable answer (`-o json`) is not escaped in this
+// spelling, which would hand back something that is not what the run produced;
+// it rewrites the same runes as \uXXXX inside its strings instead
+// ([termsafe.EscapeJSON]), which a JSON consumer decodes to the original.
 //
 // # Why this is written twice
 //
@@ -62,9 +63,10 @@ func EscapeControl(s string) string {
 // character, or a bidirectional control such as U+202E, which is not a control
 // by Unicode's category yet reorders the text around it so a line reads as
 // something it is not.
-func escaped(r rune) bool {
-	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r)
-}
+//
+// The predicate is [termsafe.Unsafe], shared with the JSON rewrite so the text
+// views and `-o json` cannot drift apart (#2693).
+func escaped(r rune) bool { return termsafe.Unsafe(r) }
 
 // maxRenderedPhaseBytes bounds how much of a heartbeat's phase reaches a
 // rendered line.

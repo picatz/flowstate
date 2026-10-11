@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"io"
 
 	"github.com/spf13/cobra"
@@ -237,7 +238,7 @@ func writeAuditJSON(surface *ui.UI, format OutputFormat, report auditReport) err
 		return fmt.Errorf("rendering the audit as %s: %w", format, err)
 	}
 
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	_, err = fmt.Fprintf(surface.Out, "%s\n", termsafe.EscapeJSON(encoded))
 
 	return err
 }

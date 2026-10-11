@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -460,6 +461,6 @@ func writeJWK(surface *ui.UI, value any) error {
 		return fmt.Errorf("rendering public JWK: %w", err)
 	}
 
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	_, err = fmt.Fprintf(surface.Out, "%s\n", termsafe.EscapeJSON(encoded))
 	return err
 }

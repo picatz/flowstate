@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1112,7 +1113,7 @@ func writeDevStackJSON(surface *ui.UI, stack devStack) error {
 		return fmt.Errorf("rendering the resolved endpoints: %w", err)
 	}
 
-	fmt.Fprintf(surface.Out, "%s\n", encoded)
+	fmt.Fprintf(surface.Out, "%s\n", termsafe.EscapeJSON(encoded))
 
 	return nil
 }

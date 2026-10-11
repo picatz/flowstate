@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"io"
 	"os"
 	"strings"
@@ -815,7 +816,10 @@ func encodeDriveResult(command string, result *flowdebug.DriveResult) ([]byte, e
 		parts = append(parts, fmt.Sprintf("%q:%s", part.name, encoded))
 	}
 
-	return []byte("{" + strings.Join(parts, ",") + "}"), nil
+	// The command is the caller's own text (a script line, an attach command),
+	// and the messages were escaped as they were encoded; escaping the whole
+	// document keeps the hand-assembled object terminal-safe (#2693).
+	return termsafe.EscapeJSON([]byte("{" + strings.Join(parts, ",") + "}")), nil
 }
 
 func newDebugGetRequest(workflowID, runID string) *connect.Request[v1.DebugGetRequest] {
