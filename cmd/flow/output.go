@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"maps"
 	"os"
 	"slices"
@@ -177,7 +178,7 @@ func writeSchema(surface *ui.UI, format OutputFormat, schema map[string]any) err
 		return fmt.Errorf("rendering the schema as %s: %w", format, err)
 	}
 
-	_, err := fmt.Fprint(surface.Out, buffer.String())
+	_, err := surface.Out.Write(termsafe.EscapeJSON([]byte(buffer.String())))
 
 	return err
 }

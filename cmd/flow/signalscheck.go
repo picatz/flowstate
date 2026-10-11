@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"maps"
 	"strings"
 
@@ -438,7 +439,7 @@ func writeCheckJSON(cmd *cobra.Command, format OutputFormat, report any) error {
 		return fmt.Errorf("rendering the answers as %s: %w", format, err)
 	}
 
-	_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", encoded)
+	_, err = fmt.Fprintf(cmd.OutOrStdout(), "%s\n", termsafe.EscapeJSON(encoded))
 
 	return err
 }

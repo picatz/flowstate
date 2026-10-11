@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -363,7 +364,7 @@ func writeLintJSON(surface *ui.UI, format OutputFormat, report lintReport) error
 		return fmt.Errorf("rendering the findings as %s: %w", format, err)
 	}
 
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	_, err = fmt.Fprintf(surface.Out, "%s\n", termsafe.EscapeJSON(encoded))
 
 	return err
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"io"
 	"maps"
 	"slices"
@@ -123,7 +124,7 @@ func writeWhoamiText(out io.Writer, msg *v1.WhoamiResponse) error {
 		if err != nil {
 			return fmt.Errorf("rendering claim %q: %w", name, err)
 		}
-		fmt.Fprintf(&b, "  %s: %s\n", name, encoded)
+		fmt.Fprintf(&b, "  %s: %s\n", name, termsafe.EscapeJSON(encoded))
 	}
 
 	_, err := out.Write([]byte(b.String()))

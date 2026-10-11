@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/picatz/flowstate/internal/termsafe"
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
@@ -135,7 +136,14 @@ func MarshalSchemaJSON(message proto.Message, indent bool) ([]byte, error) {
 		options.Indent = "  "
 	}
 
-	return options.Marshal(message)
+	encoded, err := options.Marshal(message)
+	if err != nil {
+		return nil, err
+	}
+
+	// Every schema document a terminal-bound caller prints passes here, so the
+	// rewrite of C1, bidi and line-separator runes lives once (#2693).
+	return termsafe.EscapeJSON(encoded), nil
 }
 
 // MarshalRunDocument is the one rendering of a run document that leaves this
@@ -613,7 +621,9 @@ func encodeJSON(tree any, indent bool) ([]byte, error) {
 	}
 
 	// Encode appends a newline; every caller writes its own.
-	return bytes.TrimRight(buffer.Bytes(), "\n"), nil
+	// The tree was decoded from escaped text, so its strings hold the raw runes
+	// again; rewrite them as MarshalSchemaJSON does (#2693).
+	return termsafe.EscapeJSON(bytes.TrimRight(buffer.Bytes(), "\n")), nil
 }
 
 // orderedObject is a JSON object that remembers the order its keys arrived in.

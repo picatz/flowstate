@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"encoding/json"
 	"fmt"
+	"github.com/picatz/flowstate/internal/termsafe"
 	"slices"
 	"time"
 
@@ -387,7 +388,7 @@ func writeInspectResult(surface *ui.UI, result inspectResult) error {
 		return fmt.Errorf("rendering token: %w", err)
 	}
 
-	_, err = fmt.Fprintf(surface.Out, "%s\n", encoded)
+	_, err = fmt.Fprintf(surface.Out, "%s\n", termsafe.EscapeJSON(encoded))
 	return err
 }
 
