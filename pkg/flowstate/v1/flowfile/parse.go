@@ -1781,7 +1781,7 @@ func (c *compiler) steps(n ast.Node, path string, r ref) []*v1.Node {
 
 	sequence, ok := n.(*ast.SequenceNode)
 	if !ok {
-		c.report(spanOfNode(n), r, "must be a list of steps, each with an id and one of %s", stepKindList())
+		c.report(spanOfNode(n), r, "must be a list of steps, each with an id and one of %s", stepKindList(c.env))
 		return nil
 	}
 	if len(sequence.Values) == 0 {
@@ -1891,7 +1891,7 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 		// work" as well says the same mistake twice and buries the one that names
 		// the token at fault.
 		if len(fields.list) == len(entries) {
-			c.report(span, r, "must have one of %s; a step has to do something", stepKindList())
+			c.report(span, r, "must have one of %s; a step has to do something", stepKindList(c.env))
 		}
 	case 1:
 		kind := kinds[0]

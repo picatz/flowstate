@@ -9,8 +9,10 @@ import (
 // document, which is the registry of tasks a step may name.
 //
 // The zero value is the build's own environment, whose registry is
-// [v1.DefaultRegistry], and every package-level function in this package is the
-// zero Env's method of the same name. The CLI keeps it. An embedder or editor
+// [v1.DefaultRegistry], and every registry-dependent package-level function in
+// this package is the zero Env's method of the same name. Functions that read no
+// registry ([StepGrammarKeys], [DocumentKeys], [YAMLSyntaxDiagnostics],
+// [RepinUses] and similar) have no Env method. The CLI keeps the zero Env. An embedder or editor
 // that holds its own task set (a language server answering each document from
 // that document's plugin lock, a host compiling on behalf of several tenants)
 // builds an Env with [WithRegistry] and calls the methods instead, so a task
@@ -28,12 +30,17 @@ type Env struct {
 	registry *v1.Registry
 }
 
-// WithRegistry returns the Env that resolves tasks against r. A nil r is the
-// zero Env: the process default registry.
+// WithRegistry returns the Env that resolves tasks against r. A nil r, and r
+// being [v1.DefaultRegistry] itself, are the zero Env: the process default
+// registry, so the two spellings of the default are one Env and share module
+// cache entries.
 //
 // r is read, never written. The caller owns it and may keep registering into it;
 // a lookup sees what it holds at that moment, as a lookup in the default does.
 func WithRegistry(r *v1.Registry) Env {
+	if r == v1.DefaultRegistry() {
+		r = nil
+	}
 	return Env{registry: r}
 }
 

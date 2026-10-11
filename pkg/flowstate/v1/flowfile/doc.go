@@ -172,4 +172,5 @@
 // default.
 //
 // [flowstatev1.Workflow]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#Workflow
+// [flowstatev1.DefaultRegistry]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#DefaultRegistry
 package flowfile

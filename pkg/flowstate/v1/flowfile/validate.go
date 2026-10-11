@@ -487,7 +487,7 @@ func validateAtDepth(env Env, wf *v1.Workflow, profile string, depth int, placem
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
-					Message: "step must have one of " + stepKindList(),
+					Message: "step must have one of " + stepKindList(env),
 				})
 			}
 			recordStepInScope(scope, node)
@@ -1380,7 +1380,7 @@ func validateNested(nodes []*v1.Node, enclosing refScope, index int, wf *v1.Work
 			default:
 				ds = append(ds, Diagnostic{
 					Step:    id,
-					Message: "step must have one of " + stepKindList(),
+					Message: "step must have one of " + stepKindList(enclosing.env),
 				})
 			}
 			// The same merge the top-level walk performs: a parallel block's

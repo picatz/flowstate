@@ -523,7 +523,7 @@ func stepToYAML(env Env, node *v1.Node) (yaml.MapSlice, error) {
 		step = append(step, yaml.MapItem{Key: "value", Value: value})
 
 	default:
-		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList())
+		return nil, fmt.Errorf("step %q: has no %s", node.GetId(), stepKindList(env))
 	}
 
 	// Last, under the work it undoes, because that is where a reader wants it: the

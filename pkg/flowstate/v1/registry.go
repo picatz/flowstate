@@ -765,8 +765,12 @@ func TaskNames() []string {
 // LookupTaskFrom returns the definition registered under name in tasks, or in the
 // build's own registry ([LookupTask]) when tasks is nil.
 //
-// The nil-means-default convention every registry-taking helper in this package
-// shares ([OutputNames], [OutputEnumsOf], [BindPluginCredentials]). It is the way
+// A nil tasks means the build's own registry, the convention of the lookup
+// helpers that take an optional registry ([OutputNames], [OutputEnumsOf],
+// [LookupTaskFrom] and the other *From forms). It does not hold for every
+// function that takes a registry: [BindPluginCredentials] and
+// [ElideBoundCredentials] refuse a nil one, because a binding that cannot be
+// judged must not be admitted. It is the way
 // to ask a registry the caller holds, an editor's per-document plugin set for
 // instance, the question [LookupTask] answers for the process default, without
 // mutating the default to get there.

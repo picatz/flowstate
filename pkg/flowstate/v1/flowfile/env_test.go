@@ -501,8 +501,14 @@ func TestModuleCacheDoesNotShareEntriesAcrossRegistries(t *testing.T) {
 	crossDefault := check("default", flowfile.Env{})
 	assert.Zero(t, crossDefault.Hits, "the default was handed a module compiled against A or B")
 	assert.Equal(t, 3*cold.Compiles, crossDefault.Compiles)
+	// The default registry named explicitly is the zero Env, not a registry of its
+	// own, so it reuses what the zero Env compiled.
+	viaValue := check("default as a value", flowfile.WithRegistry(v1.DefaultRegistry()))
+	assert.Positive(t, viaValue.Hits, "WithRegistry(DefaultRegistry()) did not share the zero Env's entries")
+	assert.Equal(t, crossDefault.Compiles, viaValue.Compiles)
+	assert.Equal(t, flowfile.Env{}, flowfile.WithRegistry(v1.DefaultRegistry()))
 	// Two registries that merely look alike are still two registries.
-	assert.Zero(t, check("B2", b2).Hits)
+	assert.Equal(t, viaValue.Hits, check("B2", b2).Hits, "B2 hit entries made for another registry")
 
 	// And an Env's own entries are still reused: the cache saves work within a
 	// registry, which is the reason it exists.

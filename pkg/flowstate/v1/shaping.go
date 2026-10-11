@@ -44,7 +44,7 @@ func TaskShapesOutputs(taskName string) bool {
 }
 
 // TaskShapesOutputsFrom is [TaskShapesOutputs] against tasks, or the build's own
-// registry when tasks is nil. A task tasks does not hold shapes nothing.
+// registry when tasks is nil. A task absent from that registry shapes nothing.
 func TaskShapesOutputsFrom(tasks *Registry, taskName string) bool {
 	def, found := LookupTaskFrom(tasks, taskName)
 	return found && def.ShapesOutputs

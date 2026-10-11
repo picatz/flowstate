@@ -103,7 +103,7 @@ func (e Env) StepKindList() string {
 
 // stepKindList is the internal spelling, kept so the diagnostics that call it read
 // unchanged.
-func stepKindList() string { return StepKindList() }
+func stepKindList(env Env) string { return env.StepKindList() }
 
 // sleep compiles `sleep: 30s` — or `sleep: ${...}` — into a durable timer.
 func (c *compiler) sleep(n ast.Node, path string, r ref) *v1.Wait {
