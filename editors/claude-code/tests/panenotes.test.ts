@@ -28,9 +28,10 @@ test('a pane left open keeps only the newest notes', () => {
   expect(block.split('\n').filter(l => l.startsWith('pane:'))).toHaveLength(MAX_NOTES)
 })
 
-test('the debug command is one clean argument and the copy is noted once', () => {
+test('the debug command is the id as is, and an id that is not a run id gets none', () => {
   expect(debugCommand('run-1:abc')).toBe('/flowstate:debug run-1:abc')
-  expect(debugCommand('x; rm -rf /\n')).not.toMatch(/[; ]rm|\n/)
+  for (const bad of ['x; rm -rf /\n', '../etc/passwd', '/abs/path', '.hidden', 'a b', ''])
+    expect(debugCommand(bad)).toBeUndefined()
   const n = new PaneNotes()
   n.debugAsked('run-1', 'build')
   expect(n.take()).toContain('copied /flowstate:debug for run run-1 (failed in build)')

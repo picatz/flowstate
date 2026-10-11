@@ -1,4 +1,5 @@
 import { clean } from './runs'
+import { WORKFLOW_ID } from './signal'
 import { middleTruncate } from './vocab'
 
 /** Notes kept between prompts; the oldest is dropped, so a pane left open all day cannot grow the next prompt. */
@@ -42,5 +43,8 @@ export class PaneNotes {
   }
 }
 
-/** The command that hands a failed run to the debugger: the id is cleaned and quoted so it stays one argument. */
-export const debugCommand = (id: string): string => `/flowstate:debug ${clean(id, 200).replace(/[^A-Za-z0-9._:/@-]/g, '')}`
+/**
+ * The command that hands a failed run to the debugger, or undefined for an id that is not a run id: the id is
+ * refused, never repaired, so no stripped remainder can name something else (a path, say). Run ids have no `/`.
+ */
+export const debugCommand = (id: string): string | undefined => (WORKFLOW_ID.test(id) ? `/flowstate:debug ${id}` : undefined)

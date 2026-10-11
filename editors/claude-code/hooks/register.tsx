@@ -810,9 +810,9 @@ export const register: Register = (on, options) => {
               }}>
                 Copy id
               </Button>
-              {head.kind === 'failed' && (
+              {head.kind === 'failed' && debugCommand(id) !== undefined && (
                 <Button key="debug-this" label="Debug this" plain onPress={async () => {
-                  await $.ui.copy({ text: debugCommand(id), surface: e.surface }).catch(() => undefined)
+                  await $.ui.copy({ text: debugCommand(id)!, surface: e.surface }).catch(() => undefined)
                   paneNotes.debugAsked(id, facts.failedStep)
                 }}>
                   Debug this
