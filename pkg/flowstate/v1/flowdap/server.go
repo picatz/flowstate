@@ -648,6 +648,7 @@ func (s *Server) end(terminate bool) {
 func (s *Server) capabilitiesBody() capabilities {
 	s.mu.Lock()
 	caps := s.capabilities
+	mapped := s.sourceMap != nil
 	// Termination is the run owner's to offer. An adapter that launched the
 	// run owns it, and before either request one that can launch offers it,
 	// a launch being the common case; one that attached to a durable run does
@@ -678,9 +679,11 @@ func (s *Server) capabilitiesBody() capabilities {
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
 	body.SupportsExceptionInfoRequest = caps.GetFailureBreakpoints()
-	// Locations are for line breakpoints. Before a launch, the local session
+	// Locations are answered from the adapter's own source map, so a target
+	// that cannot bind line breakpoints itself (a durable run) still offers
+	// them once a verified map is attached. Before a launch, the local session
 	// that will resolve them is the one that offers them, as for terminate.
-	body.SupportsBreakpointLocationsRequest = caps.GetSourceBreakpoints() || unbound
+	body.SupportsBreakpointLocationsRequest = mapped || unbound
 	if body.SupportsCompletionsRequest {
 		body.CompletionTriggerCharacters = []string{"."}
 	}
@@ -1482,12 +1485,13 @@ func (s *Server) exceptionInfo(request inbound) {
 }
 
 // maxBreakpointLocationLines bounds the lines one breakpointLocations request
-// examines, after its range is clamped to the document: each line is a source
-// map lookup, so the range an editor names is not the bound on the work.
+// examines, after its range is clamped to the document: the range sizes the
+// scratch space of the one pass over the source map, so the range an editor
+// names is not the bound on the work.
 const maxBreakpointLocationLines = 8192
 
 // breakpointLocations answers where a line breakpoint can bind, from the
-// resolver setBreakpoints uses ([flowdebug.SiteAtLine]) over the same source
+// resolver rule setBreakpoints uses ([flowdebug.SiteAtLine], applied to a range by [flowdebug.StepStartLines]) over the same source
 // map, so an editor offers only lines that would verify. A line is offered
 // when a step starts on it; a line inside a multi-line step still verifies in
 // setBreakpoints but is not a location. It reads the source map, which a bound
@@ -1526,7 +1530,7 @@ func (s *Server) breakpointLocations(request inbound) {
 	if asked.EndLine != nil {
 		last = *asked.EndLine
 	}
-	if first < lineBase || last < first || int64(last)-int64(lineBase)+1 > math.MaxUint32 ||
+	if first < lineBase || last < first || int64(last)-int64(lineBase) >= math.MaxUint32 ||
 		(asked.Column != nil && *asked.Column < columnBase) || (asked.EndColumn != nil && *asked.EndColumn < columnBase) {
 		s.fail(request, "flowdap: breakpointLocations needs a line within the file and an endLine not before it")
 
@@ -1559,22 +1563,27 @@ func (s *Server) breakpointLocations(request inbound) {
 	}
 	from, askedTo := uint32(first-lineBase+1), uint32(last-lineBase+1)
 	to := min(askedTo, lastStepLine)
-	if to >= from && to-from+1 > maxBreakpointLocationLines {
+	if to >= from && to-from >= maxBreakpointLocationLines {
 		s.fail(request, fmt.Sprintf("flowdap: breakpointLocations may examine at most %d lines", maxBreakpointLocationLines))
 
 		return
 	}
 
 	locations := []breakpointLocation{}
-	for line := from; line <= to && len(locations) < flowdebug.MaxBreakpoints; line++ {
-		_, location, why := flowdebug.SiteAtLine(sourceMap, &v1.DebugSourceLine{Uri: asked.Source.Path, Line: line})
-		if why != "" || location.GetRange().GetStartLine() != line {
-			continue
+	if to < from {
+		s.reply(request, breakpointLocationsBody{Breakpoints: locations})
+
+		return
+	}
+	for _, step := range flowdebug.StepStartLines(sourceMap, asked.Source.Path, from, to) {
+		if len(locations) >= flowdebug.MaxBreakpoints {
+			break
 		}
+		line := step.GetRange().GetStartLine()
 		// The columns bound the first and last line of the range only; a
 		// step starting before column or at endColumn or after is outside.
-		column := toClient(location.GetRange().GetStartColumn(), columnBase)
-		if location.GetRange().GetStartColumn() != 0 && ((line == from && asked.Column != nil && column < *asked.Column) ||
+		column := toClient(step.GetRange().GetStartColumn(), columnBase)
+		if step.GetRange().GetStartColumn() != 0 && ((line == from && asked.Column != nil && column < *asked.Column) ||
 			(line == askedTo && asked.EndColumn != nil && column >= *asked.EndColumn)) {
 			continue
 		}

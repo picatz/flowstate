@@ -1748,6 +1748,89 @@ func SiteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.Deb
 	return siteAtLine(sourceMap, line)
 }
 
+// StepStartLines resolves every line in [from, to] of one source at once,
+// with the rule [SiteAtLine] applies to each (the narrowest span containing
+// the line, the last of equal width), and returns the locations whose step
+// starts on the line they resolve, ascending by line. It makes one pass over
+// the source map and sorts it, instead of one pass per line, so the work is
+// bounded by the map and the range together. The caller bounds to-from: the
+// result and its scratch space are as large as the range. A source this map
+// was not compiled from has none.
+func StepStartLines(sourceMap *v1.DebugSourceMap, uri string, from, to uint32) []*v1.DebugSourceLocation {
+	if sourceMap == nil || to < from {
+		return nil
+	}
+	document := slices.IndexFunc(sourceMap.GetDocuments(), func(candidate *v1.DebugSourceDocument) bool {
+		return SameSourceURI(candidate.GetUri(), uri)
+	})
+	if document < 0 {
+		return nil
+	}
+
+	type candidate struct {
+		location *v1.DebugSourceLocation
+		order    int
+	}
+	var entries []candidate
+	for i, entry := range sourceMap.GetEntries() {
+		location := entry.GetLocation()
+		span := location.GetRange()
+		if int(location.GetDocument()) != document || span == nil {
+			continue
+		}
+		if max(span.GetEndLine(), span.GetStartLine()) < from || span.GetStartLine() > to {
+			continue
+		}
+		entries = append(entries, candidate{location, i})
+	}
+	width := func(c candidate) uint32 {
+		return c.location.GetRange().GetEndLine() - c.location.GetRange().GetStartLine()
+	}
+	// The winner of a line is the narrowest span, the latest entry among equals,
+	// so the first to claim a line in this order keeps it.
+	slices.SortFunc(entries, func(a, b candidate) int {
+		return cmp.Or(cmp.Compare(width(a), width(b)), cmp.Compare(b.order, a.order))
+	})
+
+	// next[i] is the first unclaimed offset at or after i, so each line is
+	// claimed once however many spans cover it.
+	count := uint64(to) - uint64(from) + 1
+	next := make([]uint64, count+1)
+	for i := range next {
+		next[i] = uint64(i)
+	}
+	find := func(i uint64) uint64 {
+		root := i
+		for next[root] != root {
+			root = next[root]
+		}
+		for next[i] != root {
+			next[i], i = root, next[i]
+		}
+
+		return root
+	}
+	winners := make([]*v1.DebugSourceLocation, count)
+	for _, c := range entries {
+		span := c.location.GetRange()
+		start := max(span.GetStartLine(), from)
+		end := min(max(span.GetEndLine(), span.GetStartLine()), to)
+		for offset := find(uint64(start - from)); offset <= uint64(end-from); offset = find(offset) {
+			winners[offset] = c.location
+			next[offset] = offset + 1
+		}
+	}
+
+	var starts []*v1.DebugSourceLocation
+	for offset, location := range winners {
+		if location != nil && uint64(location.GetRange().GetStartLine()) == uint64(from)+uint64(offset) {
+			starts = append(starts, location)
+		}
+	}
+
+	return starts
+}
+
 // siteAtLine resolves a source line through a source map to the innermost site
 // whose span contains it, or says why it cannot.
 func siteAtLine(sourceMap *v1.DebugSourceMap, line *v1.DebugSourceLine) (*v1.DebugSite, *v1.DebugSourceLocation, string) {

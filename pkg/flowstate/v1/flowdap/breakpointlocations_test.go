@@ -1,15 +1,22 @@
 package flowdap_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
+	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdap"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowdebug"
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // locatedFlowfile has a comment, blank lines and steps whose bodies span
@@ -215,4 +222,75 @@ func TestBreakpointLocationsFilterByColumnForAZeroBasedClient(t *testing.T) {
 	assert.Empty(t, locatedLines(locate(t, c, 5, map[string]any{"source": src, "line": 5, "column": 5, "endLine": 5})))
 	assert.Empty(t, locatedLines(locate(t, c, 6, map[string]any{"source": src, "line": 5, "endLine": 5, "endColumn": 4})))
 	assert.Empty(t, locatedLines(locate(t, c, 7, map[string]any{"source": src, "line": 5, "endLine": 5, "endColumn": 0})))
+}
+
+// A range ending at the largest line must be bounded like any other: the line
+// counter must not wrap past it, and the work must not scale with the range.
+func TestBreakpointLocationsRefuseARangeToTheLastLine(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launchedWith(t, "many.yaml", manySteps(4000), nil)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	src := map[string]any{"path": program}
+
+	// Lines 4 and up, ending at MaxUint32: past the work bound, so refused.
+	assert.Equal(t, false, locate(t, c, 3, map[string]any{"source": src, "line": 4, "endLine": math.MaxUint32 - 1})["success"])
+	// A range within the bound that ends past the document still answers.
+	assert.Equal(t, true, locate(t, c, 4, map[string]any{"source": src, "line": 11900, "endLine": math.MaxUint32 - 1})["success"])
+}
+
+// A zero-based client's largest endLine must not overflow the range check.
+func TestBreakpointLocationsRefuseAZeroBasedMaxIntEndLine(t *testing.T) {
+	t.Parallel()
+
+	c, program, _ := launchedWith(t, "located.yaml", locatedFlowfile, nil)
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate", "linesStartAt1": false, "columnsStartAt1": false})
+	c.await("response", "initialize")
+	c.send(2, "launch", map[string]any{"program": program})
+	c.await("response", "launch")
+	src := map[string]any{"path": program}
+
+	answer := locate(t, c, 3, map[string]any{"source": src, "line": 0, "endLine": math.MaxInt})
+	assert.Equal(t, false, answer["success"], answer)
+}
+
+// A durable target reports no source breakpoints of its own, but the adapter
+// holds a verified map from the attach and answers locations from it.
+func TestBreakpointLocationsAreOfferedAfterADurableAttach(t *testing.T) {
+	t.Parallel()
+
+	program := filepath.Join(t.TempDir(), "located.yaml")
+	require.NoError(t, os.WriteFile(program, []byte(locatedFlowfile), 0o600))
+	read := []byte(locatedFlowfile)
+	workflow, positions, err := flowfile.ParseAt(read, program)
+	require.NoError(t, err)
+	sourceMap := flowfile.SourceMap(program, read, workflow, positions)
+
+	c := newClient(t)
+	t.Cleanup(func() { _ = c.Close() })
+	require.False(t, v1.DurableDebugCapabilities().GetSourceBreakpoints())
+	remote := &fakeRemote{snapshot: &v1.DebugSnapshot{
+		Revision:     1,
+		State:        v1.DebugRunState_DEBUG_RUN_STATE_RUNNING,
+		Capabilities: v1.DurableDebugCapabilities(),
+	}}
+	server := flowdap.NewServer(nil, c,
+		flowdap.WithLaunch(func(context.Context, flowdap.LaunchArguments) (*flowdap.Launch, error) {
+			return nil, errors.New("this test only attaches")
+		}),
+		flowdap.WithAttach(func(context.Context, flowdap.AttachArguments) (*flowdap.Attachment, error) {
+			return &flowdap.Attachment{Target: remote, SourceMap: sourceMap}, nil
+		}))
+	go func() { _ = server.Serve(t.Context()) }()
+
+	c.send(1, "initialize", map[string]any{"adapterID": "flowstate"})
+	c.await("response", "initialize")
+	c.send(2, "attach", map[string]any{"workflowId": "wf-1"})
+	c.await("response", "attach")
+	caps := body(c.await("event", "capabilities"))["capabilities"].(map[string]any)
+	assert.Equal(t, true, caps["supportsBreakpointLocationsRequest"])
+	assert.Equal(t, []int{6, 10}, locatedLines(locate(t, c, 3, map[string]any{"source": map[string]any{"path": program}, "line": 1, "endLine": 20})))
 }
