@@ -11,6 +11,24 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// builtinTaskNames is the tasks this build ships, sorted: the half of the task menu
+// no other test can change. The process default also holds whatever a parallel
+// test registers for its own duration, and a want list read from it at table
+// construction can name a task that is gone when the menu is asked for.
+func builtinTaskNames() []string {
+	return slices.DeleteFunc(v1.TaskNames(), func(name string) bool { return !v1.IsBuiltinTask(name) })
+}
+
+// withoutForeignTasks drops the labels naming a registered task that is not a
+// built-in, for the same reason: such a task is there only while another
+// parallel test holds it, so it is neither required nor forbidden here.
+func withoutForeignTasks(labels []string) []string {
+	return slices.DeleteFunc(labels, func(label string) bool {
+		_, registered := v1.LookupTask(label)
+		return registered && !v1.IsBuiltinTask(label)
+	})
+}
+
 // Completion is tested with the cursor marked in the source by "|", because that
 // is how the case reads in an editor and because a document being completed is
 // usually mid-edit and therefore invalid — which is exactly the state that must
@@ -51,7 +69,7 @@ steps:
   - |
 edition: v2026.4
 `,
-			want: v1.TaskNames(),
+			want: builtinTaskNames(),
 			detailContains: map[string]string{
 				"log":  "Emit a message for a person to read.",
 				"http": "Perform an HTTP request",
@@ -363,7 +381,7 @@ edition: v2026.4
 			// MustRegister.
 			exact: slices.Concat(
 				[]string{"id", "description"},
-				v1.TaskNames(),
+				builtinTaskNames(),
 				[]string{
 					"if", "vars", "timeout", "total_timeout", "retry", "continue_on_error",
 					"undo", "async", "with", "digest", "for_each", "loop", "parallel",
@@ -824,7 +842,7 @@ edition: v2026.4
 
 			got := c.complete(uri, pos.Line, pos.Character)
 			require.NotNil(t, got.Items, "items must be an array, never null")
-			gotLabels := labels(got.Items)
+			gotLabels := withoutForeignTasks(labels(got.Items))
 
 			if tt.exact != nil {
 				assert.Equal(t, tt.exact, gotLabels)
