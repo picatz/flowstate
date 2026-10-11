@@ -75,8 +75,9 @@ whether it happens. Default `flowstate-reviewer` (Sonnet). A change to
 authentication, policy, secrets, durability, tenancy, or egress runs it with
 `model: opus` and `flowstate-security-review`, then an adversarial pass. A
 docs or comment change is a short review, not a skipped one. Any push after a
-review needs a verdict on the new head; a fix that changes only formatting or
-wording gets a short delta review, a logic change a full one.
+review needs a verdict on the complete base-to-head diff of the new head; a
+formatting or wording fix may be a short review concentrating on the change,
+as `.agents/ship.md` describes.
 
 ## Unattended runs
 
