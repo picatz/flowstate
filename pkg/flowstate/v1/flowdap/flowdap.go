@@ -99,21 +99,23 @@ type event struct {
 
 // capabilities is the initialize response body.
 type capabilities struct {
-	SupportsConfigurationDoneRequest  bool              `json:"supportsConfigurationDoneRequest"`
-	SupportsFunctionBreakpoints       bool              `json:"supportsFunctionBreakpoints"`
-	SupportsConditionalBreakpoints    bool              `json:"supportsConditionalBreakpoints"`
-	SupportsHitConditionalBreakpoints bool              `json:"supportsHitConditionalBreakpoints"`
-	SupportsLogPoints                 bool              `json:"supportsLogPoints"`
-	SupportsEvaluateForHovers         bool              `json:"supportsEvaluateForHovers"`
-	SupportsCompletionsRequest        bool              `json:"supportsCompletionsRequest"`
-	CompletionTriggerCharacters       []string          `json:"completionTriggerCharacters,omitempty"`
-	SupportsTerminateRequest          bool              `json:"supportsTerminateRequest"`
-	SupportTerminateDebuggee          bool              `json:"supportTerminateDebuggee"`
-	SupportsDelayedStackTraceLoading  bool              `json:"supportsDelayedStackTraceLoading"`
-	SupportsStepBack                  bool              `json:"supportsStepBack"`
-	SupportsGotoTargetsRequest        bool              `json:"supportsGotoTargetsRequest"`
-	SupportsExceptionInfoRequest      bool              `json:"supportsExceptionInfoRequest"`
-	ExceptionBreakpointFilters        []exceptionFilter `json:"exceptionBreakpointFilters"`
+	SupportsConfigurationDoneRequest  bool     `json:"supportsConfigurationDoneRequest"`
+	SupportsFunctionBreakpoints       bool     `json:"supportsFunctionBreakpoints"`
+	SupportsConditionalBreakpoints    bool     `json:"supportsConditionalBreakpoints"`
+	SupportsHitConditionalBreakpoints bool     `json:"supportsHitConditionalBreakpoints"`
+	SupportsLogPoints                 bool     `json:"supportsLogPoints"`
+	SupportsEvaluateForHovers         bool     `json:"supportsEvaluateForHovers"`
+	SupportsCompletionsRequest        bool     `json:"supportsCompletionsRequest"`
+	CompletionTriggerCharacters       []string `json:"completionTriggerCharacters,omitempty"`
+	SupportsTerminateRequest          bool     `json:"supportsTerminateRequest"`
+	SupportTerminateDebuggee          bool     `json:"supportTerminateDebuggee"`
+	SupportsDelayedStackTraceLoading  bool     `json:"supportsDelayedStackTraceLoading"`
+	SupportsStepBack                  bool     `json:"supportsStepBack"`
+	SupportsGotoTargetsRequest        bool     `json:"supportsGotoTargetsRequest"`
+	SupportsExceptionInfoRequest      bool     `json:"supportsExceptionInfoRequest"`
+
+	SupportsBreakpointLocationsRequest bool              `json:"supportsBreakpointLocationsRequest"`
+	ExceptionBreakpointFilters         []exceptionFilter `json:"exceptionBreakpointFilters"`
 }
 
 // exceptionFilter is one kind of failure stop an editor offers as a checkbox.
@@ -189,6 +191,19 @@ type exceptionInfoBody struct {
 
 type exceptionDetails struct {
 	Message string `json:"message"`
+}
+
+// breakpointLocationsBody answers breakpointLocations: where a breakpoint can
+// bind in the range asked about.
+type breakpointLocationsBody struct {
+	Breakpoints []breakpointLocation `json:"breakpoints"`
+}
+
+// breakpointLocation is one step start. Line and column are in the client's
+// bases, so a zero-based first line is sent rather than omitted.
+type breakpointLocation struct {
+	Line   int `json:"line"`
+	Column int `json:"column,omitempty"`
 }
 
 type stackTraceBody struct {

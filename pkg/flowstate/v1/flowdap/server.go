@@ -536,6 +536,9 @@ func (s *Server) dispatch(ctx context.Context, request inbound) (done bool) {
 	case "exceptionInfo":
 		s.exceptionInfo(request)
 
+	case "breakpointLocations":
+		s.breakpointLocations(request)
+
 	case "scopes":
 		s.reply(request, s.scopeList(ctx, request.Arguments))
 
@@ -649,7 +652,8 @@ func (s *Server) capabilitiesBody() capabilities {
 	// run owns it, and before either request one that can launch offers it,
 	// a launch being the common case; one that attached to a durable run does
 	// not, whatever else it could have done.
-	terminable := s.terminate != nil || (s.target == nil && !s.remote && s.launcher != nil)
+	unbound := s.target == nil && !s.remote && s.launcher != nil
+	terminable := s.terminate != nil || unbound
 	s.mu.Unlock()
 	if caps == nil {
 		// Before a launch or attach has said which backend this is, the
@@ -674,6 +678,9 @@ func (s *Server) capabilitiesBody() capabilities {
 		ExceptionBreakpointFilters:        []exceptionFilter{},
 	}
 	body.SupportsExceptionInfoRequest = caps.GetFailureBreakpoints()
+	// Locations are for line breakpoints. Before a launch, the local session
+	// that will resolve them is the one that offers them, as for terminate.
+	body.SupportsBreakpointLocationsRequest = caps.GetSourceBreakpoints() || unbound
 	if body.SupportsCompletionsRequest {
 		body.CompletionTriggerCharacters = []string{"."}
 	}
@@ -1472,6 +1479,108 @@ func (s *Server) exceptionInfo(request inbound) {
 		BreakMode:   breakMode,
 		Details:     exceptionDetails{Message: held.GetFailure()},
 	})
+}
+
+// maxBreakpointLocationLines bounds the lines one breakpointLocations request
+// examines, after its range is clamped to the document: each line is a source
+// map lookup, so the range an editor names is not the bound on the work.
+const maxBreakpointLocationLines = 8192
+
+// breakpointLocations answers where a line breakpoint can bind, from the
+// resolver setBreakpoints uses ([flowdebug.SiteAtLine]) over the same source
+// map, so an editor offers only lines that would verify. A line is offered
+// when a step starts on it; a line inside a multi-line step still verifies in
+// setBreakpoints but is not a location. It reads the source map, which a bound
+// target never changes, and no held stop, so a resume or terminate in flight
+// changes nothing it answers; s.mu is taken only to read that map and the
+// bases, as exceptionInfo takes it to read the stop.
+func (s *Server) breakpointLocations(request inbound) {
+	var asked struct {
+		Source *struct {
+			Path            string `json:"path"`
+			SourceReference int    `json:"sourceReference"`
+		} `json:"source"`
+		Line      *int `json:"line"`
+		Column    *int `json:"column"`
+		EndLine   *int `json:"endLine"`
+		EndColumn *int `json:"endColumn"`
+	}
+	if err := json.Unmarshal(request.Arguments, &asked); err != nil || asked.Source == nil || asked.Source.Path == "" ||
+		len(asked.Source.Path) > maxSourcePathBytes || asked.Source.SourceReference != 0 || asked.Line == nil {
+		s.fail(request, "flowdap: breakpointLocations names a source path and a line")
+
+		return
+	}
+
+	s.mu.Lock()
+	sourceMap := s.sourceMap
+	s.mu.Unlock()
+	if sourceMap == nil {
+		s.fail(request, "flowdap: this session has no source map, so lines cannot be resolved to steps")
+
+		return
+	}
+
+	lineBase, columnBase := s.clientBases()
+	first, last := *asked.Line, *asked.Line
+	if asked.EndLine != nil {
+		last = *asked.EndLine
+	}
+	if first < lineBase || last < first || int64(last)-int64(lineBase)+1 > math.MaxUint32 ||
+		(asked.Column != nil && *asked.Column < columnBase) || (asked.EndColumn != nil && *asked.EndColumn < columnBase) {
+		s.fail(request, "flowdap: breakpointLocations needs a line within the file and an endLine not before it")
+
+		return
+	}
+
+	// Only a document this program was compiled from has locations; the
+	// spelling is matched as setBreakpoints matches it.
+	document := -1
+	for i, candidate := range sourceMap.GetDocuments() {
+		if flowdebug.SameSourceURI(candidate.GetUri(), asked.Source.Path) {
+			document = i
+
+			break
+		}
+	}
+	if document < 0 {
+		s.fail(request, "flowdap: that is not a source this program was compiled from")
+
+		return
+	}
+
+	// Past the last line a step is written on nothing resolves, so the range
+	// stops there and what remains is bounded by the document.
+	var lastStepLine uint32
+	for _, entry := range sourceMap.GetEntries() {
+		if location := entry.GetLocation(); int(location.GetDocument()) == document && location.GetRange() != nil {
+			lastStepLine = max(lastStepLine, location.GetRange().GetStartLine(), location.GetRange().GetEndLine())
+		}
+	}
+	from, askedTo := uint32(first-lineBase+1), uint32(last-lineBase+1)
+	to := min(askedTo, lastStepLine)
+	if to >= from && to-from+1 > maxBreakpointLocationLines {
+		s.fail(request, fmt.Sprintf("flowdap: breakpointLocations may examine at most %d lines", maxBreakpointLocationLines))
+
+		return
+	}
+
+	locations := []breakpointLocation{}
+	for line := from; line <= to && len(locations) < flowdebug.MaxBreakpoints; line++ {
+		_, location, why := flowdebug.SiteAtLine(sourceMap, &v1.DebugSourceLine{Uri: asked.Source.Path, Line: line})
+		if why != "" || location.GetRange().GetStartLine() != line {
+			continue
+		}
+		// The columns bound the first and last line of the range only; a
+		// step starting before column or at endColumn or after is outside.
+		column := toClient(location.GetRange().GetStartColumn(), columnBase)
+		if column != 0 && ((line == from && asked.Column != nil && column < *asked.Column) ||
+			(line == askedTo && asked.EndColumn != nil && column >= *asked.EndColumn)) {
+			continue
+		}
+		locations = append(locations, breakpointLocation{Line: toClient(line, lineBase), Column: column})
+	}
+	s.reply(request, breakpointLocationsBody{Breakpoints: locations})
 }
 
 func (s *Server) stackTrace(arguments json.RawMessage) stackTraceBody {

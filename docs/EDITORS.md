@@ -764,6 +764,7 @@ It advertises what the backend reports, and refuses the rest by name.
 | Logpoints | yes | not advertised |
 | Exception filters `uncaught`, `all` | stop where a step fails and the failure will propagate, or at every failure | not offered; the durable driver has no failure stops |
 | `exceptionInfo` | at a failure stop, answers the step's address, `step failed`, the break mode (`unhandled` for `uncaught`, `always` for `all`) and the redacted failure text; at any other time it fails | not offered; the durable driver has no failure stops |
+| `breakpointLocations` | answers the lines a step starts on in the asked range (with the step's column), resolved by the same source map as line breakpoints, so each offered line verifies; a comment, a blank line or the inside of a step is not offered. At most 1024 locations, over at most 8192 lines of the file; an unknown source, a missing or backward range, or a request before the program is launched fails | the same, when the attach configuration's `program` is the file the run executes |
 | `terminate` | ends the run: answered first, then `terminated` and `exited` with code 1, and the adapter waits for the editor's `disconnect` | never ends the run: the request fails, the session detaches, and the conversation ends |
 
 An attach sends a `capabilities` event as soon as it knows the backend, so an
