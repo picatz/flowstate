@@ -12,10 +12,6 @@ package server
 // breaks when the prefix changes, which is a failure about the test rather
 // than about the property, and it cannot catch a change that alters the
 // derivation and the literal together.
-//
-// TestDescribeScheduleFailsClosedWhenSpecIsUnavailable deliberately does *not*
-// use this: that test finds its schedule by listing what Temporal holds,
-// because the path it exercises is the one an ordinary caller takes.
 func ScheduleIDForTest(namespace, name string) string {
 	return scheduleIDFor(namespace, name)
 }
