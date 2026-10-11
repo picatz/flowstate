@@ -73,6 +73,11 @@ var knobCases = []struct {
 	{"literal check", knobLit, knobSource(knobLit, "      url: https://forbidden.example.com\n"), false},
 	{"input that must be an expression", knobExpr, knobSource(knobExpr, "      url: https://example.com\n      body: plain text\n"), false},
 	{"input the task evaluates itself", knobDefer, knobSource(knobDefer, "      url: https://example.com\n      body: ${steps.nope.result}\n"), true},
+	// A literal and a typed expression the field cannot hold: reported unless the
+	// registry says the task evaluates the input itself, which is what makes a
+	// read of the wrong registry visible as a false diagnostic.
+	{"deferred input holding a literal of another type", knobDefer, knobSource(knobDefer, "      url: https://example.com\n      body: 5\n"), true},
+	{"deferred input holding a typed expression", knobDefer, knobSource(knobDefer, "      url: https://example.com\n      body: ${1 + 1}\n"), true},
 	{"enum names of an output", knobEnum, "edition: " + flowfile.CurrentEdition + `
 name: t
 steps:
@@ -118,9 +123,9 @@ func TestEnvPolicyKnobsComeFromTheEnvsRegistry(t *testing.T) {
 	// The lowered enum name is the number the output holds, under the registry
 	// that describes it and not otherwise.
 	on := flowfile.WithRegistry(envRegistry(t, knobDefs(true)...))
-	named, err := on.Unmarshal([]byte(knobCases[4].src))
+	named, err := on.Unmarshal([]byte(knobCases[len(knobCases)-1].src))
 	require.NoError(t, err)
-	numbered, err := on.Unmarshal([]byte(strings.Replace(knobCases[4].src, "CALIBRATION_SELF_REPORTED", "2", 1)))
+	numbered, err := on.Unmarshal([]byte(strings.Replace(knobCases[len(knobCases)-1].src, "CALIBRATION_SELF_REPORTED", "2", 1)))
 	require.NoError(t, err)
 	assert.True(t, proto.Equal(named.GetSteps()[1].GetValue().GetExpr().GetExpr(), numbered.GetSteps()[1].GetValue().GetExpr().GetExpr()))
 }
@@ -268,6 +273,22 @@ func TestEnvKindlessStepListsOnlyItsOwnTasks(t *testing.T) {
 	_, err = env.Marshal(kindless)
 	require.Error(t, err)
 	assertOwn(t, "marshalling a kind-less step", err.Error())
+
+	_, err = env.Unmarshal([]byte("edition: " + flowfile.CurrentEdition + `
+name: t
+inputs:
+  p:
+    type: string
+steps:
+  - id: s
+    switch:
+      value: ${inputs.p}
+      cases:
+        - case: x
+          steps: oops
+`))
+	require.Error(t, err)
+	assertOwn(t, "compiling a switch case whose steps is not a list", err.Error())
 
 	assertOwn(t, "StepKindList", env.StepKindList())
 }
