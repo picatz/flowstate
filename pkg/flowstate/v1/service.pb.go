@@ -227,9 +227,16 @@ type RunRequest struct {
 	// Unset, the run gets a generated `flowstate-workflow-<uuid>` id. Set, the
 	// workflow id is `flowstate-request-<hex>`, derived by digest from the
 	// caller's authenticated namespace and this value, and the cluster's own
-	// uniqueness on that id is the deduplication. A request id names one
-	// submission forever: a retry that arrives after the run finished is answered
-	// with the finished run.
+	// uniqueness on that id is the deduplication. That uniqueness covers a run
+	// that is still going and a run that finished while the namespace still
+	// retains its closed execution, so a retry in either state is answered with
+	// that run. It lasts as long as the namespace's workflow-execution retention
+	// period, a deployment property: once retention deletes the closed execution,
+	// nothing remembers the id, a retry starts a second run, and `reused` is
+	// false. A caller must not rely on a request id beyond that retention; one
+	// that retries later than that needs its own record of what it submitted.
+	// The id converges submissions on one run; it does not make a step's
+	// external effect idempotent.
 	//
 	// When the request also names an `entity_key`, or the workflow declares a
 	// `concurrency:` block, that address decides the run's id. This field then

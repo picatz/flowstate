@@ -2860,7 +2860,8 @@ flow validate examples/hello-world/workflow.yaml`,
 	runCmd.Flags().String("request-id", "",
 		"idempotency key for this submission, a UUID or a caller-chosen string; a second "+
 			"`flow run` carrying the same value is answered with the run the first started "+
-			"rather than starting another. Generated per invocation when unset")
+			"rather than starting another, for as long as the Temporal namespace retains that run; "+
+			"do not rely on it past retention. Generated per invocation when unset")
 
 	// Submit and exit. Following is the right default for a person at a
 	// terminal and the wrong shape for every caller that is not one: a CI job

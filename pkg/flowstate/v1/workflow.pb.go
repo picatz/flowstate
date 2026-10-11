@@ -49,7 +49,7 @@ const (
 	// `WORKFLOW_ID_CONFLICT_POLICY_FAIL` with
 	// `WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE`: a run that has *finished*
 	// releases the key, which is the difference from a webhook delivery's
-	// `REJECT_DUPLICATE`. A delivery id names one event forever; a concurrency
+	// `REJECT_DUPLICATE`. A delivery id names one event for as long as the namespace retains the closed run; a concurrency
 	// key names a resource that is free again once the run holding it ends.
 	Concurrency_ON_CONFLICT_REJECT Concurrency_OnConflict = 1
 	// Join returns the run already holding the key instead of starting a second

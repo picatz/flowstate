@@ -1011,7 +1011,9 @@ func (r *WebhookReceiver) start(ctx context.Context, route *webhookRoute, delive
 	// redelivery while the first run is still going; reuse covers one that
 	// arrives after it finished, which is the half a receiver that only thought
 	// about concurrent retries gets wrong — a provider redelivering an hour later
-	// would otherwise start a second run of a completed event.
+	// would otherwise start a second run of a completed event. Both halves end
+	// where the namespace's retention deletes the closed execution: a
+	// redelivery after that starts a new run.
 	options.WorkflowIDConflictPolicy = enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL
 	options.WorkflowIDReusePolicy = enumspb.WORKFLOW_ID_REUSE_POLICY_REJECT_DUPLICATE
 

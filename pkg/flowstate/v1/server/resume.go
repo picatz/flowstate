@@ -172,7 +172,7 @@ func (s *FlowstateServer) ResumeRun(
 	}
 
 	if req.Msg.RequestId != nil {
-		// A request id names one resume forever, as it does on Run: a retry
+		// A request id names one resume for as long as the namespace retains the run, as it does on Run: a retry
 		// that arrives after the resumed run finished must find that run, not
 		// start a second one that repeats the suffix's effects.
 		options.WorkflowExecutionErrorWhenAlreadyStarted = true

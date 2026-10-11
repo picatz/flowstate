@@ -184,7 +184,7 @@ func TestRequestIDRetryAfterTheRunFinishedStillReuses(t *testing.T) {
 	}, 30*time.Second, 100*time.Millisecond, "the first run did not finish")
 
 	second, err := fixture.teamA.Run(t.Context(), keyed(brief(), nil, "job-3"))
-	require.NoError(t, err, "a request id names one submission forever, finished or not")
+	require.NoError(t, err, "a request id names one submission while the run is retained, finished or not")
 	require.True(t, second.Msg.GetReused())
 	require.Equal(t, first.Msg.GetRunId(), second.Msg.GetRunId(), "the finished run, not a second one")
 	require.Equal(t, v1.RunResponse_STATUS_COMPLETED, second.Msg.GetStatus(),
