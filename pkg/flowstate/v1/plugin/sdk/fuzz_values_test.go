@@ -31,7 +31,7 @@ const (
 	fuzzMaxDecodeDepth    = 16
 	fuzzMaxDecodeElements = 1024
 	fuzzMaxDecodeNodes    = 1 << 16
-	fuzzMaxEncodeDepth    = maxOutputMessageDepth
+	fuzzMaxEncodeDepth    = 32
 
 	// fuzzMaxGenNodes caps the values one iteration's generator builds, which is
 	// what keeps an iteration cheap whatever the fuzzer feeds it. The hostile

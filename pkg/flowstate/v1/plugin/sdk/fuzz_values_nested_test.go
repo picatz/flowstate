@@ -40,8 +40,8 @@ func TestRepeatedNestedMessagesRoundTrip(t *testing.T) {
 	msg.Set(field("i64"), protoreflect.ValueOfInt64(math.MaxInt64))
 	msg.Set(field("u32"), protoreflect.ValueOfUint32(math.MaxUint32))
 	msg.Set(field("u64"), protoreflect.ValueOfUint64(math.MaxInt64))
-	msg.Set(field("fl"), protoreflect.ValueOfFloat32(1.5))
-	msg.Set(field("db"), protoreflect.ValueOfFloat64(-2.25))
+	msg.Set(field("fl"), protoreflect.ValueOfFloat32(0.1))
+	msg.Set(field("db"), protoreflect.ValueOfFloat64(0.1))
 	msg.Set(field("color"), protoreflect.ValueOfEnum(2))
 
 	outputs, err := EncodeOutputs(msg)
@@ -81,8 +81,8 @@ func TestRepeatedNestedMessagesRoundTrip(t *testing.T) {
 		"i64":   {Kind: &expr.Value_Int64Value{Int64Value: math.MaxInt64}},
 		"u32":   {Kind: &expr.Value_Uint64Value{Uint64Value: math.MaxUint32}},
 		"u64":   {Kind: &expr.Value_Uint64Value{Uint64Value: math.MaxInt64}},
-		"fl":    {Kind: &expr.Value_DoubleValue{DoubleValue: 1.5}},
-		"db":    {Kind: &expr.Value_DoubleValue{DoubleValue: -2.25}},
+		"fl":    {Kind: &expr.Value_DoubleValue{DoubleValue: float64(float32(0.1))}},
+		"db":    {Kind: &expr.Value_DoubleValue{DoubleValue: 0.1}},
 		"color": {Kind: &expr.Value_Int64Value{Int64Value: 2}},
 	} {
 		if got := values[name].GetLiteral(); !proto.Equal(got, want) {
@@ -92,4 +92,18 @@ func TestRepeatedNestedMessagesRoundTrip(t *testing.T) {
 
 	// And back: the values the encoder produced rebuild the message.
 	checkRoundTrip(t, msg, rich)
+
+	// A double keeps all 64 bits: none of these survives a trip through float32.
+	for _, want := range []float64{0.1, math.MaxFloat64, math.SmallestNonzeroFloat64, -math.MaxFloat64} {
+		edge := dynamicpb.NewMessage(rich)
+		edge.Set(field("db"), protoreflect.ValueOfFloat64(want))
+		out, err := EncodeOutputs(edge)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := out.GetNamedValues()["db"].GetLiteral().GetDoubleValue(); got != want {
+			t.Errorf("db %v encoded as %v", want, got)
+		}
+		checkRoundTrip(t, edge, rich)
+	}
 }
