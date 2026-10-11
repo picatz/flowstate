@@ -186,6 +186,142 @@ func TestEveryProfileLibraryIsVersionPinned(t *testing.T) {
 	}
 }
 
+// TestEveryVersionedCelLibraryCallIsPinnedTree extends the table test to the
+// whole tree: a versioned constructor called anywhere outside the profile
+// table (a policy environment, a predicate checker) must carry its own
+// `<Name>Version(...)` option too. This found `ext.Bindings()` bare in
+// signalpredicate.go beside a pinned `ext.Strings`.
+//
+// Consciously left unpinned: ext.NativeTypes and ext.Network accept a version
+// option, but cel-go v0.31.0 gates nothing on either, so a pin would freeze no
+// behavior; they are not in the checked set. Add them, with a pin, when a
+// cel-go release grows a gate. ext.Strings is covered by its own test above.
+func TestEveryVersionedCelLibraryCallIsPinnedTree(t *testing.T) {
+	t.Parallel()
+
+	root := testkit.RepoRoot(t)
+	var found int
+	require.NoError(t, filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			switch entry.Name() {
+			case ".git", ".claude", "vendor", "plugins":
+				return filepath.SkipDir
+			}
+
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, ".pb.go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		bad, n := unpinnedVersionedCalls(t, path, src)
+		found += n
+		require.Empty(t, bad, "%s builds a versioned cel-go library without its Version option, so a "+
+			"cel-go bump could change what its expressions mean", path)
+
+		return nil
+	}))
+	require.GreaterOrEqual(t, found, 10, "walked the wrong tree: too few versioned constructor calls found")
+}
+
+// TestUnpinnedVersionedCallsAreDetected is the negative case for the tree walk.
+func TestUnpinnedVersionedCallsAreDetected(t *testing.T) {
+	t.Parallel()
+
+	const src = `package p
+
+import (
+	"github.com/google/cel-go/cel"
+	celext "github.com/google/cel-go/ext"
+)
+
+var _ = []cel.EnvOption{
+	celext.Bindings(),
+	celext.Math(celext.MathVersion(3)),
+	cel.OptionalTypes(),
+}
+`
+	bad, n := unpinnedVersionedCalls(t, "x.go", []byte(src))
+	require.Equal(t, 3, n)
+	require.Equal(t, []string{"Bindings", "OptionalTypes"}, bad)
+}
+
+// versionedConstructors are the cel-go constructors checked tree-wide, keyed
+// by import path then constructor name, with the option each must carry.
+var versionedConstructors = map[string]map[string]string{
+	"github.com/google/cel-go/ext": {
+		"Bindings": "BindingsVersion", "TwoVarComprehensions": "TwoVarComprehensionsVersion",
+		"Encoders": "EncodersVersion", "Lists": "ListsVersion", "Math": "MathVersion",
+		"Protos": "ProtosVersion", "Regex": "RegexVersion", "Sets": "SetsVersion",
+	},
+	"github.com/google/cel-go/cel": {"OptionalTypes": "OptionalTypesVersion"},
+}
+
+// unpinnedVersionedCalls returns the constructors called without their Version
+// option in one source file, and how many versioned calls it saw.
+func unpinnedVersionedCalls(t *testing.T, path string, src []byte) (bad []string, total int) {
+	t.Helper()
+
+	file, err := parser.ParseFile(token.NewFileSet(), path, src, 0)
+	require.NoError(t, err)
+
+	locals := map[string]map[string]string{}
+	for _, imported := range file.Imports {
+		importPath := strings.Trim(imported.Path.Value, `"`)
+		ctors, ok := versionedConstructors[importPath]
+		if !ok {
+			continue
+		}
+		name := importPath[strings.LastIndex(importPath, "/")+1:]
+		if imported.Name != nil {
+			require.NotEqual(t, ".", imported.Name.Name, "%s dot-imports %s, which hides its calls", path, importPath)
+			name = imported.Name.Name
+		}
+		locals[name] = ctors
+	}
+	if len(locals) == 0 {
+		return nil, 0
+	}
+
+	ast.Inspect(file, func(node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		selector, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		pkg, ok := selector.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		option, ok := locals[pkg.Name][selector.Sel.Name]
+		if !ok {
+			return true
+		}
+		total++
+		for _, arg := range call.Args {
+			if optionCall, ok := arg.(*ast.CallExpr); ok {
+				if sel, ok := optionCall.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == option {
+					return true
+				}
+			}
+		}
+		bad = append(bad, selector.Sel.Name)
+
+		return true
+	})
+
+	return bad, total
+}
+
 // selectorName renders a `pkg.Name` call target, or "" for any other shape.
 func selectorName(expr ast.Expr) string {
 	selector, ok := expr.(*ast.SelectorExpr)

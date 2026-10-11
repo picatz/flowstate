@@ -1030,7 +1030,7 @@ func ProfileNames() []string {
 // other library's reconstruction panic generically. See #1854 and the
 // upstream row tracked in #1862.
 func ProfileConfig(env *cel.Env, name string) (*celconfig.Config, error) {
-	if _, regexErr := cel.NewCustomEnv(ext.Regex()); regexErr != nil {
+	if _, regexErr := cel.NewCustomEnv(ext.Regex(ext.RegexVersion(regexExtensionVersion))); regexErr != nil {
 		if slices.Contains(env.Libraries(), "cel.lib.ext.regex") {
 			return nil, fmt.Errorf("cel: profile %q cannot be serialized: library %q does not "+
 				"construct on cel-go's isolated bare environment (%w); see #1854", name, "cel.lib.ext.regex", regexErr)
