@@ -22,7 +22,7 @@ import (
 var guardedSelectors = map[string]map[string]bool{
 	"flowfile": set("Parse", "ParseAt", "ParseFile", "Unmarshal", "ValidateSource", "ValidateSourceAt",
 		"ValidateSourceFile", "ParseAndValidateSourceAt", "ParseAndValidateFile", "ParseAndValidateFileAt",
-		"Fix", "Format", "Marshal", "RepinUses"),
+		"Fix", "Format", "Marshal", "RepinUses", "IteratorType", "IteratorTyper", "ResultEntryOf"),
 	"flowtest": set("LoadSource", "LoadSourceAt", "LoadSourceAtWithDefaults", "LoadDirDefaultsSource"),
 	"v1":       set("TaskShapesOutputs", "LookupTask", "TaskNames"),
 }

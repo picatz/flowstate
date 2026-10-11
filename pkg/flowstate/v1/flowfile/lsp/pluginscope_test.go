@@ -23,7 +23,15 @@ import (
 func lockTask(t *testing.T, name string) v1.TaskDef {
 	t.Helper()
 
-	shape, ok := v1.LookupTask("log")
+	return lockTaskLike(t, name, "log")
+}
+
+// lockTaskLike is a plugin task with the inputs and outputs of the built-in
+// task like.
+func lockTaskLike(t *testing.T, name, like string) v1.TaskDef {
+	t.Helper()
+
+	shape, ok := v1.LookupTask(like)
 	require.True(t, ok)
 
 	return v1.TaskDef{Name: name, Summary: "Task " + name + ".", Inputs: shape.Inputs, Outputs: shape.Outputs, Fn: shape.Fn}

@@ -142,13 +142,22 @@ func receiverBefore(src string, dot int, pairs map[int]int) string {
 // resultEntryFor is the entry the macro variable name is bound to at the cursor,
 // from the step it is written in. The innermost macro that binds the name decides:
 // one that binds it to anything but a `results` list hides an outer entry.
-func resultEntryFor(wf *v1.Workflow, step string, macros []openMacro, name string) (flowfile.ResultEntry, bool) {
+func resultEntryFor(doc *document, wf *v1.Workflow, step string, macros []openMacro, name string) (flowfile.ResultEntry, bool) {
 	for i := len(macros) - 1; i >= 0; i-- {
 		if macros[i].variable != name {
 			continue
 		}
 
-		return flowfile.ResultEntryOf(wf, step, macros[i].receiver)
+		type found struct {
+			entry flowfile.ResultEntry
+			ok    bool
+		}
+		f := underDoc(doc, func() found {
+			entry, ok := flowfile.ResultEntryOf(wf, step, macros[i].receiver)
+			return found{entry, ok}
+		})
+
+		return f.entry, f.ok
 	}
 
 	return flowfile.ResultEntry{}, false
@@ -182,7 +191,7 @@ func resultEntryLocals(doc *document, pos lsp.Position, step, inner string) []ce
 		}
 		seen[name] = true
 
-		entry, ok := resultEntryFor(wf, step, macros, name)
+		entry, ok := resultEntryFor(doc, wf, step, macros, name)
 		if !ok {
 			continue
 		}
@@ -275,7 +284,7 @@ func hoverResultEntry(doc *document, from *parsedStep, v *value, f fence, cursor
 	if wf == nil {
 		return nil
 	}
-	entry, ok := resultEntryFor(wf, from.id, macros, segments[0])
+	entry, ok := resultEntryFor(doc, wf, from.id, macros, segments[0])
 	if !ok {
 		return nil
 	}

@@ -630,8 +630,15 @@ func hoverBareName(doc *document, from *parsedStep, name string, clock, shaping 
 		// the validator judges the body with.
 		typeSentence := "Its type is whatever the loop's `items` expression yields an element of. "
 		if wf := compiledWorkflow(doc); wf != nil {
-			if typed, ok := flowfile.IteratorType(wf, from.id, name); ok {
-				typeSentence = fmt.Sprintf("Its type is `%s`, the element type of the loop's `items` expression. ", typed)
+			type typed struct {
+				name string
+				ok   bool
+			}
+			if t := underDoc(doc, func() typed {
+				name, ok := flowfile.IteratorType(wf, from.id, name)
+				return typed{name, ok}
+			}); t.ok {
+				typeSentence = fmt.Sprintf("Its type is `%s`, the element type of the loop's `items` expression. ", t.name)
 			}
 		}
 
