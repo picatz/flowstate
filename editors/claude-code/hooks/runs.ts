@@ -103,3 +103,9 @@ export const toListing = (run: { exitCode: number; stdout: string; stderr: strin
   run.exitCode === 0
     ? { runs: parsePage(run.stdout).runs.slice(0, MAX_RUNS) }
     : { offline: filtered ? rejection(run.stderr) : reason(run.stderr) }
+
+/**
+ * Whether a timeline error says the server no longer has the run, as after a restart of a server that keeps nothing between
+ * sessions. A run left selected in the pane then reads as gone, not as a timeline that failed to load.
+ */
+export const isGone = (error: string): boolean => /not.?found|no such (workflow|run)|does not exist/i.test(error)

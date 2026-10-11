@@ -1,4 +1,4 @@
-import { clean, reason } from '../hooks/runs'
+import { clean, isGone, reason } from '../hooks/runs'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -117,4 +117,11 @@ test('a very long error still ends in its cause, and a cut never splits a charac
   expect(reason('a'.repeat(101))).toContain(' … ')
   const huge = reason(`start ${'y'.repeat(50_000)} the real cause`)
   expect(huge).toMatch(/the real cause$/)
+})
+
+test('a timeline error that says the run is gone is told apart from one that failed to load', () => {
+  expect(isGone('workflow execution not found')).toBe(true)
+  expect(isGone('NotFound: no such workflow')).toBe(true)
+  expect(isGone('connection refused')).toBe(false)
+  expect(isGone('')).toBe(false)
 })

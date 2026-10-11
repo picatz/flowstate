@@ -6,7 +6,7 @@ import type { RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
-import { MAX_PAGES, MAX_RUNS, clean, parsePage, reason, stderrNote, toListing } from './runs'
+import { MAX_PAGES, MAX_RUNS, clean, isGone, parsePage, reason, stderrNote, toListing } from './runs'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { CHIPS, LastGood, chipFor, chipText } from './chips'
@@ -840,7 +840,9 @@ export const register: Register = (on, options) => {
             <Text>  {story(facts)}</Text>
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
             {account && 'error' in account ? (
-              <Text dimColor>  Timeline unavailable ({account.error}).</Text>
+              <Text dimColor>
+                {isGone(account.error) ? '  This run is no longer on the server (a restart clears runs a dev server keeps in memory). Close it.' : `  Timeline unavailable (${account.error}).`}
+              </Text>
             ) : (
               <Box flexDirection="column">
                 <Text>
