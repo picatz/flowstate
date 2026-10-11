@@ -94,7 +94,7 @@ does not keep a stale picture, the delivered signal's gate and the waiting step'
 delivered line (ids shortened) goes at the read after the first, and if the server still
 reports the gate after that (a quorum not yet met, say) it is shown again as the server
 says. A refused or unknown delivery closes nothing. The run id on the card is shortened,
-with a `Copy id` button.
+with a `Copy id` button, and a `Debug this` button on a failed run that copies `/flowstate:debug <id>`.
 
 The pane's Send/Confirm replaces the Bash guard's question for this one action
 only. The `guardServerActions` guard still asks before Claude runs `flow signal`
