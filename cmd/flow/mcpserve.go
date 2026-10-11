@@ -616,8 +616,10 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 					l.release(id)
 				}
 			}}
+			// Deferred so a handler that panics still settles its slot; the panic
+			// keeps propagating.
+			defer recorder.finish()
 			next.ServeHTTP(recorder, r)
-			recorder.finish()
 
 			return
 		}
@@ -638,8 +640,10 @@ func (l *mcpSessionLimiter) wrap(next http.Handler) http.Handler {
 		// client that has read the response can already use the session.
 		recorder := &mcpSessionRecorder{ResponseWriter: w}
 		recorder.onStatus = func(int) { l.settle(recorder.Header().Get(mcpSessionHeader)) }
+		// Deferred for the same reason as above: a panic must not leak the
+		// reservation.
+		defer recorder.finish()
 		next.ServeHTTP(recorder, r)
-		recorder.finish()
 	})
 }
 

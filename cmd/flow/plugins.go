@@ -780,23 +780,23 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 			fmt.Fprintln(out)
 		}
 
-		fmt.Fprintf(out, "%s %s\n", theme.Accent.Render(p.GetName()), theme.Muted.Render(p.GetVersion()))
+		fmt.Fprintf(out, "%s %s\n", theme.Accent.Render(ui.EscapeControl(p.GetName())), theme.Muted.Render(ui.EscapeControl(p.GetVersion())))
 
 		if summary := p.GetDescription(); summary != "" {
-			fmt.Fprintf(out, "  %s\n", summary)
+			fmt.Fprintf(out, "  %s\n", ui.EscapeControl(summary))
 		}
 
-		fmt.Fprintf(out, "  %s\n", theme.Muted.Render(p.GetPath()))
+		fmt.Fprintf(out, "  %s\n", theme.Muted.Render(ui.EscapeControl(p.GetPath())))
 
 		// The value --plugin-pin and --plugin-pins ask for, measured from the
 		// descriptor the process is exec'd from (#1326). Printed so an operator
 		// adopts it from here rather than re-deriving it with sha256sum.
 		if digest := p.GetDistributionDigest(); digest != "" {
-			fmt.Fprintf(out, "  distribution_digest: %s\n", digest)
+			fmt.Fprintf(out, "  distribution_digest: %s\n", ui.EscapeControl(digest))
 		}
 
 		if schemes := p.GetSecretSchemes(); len(schemes) > 0 {
-			fmt.Fprintf(out, "  secrets: %s\n", strings.Join(schemes, ", "))
+			fmt.Fprintf(out, "  secrets: %s\n", ui.EscapeControl(strings.Join(schemes, ", ")))
 			// Launching it registers a secret provider, and a process holding one
 			// refuses to run without an access policy (#1545); said here so the
 			// requirement is visible before the refusal is.
@@ -811,11 +811,11 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 			if description := credential.GetDescription(); description != "" {
 				line += ": " + description
 			}
-			fmt.Fprintf(out, "  credential: %s\n", line)
+			fmt.Fprintf(out, "  credential: %s\n", ui.EscapeControl(line))
 		}
 
 		for _, task := range p.GetTasks() {
-			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(task.GetName()), task.GetSummary())
+			fmt.Fprintf(out, "\n  %s\n    %s\n", theme.Accent.Render(ui.EscapeControl(task.GetName())), ui.EscapeControl(task.GetSummary()))
 
 			// The two claims that change what this task can see, in words an
 			// operator can act on rather than a field an operator has to already
@@ -824,10 +824,10 @@ func writePluginCatalog(surface *ui.UI, catalog *v1.PluginCatalog) error {
 			// shape: a reviewer deciding whether to trust this task reads these
 			// two lines before they read what it takes.
 			if secretInputs := task.GetSecretInputs(); len(secretInputs) > 0 {
-				fmt.Fprintf(out, "    accepts a secret in: %s\n", strings.Join(secretInputs, ", "))
+				fmt.Fprintf(out, "    accepts a secret in: %s\n", ui.EscapeControl(strings.Join(secretInputs, ", ")))
 			}
 			for _, input := range slices.Sorted(maps.Keys(task.GetCredentialInputs())) {
-				fmt.Fprintf(out, "    needs credential %s in: %s\n", task.GetCredentialInputs()[input], input)
+				fmt.Fprintf(out, "    needs credential %s in: %s\n", ui.EscapeControl(task.GetCredentialInputs()[input]), ui.EscapeControl(input))
 			}
 			fmt.Fprintf(out, "    receives prior step outputs: %s\n", yesNo(task.GetNeedsScope()))
 

@@ -1875,3 +1875,25 @@ func TestMCPServeRefusesAnUnusablePluginCatalogBeforeServing(t *testing.T) {
 		})
 	}
 }
+
+// TestMCPSessionLimiterReleasesTheReservationOfAPanickingHandler is #2678: a
+// handler that panics must still give back the slot it reserved, and the
+// panic must still reach the caller.
+func TestMCPSessionLimiterReleasesTheReservationOfAPanickingHandler(t *testing.T) {
+	t.Parallel()
+
+	limiter := newMCPSessionLimiter(1, mcpServeDefaultMaxSessionRequests, time.Minute, time.Now)
+	handler := limiter.wrap(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { panic("boom") }))
+
+	serve := func(req *http.Request) (recovered any) {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(httptest.NewRecorder(), req)
+
+		return nil
+	}
+
+	require.Equal(t, "boom", serve(httptest.NewRequest(http.MethodPost, "/mcp", nil)),
+		"the panic must keep propagating")
+	require.Equal(t, 0, limiter.open())
+	require.True(t, limiter.reserve(), "the panicking request leaked its reservation, so a new session is refused")
+}
