@@ -115,42 +115,30 @@ func TestEveryStringsExtensionIsVersionPinned(t *testing.T) {
 //
 // It reads the `extensionLibraries` literal in celenv.go and requires each
 // cel-go constructor in it to carry its own `<Name>Version(...)` option whose
-// argument is a named `*ExtensionVersion` constant, so a pin cannot be a bare
+// argument is that library's own named `*ExtensionVersion` constant, so a pin cannot be a bare
 // number that bypasses the one reviewed place the values live. The table of
 // constructors below is the audit: a library cel-go gives a version knob
 // appears here, or this fails when a new constructor shows up unpinned.
 func TestEveryProfileLibraryIsVersionPinned(t *testing.T) {
 	t.Parallel()
 
-	// constructor -> its version option, for every versioned library in the table.
-	versioned := map[string]string{
-		"ext.Bindings":             "ext.BindingsVersion",
-		"ext.TwoVarComprehensions": "ext.TwoVarComprehensionsVersion",
-		"ext.Encoders":             "ext.EncodersVersion",
-		"ext.Lists":                "ext.ListsVersion",
-		"ext.Math":                 "ext.MathVersion",
-		"cel.OptionalTypes":        "cel.OptionalTypesVersion",
-		"ext.Protos":               "ext.ProtosVersion",
-		"ext.Regex":                "ext.RegexVersion",
-		"ext.Sets":                 "ext.SetsVersion",
-		"ext.Strings":              "ext.StringsVersion",
+	// constructor -> its version option and the one constant that must feed it,
+	// for every versioned library in the table.
+	versioned := map[string]struct{ option, constant string }{
+		"ext.Bindings":             {"ext.BindingsVersion", "bindingsExtensionVersion"},
+		"ext.TwoVarComprehensions": {"ext.TwoVarComprehensionsVersion", "comprehensionsExtensionVersion"},
+		"ext.Encoders":             {"ext.EncodersVersion", "encodersExtensionVersion"},
+		"ext.Lists":                {"ext.ListsVersion", "listsExtensionVersion"},
+		"ext.Math":                 {"ext.MathVersion", "mathExtensionVersion"},
+		"cel.OptionalTypes":        {"cel.OptionalTypesVersion", "optionalExtensionVersion"},
+		"ext.Protos":               {"ext.ProtosVersion", "protosExtensionVersion"},
+		"ext.Regex":                {"ext.RegexVersion", "regexExtensionVersion"},
+		"ext.Sets":                 {"ext.SetsVersion", "setsExtensionVersion"},
+		"ext.Strings":              {"ext.StringsVersion", "stringsExtensionVersion"},
 	}
 
 	file, err := parser.ParseFile(token.NewFileSet(), "celenv.go", nil, 0)
 	require.NoError(t, err)
-
-	selectorName := func(expr ast.Expr) string {
-		selector, ok := expr.(*ast.SelectorExpr)
-		if !ok {
-			return ""
-		}
-		pkg, ok := selector.X.(*ast.Ident)
-		if !ok {
-			return ""
-		}
-
-		return pkg.Name + "." + selector.Sel.Name
-	}
 
 	var table *ast.CompositeLit
 	ast.Inspect(file, func(node ast.Node) bool {
@@ -171,7 +159,7 @@ func TestEveryProfileLibraryIsVersionPinned(t *testing.T) {
 			return true
 		}
 		name := selectorName(call.Fun)
-		option, isVersioned := versioned[name]
+		pin, isVersioned := versioned[name]
 		if !isVersioned {
 			if strings.HasSuffix(name, "Version") {
 				return true
@@ -186,24 +174,67 @@ func TestEveryProfileLibraryIsVersionPinned(t *testing.T) {
 		}
 
 		seen[name] = true
-		var pinned bool
-		for _, arg := range call.Args {
-			optionCall, ok := arg.(*ast.CallExpr)
-			if !ok || selectorName(optionCall.Fun) != option || len(optionCall.Args) != 1 {
-				continue
-			}
-			constant, ok := optionCall.Args[0].(*ast.Ident)
-			pinned = ok && strings.HasSuffix(constant.Name, "ExtensionVersion")
-		}
-		require.True(t, pinned,
-			"%s is built without %s(<name>ExtensionVersion), so an expression stored "+
-				"today could gain functions after a cel-go bump", name, option)
+		require.True(t, isPinnedBy(call, pin.option, pin.constant),
+			"%s is built without %s(%s), so an expression stored today could "+
+				"gain functions after a cel-go bump, or is fed by the wrong constant", name, pin.option, pin.constant)
 
 		return true
 	})
 
 	for name := range versioned {
 		require.True(t, seen[name], "%s is not constructed in extensionLibraries; the audit table is stale", name)
+	}
+}
+
+// selectorName renders a `pkg.Name` call target, or "" for any other shape.
+func selectorName(expr ast.Expr) string {
+	selector, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return ""
+	}
+	pkg, ok := selector.X.(*ast.Ident)
+	if !ok {
+		return ""
+	}
+
+	return pkg.Name + "." + selector.Sel.Name
+}
+
+// isPinnedBy reports whether a constructor call carries `option(constant)` with
+// exactly that identifier, so a pin fed by another library's constant, or by a
+// bare number, does not count.
+func isPinnedBy(call *ast.CallExpr, option, constant string) bool {
+	for _, arg := range call.Args {
+		optionCall, ok := arg.(*ast.CallExpr)
+		if !ok || selectorName(optionCall.Fun) != option || len(optionCall.Args) != 1 {
+			continue
+		}
+		if ident, ok := optionCall.Args[0].(*ast.Ident); ok && ident.Name == constant {
+			return true
+		}
+	}
+
+	return false
+}
+
+// TestIsPinnedByRejectsWrongConstant proves the pin check can fail: a version
+// fed by another library's constant, a bare number, or no option at all is not
+// a pin.
+func TestIsPinnedByRejectsWrongConstant(t *testing.T) {
+	t.Parallel()
+
+	for src, want := range map[string]bool{
+		"ext.Math(ext.MathVersion(mathExtensionVersion))":    true,
+		"ext.Math(ext.MathVersion(stringsExtensionVersion))": false,
+		"ext.Math(ext.MathVersion(3))":                       false,
+		"ext.Math(ext.SetsVersion(mathExtensionVersion))":    false,
+		"ext.Math()": false,
+	} {
+		expr, err := parser.ParseExpr(src)
+		require.NoError(t, err)
+		call, ok := expr.(*ast.CallExpr)
+		require.True(t, ok)
+		require.Equal(t, want, isPinnedBy(call, "ext.MathVersion", "mathExtensionVersion"), src)
 	}
 }
 
