@@ -109,15 +109,7 @@ func callee(doc *document, target string) (calledWorkflow, bool) {
 		return calledWorkflow{}, false
 	}
 
-	type parsed struct {
-		workflow *v1.Workflow
-		err      error
-	}
-	p := underDoc(doc, func() parsed {
-		workflow, _, err := flowfile.ParseAt(data, located.Path)
-		return parsed{workflow, err}
-	})
-	workflow, err := p.workflow, p.err
+	workflow, _, err := doc.env.ParseAt(data, located.Path)
 	if err != nil || workflow == nil {
 		// A callee too broken to compile declares nothing this can be sure of.
 		// Go-to-definition still navigates there, because arriving in a broken

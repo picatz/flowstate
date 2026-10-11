@@ -16,10 +16,7 @@ import (
 // is one the file compiles with. Nothing when the document names no task with an
 // enum in its outputs.
 //
-// Read from [v1.DefaultRegistry] and not the document's own: the compiler lowers a
-// name against the default registry (as every other check of a file does), so a
-// name only an injected registry holds would be offered and then refused. A name
-// something else already holds here (a local, a root, `now`) is not offered; taken
+// A name something else already holds here (a local, a root, `now`) is not offered; taken
 // is the names this position binds.
 func enumValueCandidates(doc *document, pos lsp.Position, taken map[string]bool) []celcomplete.Candidate {
 	wf := compiledWorkflow(doc)
@@ -29,7 +26,7 @@ func enumValueCandidates(doc *document, pos lsp.Position, taken map[string]bool)
 		wf = compiledText(doc, withoutFenceAt(doc, pos))
 	}
 
-	enums := underDoc(doc, func() *v1.OutputEnums { return v1.OutputEnumsOf(wf, nil) })
+	enums := v1.OutputEnumsOf(wf, doc.env.Registry())
 	names := enums.Names()
 	out := make([]celcomplete.Candidate, 0, len(names))
 	for _, name := range names {

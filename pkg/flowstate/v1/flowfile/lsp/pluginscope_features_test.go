@@ -2,7 +2,6 @@ package lsp
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,31 +74,4 @@ func TestLoopTypesAndResultEntriesSeeOnlyTheirOwnLocksTasks(t *testing.T) {
 	assert.NotContains(t, item, "Its type is `", "another document's lock typed a loop item")
 	assert.NotContains(t, hints, "n: ", "another document's lock produced an inlay hint")
 	assert.NotContains(t, entry, "status_code", "another document's lock supplied a results entry's outputs")
-}
-
-// A locked compile waits for anyone holding the registry's compound-mutation
-// lock: both would otherwise save, replace and restore the same definitions at
-// once.
-func TestALockedCompileWaitsForTheDefaultRegistryLock(t *testing.T) {
-	t.Parallel()
-
-	release := v1.LockDefaultRegistry()
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		underLock([]v1.TaskDef{lockTask(t, "alpha.run")}, func() struct{} { return struct{}{} })
-	}()
-
-	select {
-	case <-done:
-		release()
-		t.Fatal("a locked compile ran while another holder had the default registry's lock")
-	case <-time.After(200 * time.Millisecond):
-	}
-	release()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("a locked compile never ran after the default registry's lock was released")
-	}
 }

@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 	"github.com/sourcegraph/go-lsp"
 )
 
@@ -56,21 +55,8 @@ type inlayHint struct {
 // from a model the text no longer matches would sit on the wrong line.
 func inlayHints(doc *document, visible lsp.Range) []inlayHint {
 	// Both the table's construction and each question it answers read task
-	// definitions, so both run in the document's registry scope.
-	return inlayHintsWith(doc, visible, func(wf *v1.Workflow) func(step, name string) (string, bool) {
-		typer := underDoc(doc, func() func(step, name string) (string, bool) { return flowfile.IteratorTyper(wf) })
-		return func(step, name string) (string, bool) {
-			type typed struct {
-				name string
-				ok   bool
-			}
-			t := underDoc(doc, func() typed {
-				name, ok := typer(step, name)
-				return typed{name, ok}
-			})
-			return t.name, t.ok
-		}
-	})
+	// definitions, so both come from the document's own Env.
+	return inlayHintsWith(doc, visible, doc.env.IteratorTyper)
 }
 
 // inlayHintsWith is [inlayHints] over a chosen iterator-type source, the seam a

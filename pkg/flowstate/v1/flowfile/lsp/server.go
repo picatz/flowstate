@@ -1074,7 +1074,7 @@ func (s *FlowfileServer) tasks() *v1.Registry {
 	if s.Tasks != nil {
 		return s.Tasks
 	}
-	return v1.DefaultRegistry()
+	return defaultTasks()
 }
 
 // logger returns the configured logger, or the default one.

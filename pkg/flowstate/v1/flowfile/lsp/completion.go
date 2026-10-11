@@ -47,7 +47,17 @@ type dslKey struct {
 // Deriving it means the next kind added to the DSL cannot leave this describing the
 // language as it used to be. It is the same reasoning `stepKindList` was written
 // with on the diagnostics side; this package simply had no way to reach it.
-var oneStepKind = "A step does exactly one of " + flowfile.StepKindList() + "."
+var oneStepKind = "A step does exactly one of " + stepKindWords() + "."
+
+// stepKindWords lists the kinds of step the grammar itself defines, then the
+// task a step may name. It reads no task registry: the table it feeds is shared
+// by every document, so it cannot name one document's tasks, and the process
+// default is not read for it.
+func stepKindWords() string {
+	kinds := flowfile.WithRegistry(v1.NewRegistry()).StepKinds()
+
+	return strings.Join(kinds, ", ") + ", or the name of a task"
+}
 
 // editionList names the grammar versions this build compiles, derived from the
 // flowfile package for the same reason oneStepKind is: a version number copied

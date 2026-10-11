@@ -23,9 +23,9 @@ func enumProbeDef(name string) v1.TaskDef {
 }
 
 // TestEnumValuesAreOfferedOnlyWhereTheCompilerResolvesThem pins that completion
-// agrees with the compiler: a name is offered for a task the default registry
-// holds, and not for one only a server's own registry knows, which the compiler
-// would leave unresolved.
+// agrees with the compiler: both resolve a document's names against the
+// server's own registry, so a name is offered for a task that registry holds and
+// not for one only the process default holds, which the compiler leaves unknown.
 func TestEnumValuesAreOfferedOnlyWhereTheCompilerResolvesThem(t *testing.T) {
 	const (
 		shared   = "test_enum_scope_shared"
@@ -34,13 +34,18 @@ func TestEnumValuesAreOfferedOnlyWhereTheCompilerResolvesThem(t *testing.T) {
 	require.NoError(t, v1.DefaultRegistry().Register(enumProbeDef(shared)))
 	t.Cleanup(func() { v1.DefaultRegistry().Unregister(shared) })
 
+	// The server's registry is all a document compiles against, so it holds the
+	// `log` the source below also uses.
 	own := v1.NewRegistry()
+	logDef, ok := v1.LookupTask("log")
+	require.True(t, ok)
+	require.NoError(t, own.Register(logDef))
 	require.NoError(t, own.Register(enumProbeDef(injected)))
 
 	c := newClientFor(t, &FlowfileServer{Logger: discardLogger(), Tasks: own})
 	c.initialize()
 
-	for task, offered := range map[string]bool{shared: true, injected: false} {
+	for task, offered := range map[string]bool{shared: false, injected: true} {
 		src, pos := splitCursor(t, `edition: v2026.4
 name: c
 steps:

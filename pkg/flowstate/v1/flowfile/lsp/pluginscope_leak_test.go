@@ -12,10 +12,12 @@ import (
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
-// Every feature on a locked document leaves the default registry and the shared
-// module cache as it found them, and a second, unlocked document on the same
-// server never sees the lock's task. Not parallel: it reads the process-wide
-// module cache's counters, which no other test may move meanwhile.
+// A locked document's features compile through the shared module cache (its key
+// includes the registry, so it may), leave the default registry as they found it,
+// and an unlocked document on the same server neither sees the lock's task nor is
+// served what the locked document's compile left in the cache. Not parallel: it
+// reads the process-wide module cache's counters, which no other test may move
+// meanwhile.
 func TestFeaturesOnALockedDocumentLeakNothing(t *testing.T) {
 	dir := moduleTree(t)
 	// Bytes unique to this test, so the cache holds nothing for them yet.
@@ -44,21 +46,18 @@ func TestFeaturesOnALockedDocumentLeakNothing(t *testing.T) {
 	c.definition(locked, 3, 10)
 	c.codeAction(locked, lsp.Range{End: lsp.Position{Line: 100}}, nil, got.Diagnostics)
 	after := moduleCache.Stats()
-	assert.Equal(t, before.Entries, after.Entries, "a module compiled with a lock's tasks was stored in the shared cache")
-	assert.Equal(t, before.Compiles, after.Compiles, "a locked document compiled through the shared cache")
+	assert.Greater(t, after.Compiles, before.Compiles, "a locked document did not compile through the shared cache")
 
-	compileMu.RLock()
 	_, leaked := v1.DefaultRegistry().Lookup("alpha.run")
-	compileMu.RUnlock()
 	assert.False(t, leaked, "a feature left the lock's task in the default registry")
 
 	// The control: a document with no lock, on the same server, does not see the
-	// task, and its compile does go through the shared cache, which is what gives
-	// the counters above their meaning.
+	// task, and the module it shares with the locked document is compiled again
+	// for its own registry rather than served from the locked document's entry.
 	other := string(fileURI(filepath.Join(dir, "other.yaml")))
 	plain := c.open(other, otherImporterSource+step)
 	assert.True(t, unknownTask(plain, "alpha.run"), "an unlocked document saw a lock's task: %v", plain.Diagnostics)
-	assert.Greater(t, moduleCache.Stats().Compiles, after.Compiles, "the control never used the cache, so the assertions above prove nothing")
+	assert.Greater(t, moduleCache.Stats().Compiles, after.Compiles, "an unlocked document was served a module compiled against a lock's registry")
 }
 
 // A request that holds a document across the close of its last user still
@@ -78,16 +77,20 @@ func TestARequestHoldingAClosedDocumentKeepsItsLockAndTheScopeEmpties(t *testing
 	held, ok := c.rawServerDoc(uri)
 	require.True(t, ok)
 	registry := held.tasks
-	require.NotEmpty(t, overlayOf(registry))
+	_, ok = registry.Lookup("alpha.run")
+	require.True(t, ok)
+	require.Same(t, registry, held.env.Registry(), "the document's Env is not its own registry")
 
 	closeAndWait(c, uri)
 
-	assert.Empty(t, overlayOf(registry), "the scope kept the lock's tasks after its last document closed")
+	// The scope's retained copy is gone, and the document still owns its registry.
 	server.scopes.mu.Lock()
 	assert.Empty(t, server.scopes.entries)
 	assert.Empty(t, server.scopes.byDoc)
 	server.scopes.mu.Unlock()
 
+	_, ok = registry.Lookup("alpha.run")
+	assert.True(t, ok, "a document held across its close lost its registry")
 	for _, d := range diagnoseCarried(held) {
 		assert.NotContains(t, d.published.Message, `"alpha.run"`, "a document held across its close lost its lock's tasks")
 	}

@@ -2,8 +2,6 @@ package lsp
 
 import (
 	"github.com/sourcegraph/go-lsp"
-
-	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // Formatting answers "what would `flow fmt` write here?" through the same path
@@ -40,15 +38,8 @@ func formatEdits(doc *document) []lsp.TextEdit {
 	if workflow == nil {
 		return nil
 	}
-	type written struct {
-		text []byte
-		err  error
-	}
-	w := underDoc(doc, func() written {
-		text, err := flowfile.Format([]byte(doc.text), workflow)
-		return written{text, err}
-	})
-	if w.err != nil {
+	text, err := doc.env.Format([]byte(doc.text), workflow)
+	if err != nil {
 		// A workflow this build itself just compiled but cannot write back out —
 		// an expression built from a macro, a literal `${`, a comment the rewrite
 		// cannot keep — has no shape a formatter can produce an edit for. `flow fmt`
@@ -56,7 +47,7 @@ func formatEdits(doc *document) []lsp.TextEdit {
 		// it on, so the honest answer is the one a parse failure gets: nothing.
 		return nil
 	}
-	formatted := w.text
+	formatted := text
 
 	if string(formatted) == doc.text {
 		return []lsp.TextEdit{}

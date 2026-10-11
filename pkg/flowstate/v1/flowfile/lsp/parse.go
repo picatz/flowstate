@@ -814,7 +814,7 @@ func (p *parsedFile) stepAt(pos lsp.Position) *parsedStep {
 // A syntax error is returned rather than partially modeled: the parser reports
 // one error with a token, which is a better diagnostic than anything that could
 // be reconstructed from a half-built tree.
-func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
+func parseFlowfile(env flowfile.Env, text string, ix *lineIndex) (*parsedFile, error) {
 	file, err := strictyaml.ParseBytes([]byte(text), 0)
 	if err != nil {
 		return nil, err
@@ -843,7 +843,7 @@ func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
 			case "steps":
 				if p.stepsEntry == nil {
 					p.stepsEntry = e
-					p.steps = buildSteps(e, ix)
+					p.steps = buildSteps(env, e, ix)
 				}
 			}
 		}
@@ -861,16 +861,16 @@ func parseFlowfile(text string, ix *lineIndex) (*parsedFile, error) {
 // kept as a tree, because every feature here asks the same two questions — which
 // step is at this position, and which steps come before it — and both are answered
 // by document order at any depth.
-func buildSteps(steps *entry, ix *lineIndex) []*parsedStep {
+func buildSteps(env flowfile.Env, steps *entry, ix *lineIndex) []*parsedStep {
 	var out []*parsedStep
-	collectSteps(steps, nil, nil, ix, &out)
+	collectSteps(env, steps, nil, nil, ix, &out)
 	assignStepRanges(ix, out, steps.keyRange.Start.Character)
 	return out
 }
 
 // collectSteps appends the steps of one sequence, and the steps nested inside them,
 // to out.
-func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *lineIndex, out *[]*parsedStep) {
+func collectSteps(env flowfile.Env, steps *entry, parent *parsedStep, scope []scopeFrame, ix *lineIndex, out *[]*parsedStep) {
 	if steps == nil || steps.value == nil || steps.value.kind != kindSequence {
 		return
 	}
@@ -885,7 +885,7 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 			rng:     item.rng,
 			entries: item.entries,
 		}
-		fillParsedStep(s, item.entries)
+		fillParsedStep(env, s, item.entries)
 		*out = append(*out, s)
 
 		// A nested body's steps follow their parent in document order, which is
@@ -912,7 +912,7 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 		if s.forEachEntry != nil && s.forEachEntry.value != nil {
 			for _, fe := range s.forEachEntry.value.entries {
 				if fe.key == "steps" {
-					collectSteps(fe, s, append(slices.Clip(scope), scopeFrame{block: s, branch: -1}), ix, out)
+					collectSteps(env, fe, s, append(slices.Clip(scope), scopeFrame{block: s, branch: -1}), ix, out)
 				}
 			}
 		}
@@ -920,7 +920,7 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 			for i, branch := range s.parallelEntry.value.items {
 				for _, be := range branch.entries {
 					if be.key == "steps" {
-						collectSteps(be, s, append(slices.Clip(scope), scopeFrame{block: s, branch: i}), ix, out)
+						collectSteps(env, be, s, append(slices.Clip(scope), scopeFrame{block: s, branch: i}), ix, out)
 					}
 				}
 			}
@@ -951,14 +951,14 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 					for i, c := range se.value.items {
 						for _, ce := range c.entries {
 							if ce.key == "steps" {
-								collectSteps(ce, s, append(slices.Clip(scope), scopeFrame{block: s, branch: i}), ix, out)
+								collectSteps(env, ce, s, append(slices.Clip(scope), scopeFrame{block: s, branch: i}), ix, out)
 							}
 						}
 					}
 				case "default":
 					for _, de := range se.value.entries {
 						if de.key == "steps" {
-							collectSteps(de, s, append(slices.Clip(scope), scopeFrame{block: s, branch: cases}), ix, out)
+							collectSteps(env, de, s, append(slices.Clip(scope), scopeFrame{block: s, branch: cases}), ix, out)
 						}
 					}
 				}
@@ -976,7 +976,7 @@ func collectSteps(steps *entry, parent *parsedStep, scope []scopeFrame, ix *line
 		if s.loopEntry != nil && s.loopEntry.value != nil {
 			for _, le := range s.loopEntry.value.entries {
 				if le.key == "steps" {
-					collectSteps(le, s, append(slices.Clip(scope), scopeFrame{block: s, branch: -1}), ix, out)
+					collectSteps(env, le, s, append(slices.Clip(scope), scopeFrame{block: s, branch: -1}), ix, out)
 				}
 			}
 		}
@@ -1158,14 +1158,14 @@ func blockAs(block *entry) string {
 const loopResultsOutput = "results"
 
 // fillParsedStep reads one step's keys into the model.
-func fillParsedStep(s *parsedStep, entries []*entry) {
+func fillParsedStep(env flowfile.Env, s *parsedStep, entries []*entry) {
 	// Asked once for the whole step, because whether an unregistered key names a
 	// task depends on what else the step says — see flowfile.StepTaskKeys.
 	keys := make([]string, len(entries))
 	for i, e := range entries {
 		keys[i] = e.key
 	}
-	taskKeys := flowfile.StepTaskKeys(keys)
+	taskKeys := env.StepTaskKeys(keys)
 
 	for _, e := range entries {
 		switch e.key {

@@ -148,16 +148,7 @@ func resultEntryFor(doc *document, wf *v1.Workflow, step string, macros []openMa
 			continue
 		}
 
-		type found struct {
-			entry flowfile.ResultEntry
-			ok    bool
-		}
-		f := underDoc(doc, func() found {
-			entry, ok := flowfile.ResultEntryOf(wf, step, macros[i].receiver)
-			return found{entry, ok}
-		})
-
-		return f.entry, f.ok
+		return doc.env.ResultEntryOf(wf, step, macros[i].receiver)
 	}
 
 	return flowfile.ResultEntry{}, false

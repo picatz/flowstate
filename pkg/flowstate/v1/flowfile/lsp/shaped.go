@@ -50,24 +50,21 @@ func (s *outlineStep) shapes(tasks *v1.Registry) bool {
 	return registryShapesOutputs(tasks, s.taskName) && slices.Contains(s.inputKeys, taskShapingKey)
 }
 
-// registryShapesOutputs asks *this server's* registry whether a task shapes.
+// registryShapesOutputs asks the registry a document is answered from whether a
+// task shapes its outputs.
 //
-// [v1.TaskShapesOutputs] asks the default registry, which is the right question
-// for the compiler and the validator — both build from the built-ins alone — and
-// the wrong one here. The registry is a property of the server
-// ([FlowfileServer.Tasks]):
-// `flow lsp` opens a plugin host, registers what it found, and hands that
-// registry in, so a shaping plugin task is registered *there* and unknown to the
-// default one. Asked the wrong registry, a plugin that declares shaping reads as
-// a task that does not, and the editor offers the outputs its descriptor
-// declares — the exact names the author's `outputs:` replaced, which is the
-// failure #324 is the record of, arrived at from the other side.
+// That registry is the document's own (see [document.env]): the server's
+// ([FlowfileServer.Tasks]) plus the tasks of the plugin lock above the document.
+// Asked another, a plugin that declares shaping would read as a task that does
+// not, and the editor would offer the outputs its descriptor declares — the exact
+// names the author's `outputs:` replaced, which is the failure #324 is the record
+// of.
 //
-// Nil is the default registry, which is what every other lookup in this package
+// Nil is the process default, which is what every other lookup in this package
 // already means by it (see [newDocument]).
 func registryShapesOutputs(tasks *v1.Registry, taskName string) bool {
 	if tasks == nil {
-		return underBase(func() bool { return v1.TaskShapesOutputs(taskName) })
+		tasks = defaultTasks()
 	}
 	def, found := tasks.Lookup(taskName)
 	return found && def.ShapesOutputs

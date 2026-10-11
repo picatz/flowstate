@@ -35,10 +35,10 @@ import (
 var moduleCache = flowfile.NewModuleCache(0, 0)
 
 // moduleInterface is the interface of the module at path through the shared
-// cache, compiled against the default registry as the host left it: the cache is
-// keyed by bytes, so nothing compiled with a document's lock tasks may reach it.
-func moduleInterface(path string) string {
-	return underBase(func() string { return moduleCache.Interface(path) })
+// cache, compiled against env's registry. The cache key includes the registry, so
+// an interface made against one registry is never served for another.
+func moduleInterface(env flowfile.Env, path string) string {
+	return env.ModuleInterface(moduleCache, path)
 }
 
 // maxInterfaceMemo bounds the interfaces a server remembers. Past it the memo is
@@ -83,7 +83,7 @@ func (s *FlowfileServer) rememberInterface(doc *document) {
 		return
 	}
 	canon := canonicalPath(path)
-	s.interfaces.swap(canon, moduleInterface(canon))
+	s.interfaces.swap(canon, moduleInterface(s.baseEnv(), canon))
 }
 
 // afterQueued runs publish on the document open under uri once every document
@@ -122,7 +122,7 @@ func (s *FlowfileServer) dependentsToRecheck(saved *document) []*document {
 	if !isModule(saved) && !s.interfaces.has(canonicalPath(path)) {
 		return nil
 	}
-	walk := &interfaceWalk{memo: &s.interfaces, saved: canonicalPath(path), loads: v1.MaxModules, verdicts: map[string]bool{}}
+	walk := &interfaceWalk{env: s.baseEnv(), memo: &s.interfaces, saved: canonicalPath(path), loads: v1.MaxModules, verdicts: map[string]bool{}}
 	walk.changed(walk.saved, 0)
 
 	var out []*document
@@ -144,6 +144,9 @@ func (s *FlowfileServer) dependentsToRecheck(saved *document) []*document {
 // An interfaceWalk decides, for one save, which modules have a different
 // interface than the editor was last told of.
 type interfaceWalk struct {
+	// env is the base environment: the memo is per path, not per document, so an
+	// interface is always the one the server's own registry gives.
+	env   flowfile.Env
 	memo  *interfaceMemo
 	saved string
 
@@ -186,7 +189,7 @@ func (w *interfaceWalk) changed(path string, depth int) bool {
 		}
 	}
 
-	now := moduleInterface(path)
+	now := moduleInterface(w.env, path)
 	previous, known := w.memo.swap(path, now)
 	verdict := now == "" || !known || previous != now
 	w.verdicts[path] = verdict

@@ -811,15 +811,9 @@ func repinActions(doc *document, params codeActionParams) []codeAction {
 	if len(covered) == 0 {
 		return nil
 	}
-	type repinned struct {
-		result flowfile.FixResult
-		err    error
-	}
-	r := underDoc(doc, func() repinned {
-		result, err := flowfile.RepinUses(path, []byte(doc.text))
-		return repinned{result, err}
-	})
-	result, err := r.result, r.err
+	// RepinUses reads no task registry (it hashes the module files `use:` names),
+	// so it has no Env form.
+	result, err := flowfile.RepinUses(path, []byte(doc.text))
 	if err != nil || len(result.Changes) == 0 || string(result.Source) == doc.text {
 		return nil
 	}

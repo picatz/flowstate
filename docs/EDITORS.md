@@ -293,10 +293,12 @@ under a ninth is refused its lock with a warning message and reads plugin tasks 
 unknown until another is closed. A lock that cannot be read or used leaves its
 document on the built-in tasks, with the same warning.
 
-The compiler reads one process-wide registry and takes none, so while a document
-under a lock is being checked the lock's tasks are added to it for that call and
-removed after, and such checks run one at a time. This is an interim bound, not
-the design; passing a registry through the compiler is tracked in #2695.
+Each document is compiled against its own registry: the server's tasks plus the
+tasks of the lock above that document. The registry is handed to the compiler
+for that document alone, so a lock's tasks are never added to the process-wide
+registry, checks on documents under different locks run concurrently, and a
+request still working on a document that has since been closed answers from the
+registry the document was opened with.
 
 `--plugin`, `--plugin-scheme` and `--allow-insecure-plugin-dir` are accepted too,
 with the meanings [CLI.md](CLI.md) gives them. A plugin that will not start —
