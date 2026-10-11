@@ -107,8 +107,14 @@ test('a long transport error keeps its cause, which comes last', () => {
 test('a very long error still ends in its cause, and a cut never splits a character', () => {
   const long = `rpc error: ${'x'.repeat(900)} connection refused`
   expect(reason(long)).toMatch(/connection refused$/)
-  const emoji = `${'😀'.repeat(80)} end`
+  const emoji = `${'😀'.repeat(120)} end`
   const cut = reason(emoji)
   expect(Array.from(cut).every(c => c.codePointAt(0)! < 0xd800 || c.codePointAt(0)! > 0xdfff)).toBe(true)
   expect(cut).toMatch(/ end$/)
+  expect(cut).toContain(' … ')
+  expect(Array.from(cut).length).toBeLessThanOrEqual(100)
+  expect(reason('a'.repeat(100))).toBe('a'.repeat(100))
+  expect(reason('a'.repeat(101))).toContain(' … ')
+  const huge = reason(`start ${'y'.repeat(50_000)} the real cause`)
+  expect(huge).toMatch(/the real cause$/)
 })
