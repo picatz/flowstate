@@ -812,8 +812,9 @@ export const register: Register = (on, options) => {
               </Button>
               {head.kind === 'failed' && debugCommand(id) !== undefined && (
                 <Button key="debug-this" label="Debug this" plain onPress={async () => {
-                  await $.ui.copy({ text: debugCommand(id)!, surface: e.surface }).catch(() => undefined)
-                  paneNotes.debugAsked(id, facts.failedStep)
+                  // The note says what reached the clipboard, so a refused copy leaves none.
+                  const copied = await $.ui.copy({ text: debugCommand(id)!, surface: e.surface }).then(() => true, () => false)
+                  if (copied) paneNotes.debugAsked(id, facts.failedStep)
                 }}>
                   Debug this
                 </Button>
