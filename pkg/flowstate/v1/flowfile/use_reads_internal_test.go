@@ -39,7 +39,7 @@ func TestAFailingModuleIsReadOnceHoweverOftenItIsNamed(t *testing.T) {
 	path := filepath.Join(dir, "w.yaml")
 
 	session := newModuleSession()
-	_, _, err := parse(data, path, nil, new(int), session)
+	_, _, err := parse(Env{}, data, path, nil, new(int), session)
 	require.Error(t, err)
 	assert.Equal(t, 1, *session.reads, "the failing child is read once, not once per use")
 	assert.LessOrEqual(t, *session.reads, v1.MaxModules)
@@ -74,7 +74,7 @@ func TestAChainOfModulesEndingInAFailureIsReadOncePerModule(t *testing.T) {
 	}
 
 	session := newModuleSession()
-	_, _, err := parse([]byte(files["w.yaml"]), filepath.Join(dir, "w.yaml"), nil, new(int), session)
+	_, _, err := parse(Env{}, []byte(files["w.yaml"]), filepath.Join(dir, "w.yaml"), nil, new(int), session)
 	require.Error(t, err)
 	assert.LessOrEqual(t, *session.reads, 3, "bad, l2 and l1 are each read once")
 }
@@ -109,7 +109,7 @@ func TestAFanOutOfFailingModulesKeepsItsReportSmall(t *testing.T) {
 	}
 
 	session := newModuleSession()
-	_, _, err := parse([]byte(files["w.yaml"]), filepath.Join(dir, "w.yaml"), nil, new(int), session)
+	_, _, err := parse(Env{}, []byte(files["w.yaml"]), filepath.Join(dir, "w.yaml"), nil, new(int), session)
 	require.Error(t, err)
 	assert.Less(t, len(err.Error()), 8<<10, "the report does not grow with the fan-out")
 	assert.LessOrEqual(t, *session.reads, 4, "each distinct module is read once")

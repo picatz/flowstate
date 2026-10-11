@@ -6,8 +6,6 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
-
-	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Source positions are kept because a diagnostic without one is a diagnostic the
@@ -97,6 +95,11 @@ type Positions struct {
 	steps    map[string]string
 	triggers map[string]string
 
+	// env is the environment the file was compiled in. Locating a field under a
+	// step tries every task name that environment knows, so the answer must come
+	// from the same registry the compile used and not from whichever is default.
+	env Env
+
 	// stepAt is every step's id by its path, duplicates included: the
 	// inverse of steps, which keeps only the first declaration of an id. The
 	// debugger's source map reads it, because two sibling loops may each
@@ -118,8 +121,9 @@ type Positions struct {
 	blockFenced map[string]bool
 }
 
-func newPositions() *Positions {
+func newPositions(env Env) *Positions {
 	return &Positions{
+		env:      env,
 		spans:    make(map[string]Span),
 		exprs:    make(map[string]Span),
 		steps:    make(map[string]string),
@@ -260,7 +264,7 @@ func (p *Positions) Locate(step, field string) (Span, bool) {
 		return p.At(base)
 	}
 
-	for _, candidate := range fieldCandidates(base, field) {
+	for _, candidate := range p.fieldCandidates(base, field) {
 		if span, ok := p.At(candidate); ok {
 			return span, true
 		}
@@ -287,9 +291,10 @@ func (p *Positions) Locate(step, field string) (Span, bool) {
 // step, so the squiggle sat on `- id:` while the expression at fault was lines
 // away (#318). A step does one kind of work, so at most one of these candidates
 // can exist in the map and adding it cannot make the search ambiguous.
-func fieldCandidates(base, field string) []string {
-	candidates := make([]string, 0, len(v1.TaskNames())+4)
-	for _, task := range v1.TaskNames() {
+func (p *Positions) fieldCandidates(base, field string) []string {
+	names := p.env.taskNames()
+	candidates := make([]string, 0, len(names)+4)
+	for _, task := range names {
 		candidates = append(candidates, base+"."+task+"."+field)
 	}
 
@@ -329,7 +334,7 @@ func (p *Positions) locateExpr(step, field string) (Span, bool) {
 		return Span{}, false
 	}
 
-	for _, candidate := range fieldCandidates(base, field) {
+	for _, candidate := range p.fieldCandidates(base, field) {
 		if span, ok := p.ExprAt(candidate); ok {
 			return span, true
 		}
@@ -430,7 +435,7 @@ func (p *Positions) flagged(set map[string]bool, step, field string) bool {
 	if !ok {
 		return false
 	}
-	for _, candidate := range fieldCandidates(base, field) {
+	for _, candidate := range p.fieldCandidates(base, field) {
 		if set[candidate] {
 			return true
 		}

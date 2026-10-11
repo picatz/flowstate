@@ -33,6 +33,12 @@ import (
 // string containing ${, which would be read as an expression, and an expression
 // whose source used a macro, which cel-go cannot write back.
 func Marshal(wf *v1.Workflow) ([]byte, error) {
+	return Env{}.Marshal(wf)
+}
+
+// Marshal is [Marshal] against this Env's registry: the registry decides which
+// bound credentials are elided and the order a task's inputs are written in.
+func (e Env) Marshal(wf *v1.Workflow) ([]byte, error) {
 	if err := checkSourceForms(wf); err != nil {
 		return nil, err
 	}
@@ -43,7 +49,7 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	// and only when something is bound.
 	if bindsCredentials(wf) {
 		elided := proto.Clone(wf).(*v1.Workflow)
-		if err := v1.ElideBoundCredentials(elided, v1.DefaultRegistry()); err != nil {
+		if err := v1.ElideBoundCredentials(elided, e.Registry()); err != nil {
 			return nil, err
 		}
 		wf = elided
@@ -212,7 +218,7 @@ func Marshal(wf *v1.Workflow) ([]byte, error) {
 	// that back is an author asking for an empty list, which is a different
 	// mistake and gets a different diagnostic.
 	if len(wf.GetSteps()) > 0 {
-		steps, err := stepsToYAML(wf.GetSteps())
+		steps, err := stepsToYAML(e, wf.GetSteps())
 		if err != nil {
 			return nil, err
 		}
@@ -305,10 +311,10 @@ func bindsCredentials(wf *v1.Workflow) bool {
 
 // stepsToYAML writes a list of steps, recursing through nested control flow so
 // that a loop body and a parallel branch come back out as they went in.
-func stepsToYAML(nodes []*v1.Node) ([]any, error) {
+func stepsToYAML(env Env, nodes []*v1.Node) ([]any, error) {
 	steps := make([]any, 0, len(nodes))
 	for _, node := range nodes {
-		step, err := stepToYAML(node)
+		step, err := stepToYAML(env, node)
 		if err != nil {
 			return nil, err
 		}
@@ -346,7 +352,7 @@ func unrepresentablePolicySubject(node *v1.Node) (string, bool) {
 }
 
 // stepToYAML writes one step.
-func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
+func stepToYAML(env Env, node *v1.Node) (yaml.MapSlice, error) {
 	step := yaml.MapSlice{{Key: "id", Value: textToYAML(node.GetId())}}
 
 	// Written second, right under the id, because prose about a step is read
@@ -431,21 +437,21 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 
 	switch kind := node.GetKind().(type) {
 	case *v1.Node_Task:
-		inputs, err := taskInputsToYAML(kind.Task)
+		inputs, err := taskInputsToYAML(env, kind.Task)
 		if err != nil {
 			return nil, fmt.Errorf("step %q: %w", node.GetId(), err)
 		}
 		step = append(step, yaml.MapItem{Key: kind.Task.GetName(), Value: inputs})
 
 	case *v1.Node_ForEach:
-		loop, err := forEachToYAML(kind.ForEach)
+		loop, err := forEachToYAML(env, kind.ForEach)
 		if err != nil {
 			return nil, fmt.Errorf("step %q for_each: %w", node.GetId(), err)
 		}
 		step = append(step, yaml.MapItem{Key: "for_each", Value: loop})
 
 	case *v1.Node_Loop:
-		loop, err := loopToYAML(kind.Loop)
+		loop, err := loopToYAML(env, kind.Loop)
 		if err != nil {
 			return nil, fmt.Errorf("step %q loop: %w", node.GetId(), err)
 		}
@@ -454,7 +460,7 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 	case *v1.Node_Parallel:
 		branches := make([]any, 0, len(kind.Parallel.GetBranches()))
 		for i, branch := range kind.Parallel.GetBranches() {
-			steps, err := stepsToYAML(branch.GetSteps())
+			steps, err := stepsToYAML(env, branch.GetSteps())
 			if err != nil {
 				return nil, fmt.Errorf("step %q parallel branch %d: %w", node.GetId(), i+1, err)
 			}
@@ -492,7 +498,7 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		}
 
 	case *v1.Node_Switch:
-		value, err := switchToYAML(kind.Switch)
+		value, err := switchToYAML(env, kind.Switch)
 		if err != nil {
 			return nil, fmt.Errorf("step %q switch: %w", node.GetId(), err)
 		}
@@ -528,7 +534,7 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 		if task.GetName() == "" {
 			return nil, fmt.Errorf("step %q undo: compensation has no task", node.GetId())
 		}
-		inputs, err := taskInputsToYAML(task)
+		inputs, err := taskInputsToYAML(env, task)
 		if err != nil {
 			return nil, fmt.Errorf("step %q undo: %w", node.GetId(), err)
 		}
@@ -549,7 +555,7 @@ func stepToYAML(node *v1.Node) (yaml.MapSlice, error) {
 // says the inputs are empty on purpose, and a key with nothing after it reads as
 // an unfinished line. A formatter should not produce something that looks like a
 // mistake.
-func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
+func taskInputsToYAML(env Env, task *v1.Task) (yaml.MapSlice, error) {
 	// A task used to carry a description, and this function refused one rather than
 	// dropping it: silently discarding a field would make Marshal(Unmarshal(x))
 	// mean something other than x, which is the property this file exists to hold.
@@ -558,9 +564,9 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 	// it rewrites an older file.
 
 	inputs := yaml.MapSlice{}
-	for _, name := range orderedInputNames(task) {
+	for _, name := range orderedInputNames(env, task) {
 		write := inputValueToYAML
-		if name == v1.ShapingInput && v1.TaskShapesOutputs(task.GetName()) {
+		if name == v1.ShapingInput && v1.TaskShapesOutputsFrom(env.tasks(), task.GetName()) {
 			// The one input read by a rule of its own, so the one input that
 			// cannot be written by the general one: a mapping under a shaping
 			// task's `outputs:` is compiled entry by entry into a
@@ -594,9 +600,9 @@ func taskInputsToYAML(task *v1.Task) (yaml.MapSlice, error) {
 // A task the registry does not know (a plugin that is not loaded where this
 // runs) and any name its schema does not list fall back to sorted, after the
 // ones that are listed.
-func orderedInputNames(task *v1.Task) []string {
+func orderedInputNames(env Env, task *v1.Task) []string {
 	names := slices.Sorted(maps.Keys(task.GetInputs()))
-	def, ok := v1.DefaultRegistry().Lookup(task.GetName())
+	def, ok := env.lookup(task.GetName())
 	if !ok || len(names) < 2 {
 		return names
 	}
@@ -642,7 +648,7 @@ func varsToYAML(vars map[string]*v1.Value) (yaml.MapSlice, error) {
 }
 
 // forEachToYAML writes a loop and its body.
-func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
+func forEachToYAML(env Env, loop *v1.ForEach) (yaml.MapSlice, error) {
 	items, err := exprValueToYAML(loop.GetItems())
 	if err != nil {
 		return nil, fmt.Errorf("items: %w", err)
@@ -656,7 +662,7 @@ func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
 		out = append(out, yaml.MapItem{Key: "max_parallel", Value: maxParallel})
 	}
 
-	steps, err := stepsToYAML(loop.GetBody())
+	steps, err := stepsToYAML(env, loop.GetBody())
 	if err != nil {
 		return nil, err
 	}
@@ -670,7 +676,7 @@ func forEachToYAML(loop *v1.ForEach) (yaml.MapSlice, error) {
 // [inputValueToYAML] because either may be a literal or an expression, exactly as a
 // task input is. The order here is the order the acceptance example is written in, so
 // a marshalled loop reads the way an author would have written one.
-func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
+func loopToYAML(env Env, loop *v1.Loop) (yaml.MapSlice, error) {
 	out := yaml.MapSlice{}
 
 	if state := loop.GetState(); state != "" {
@@ -699,7 +705,7 @@ func loopToYAML(loop *v1.Loop) (yaml.MapSlice, error) {
 		out = append(out, yaml.MapItem{Key: "max_iterations", Value: maxIterations})
 	}
 
-	steps, err := stepsToYAML(loop.GetBody())
+	steps, err := stepsToYAML(env, loop.GetBody())
 	if err != nil {
 		return nil, err
 	}
@@ -774,7 +780,7 @@ func loopStateToYAML(value *v1.Value) (any, error) {
 // byte-for-byte surface never rewrites a file it is not changing. `steps:` is
 // always written, `[]` included: an empty body is written-down ignoring, and
 // dropping the key would turn it into a parse error on the way back in.
-func switchToYAML(sw *v1.Switch) (yaml.MapSlice, error) {
+func switchToYAML(env Env, sw *v1.Switch) (yaml.MapSlice, error) {
 	value, err := exprValueToYAML(sw.GetValue())
 	if err != nil {
 		return nil, fmt.Errorf("value: %w", err)
@@ -802,7 +808,7 @@ func switchToYAML(sw *v1.Switch) (yaml.MapSlice, error) {
 			caseValue = list
 		}
 
-		steps, err := stepsToYAML(c.GetSteps())
+		steps, err := stepsToYAML(env, c.GetSteps())
 		if err != nil {
 			return nil, fmt.Errorf("case %d: %w", i+1, err)
 		}
@@ -814,7 +820,7 @@ func switchToYAML(sw *v1.Switch) (yaml.MapSlice, error) {
 	out = append(out, yaml.MapItem{Key: "cases", Value: cases})
 
 	if def := sw.GetDefault(); def != nil {
-		steps, err := stepsToYAML(def.GetSteps())
+		steps, err := stepsToYAML(env, def.GetSteps())
 		if err != nil {
 			return nil, fmt.Errorf("default: %w", err)
 		}

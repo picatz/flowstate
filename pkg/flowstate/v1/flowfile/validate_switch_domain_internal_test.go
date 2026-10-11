@@ -846,7 +846,7 @@ steps:
 // step from the scope rather than searching the file for its id (#323), so the
 // tests that call it directly have to hand it the same thing the walk would.
 func domainScope(wf *v1.Workflow) refScope {
-	scope := newRefScope(wf)
+	scope := newRefScope(Env{}, wf)
 	for _, node := range wf.GetSteps() {
 		recordStepInScope(scope, node)
 	}

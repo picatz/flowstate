@@ -299,7 +299,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	callee, _, err := parse(data, resolved, ancestors, c.callBudget, nil)
+	callee, _, err := parse(c.env, data, resolved, ancestors, c.callBudget, nil)
 	if err != nil {
 		c.report(spanOfNode(pathNode), callRef,
 			"calls %q, which failed to compile:\n%s", target, indentLines(err.Error()))

@@ -46,6 +46,13 @@ import (
 // The depth the module sits at is part of the key because the bound on how deeply
 // modules use one another is judged while a module is compiled, and a module
 // compiled with room to spare must not be reused where there is none.
+//
+// The registry the compile resolved tasks against is part of the key for the same
+// reason: one cache may serve [Env]s holding different task sets (an editor's
+// documents, each with its own plugin lock), and a module compiled and cleared
+// against one registry must not be handed to a compile against another. The
+// registry is named by its identity, the pointer, and the process default by nil,
+// so the zero Env never shares an entry with a registry of its own.
 
 const (
 	// DefaultModuleCacheEntries is how many compiled modules a [ModuleCache] holds
@@ -60,13 +67,15 @@ const (
 
 // A moduleKey names the inputs a module's compile depends on besides its own
 // dependencies: where it is, what its bytes are, the language this build
-// compiles, and how deep it sits.
+// compiles, how deep it sits, and the task registry it was compiled against
+// (nil for the process default).
 type moduleKey struct {
-	path    string
-	digest  string
-	profile string
-	edition string
-	depth   int
+	path     string
+	digest   string
+	profile  string
+	edition  string
+	depth    int
+	registry *v1.Registry
 }
 
 // A moduleDep is one `use:` a cached module was compiled with: the path as the
@@ -152,18 +161,31 @@ func (m *ModuleCache) Stats() ModuleCacheStats {
 // from the cache when they have not changed. The diagnostics are the ones an
 // uncached call reports.
 func (m *ModuleCache) ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
-	return validateThroughEdition(data, path, m)
+	return Env{}.ValidateSourceAtCached(m, data, path)
 }
 
 // ValidateSourceFile is [ValidateSourceFile] with the modules the file uses taken
 // from the cache when they have not changed.
 func (m *ModuleCache) ValidateSourceFile(path string) (Diagnostics, error) {
+	return Env{}.ValidateSourceFileCached(m, path)
+}
+
+// ValidateSourceAtCached is [ModuleCache.ValidateSourceAt] against this Env's
+// registry. One cache may serve several Envs: an entry is only ever used by a
+// compile against the registry it was made with.
+func (e Env) ValidateSourceAtCached(m *ModuleCache, data []byte, path string) (Diagnostics, error) {
+	return validateThroughEdition(e, data, path, m)
+}
+
+// ValidateSourceFileCached is [ModuleCache.ValidateSourceFile] against this Env's
+// registry.
+func (e Env) ValidateSourceFileCached(m *ModuleCache, path string) (Diagnostics, error) {
 	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, err
 	}
 
-	return validateThroughEdition(data, path, m)
+	return validateThroughEdition(e, data, path, m)
 }
 
 // Interface is the interface digest of the module in the file at path, as the
@@ -173,10 +195,17 @@ func (m *ModuleCache) ValidateSourceFile(path string) (Diagnostics, error) {
 // as "changed". The file is compiled, or found in the cache, by the same code a
 // `use:` reaches it with.
 func (m *ModuleCache) Interface(path string) string {
+	return Env{}.ModuleInterface(m, path)
+}
+
+// ModuleInterface is [ModuleCache.Interface] against this Env's registry: the
+// module is compiled, or found in the cache, as a compile against that registry.
+func (e Env) ModuleInterface(m *ModuleCache, path string) string {
 	if m == nil {
 		return ""
 	}
 	c := &compiler{
+		env: e,
 		// A name that is the target's plus a suffix is never the target itself,
 		// which would be a cycle.
 		filePath:   path + ".importer",
@@ -203,8 +232,8 @@ func (m *ModuleCache) moduleSession() *moduleSession {
 	return s
 }
 
-func (m *ModuleCache) keyFor(path, digest string, depth int) moduleKey {
-	return moduleKey{path: path, digest: digest, profile: v1.CurrentProfile, edition: CurrentEdition, depth: depth}
+func (m *ModuleCache) keyFor(env Env, path, digest string, depth int) moduleKey {
+	return moduleKey{path: path, digest: digest, profile: v1.CurrentProfile, edition: CurrentEdition, depth: depth, registry: env.tasks()}
 }
 
 // lookup finds the entry for key and marks it used. It does not judge it: the
@@ -279,7 +308,7 @@ func (c *compiler) reuseModule(resolved string, ancestors []string, digest strin
 	if cache == nil || c.session.ignorePins {
 		return nil, false
 	}
-	entry, ok := cache.lookup(cache.keyFor(resolved, digest, c.session.depth+1))
+	entry, ok := cache.lookup(cache.keyFor(c.env, resolved, digest, c.session.depth+1))
 	if !ok {
 		cache.count(func(s *ModuleCacheStats) { s.Misses++ })
 
@@ -287,6 +316,7 @@ func (c *compiler) reuseModule(resolved string, ancestors []string, digest strin
 	}
 
 	module := &compiler{
+		env:        c.env,
 		filePath:   resolved,
 		callStack:  ancestors,
 		callBudget: c.callBudget,

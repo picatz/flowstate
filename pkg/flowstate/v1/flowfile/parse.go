@@ -171,11 +171,11 @@ func StepGrammarKeys() []string {
 // keywords, because from an author's position those are the same kind of thing.
 // [v1.ReservedStepKeys] keeps the two halves disjoint, so a key is never
 // ambiguous.
-func stepKeys() []string {
+func (e Env) stepKeys() []string {
 	keys := make([]string, 0, len(stepPropertyKeys)+len(nodeKindKeys)+8)
 	keys = append(keys, stepPropertyKeys...)
 	keys = append(keys, nodeKindKeys...)
-	return append(keys, v1.TaskNames()...)
+	return append(keys, e.taskNames()...)
 }
 
 // couldBeATaskName reports whether a key is spelled the way a task name must be.
@@ -219,8 +219,8 @@ func couldBeATaskName(key string) bool {
 }
 
 // stepKindKeys are the keys saying what a step *does*. Exactly one is required.
-func stepKindKeys() []string {
-	return append(slices.Clone(nodeKindKeys), v1.TaskNames()...)
+func (e Env) stepKindKeys() []string {
+	return append(slices.Clone(nodeKindKeys), e.taskNames()...)
 }
 
 // retiredStepKeys are spellings a step used to have, and what to write instead.
@@ -401,6 +401,11 @@ const retiredUniqueMessage = "`unique:` is removed: `must: this == this.distinct
 // The last clause is why this takes the whole step rather than one key: the answer
 // for `shell` depends on what else the step says.
 func StepTaskKeys(keys []string) []string {
+	return Env{}.StepTaskKeys(keys)
+}
+
+// StepTaskKeys is [StepTaskKeys] against this Env's registry.
+func (e Env) StepTaskKeys(keys []string) []string {
 	// The words the step grammar speaks for, which is [v1.ReservedStepKeys] and
 	// not the subset this build happens to implement.
 	//
@@ -411,11 +416,11 @@ func StepTaskKeys(keys []string) []string {
 	// today would compile as a task nobody registered, and the day `needs:` becomes
 	// grammar, a file that compiles would silently mean something else.
 	grammar := v1.ReservedStepKeys()
-	kinds := stepKindKeys()
+	kinds := e.stepKindKeys()
 
 	var out []string
 	for _, key := range keys {
-		if _, known := v1.LookupTask(key); known {
+		if _, known := e.lookup(key); known {
 			out = append(out, key)
 		}
 	}
@@ -478,7 +483,12 @@ func StepTaskKeys(keys []string) []string {
 // refused with a diagnostic saying so. Use [ParseFile] to compile a file that
 // may contain one.
 func Parse(data []byte) (*v1.Workflow, *Positions, error) {
-	wf, pos, err := parse(data, "", nil, new(int), nil)
+	return Env{}.Parse(data)
+}
+
+// Parse is [Parse] against this Env's registry.
+func (e Env) Parse(data []byte) (*v1.Workflow, *Positions, error) {
+	wf, pos, err := parse(e, data, "", nil, new(int), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -493,11 +503,16 @@ func Parse(data []byte) (*v1.Workflow, *Positions, error) {
 // package doc on `v1.Call` for why filesystem access belongs at the edge that
 // already has an author's files, and never at a worker.
 func ParseFile(path string) (*v1.Workflow, *Positions, error) {
+	return Env{}.ParseFile(path)
+}
+
+// ParseFile is [ParseFile] against this Env's registry.
+func (e Env) ParseFile(path string) (*v1.Workflow, *Positions, error) {
 	data, err := readBoundedSource(path)
 	if err != nil {
 		return nil, nil, err
 	}
-	wf, pos, err := parse(data, path, nil, new(int), nil)
+	wf, pos, err := parse(e, data, path, nil, new(int), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -513,7 +528,12 @@ func ParseFile(path string) (*v1.Workflow, *Positions, error) {
 // from disk, because a callee is a *different* file's content and this
 // function has no in-memory version of it to prefer.
 func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
-	wf, pos, err := parse(data, path, nil, new(int), nil)
+	return Env{}.ParseAt(data, path)
+}
+
+// ParseAt is [ParseAt] against this Env's registry.
+func (e Env) ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
+	wf, pos, err := parse(e, data, path, nil, new(int), nil)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -528,9 +548,15 @@ func ParseAt(data []byte, path string) (*v1.Workflow, *Positions, error) {
 // every other change to the file. Never for a file that is run, validated or
 // submitted: there a pin is the author's check and is always enforced.
 func ParseAtWithoutModulePins(data []byte, path string) (*v1.Workflow, *Positions, error) {
+	return Env{}.ParseAtWithoutModulePins(data, path)
+}
+
+// ParseAtWithoutModulePins is [ParseAtWithoutModulePins] against this Env's
+// registry.
+func (e Env) ParseAtWithoutModulePins(data []byte, path string) (*v1.Workflow, *Positions, error) {
 	session := newModuleSession()
 	session.ignorePins = true
-	wf, pos, err := parse(data, path, nil, new(int), session)
+	wf, pos, err := parse(e, data, path, nil, new(int), session)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -542,7 +568,7 @@ func ParseAtWithoutModulePins(data []byte, path string) (*v1.Workflow, *Position
 // already being compiled, for cycle detection across files, and the running
 // total of nodes a call has compiled so far, shared across the whole tree —
 // see call.go.
-func parse(data []byte, path string, callStack []string, callBudget *int, session *moduleSession) (*v1.Workflow, *Positions, error) {
+func parse(env Env, data []byte, path string, callStack []string, callBudget *int, session *moduleSession) (*v1.Workflow, *Positions, error) {
 	if len(data) > maxBytes {
 		return nil, nil, Diagnostics{{
 			Line:   1,
@@ -566,7 +592,8 @@ func parse(data []byte, path string, callStack []string, callBudget *int, sessio
 	}
 
 	c := &compiler{
-		pos:        newPositions(),
+		env:        env,
+		pos:        newPositions(env),
 		anchors:    make(map[string]ast.Node),
 		filePath:   path,
 		callStack:  callStack,
@@ -668,6 +695,11 @@ func YAMLSyntaxDiagnostics(data []byte, err error) Diagnostics {
 // A compiler walks one document tree, building the workflow and collecting every
 // problem it finds rather than stopping at the first.
 type compiler struct {
+	// env is the registry this compile resolves task names, input shapes and
+	// output names against. Carried unchanged into every call and module the
+	// compile reaches, so a whole tree of files is read in one environment.
+	env Env
+
 	diags   Diagnostics
 	pos     *Positions
 	anchors map[string]ast.Node
@@ -1075,7 +1107,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// An enum value written by name becomes its number, so the specification
 	// holds what a run stores and neither driver learns a name (enumnames.go).
 	if len(c.diags) == 0 {
-		lowerEnumNames(workflow)
+		lowerEnumNames(c.env, workflow)
 	}
 
 	// A declaration typed by a record with a `sensitive:` field is sensitive whole.
@@ -1085,7 +1117,7 @@ func (c *compiler) compile(file *ast.File) *v1.Workflow {
 	// enforces, against the plugins this process knows. A plugin it does not know
 	// is bound at the server's admission instead, which refuses what it cannot.
 	if f, found := fields.get("plugins"); found && len(c.diags) == 0 {
-		if err := v1.BindPluginCredentials(workflow, v1.DefaultRegistry()); err != nil {
+		if err := v1.BindPluginCredentials(workflow, c.env.Registry()); err != nil {
 			c.report(spanOfNode(f.key), ref{path: "plugins", label: "plugins"}, "%s", err)
 		}
 	}
@@ -1807,12 +1839,12 @@ func (c *compiler) step(n ast.Node, path string) *v1.Node {
 	for i, e := range entries {
 		names[i] = e.name
 	}
-	promoted := StepTaskKeys(names)
+	promoted := c.env.StepTaskKeys(names)
 
 	// stepKeys already holds every *registered* name, so only an unregistered one
 	// is news here. Appending the whole promoted set would list `echo` twice in
 	// "the keys here are ...", which reads like a bug in the tool.
-	known := stepKeys()
+	known := c.env.stepKeys()
 	for _, name := range promoted {
 		if !slices.Contains(known, name) {
 			known = append(known, name)
@@ -2147,7 +2179,7 @@ func (c *compiler) inputs(n ast.Node, path string, r ref, taskName string, into 
 		// entry, so the names survive into the specification instead of being
 		// erased into one expression that builds a map. See
 		// [compiler.shapedOutputs].
-		if e.name == v1.ShapingInput && v1.TaskShapesOutputs(taskName) {
+		if e.name == v1.ShapingInput && v1.TaskShapesOutputsFrom(c.env.tasks(), taskName) {
 			if value := c.shapedOutputs(e.value, e.key, valuePath, inputRef); value != nil {
 				into[e.name] = value
 			}

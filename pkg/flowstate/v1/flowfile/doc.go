@@ -158,5 +158,18 @@
 // the task's own definition, so an input built to accept a reference is offered on
 // the day it is built.
 //
+// # The task registry
+//
+// Which tasks a step may name, and what their inputs and outputs are, comes from
+// a registry. By default that is the process's own, [flowstatev1.DefaultRegistry]
+// (the built-in tasks plus whatever this process registered at startup), and the
+// package-level functions here read it. A caller that holds its own task set (an
+// editor answering each document from that document's plugin lock, an embedder
+// compiling for several tenants) uses an [Env] built with [WithRegistry] and calls
+// the same operations as its methods: [Env.Parse], [Env.ValidateSource],
+// [Env.Fix], [Env.Format], [Env.Marshal] and the rest see only that registry, and
+// the process default is neither consulted nor modified. The CLI keeps the
+// default.
+//
 // [flowstatev1.Workflow]: https://pkg.go.dev/github.com/picatz/flowstate/pkg/flowstate/v1#Workflow
 package flowfile

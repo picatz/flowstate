@@ -99,7 +99,7 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 	// The callee's own steps, vars, and outputs, validated on its own terms and
 	// in its own — isolated — scope: not the scope above, which is the caller's
 	// and exactly what [v1.CallScope] refuses a callee.
-	for _, d := range validateAtDepth(callee, calleeProfile, depth, placement.IntoCall()) {
+	for _, d := range validateAtDepth(scope.env, callee, calleeProfile, depth, placement.IntoCall()) {
 		d.Step = id
 		d.Message = fmt.Sprintf("workflow %q: %s", callee.GetName(), d.Message)
 		ds = append(ds, d)

@@ -76,7 +76,12 @@ func parseDuration(s string) (time.Duration, error) { return v1.ParseDuration(s)
 // A copy is returned because the caller must not be able to edit the DSL by
 // editing a slice header.
 func StepKinds() []string {
-	return stepKindKeys()
+	return Env{}.StepKinds()
+}
+
+// StepKinds is [StepKinds] against this Env's registry.
+func (e Env) StepKinds() []string {
+	return e.stepKindKeys()
 }
 
 // StepKindList renders the kinds a step may be as prose: "a, b, or c".
@@ -84,7 +89,12 @@ func StepKinds() []string {
 // Built from [stepKindKeys] rather than written out, so that adding a kind cannot
 // leave a diagnostic — or an editor — describing the DSL as it used to be.
 func StepKindList() string {
-	kinds := stepKindKeys()
+	return Env{}.StepKindList()
+}
+
+// StepKindList is [StepKindList] against this Env's registry.
+func (e Env) StepKindList() string {
+	kinds := e.stepKindKeys()
 	if len(kinds) < 2 {
 		return strings.Join(kinds, "")
 	}

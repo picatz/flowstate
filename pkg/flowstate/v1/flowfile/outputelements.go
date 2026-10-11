@@ -45,8 +45,8 @@ type outputElement struct {
 
 // outputElementErrors reports a read of a field a message inside a task's answer
 // does not have.
-func outputElementErrors(wf *v1.Workflow) Diagnostics {
-	origins := newEnumOrigins(wf)
+func outputElementErrors(env Env, wf *v1.Workflow) Diagnostics {
+	origins := newEnumOrigins(env, wf)
 
 	var ds Diagnostics
 	v1.WalkWorkflow(wf, v1.Walk{Value: func(site v1.ValueSite) {
@@ -234,7 +234,7 @@ func (o *enumOrigins) taskAnswer(id string) (outputElement, bool) {
 	if !ok || node.GetTask() == nil {
 		return outputElement{}, false
 	}
-	def, found := v1.LookupTask(node.GetTask().GetName())
+	def, found := o.env.lookup(node.GetTask().GetName())
 	if !found || def.Outputs == nil {
 		return outputElement{}, false
 	}

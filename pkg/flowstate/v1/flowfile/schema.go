@@ -58,8 +58,8 @@ func credentialPlacement(stepID string, def v1.TaskDef, task *v1.Task, name stri
 // validateTaskInputs reports what the task's own schema says is wrong with its
 // inputs: a name it does not declare, a required one left out, and a literal
 // whose type the field cannot hold.
-func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
-	def, known := v1.LookupTask(task.GetName())
+func validateTaskInputs(env Env, stepID string, task *v1.Task) Diagnostics {
+	def, known := env.lookup(task.GetName())
 	if !known {
 		// An unknown task is reported on its own.
 		return nil
@@ -82,7 +82,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 
 	// Inputs the task evaluates itself are passed through untouched, so their
 	// shape is the task's business rather than the schema's.
-	_, deferred := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+	_, deferred := v1.ResolvableInputsFrom(env.tasks(), task.GetName(), task.GetInputs())
 
 	// checkable names the inputs whose literal the field can hold, which is the set
 	// the schema's own rules are worth running over. Collected on the way rather
@@ -208,7 +208,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		// input, correctly, because their shape is the task's business. Whether a
 		// value carries a fence is not the task's business, because it is decided
 		// by the parser before the task sees anything.
-		if v1.MustBeExpression(def.Name, name) {
+		if v1.MustBeExpressionFrom(env.tasks(), def.Name, name) {
 			if task.GetInputs()[name].GetExpr() == nil {
 				ds = append(ds, Diagnostic{
 					Step:  stepID,
@@ -240,7 +240,7 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 		checkable[name] = true
 	}
 
-	return append(ds, violatedRules(stepID, task, def, checkable)...)
+	return append(ds, violatedRules(env, stepID, task, def, checkable)...)
 }
 
 // checkExpressionInputTypes reports a task input written as an expression whose
@@ -261,22 +261,22 @@ func validateTaskInputs(stepID string, task *v1.Task) Diagnostics {
 // run decides — because an expression the checker leaves `dyn` is never reported, and
 // neither is an enum's value, which only a run can judge, so a diagnostic here is
 // drawn from a type the file fixes.
-func checkExpressionInputTypes(stepID string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
-	def, known := v1.LookupTask(task.GetName())
+func checkExpressionInputTypes(env Env, stepID string, task *v1.Task, wf *v1.Workflow, table *typeTable) Diagnostics {
+	def, known := env.lookup(task.GetName())
 	if !known || def.Inputs == nil {
 		return nil
 	}
 
 	// Inputs the task evaluates itself are the task's business, the same skip the
 	// literal path takes: their shape is decided against a scope this cannot see.
-	_, deferred := v1.ResolvableInputs(task.GetName(), task.GetInputs())
+	_, deferred := v1.ResolvableInputsFrom(env.tasks(), task.GetName(), task.GetInputs())
 
 	var ds Diagnostics
 	for _, name := range sortedInputNames(task.GetInputs()) {
 		if _, isDeferred := deferred[name]; isDeferred {
 			continue
 		}
-		if v1.MustBeExpression(def.Name, name) {
+		if v1.MustBeExpressionFrom(env.tasks(), def.Name, name) {
 			// An input the task requires as an expression is evaluated by the task,
 			// against names this validator does not model — its value is not a shape
 			// the field holds directly, so comparing one to the field is meaningless.
@@ -496,7 +496,7 @@ func representativeValue(t v1.InputDeclaration_Type) *expr.Value {
 // checkable names the inputs whose literal the field can hold. One that cannot is
 // already reported, and running rules over a value the field rejected would answer a
 // question nobody asked with a second diagnostic about the same line.
-func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[string]bool) Diagnostics {
+func violatedRules(env Env, stepID string, task *v1.Task, def v1.TaskDef, checkable map[string]bool) Diagnostics {
 	if len(checkable) == 0 || def.Inputs == nil {
 		return nil
 	}
@@ -523,7 +523,7 @@ func violatedRules(stepID string, task *v1.Task, def v1.TaskDef, checkable map[s
 		// already answered well. So: does the field accept this shape, then does
 		// the schema's rule accept this value, then will this build do anything
 		// with it.
-		if err := v1.CheckLiteralInput(def.Name, name, task.GetInputs()[name]); err != nil {
+		if err := v1.CheckLiteralInputFrom(env.tasks(), def.Name, name, task.GetInputs()[name]); err != nil {
 			ds = append(ds, Diagnostic{Step: stepID, Field: name, Message: err.Error(), Code: v1.DiagnosticCodeConstraintViolation})
 		}
 	}

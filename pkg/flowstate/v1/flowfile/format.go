@@ -92,6 +92,12 @@ import (
 // written at all. Both mean the same thing to a caller: there is nothing safe to
 // write, so write nothing.
 func Format(source []byte, wf *v1.Workflow) ([]byte, error) {
+	return Env{}.Format(source, wf)
+}
+
+// Format is [Format] against this Env's registry, which [Env.Marshal] reads for the
+// order a task's inputs are written in and for bound credentials.
+func (e Env) Format(source []byte, wf *v1.Workflow) ([]byte, error) {
 	// The same byte bound Parse and Fix hold, because this parses bytes an
 	// outside party wrote and an exported entry point does not get to assume
 	// its caller compiled them first. With the bytes bounded, the walk's node
@@ -102,7 +108,7 @@ func Format(source []byte, wf *v1.Workflow) ([]byte, error) {
 		return nil, fmt.Errorf("the source is %d bytes, more than the %d a Flowfile may hold", len(source), maxBytes)
 	}
 
-	formatted, err := Marshal(wf)
+	formatted, err := e.Marshal(wf)
 	if err != nil {
 		return nil, err
 	}

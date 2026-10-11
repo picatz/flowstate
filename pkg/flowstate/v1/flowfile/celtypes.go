@@ -166,7 +166,7 @@ type stepOutputs struct {
 }
 
 // newTypeTable reads a workflow's declarations and `value:` steps.
-func newTypeTable(wf *v1.Workflow) *typeTable {
+func newTypeTable(env Env, wf *v1.Workflow) *typeTable {
 	table := &typeTable{
 		inputs:     map[string]*cel.Type{},
 		inputTypes: map[string]*v1.Type{},
@@ -192,7 +192,7 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 		// definition that did not check is absent, and a call to it was refused
 		// when the file compiled.
 		table.functions, _ = v1.NewFunctionSet(wf.GetProfile(), wf.GetDeclaredFunctions())
-		table.enumNames = v1.OutputEnumsOf(wf, nil).Names()
+		table.enumNames = v1.OutputEnumsOf(wf, env.tasks()).Names()
 		for _, declared := range wf.GetDeclaredFunctions() {
 			for _, parameter := range declared.GetParameters() {
 				table.enumNames = slices.DeleteFunc(table.enumNames, func(name string) bool { return name == parameter.GetName() })
@@ -210,12 +210,12 @@ func newTypeTable(wf *v1.Workflow) *typeTable {
 				table.bind(node.GetId(), each, index)
 			}
 		}})
-		if shape := resultShapeOf(top, index); shape != nil {
+		if shape := resultShapeOf(env, top, index); shape != nil {
 			table.shapes[top.GetId()] = shape
 		}
 		if value, ok := top.GetKind().(*v1.Node_Value); ok {
 			table.values[top.GetId()] = &valueStep{value: value.Value, index: index}
-		} else if typed := typedOutputs(top); len(typed) > 0 {
+		} else if typed := typedOutputs(env, top); len(typed) > 0 {
 			table.outputs[top.GetId()] = &stepOutputs{types: typed, index: index}
 		}
 	}
@@ -344,14 +344,14 @@ func (t *typeTable) elementType(binding *loopBinding) *cel.Type {
 // definition gives a type, by [v1.OutputNames]: the one answer to what a step
 // exposes, so this reads no descriptor or declaration of its own. Nil for any
 // other kind, and for a step whose names the file cannot know.
-func typedOutputs(node *v1.Node) map[string]*cel.Type {
+func typedOutputs(env Env, node *v1.Node) map[string]*cel.Type {
 	switch node.GetKind().(type) {
 	case *v1.Node_Task, *v1.Node_Call, *v1.Node_Wait, *v1.Node_ForEach, *v1.Node_Loop:
 	default:
 		return nil
 	}
 
-	names, ok := v1.OutputNames(node, nil)
+	names, ok := v1.OutputNames(node, env.tasks())
 	if !ok {
 		return nil
 	}
@@ -660,7 +660,12 @@ func cacheKeyFor(names []string, leaves map[string]*cel.Type) string {
 // An item that is a record is spelled as the record (`Line`), since CEL holds a
 // record as `dyn` and a reader asking what the item is wants the name the file gave it.
 func IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
-	return IteratorTyper(wf)(step, name)
+	return Env{}.IteratorType(wf, step, name)
+}
+
+// IteratorType is [IteratorType] against this Env's registry.
+func (e Env) IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
+	return e.IteratorTyper(wf)(step, name)
 }
 
 // IteratorTyper is [IteratorType] with the workflow scanned once: the returned
@@ -668,7 +673,12 @@ func IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
 // A caller that asks about many loops, such as an editor's inlay hints, uses it
 // so its work does not grow with loops times workflow size.
 func IteratorTyper(wf *v1.Workflow) func(step, name string) (string, bool) {
-	table := newTypeTable(wf)
+	return Env{}.IteratorTyper(wf)
+}
+
+// IteratorTyper is [IteratorTyper] against this Env's registry.
+func (e Env) IteratorTyper(wf *v1.Workflow) func(step, name string) (string, bool) {
+	table := newTypeTable(e, wf)
 
 	return func(step, name string) (string, bool) {
 		if record := table.recordIterators(step)[name]; record != nil {

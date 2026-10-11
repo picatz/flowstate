@@ -420,7 +420,13 @@ func TaskNeedsAuthority(task *Task) bool {
 // the miss rule above is a rule and not a shape: matching [TaskNeedsAuthority]'s
 // literal here would open exactly what this refuses.
 func AcceptsNestedSecret(taskName, input string) bool {
-	def, found := LookupTask(taskName)
+	return AcceptsNestedSecretFrom(nil, taskName, input)
+}
+
+// AcceptsNestedSecretFrom is [AcceptsNestedSecret] against tasks, or the build's
+// own registry when tasks is nil.
+func AcceptsNestedSecretFrom(tasks *Registry, taskName, input string) bool {
+	def, found := LookupTaskFrom(tasks, taskName)
 	return found && slices.Contains(def.NestedSecretInputs, input)
 }
 
@@ -431,7 +437,13 @@ func AcceptsNestedSecret(taskName, input string) bool {
 // [AcceptsNestedSecret] refused, and a build that cannot describe a task cannot
 // name a place inside it where a reference would be safe.
 func NestedSecretInputs(taskName string) []string {
-	def, found := LookupTask(taskName)
+	return NestedSecretInputsFrom(nil, taskName)
+}
+
+// NestedSecretInputsFrom is [NestedSecretInputs] against tasks, or the build's own
+// registry when tasks is nil.
+func NestedSecretInputsFrom(tasks *Registry, taskName string) []string {
+	def, found := LookupTaskFrom(tasks, taskName)
 	if !found {
 		return nil
 	}
@@ -446,7 +458,13 @@ func NestedSecretInputs(taskName string) []string {
 // complaint about an input of it would be a second diagnostic about a step whose
 // real problem is already named.
 func CheckLiteralInput(taskName, input string, value *Value) error {
-	def, found := LookupTask(taskName)
+	return CheckLiteralInputFrom(nil, taskName, input, value)
+}
+
+// CheckLiteralInputFrom is [CheckLiteralInput] against tasks, or the build's own
+// registry when tasks is nil.
+func CheckLiteralInputFrom(tasks *Registry, taskName, input string, value *Value) error {
+	def, found := LookupTaskFrom(tasks, taskName)
 	if !found || def.CheckLiteral == nil {
 		return nil
 	}
@@ -468,7 +486,13 @@ func (d TaskDef) deferred(input string) bool {
 // real problem is already reported as an unknown task; a second complaint about
 // one of its inputs would be a false diagnostic laid on top of a true one.
 func MustBeExpression(taskName, input string) bool {
-	def, found := LookupTask(taskName)
+	return MustBeExpressionFrom(nil, taskName, input)
+}
+
+// MustBeExpressionFrom is [MustBeExpression] against tasks, or the build's own
+// registry when tasks is nil.
+func MustBeExpressionFrom(tasks *Registry, taskName, input string) bool {
+	def, found := LookupTaskFrom(tasks, taskName)
 	return found && slices.Contains(def.ExpressionInputs, input)
 }
 
@@ -738,6 +762,27 @@ func TaskNames() []string {
 	return DefaultRegistry().Names()
 }
 
+// LookupTaskFrom returns the definition registered under name in tasks, or in the
+// build's own registry ([LookupTask]) when tasks is nil.
+//
+// The nil-means-default convention every registry-taking helper in this package
+// shares ([OutputNames], [OutputEnumsOf], [BindPluginCredentials]). It is the way
+// to ask a registry the caller holds, an editor's per-document plugin set for
+// instance, the question [LookupTask] answers for the process default, without
+// mutating the default to get there.
+func LookupTaskFrom(tasks *Registry, name string) (TaskDef, bool) {
+	return lookupTaskDef(tasks, name)
+}
+
+// TaskNamesFrom returns the sorted names tasks offers, or the build's own
+// ([TaskNames]) when tasks is nil.
+func TaskNamesFrom(tasks *Registry) []string {
+	if tasks == nil {
+		return TaskNames()
+	}
+	return tasks.Names()
+}
+
 // registryContextKey carries a per-run [Registry] override.
 type registryContextKey struct{}
 
@@ -755,10 +800,13 @@ type registryContextKey struct{}
 // test whose http task was supposedly stubbed).
 //
 // A context registry is consulted only by [LookupTaskIn] — the execution path.
-// Every other reader, including the compiler and the validator, keeps asking
-// what the build provides through [LookupTask]: they ask about *shapes*, which
-// are a property of the build, and a per-run override of a shape would let a
-// file compile against one definition and run against another.
+// Every other reader, including the compiler and the validator, ignores the
+// context: they ask about *shapes*, which are a property of what the caller
+// compiled against, and a per-run override of a shape would let a file compile
+// against one definition and run against another. They read the registry of the
+// flowfile.Env they were called through, which is the build's own
+// ([DefaultRegistry]) unless an embedder or editor that holds its own task set
+// supplied another with flowfile.WithRegistry.
 //
 // Production never sets one. With no registry on the context, [LookupTaskIn] is
 // [LookupTask], which is what keeps the durable driver and every ordinary local
@@ -810,7 +858,13 @@ func TaskNamesIn(ctx context.Context) []string {
 // miss evaluates in the engine's own scope, where a name that does not resolve is
 // reported, instead of passing an expression along to a task that may not exist.
 func ResolvableInputs(taskName string, inputs map[string]*Value) (resolve, defer_ map[string]*Value) {
-	def, known := LookupTask(taskName)
+	return ResolvableInputsFrom(nil, taskName, inputs)
+}
+
+// ResolvableInputsFrom is [ResolvableInputs] against tasks, or the build's own
+// registry when tasks is nil.
+func ResolvableInputsFrom(tasks *Registry, taskName string, inputs map[string]*Value) (resolve, defer_ map[string]*Value) {
+	def, known := LookupTaskFrom(tasks, taskName)
 	resolve = make(map[string]*Value, len(inputs))
 	defer_ = make(map[string]*Value)
 	for name, v := range inputs {

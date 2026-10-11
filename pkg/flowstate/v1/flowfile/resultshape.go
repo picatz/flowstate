@@ -56,7 +56,7 @@ type shapeStep struct {
 
 // resultShapeOf is the entry shape of a top-level `loop:` or `for_each` step, nil
 // for any other.
-func resultShapeOf(node *v1.Node, index int) *resultShape {
+func resultShapeOf(env Env, node *v1.Node, index int) *resultShape {
 	var body []*v1.Node
 	switch kind := node.GetKind().(type) {
 	case *v1.Node_Loop:
@@ -77,7 +77,7 @@ func resultShapeOf(node *v1.Node, index int) *resultShape {
 		if _, parallel := n.GetKind().(*v1.Node_Parallel); parallel && !n.GetPolicy().GetContinueOnError() {
 			continue
 		}
-		shape.steps[n.GetId()] = closedOutputs(n)
+		shape.steps[n.GetId()] = closedOutputs(env, n)
 	}
 
 	return shape
@@ -86,14 +86,14 @@ func resultShapeOf(node *v1.Node, index int) *resultShape {
 // closedOutputs are the outputs of a task, value or call step when its definition
 // names every one of them, and an open step otherwise. A tolerated failure adds the
 // names the policy records, which are allowed beside them.
-func closedOutputs(node *v1.Node) *shapeStep {
+func closedOutputs(env Env, node *v1.Node) *shapeStep {
 	switch node.GetKind().(type) {
 	case *v1.Node_Task, *v1.Node_Value, *v1.Node_Call:
 	default:
 		return &shapeStep{}
 	}
 
-	outputs, ok := v1.OutputNames(node, nil)
+	outputs, ok := v1.OutputNames(node, env.tasks())
 	if !ok || len(outputs) == 0 {
 		return &shapeStep{}
 	}
@@ -368,7 +368,12 @@ type ResultEntryOutput struct {
 // It reads the table [Validate] judges with, so a hover or a completion cannot
 // offer a key the diagnostic refuses.
 func ResultEntryOf(wf *v1.Workflow, step, receiver string) (ResultEntry, bool) {
-	table := newTypeTable(wf)
+	return Env{}.ResultEntryOf(wf, step, receiver)
+}
+
+// ResultEntryOf is [ResultEntryOf] against this Env's registry.
+func (e Env) ResultEntryOf(wf *v1.Workflow, step, receiver string) (ResultEntry, bool) {
+	table := newTypeTable(e, wf)
 	parsed := v1.NewExpr(receiver).GetExpr().GetExpr()
 
 	shape := table.listShape(parsed, table.before(v1.ValueSite{Step: step}))
