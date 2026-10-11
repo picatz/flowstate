@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
@@ -511,30 +512,60 @@ func wellKnown(name protoreflect.FullName) bool {
 func Literal(v any) *expr.Value {
 	value := flowstatev1.NewValue(v)
 	if literal := value.GetLiteral(); literal != nil {
-		return markUnrepresentable(literal)
+		budget := maxLiteralWalkNodes
+		return markUnrepresentable(literal, &budget)
 	}
-	return errorLiteral(value.GetError().GetMessage())
+	// Only the Go type is kept. The text of an error, or of whatever else
+	// NewValue refused, can carry a secret from upstream, and a step output is
+	// written to workflow history.
+	return errorLiteral(fmt.Sprintf("flowstatev1: a value of type %s cannot be represented", unrepresentableType(v)))
+}
+
+// Bounds on the walk [markUnrepresentable] makes over a literal, which may be a
+// caller-supplied tree that is deeper than any real output or even cyclic. Past
+// either, the rest is returned as it is.
+const maxLiteralWalkNodes = 1 << 14
+
+// unrepresentableType names the Go type of a refused value, with only
+// characters a type name has, so nothing from the value reaches the output.
+func unrepresentableType(v any) string {
+	name := fmt.Sprintf("%T", v)
+	if len(name) > 128 || !utf8.ValidString(name) {
+		return "(unnamed)"
+	}
+	return name
 }
 
 // markUnrepresentable replaces what [flowstatev1.NewValue] left out of a list or
-// a map, an element it had no literal for, with an error value.
-func markUnrepresentable(literal *expr.Value) *expr.Value {
+// a map, an element it had no literal for, with an error value. It is bounded by
+// the node budget, which also stops a cycle, and tolerates nil
+// entries, since the literal may hold a caller-supplied tree.
+func markUnrepresentable(literal *expr.Value, budget *int) *expr.Value {
+	if literal == nil || *budget <= 0 {
+		return literal
+	}
+	*budget--
+
 	switch kind := literal.GetKind().(type) {
 	case *expr.Value_ListValue:
-		for i, element := range kind.ListValue.GetValues() {
+		values := kind.ListValue.GetValues()
+		for i, element := range values {
 			if element == nil {
-				kind.ListValue.Values[i] = errorLiteral("")
+				values[i] = errorLiteral("")
 				continue
 			}
-			markUnrepresentable(element)
+			markUnrepresentable(element, budget)
 		}
 	case *expr.Value_MapValue:
 		for _, entry := range kind.MapValue.GetEntries() {
-			if entry.GetValue() == nil {
+			if entry == nil {
+				continue
+			}
+			if entry.Value == nil {
 				entry.Value = errorLiteral("")
 				continue
 			}
-			markUnrepresentable(entry.Value)
+			markUnrepresentable(entry.Value, budget)
 		}
 	}
 	return literal
@@ -550,9 +581,9 @@ func errorLiteral(message string) *expr.Value {
 		Code:    flowstatev1.Value_Error_CODE_INTERNAL,
 	})
 	if err != nil {
-		// Marshaling a message of two plain fields cannot fail; a string that
-		// still names the cause beats a panic if it somehow did.
-		return &expr.Value{Kind: &expr.Value_StringValue{StringValue: message}}
+		// Unreachable for a fixed message of valid text; a literal that still
+		// names nothing of the value beats a panic if it somehow happened.
+		return &expr.Value{Kind: &expr.Value_NullValue{}}
 	}
 	return &expr.Value{Kind: &expr.Value_ObjectValue{ObjectValue: packed}}
 }

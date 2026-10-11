@@ -887,6 +887,12 @@ func FuzzLiteral(f *testing.F) {
 			}
 		}
 
+		// A caller-supplied literal that is cyclic, or holds nil entries, beside the
+		// generated value: it has to be answered, not walked forever or panicked on.
+		if Literal(map[string]any{"in": input, "cycle": fuzzCyclicLiteral(), "nil": fuzzNilEntryLiteral()}) == nil {
+			t.Fatal("Literal returned nil for a caller-supplied literal")
+		}
+
 		got := Literal(input)
 		if got == nil {
 			t.Fatalf("Literal(%T) returned nil", input)
