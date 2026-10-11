@@ -63,6 +63,7 @@ func TestInitializeAdvertisesOnlyWhatIsImplemented(t *testing.T) {
 	// Everything not implemented must stay unadvertised.
 	require.NotNil(t, got.SignatureHelpProvider)
 	assert.Equal(t, []string{"(", ","}, got.SignatureHelpProvider.TriggerCharacters)
+	assert.True(t, got.InlayHintProvider)
 	assert.Nil(t, got.CodeLensProvider)
 	assert.Nil(t, got.ExecuteCommandProvider)
 }
@@ -86,6 +87,7 @@ var implementedCapabilities = map[string]string{
 	"DocumentFormattingProvider": "textDocument/formatting",
 	"CodeActionProvider":         "textDocument/codeAction",
 	"SemanticTokensProvider":     "textDocument/semanticTokens/full",
+	"InlayHintProvider":          "textDocument/inlayHint",
 	"SignatureHelpProvider":      "textDocument/signatureHelp",
 }
 
@@ -127,6 +129,10 @@ func TestNoCapabilityIsAdvertisedWithoutAHandler(t *testing.T) {
 	if got.RenameProvider != nil {
 		// Wrapper field in the options form, like CodeActionProvider above.
 		set["RenameProvider"] = true
+	}
+	if got.InlayHintProvider {
+		// Wrapper field: go-lsp has no such capability to scan.
+		set["InlayHintProvider"] = true
 	}
 	if got.SemanticTokensProvider != nil {
 		// Also a wrapper field: go-lsp has no such capability to scan.
