@@ -660,16 +660,27 @@ func cacheKeyFor(names []string, leaves map[string]*cel.Type) string {
 // An item that is a record is spelled as the record (`Line`), since CEL holds a
 // record as `dyn` and a reader asking what the item is wants the name the file gave it.
 func IteratorType(wf *v1.Workflow, step, name string) (string, bool) {
+	return IteratorTyper(wf)(step, name)
+}
+
+// IteratorTyper is [IteratorType] with the workflow scanned once: the returned
+// function answers any number of (step, name) questions from one type table.
+// A caller that asks about many loops, such as an editor's inlay hints, uses it
+// so its work does not grow with loops times workflow size.
+func IteratorTyper(wf *v1.Workflow) func(step, name string) (string, bool) {
 	table := newTypeTable(wf)
-	if record := table.recordIterators(step)[name]; record != nil {
-		return v1.TypeString(record), true
-	}
 
-	bound := table.bindingsFor(step, []string{name})
-	typed, ok := bound[name]
-	if !ok {
-		return "", false
-	}
+	return func(step, name string) (string, bool) {
+		if record := table.recordIterators(step)[name]; record != nil {
+			return v1.TypeString(record), true
+		}
 
-	return typed.String(), true
+		bound := table.bindingsFor(step, []string{name})
+		typed, ok := bound[name]
+		if !ok {
+			return "", false
+		}
+
+		return typed.String(), true
+	}
 }

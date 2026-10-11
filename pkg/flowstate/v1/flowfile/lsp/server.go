@@ -495,6 +495,17 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		return semanticTokens(doc), nil
 
+	case "textDocument/inlayHint":
+		var params inlayHintParams
+		if err := decode(req, &params); err != nil {
+			return nil, err
+		}
+		doc, ok := s.awaitDoc(ctx, conn, params.TextDocument.URI)
+		if !ok {
+			return []inlayHint{}, nil
+		}
+		return inlayHints(doc, params.Range), nil
+
 	case "textDocument/codeAction":
 		var params codeActionParams
 		if err := decode(req, &params); err != nil {
@@ -569,6 +580,9 @@ type serverCapabilities struct {
 	// SemanticTokensProvider is absent from go-lsp, which predates the feature.
 	SemanticTokensProvider *semanticTokensProvider `json:"semanticTokensProvider,omitempty"`
 
+	// InlayHintProvider is absent from go-lsp, which predates the feature.
+	InlayHintProvider bool `json:"inlayHintProvider,omitempty"`
+
 	// RenameProvider is the options form for the reason CodeActionProvider is:
 	// go-lsp models it as a bool, which cannot say that prepareRename is served.
 	RenameProvider *renameOptions `json:"renameProvider,omitempty"`
@@ -612,6 +626,7 @@ func capabilities() serverCapabilities {
 			},
 			Full: true,
 		},
+		InlayHintProvider: true,
 		CodeActionProvider: &codeActionOptions{
 			// Both spellings of the same migration: the quickfix an author reaches
 			// from the diagnostic under their cursor, and the whole-file action an
