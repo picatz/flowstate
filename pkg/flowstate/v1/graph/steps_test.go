@@ -262,3 +262,25 @@ func TestStepsWithoutAMapCarryNoSources(t *testing.T) {
 	require.Empty(t, g.GetSources())
 	require.False(t, g.GetPartial())
 }
+
+func TestStepsFromWithholdsALocationWhoseDocumentIndexIsOutOfRange(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("build", "exec")}}
+	for _, bad := range []int32{-1, 1, 1 << 30} {
+		sm := mapOf(wf, map[string]uint32{"build": 4}, map[string][]string{"build": {"build"}})
+		sm.Entries[0].Location.Document = bad
+
+		g := graph.StepsFrom(wf, sm)
+		require.Empty(t, g.GetSources(), "document %d", bad)
+		require.Empty(t, g.GetDocuments(), "document %d", bad)
+	}
+}
+
+func TestStepsFromDoesNotCarryAGeneratedFromIndexIntoTheGraphsDocuments(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("build", "exec")}}
+	sm := mapOf(wf, map[string]uint32{"build": 4}, map[string][]string{"build": {"build"}})
+	sm.Documents[0].GeneratedFrom = 1
+
+	g := graph.StepsFrom(wf, sm)
+	require.Len(t, g.GetDocuments(), 1)
+	require.Zero(t, g.GetDocuments()[0].GetGeneratedFrom())
+}

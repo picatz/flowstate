@@ -139,14 +139,18 @@ func indexLocations(workflow string, sourceMap *v1.DebugSourceMap) locations {
 // lives in into g on first use so the layer indexes g's own documents.
 func (l locations) add(g *v1.Graph, sourceMap *v1.DebugSourceMap, node string, path []string) {
 	loc, ok := l[strings.Join(path, "\x00")]
-	if !ok || int(loc.GetDocument()) >= len(sourceMap.GetDocuments()) {
+	if !ok || loc.GetDocument() < 0 || int(loc.GetDocument()) >= len(sourceMap.GetDocuments()) {
 		return
 	}
 	doc := sourceMap.GetDocuments()[loc.GetDocument()]
 	index := slices.IndexFunc(g.Documents, func(d *v1.DebugSourceDocument) bool { return proto.Equal(d, doc) })
 	if index < 0 {
 		index = len(g.Documents)
-		g.Documents = append(g.Documents, proto.CloneOf(doc))
+		// generated_from indexes the source map's documents, not this graph's,
+		// so it is dropped rather than left pointing at the wrong one.
+		copied := proto.CloneOf(doc)
+		copied.GeneratedFrom = 0
+		g.Documents = append(g.Documents, copied)
 	}
 	located := proto.CloneOf(loc)
 	located.Document = int32(index)
