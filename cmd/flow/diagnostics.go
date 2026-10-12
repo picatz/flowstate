@@ -65,7 +65,16 @@ func positionLine(path, tail string) string {
 // line and column, `file: a/b: step "b": message`, so the reader still has
 // somewhere to look. A line, when there is one, wins and the address is not
 // printed.
+//
+// A diagnostic raised in a file the one being checked calls carries that file's
+// name in [flowfile.Diagnostic.File], and is rendered under it rather than under
+// path: its line and column are positions in the callee, so putting them after
+// the caller's name would send a reader to the wrong place in the wrong file.
 func diagnosticLine(path string, d flowfile.Diagnostic) string {
+	if d.File != "" {
+		path = d.File
+	}
+
 	if d.Line == 0 && len(d.Path) > 0 {
 		last := len(d.Path) - 1
 		segments := make([]*v1.DebugSegment, 0, last)
@@ -144,6 +153,11 @@ func errDiagnosticsOf(err error) flowfile.Diagnostics {
 func writeErrDiagnostics(w io.Writer, theme ui.Theme, path string, err error) {
 	themedPath := theme.Muted.Render(path)
 	for _, d := range errDiagnosticsOf(err) {
+		// A callee's diagnostic is under the callee's own name; see [diagnosticLine].
+		if d.File != "" {
+			fmt.Fprintln(w, positionLine(theme.Muted.Render(d.File), theme.Danger.Render(d.Error())))
+			continue
+		}
 		fmt.Fprintln(w, positionLine(themedPath, theme.Danger.Render(d.Error())))
 	}
 }
@@ -158,6 +172,31 @@ func errDiagnosticsProto(err error) []*v1.Diagnostic {
 	out := make([]*v1.Diagnostic, 0, len(diagnostics))
 	for _, d := range diagnostics {
 		out = append(out, d.Proto())
+	}
+	return out
+}
+
+// dedupeCalleeDiagnostics drops a callee's diagnostic that an earlier one in ds
+// already says: a callee reached through two call sites is compiled for each,
+// and [flowfile.Diagnostics.Reports] keeps each finding once in the machine
+// reports, so the text form must not print twice what they print once. The
+// caller's own diagnostics are never dropped.
+func dedupeCalleeDiagnostics(ds flowfile.Diagnostics) flowfile.Diagnostics {
+	type finding struct {
+		file, message, step, field string
+		line, column               int
+	}
+	seen := map[finding]bool{}
+	out := make(flowfile.Diagnostics, 0, len(ds))
+	for _, d := range ds {
+		if d.File != "" {
+			key := finding{d.File, d.Message, d.Step, d.Field, d.Line, d.Column}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+		}
+		out = append(out, d)
 	}
 	return out
 }

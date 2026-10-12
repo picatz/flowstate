@@ -2519,7 +2519,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 
 		failed = true
-		writeDiagnostics(out, theme.Muted.Render(path), diagnostics)
+		writeDiagnostics(out, theme.Muted.Render(path), dedupeCalleeDiagnostics(diagnostics))
 	}
 
 	for _, file := range claims.policies() {
@@ -2564,7 +2564,13 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 	}
 
 	modules := flowfile.NewModuleCache(0, 0)
+	// reports are the files this invocation was asked about, in the order it was
+	// asked; derived are the callee files their diagnostics turned out to be in,
+	// merged in after the last of them so that a callee named on the command line
+	// keeps its own place and one that was not is appended in the order it was
+	// reached (#1555).
 	reports := make([]*v1.DiagnosticReport, 0, len(targets))
+	var derived []*v1.DiagnosticReport
 	for _, target := range targets {
 		path := target.path
 
@@ -2601,11 +2607,14 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
 		diagnostics = append(diagnostics, claims.workflow(target)...)
 
-		reports = append(reports, diagnostics.Report(path))
+		own := diagnostics.Reports(path)
+		reports = append(reports, own[0])
+		derived = append(derived, own[1:]...)
 	}
 	for _, file := range claims.policies() {
 		reports = append(reports, file.diagnostics.Report(file.path))
 	}
+	reports = flowfile.MergeReports(reports, derived)
 
 	var failed bool
 	for _, report := range reports {

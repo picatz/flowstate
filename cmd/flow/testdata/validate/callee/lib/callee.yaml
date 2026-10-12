@@ -1,0 +1,11 @@
+edition: v2026.4
+name: callee
+inputs:
+  shards:
+    type: int
+    default: 0
+    must: this >= 1
+steps:
+  - id: work
+    log:
+      message: hi

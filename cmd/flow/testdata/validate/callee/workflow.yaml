@@ -1,0 +1,5 @@
+edition: v2026.4
+name: caller
+steps:
+  - id: place
+    call: ./lib/callee.yaml
