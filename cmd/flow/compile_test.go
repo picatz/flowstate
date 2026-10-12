@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -286,4 +287,137 @@ func TestCompileSchemaWritesTheContractAsJSONSchema(t *testing.T) {
 	_, _, err = compileOutput(t, path, "--schema", "steps")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `"inputs" or "outputs"`)
+}
+
+// compileSourceMap compiles path with --source-map and returns the specification read
+// back from stdout and the map read back from the file written beside it.
+func compileSourceMap(t *testing.T, path, mapPath string, extra ...string) (*v1.Workflow, *v1.DebugSourceMap, string) {
+	t.Helper()
+
+	out, errOut, err := compileOutput(t, append([]string{path, "--source-map", mapPath}, extra...)...)
+	require.NoError(t, err, "stderr said:\n%s", errOut)
+
+	var workflow v1.Workflow
+	require.NoError(t, protojson.Unmarshal([]byte(out), &workflow), "stdout is not a workflow:\n%s", out)
+
+	raw, err := os.ReadFile(mapPath)
+	require.NoError(t, err)
+	var sourceMap v1.DebugSourceMap
+	require.NoError(t, protojson.Unmarshal(raw, &sourceMap), "the file is not a source map:\n%s", raw)
+
+	return &workflow, &sourceMap, string(raw)
+}
+
+// TestCompileSourceMapDescribesThePrintedSpecification is the join for --source-map:
+// the digest in the file must be the digest of the specification on stdout, and the
+// entries must put a step on the line it is written on.
+func TestCompileSourceMapDescribesThePrintedSpecification(t *testing.T) {
+	path, err := filepath.Abs(filepath.Join("..", "..", "examples", "hello-world", "workflow.yaml"))
+	require.NoError(t, err)
+	mapPath := filepath.Join(t.TempDir(), "map.json")
+
+	workflow, sourceMap, raw := compileSourceMap(t, path, mapPath)
+
+	assert.Equal(t, flowfile.IRDigest(workflow), sourceMap.GetIrDigest(),
+		"the map is bound to a different program than the one printed")
+	assert.True(t, strings.HasSuffix(raw, "}\n") && !strings.HasSuffix(raw, "\n\n"), "want one trailing newline")
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Len(t, sourceMap.GetDocuments(), 1)
+	assert.Equal(t, path, sourceMap.GetDocuments()[0].GetUri())
+	assert.Equal(t, v1.ContentDigest(data), sourceMap.GetDocuments()[0].GetDigest())
+
+	// The same map the library makes for these bytes.
+	want, positions, _, err := flowfile.ParseAndValidateFileAt(path)
+	require.NoError(t, err)
+	if diff := cmp.Diff(flowfile.SourceMap(path, data, want, positions), sourceMap, protocmp.Transform()); diff != "" {
+		t.Fatalf("the map is not the library's for this file (-want +got):\n%s", diff)
+	}
+
+	// And the step "hello" is where the file says it is.
+	var line uint32
+	for _, entry := range sourceMap.GetEntries() {
+		if strings.Join(entry.GetSite().GetPath(), "/") == "hello" {
+			line = entry.GetLocation().GetRange().GetStartLine()
+		}
+	}
+	var wantLine uint32
+	for i, text := range strings.Split(string(data), "\n") {
+		if strings.Contains(text, "id: hello") {
+			wantLine = uint32(i + 1)
+		}
+	}
+	require.NotZero(t, wantLine)
+	assert.Equal(t, wantLine, line, "step hello is not mapped to the line it is written on: %s", raw)
+}
+
+func TestCompileSourceMapIsRefusedWithSchema(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "hello-world", "workflow.yaml")
+	mapPath := filepath.Join(t.TempDir(), "map.json")
+
+	out, _, err := compileOutput(t, path, "--schema", "inputs", "--source-map", mapPath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--source-map")
+	assert.Empty(t, out)
+	assert.NoFileExists(t, mapPath)
+}
+
+func TestCompileSourceMapIsNotWrittenForARefusedFile(t *testing.T) {
+	path := writeWorkflow(t, "broken.yaml", brokenWorkflow)
+	mapPath := filepath.Join(t.TempDir(), "map.json")
+
+	out, _, err := compileOutput(t, path, "--source-map", mapPath)
+	require.Error(t, err)
+	assert.Empty(t, out)
+	assert.NoFileExists(t, mapPath, "a refused compile left a source map behind")
+
+	entries, err := os.ReadDir(filepath.Dir(mapPath))
+	require.NoError(t, err)
+	assert.Empty(t, entries, "a refused compile left a file beside the requested path")
+}
+
+// A called Flowfile is a second document, bound to its exact bytes.
+func TestCompileSourceMapNamesCalleeDocumentsByDigest(t *testing.T) {
+	dir, err := filepath.Abs(filepath.Join("..", "..", "examples", "call-a-workflow"))
+	require.NoError(t, err)
+	caller := filepath.Join(dir, "workflow.yaml")
+	callee := filepath.Join(dir, "workflows", "provision-tenant.yaml")
+
+	_, sourceMap, raw := compileSourceMap(t, caller, filepath.Join(t.TempDir(), "map.json"))
+
+	require.Len(t, sourceMap.GetDocuments(), 2, raw)
+	for i, file := range []string{caller, callee} {
+		data, err := os.ReadFile(file)
+		require.NoError(t, err)
+		assert.Equal(t, file, sourceMap.GetDocuments()[i].GetUri())
+		assert.Equal(t, v1.ContentDigest(data), sourceMap.GetDocuments()[i].GetDigest())
+	}
+	var calleeEntries int
+	for _, entry := range sourceMap.GetEntries() {
+		if entry.GetLocation().GetDocument() == 1 {
+			calleeEntries++
+		}
+	}
+	assert.NotZero(t, calleeEntries, "no step of the callee is mapped")
+}
+
+func TestCompileSourceMapRefusesAnUnwritablePath(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "hello-world", "workflow.yaml")
+	dir := t.TempDir()
+
+	for name, target := range map[string]string{
+		"empty":     "",
+		"directory": dir,
+		"no parent": filepath.Join(dir, "missing", "map.json"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, _, err := compileOutput(t, path, "--source-map", target)
+			require.Error(t, err)
+			assert.Empty(t, out, "stdout was written before the path was refused")
+		})
+	}
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
 }
