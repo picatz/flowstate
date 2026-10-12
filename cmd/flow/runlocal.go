@@ -598,7 +598,7 @@ func localRun(outputs *v1.Workflow_StepOutputs, runErr, interrupted error, start
 		switch response.GetStatus() {
 		case v1.RunResponse_STATUS_FAILED:
 			errorResponse.Kind = v1.ClassifyError(runErr).String()
-			errorResponse.Expression = v1.ExpressionFailureOf(runErr)
+			errorResponse.Expression = v1.ExpressionFailureOf(runErr).Reportable()
 		case v1.RunResponse_STATUS_TIMED_OUT:
 			errorResponse = v1.RunTimeoutFailure(runErr.Error())
 		}

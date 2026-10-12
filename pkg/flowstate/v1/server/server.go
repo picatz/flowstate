@@ -2508,7 +2508,7 @@ func expressionDetail(app *temporal.ApplicationError) *v1.ExpressionFailure {
 		marker string
 		detail v1.ExpressionFailure
 	)
-	if app.Details(&marker, &detail) != nil || detail.GetOperator()+detail.GetSelected() == "" {
+	if app.Details(&marker, &detail) != nil || detail.Reportable() == nil {
 		return nil
 	}
 

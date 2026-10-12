@@ -189,9 +189,13 @@ message RunResponse {
     // the argument to fix without parsing `message`.
     string input = 3 [(buf.validate.field).string.max_bytes = 256];
 
-    // Expression says which operation failed and what it saw, when `kind` is
-    // `Expression` and the cause was an operator with no overload for its
-    // operands or a selection of a missing key. Unset for every other failure.
+    // Expression is the structured account of a failed expression, when `kind`
+    // is `Expression` and a step claimed the failure: at least that step's
+    // `step` and `location`. `operator`, `operand_types`, `subexpression` and
+    // `caret` are set only when the cause was an operator with no overload for
+    // its operands or a selection of a missing key; a division by zero or an
+    // index out of bounds carries `step` and `location` alone. Unset when no
+    // step claimed the failure, and for every other kind of failure.
     ExpressionFailure expression = 4;
   }
 

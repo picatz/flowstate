@@ -369,3 +369,32 @@ func TestQualifyStepMarksAFailureThatCrossedACall(t *testing.T) {
 	var nilFailure *ExpressionFailure
 	assert.NotPanics(t, func() { nilFailure.QualifyStep("x"); nilFailure.AttributeStep("x", nil) })
 }
+
+// TestAnUnexplainedEvaluationFailureStillCarriesAStepAndLocation pins #1568: a
+// failure whose words are complete (a division by zero, an index out of bounds)
+// keeps them unchanged and reports no operator or key, but is attributed to its
+// step and location like the two explained classes.
+func TestAnUnexplainedEvaluationFailureStillCarriesAStepAndLocation(t *testing.T) {
+	t.Parallel()
+
+	for expression, message := range map[string]string{
+		`1 / 0`:     "evaluate expression: division by zero",
+		`[1, 2][5]`: "evaluate expression: index out of bounds: 5",
+	} {
+		_, err := evalInProfile(t, expression, nil)
+		require.Error(t, err, expression)
+		assert.Equal(t, message, err.Error(), "the sentence is not restated")
+		require.NotNil(t, ExpressionFailureOf(err), expression)
+		assert.Nil(t, ExpressionFailureOf(err).Reportable(), "before a step claims it there is nothing to report")
+
+		AttributeToStep(err, &Node{Id: "boom", Source: &SourceLocation{File: "f.yaml", Line: 3, Column: 5}})
+
+		detail := ExpressionFailureOf(err).Reportable()
+		require.NotNil(t, detail, expression)
+		assert.Equal(t, "boom", detail.GetStep())
+		assert.EqualValues(t, 3, detail.GetLocation().GetLine())
+		assert.Empty(t, detail.GetOperator()+detail.GetSelected()+detail.GetSubexpression())
+		assert.Nil(t, detail.Caret, "no node offset is known, so no excerpt is drawn")
+		assert.Empty(t, detail.Excerpt(""))
+	}
+}

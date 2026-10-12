@@ -3369,9 +3369,13 @@ type RunResponse_Error struct {
 	// in `kind`, and empty for every other failure, so a program can point at
 	// the argument to fix without parsing `message`.
 	Input string `protobuf:"bytes,3,opt,name=input,proto3" json:"input,omitempty"`
-	// Expression says which operation failed and what it saw, when `kind` is
-	// `Expression` and the cause was an operator with no overload for its
-	// operands or a selection of a missing key. Unset for every other failure.
+	// Expression is the structured account of a failed expression, when `kind`
+	// is `Expression` and a step claimed the failure: at least that step's
+	// `step` and `location`. `operator`, `operand_types`, `subexpression` and
+	// `caret` are set only when the cause was an operator with no overload for
+	// its operands or a selection of a missing key; a division by zero or an
+	// index out of bounds carries `step` and `location` alone. Unset when no
+	// step claimed the failure, and for every other kind of failure.
 	Expression    *ExpressionFailure `protobuf:"bytes,4,opt,name=expression,proto3" json:"expression,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

@@ -234,6 +234,29 @@ func TestRunWorkflowErrorKind(t *testing.T) {
 	}
 }
 
+// TestRunWorkflowExpressionFailure pins that a run failing on an expression in
+// the local driver reports the account [conformance.ExpressionFailureCases]
+// says it must, and the kind. The same cases run against the durable driver in
+// engine.TestRunWorkflowExpressionFailure.
+func TestRunWorkflowExpressionFailure(t *testing.T) {
+	for _, tc := range conformance.ExpressionFailureCases() {
+		t.Run(tc.Name, func(t *testing.T) {
+			_, err := v1.Run(t.Context(), tc.Workflow)
+			require.Error(t, err)
+			require.Equal(t, tc.WantKind, v1.ClassifyError(err))
+
+			// Reported the way `flow run local` does, through Reportable.
+			got := v1.ExpressionFailureOf(err).Reportable()
+			if tc.Want == nil {
+				require.Nil(t, got)
+
+				return
+			}
+			require.Empty(t, cmp.Diff(tc.Want, got, protocmp.Transform()))
+		})
+	}
+}
+
 // TestRunWorkflowHTTPAttemptOutcome is the local caller of the shared
 // ambiguous-mutation case. The durable caller lives in engine/workflow_test.go.
 func TestRunWorkflowHTTPAttemptOutcome(t *testing.T) {

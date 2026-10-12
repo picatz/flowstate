@@ -365,3 +365,40 @@ func TestDurableStepTimeoutMessage(t *testing.T) {
 		require.Equal(t, err, got)
 	})
 }
+
+// TestAnActivityExpressionFailureWithNoExplanationKeepsItsAccount pins #1568's
+// durable half: an evaluation failure with complete words still crosses the
+// activity boundary as an Expression application error carrying its (empty)
+// account, which the workflow side reads back so it can name the step on it.
+func TestAnActivityExpressionFailureWithNoExplanationKeepsItsAccount(t *testing.T) {
+	t.Parallel()
+
+	_, evalErr := v1.Run(t.Context(), &v1.Workflow{
+		Name:  "divide",
+		Steps: []*v1.Node{{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr("1 / 0")}}},
+	})
+	require.Error(t, evalErr)
+
+	err := activityError("log", evalErr, false)
+	app, ok := errors.AsType[*temporal.ApplicationError](err)
+	require.True(t, ok)
+	require.True(t, app.HasDetails())
+
+	// Through the failure converter, as the workflow side receives it: the
+	// cause chain is gone and only the type and details remain.
+	fc := temporal.GetDefaultFailureConverter()
+	received := fc.FailureToError(fc.ErrorToFailure(err))
+
+	got := expressionOf(received, nil)
+	require.NotNil(t, got, "the account must survive the activity boundary to be attributed")
+	got.AttributeStep("boom", &v1.SourceLocation{File: "f.yaml", Line: 2, Column: 3})
+	require.NotNil(t, got.Reportable())
+
+	// Across the wire the cause chain is gone and only the details remain: an
+	// empty account on an Expression error is read, on any other kind it is not.
+	fc = temporal.GetDefaultFailureConverter()
+	wire := fc.FailureToError(fc.ErrorToFailure(temporal.NewApplicationError("boom", v1.ErrorKindExpression.String(), &v1.ExpressionFailure{})))
+	require.NotNil(t, expressionOf(wire, nil), "the empty account of an Expression failure is kept")
+	other := fc.FailureToError(fc.ErrorToFailure(temporal.NewApplicationError("boom", v1.ErrorKindUpstream.String(), &v1.ExpressionFailure{})))
+	require.Nil(t, expressionOf(other, nil), "an empty payload on another kind is not an expression account")
+}

@@ -182,9 +182,11 @@ func init() {
 			Name: "flowstate.v1.ExpressionFailure",
 			Leading: " ExpressionFailure is what a failed expression knew about itself, as fields a\n" +
 				" program can read without parsing the failure's words. It accompanies a failure\n" +
-				" of kind `Expression` whose cause was an operation with no overload for its\n" +
-				" operands, or a selection of a key that is not there; any other expression\n" +
-				" failure carries none.\n" +
+				" of kind `Expression` raised while evaluating. An operation with no overload\n" +
+				" for its operands, or a selection of a key that is not there, fills in the\n" +
+				" operator or selection; any other evaluation failure (a division by zero, an\n" +
+				" index out of bounds) carries only `step` and `location`, its words being\n" +
+				" complete. A failure raised outside any step carries none.\n" +
 				"\n" +
 				" It quotes the failing expression's own source text (`subexpression`,\n" +
 				" `selected`), which is the author's and can hold literals, so it is treated\n" +

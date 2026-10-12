@@ -455,7 +455,12 @@ func (e *Evaluator) evalProgramWithCost(ctx context.Context, env *cel.Env, prg c
 		if text, detail := e.describeEvalFailure(ctx, env, parsedOf(), activation, err); text != "" {
 			return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w (%s)", err, text), Detail: detail}
 		}
-		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err)}
+		// The words are complete (a division by zero, an index out of bounds), so
+		// they are not restated, but the failure still carries an account for the
+		// step and its location to be recorded on, so every evaluation failure
+		// reports where it is written and not only the two classes that are
+		// explained (#1568).
+		return nil, cost, &ExpressionError{Err: fmt.Errorf("evaluate expression: %w", err), Detail: &ExpressionFailure{}}
 	}
 	return out, cost, nil
 }
@@ -498,8 +503,12 @@ type ExpressionError struct {
 	// Err is the failure this classifies, already worded for a reader.
 	Err error
 
-	// Detail is the same account as fields, when the failure was an operation
-	// with no overload or a missing key (#1551); nil otherwise.
+	// Detail is the same account as fields: an operation with no overload or a
+	// missing key fills in what failed (#1551); any other evaluation failure
+	// carries it empty, for the step and location to be attributed (#1568).
+	// Nil for a failure to parse, compile, or prepare. Surfaces report it
+	// through [ExpressionFailure.Reportable], which drops an account that never
+	// learned a step.
 	Detail *ExpressionFailure
 }
 

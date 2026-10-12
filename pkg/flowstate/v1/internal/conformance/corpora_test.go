@@ -78,6 +78,7 @@ func corpusSizes() map[string]int {
 		"OutputCases":                     len(OutputCases()),
 		"SteppedCases":                    len(SteppedCases()),
 		"ErrorKindCases":                  len(ErrorKindCases(standIn)),
+		"ExpressionFailureCases":          len(ExpressionFailureCases()),
 		"ErrorTextCases":                  len(ErrorTextCases(standIn)),
 		"ExecCases":                       len(ExecCases("/")),
 		"ExpectedTaskSpans":               len(ExpectedTaskSpans()),
