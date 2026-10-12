@@ -115,13 +115,15 @@ const (
 	DiagnosticCodeModulePinMismatch DiagnosticCode = "module-pin-mismatch"
 
 	// DiagnosticCodeCallCycle marks a `call:` whose target is a file already being
-	// compiled further up the chain: the file calling itself, or a longer loop of
-	// files calling each other.
+	// compiled further up the chain, reported at the call that closes the loop. A
+	// loop through other files closes inside the callee, so the outermost caller
+	// reports it as [DiagnosticCodeCalleeFailed] with the chain in the message.
 	DiagnosticCodeCallCycle DiagnosticCode = "call-cycle"
 
 	// DiagnosticCodeCallUnreadable marks a `call:` whose target resolved to a path
-	// but could not be read: missing, not a regular file, over the size bound, or
-	// not text.
+	// but could not be read: missing or unopenable, a directory or other file that
+	// is not a regular file, over the size bound, or an I/O error. A file that
+	// reads but does not parse is [DiagnosticCodeCalleeFailed].
 	DiagnosticCodeCallUnreadable DiagnosticCode = "call-unreadable"
 
 	// DiagnosticCodeCalleeFailed marks a `call:` whose target was read but did not
@@ -268,14 +270,17 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 		},
 		{
 			Code: DiagnosticCodeCallCycle,
-			Description: "A `call:` names a file already being compiled further up the chain: the " +
-				"file calling itself, or a loop of files calling each other. The message lists " +
-				"the chain.",
+			Description: "A `call:` names a file already being compiled further up the chain, " +
+				"reported at the call that closes the loop. The message lists the chain. A loop " +
+				"through other files closes inside the callee, so the outermost caller reports " +
+				"it as `callee-failed`.",
 		},
 		{
 			Code: DiagnosticCodeCallUnreadable,
-			Description: "A `call:` target resolved to a path but could not be read: it is missing, " +
-				"not a regular file, over the size bound, or not text.",
+			Description: "A `call:` target resolved to a path but could not be read: it is missing " +
+				"or cannot be opened, is a directory or other file that is not a regular file, " +
+				"is over the size bound, or failed with an I/O error. A file that reads but does " +
+				"not parse is `callee-failed`.",
 		},
 		{
 			Code: DiagnosticCodeCalleeFailed,
