@@ -419,7 +419,7 @@ const readOnlyFlag = "read-only"
 func addReadOnlyFlag(cmd *cobra.Command) {
 	cmd.Flags().Bool(readOnlyFlag, false,
 		"serve only the tools that declare readOnlyHint, the ones that cannot change state, and refuse "+
-			"(and audit) a call to any other. It narrows what is served and grants nothing: the caller's "+
+			"a call to any other (`flow mcp serve` also audits the refusal). It narrows what is served and grants nothing: the caller's "+
 			"actions are checked as usual")
 }
 

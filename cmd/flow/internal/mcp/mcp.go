@@ -780,7 +780,7 @@ func withheldRefusal(deps Deps, withheld []string) mcp.Middleware {
 
 			refuse := withMCPPrincipal(func(ctx context.Context, call *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 				return denyTool(ctx, deps.Audit, deps.AuditFailure, call.Params.Name,
-					fmt.Errorf("%s is not served: this server is read-only (--read-only) and the tool changes state", call.Params.Name)), nil
+					fmt.Errorf("%s is not served: this server is read-only (--read-only) and the tool is not declared read-only", call.Params.Name)), nil
 			})
 
 			return refuse(ctx, call)

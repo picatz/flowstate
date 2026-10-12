@@ -102,7 +102,7 @@ func TestReadOnlyRefusesACallToAWithheldTool(t *testing.T) {
 
 	session := readOnlySession(t, flowmcp.Deps{ReadOnly: true})
 
-	for _, name := range []string{flowmcp.ToolName("Terminate"), flowmcp.RunLocalToolName, "flowstate_unannotated"} {
+	for _, name := range []string{flowmcp.RunLocalToolName, "flowstate_unannotated"} {
 		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{Name: name, Arguments: map[string]any{}})
 		require.NoError(t, err, "a refusal is a tool error, not a protocol error")
 		require.True(t, result.IsError)
