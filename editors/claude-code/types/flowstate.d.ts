@@ -102,6 +102,23 @@ export interface Diagnostic {
    * person or an agent to choose between. They are never applied together.
    */
   edits: SuggestedEdit[]
+  /**
+   * Path is the chain of step ids from the workflow root to the step the
+   * problem was found in: `["pages", "page"]` for a step `page` in the body of
+   * a loop `pages`. It is the key [DebugSourceMap] entries use (see
+   * [DebugSite.path]), so a consumer can address the step in the compiled IR
+   * without going through a source line.
+   *
+   * Empty when the step cannot be named uniquely (the same id is declared in
+   * more than one scope), the problem is not on a step, or the diagnostic was
+   * raised before a workflow existed (a parse failure). [step] and [field]
+   * keep their meaning, and Path adds to them rather than replacing either.
+   *
+   * It carries no digest: what binds a path to one version of the IR is
+   * [DebugSourceMap.ir_digest], and a second binding here would be a second
+   * spelling of that integrity check.
+   */
+  path: string[]
 }
 
 /**

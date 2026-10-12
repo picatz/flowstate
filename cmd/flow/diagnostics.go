@@ -59,7 +59,23 @@ func positionLine(path, tail string) string {
 // exception to the rule so much as the honest end of it: it describes the whole
 // document rather than a line in it, so there is no line to name. See
 // [flowfile.Diagnostic.Error], which supplies the leading separator.
+//
+// One case stands between them: no line, but a step the IR can name. Then the
+// step's address in [v1.FormatDebugAddress]'s grammar takes the place of the
+// line and column, `file: a/b: step "b": message`, so the reader still has
+// somewhere to look. A line, when there is one, wins and the address is not
+// printed.
 func diagnosticLine(path string, d flowfile.Diagnostic) string {
+	if d.Line == 0 && len(d.Path) > 0 {
+		last := len(d.Path) - 1
+		segments := make([]*v1.DebugSegment, 0, last)
+		for _, id := range d.Path[:last] {
+			segments = append(segments, &v1.DebugSegment{StepId: id})
+		}
+
+		return positionLine(path, " "+v1.FormatDebugAddress(segments, d.Path[last])+":"+d.Error())
+	}
+
 	return positionLine(path, d.Error())
 }
 

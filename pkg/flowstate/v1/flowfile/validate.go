@@ -108,6 +108,14 @@ type Diagnostic struct {
 	// classes worth branching on.
 	Code v1.DiagnosticCode
 
+	// Path is the chain of step ids from the workflow root to Step, the key
+	// [v1.DebugSourceMap] entries use. Empty when the problem is not on a step
+	// or the step's id is declared in more than one scope. It is derived from
+	// the validated workflow by [attachPaths], so it does not depend on source
+	// positions; a diagnostic raised before a workflow exists (a parse failure)
+	// has none.
+	Path []string
+
 	// Edits are repairs a program may apply to the source, each complete and
 	// independently applyable, and each an alternative to its siblings rather
 	// than a step in a sequence.
@@ -327,7 +335,10 @@ func (e Env) Validate(wf *v1.Workflow) Diagnostics {
 		}
 	}
 
-	return validateAtDepth(e, wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)
+	ds := validateAtDepth(e, wf, wf.GetProfile(), 0, v1.UndoScopeTopLevel)
+	attachPaths(ds, wf)
+
+	return ds
 }
 
 // validateAtDepth is the whole of what [Validate] checks for one workflow, at
@@ -2481,6 +2492,7 @@ func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (
 		var compilerDiags Diagnostics
 		if wf != nil && errors.As(err, &compilerDiags) {
 			idDiags := validateStepIDs(wf)
+			attachPaths(idDiags, wf)
 			positionDiagnostics(idDiags, positions)
 			if len(idDiags) > 0 {
 				return nil, append(idDiags, compilerDiags...)
@@ -2502,7 +2514,9 @@ func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (
 	// What the schema refuses, in the schema's own words, so that nothing this
 	// package accepts is refused at submit for a rule an author could have read
 	// here — see [schemaDiagnostics].
-	ds = append(ds, schemaDiagnostics(wf, positions)...)
+	schema := schemaDiagnostics(wf, positions)
+	attachPaths(schema, wf)
+	ds = append(ds, schema...)
 
 	// Whether it will *fit* is a different question from whether it is well
 	// formed, and an author should meet it here rather than at submit.
@@ -2520,7 +2534,7 @@ func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (
 // positionDiagnostics places each diagnostic at its source position, when the
 // compiler recorded one.
 func positionDiagnostics(ds Diagnostics, positions *Positions) {
-	if positions == nil {
+	if positions == nil || len(ds) == 0 {
 		return
 	}
 	for i := range ds {
@@ -3905,6 +3919,7 @@ func (d Diagnostic) Proto() *v1.Diagnostic {
 		Value:   d.Value,
 		Code:    string(code),
 		Edits:   d.Edits,
+		Path:    slices.Clone(d.Path),
 	}
 }
 

@@ -3,7 +3,6 @@ package flowfile
 import (
 	"path/filepath"
 	"sort"
-	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -131,6 +130,23 @@ func calls(nodes []*v1.Node) []*v1.Call {
 	return found
 }
 
+// sitePath is the chain of step ids from the workflow root to the step declared
+// at path, read from the ids of the step paths enclosing it. It is the one
+// derivation of a site path, shared by the source map and by diagnostics.
+func (p *Positions) sitePath(path string) []string {
+	var site []string
+	for i := range len(path) {
+		if path[i] != ']' {
+			continue
+		}
+		if id, ok := p.stepAt[path[:i+1]]; ok {
+			site = append(site, id)
+		}
+	}
+
+	return site
+}
+
 // siteEntries maps each step recorded in this document to its span, with the
 // step's site path read from the ids of the step paths enclosing it.
 func (p *Positions) siteEntries(workflow string, document int32) []*v1.DebugSourceEntry {
@@ -151,15 +167,7 @@ func (p *Positions) siteEntries(workflow string, document int32) []*v1.DebugSour
 			continue
 		}
 
-		var site []string
-		for i := range len(path) {
-			if path[i] != ']' {
-				continue
-			}
-			if id, ok := p.stepAt[path[:i+1]]; ok && strings.HasSuffix(path[:i+1], "]") {
-				site = append(site, id)
-			}
-		}
+		site := p.sitePath(path)
 
 		entries = append(entries, &v1.DebugSourceEntry{
 			Site: &v1.DebugSite{Workflow: workflow, Path: site},

@@ -103,4 +103,10 @@ const diagnosticShapeSection = "## Shape\n\n" +
 	"Applying every `changes` entry in one `edits[i]` and stopping is a complete\n" +
 	"repair for the problem that diagnostic names — not a promise the file has no\n" +
 	"other problems, and never a step to compose with a sibling edit. More than one\n" +
-	"entry in `edits` means alternatives to choose between, not a sequence to run.\n"
+	"entry in `edits` means alternatives to choose between, not a sequence to run.\n\n" +
+	"A diagnostic the validator raises on a step also carries `path`, the chain of step\n" +
+	"ids from the workflow root to that step (`[\"pages\", \"page\"]` for step `page` in\n" +
+	"the body of loop `pages`): the key `DebugSourceMap` entries use, so a program can\n" +
+	"address the step without a line number. It is empty when the step id is declared\n" +
+	"in more than one scope or the problem is not on a step, and `step` and `field`\n" +
+	"mean what they always did.\n"
