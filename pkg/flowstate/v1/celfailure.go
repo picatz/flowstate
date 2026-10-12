@@ -536,6 +536,18 @@ func (f *ExpressionFailure) Excerpt(indent string) string {
 	return indent + f.GetSubexpression() + "\n" + indent + strings.Repeat(" ", int(f.GetCaret())) + "^"
 }
 
+// Reportable returns f when it says anything (a failed operation, or the step
+// it happened in), and nil for the empty account an evaluation failure carries
+// until a step claims it, so a failure raised outside any step reports no
+// `expression` at all, as it did before. It is safe on a nil receiver.
+func (f *ExpressionFailure) Reportable() *ExpressionFailure {
+	if f == nil || proto.Size(f) == 0 {
+		return nil
+	}
+
+	return f
+}
+
 // AttributeToStep records on err's structured account the step it failed in and
 // where that step is written, when err carries one and no inner step claimed it
 // first, so nesting names the innermost. It returns err unchanged: both drivers

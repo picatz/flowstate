@@ -226,9 +226,11 @@ message Value {
 
 // ExpressionFailure is what a failed expression knew about itself, as fields a
 // program can read without parsing the failure's words. It accompanies a failure
-// of kind `Expression` whose cause was an operation with no overload for its
-// operands, or a selection of a key that is not there; any other expression
-// failure carries none.
+// of kind `Expression` raised while evaluating. An operation with no overload
+// for its operands, or a selection of a key that is not there, fills in the
+// operator or selection; any other evaluation failure (a division by zero, an
+// index out of bounds) carries only `step` and `location`, its words being
+// complete. A failure raised outside any step carries none.
 //
 // It quotes the failing expression's own source text (`subexpression`,
 // `selected`), which is the author's and can hold literals, so it is treated

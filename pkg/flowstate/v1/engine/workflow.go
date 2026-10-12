@@ -356,7 +356,7 @@ func expressionOf(err error, inner *ErrRunFailed) *v1.ExpressionFailure {
 	}
 	if app, ok := errors.AsType[*temporal.ApplicationError](err); ok && app.HasDetails() {
 		var detail v1.ExpressionFailure
-		if app.Details(&detail) == nil && detail.GetOperator()+detail.GetSelected() != "" {
+		if app.Details(&detail) == nil && (detail.GetOperator()+detail.GetSelected() != "" || app.Type() == v1.ErrorKindExpression.String()) {
 			return &detail
 		}
 	}
@@ -545,8 +545,8 @@ func classifyRunError(err error) error {
 	}
 
 	details := []any{RunFailureMarker}
-	if run.expression != nil {
-		details = append(details, run.expression)
+	if reportable := run.expression.Reportable(); reportable != nil {
+		details = append(details, reportable)
 	}
 
 	return temporal.NewApplicationErrorWithOptions(run.Error(), run.errorKind().String(),

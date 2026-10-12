@@ -151,7 +151,7 @@ func heldAcross(held []heldFailure) []*v1.HeldFailure {
 			entry.Kind = string(run.Kind)
 			entry.Recorded = run.Recorded
 			entry.RecordedFromTask = run.recordedFromTask
-			entry.Expression = run.expression
+			entry.Expression = run.expression.Reportable()
 		}
 
 		carried = append(carried, entry)

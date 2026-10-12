@@ -2966,12 +2966,45 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 		require.Empty(t, cmp.Diff(qualified, &got, protocmp.Transform()), "durable")
 	})
 
-	t.Run("a failure that is not an expression failure carries none", func(t *testing.T) {
-		_, err := v1.Run(t.Context(), &v1.Workflow{
-			Name:  "no-structured-account",
-			Steps: []*v1.Node{{Id: "bad", Kind: &v1.Node_Value{Value: v1.NewExpr(`[1][5]`)}}},
+	// A failure whose words are complete (#1568) reports no operator or key, but
+	// still says which step and where, the same on both drivers.
+	for name, expression := range map[string]string{
+		"an index out of bounds": `[1][5]`,
+		"a division by zero":     `1 / 0`,
+	} {
+		t.Run(name+" carries its step and location", func(t *testing.T) {
+			bare := &v1.Workflow{
+				Name: "expression-failure-bare",
+				Steps: []*v1.Node{
+					{Id: "bad", Source: &v1.SourceLocation{File: "w.yaml", Line: 4, Column: 7}, Kind: &v1.Node_Value{Value: v1.NewExpr(expression)}},
+				},
+			}
+			bareWant := &v1.ExpressionFailure{Step: "bad", Location: &v1.SourceLocation{File: "w.yaml", Line: 4, Column: 7}}
+
+			_, err := v1.Run(t.Context(), bare)
+			require.Error(t, err)
+			require.Empty(t, cmp.Diff(bareWant, v1.ExpressionFailureOf(err), protocmp.Transform()), "local")
+
+			testSuite := &testsuite.WorkflowTestSuite{}
+			env := testSuite.NewTestWorkflowEnvironment()
+			env.RegisterWorkflow(engine.Run)
+			env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
+			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
+			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
+
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: bare})
+			require.True(t, env.IsWorkflowCompleted())
+
+			app, ok := errors.AsType[*temporal.ApplicationError](env.GetWorkflowError())
+			require.True(t, ok)
+
+			var (
+				marker string
+				got    v1.ExpressionFailure
+			)
+			require.NoError(t, app.Details(&marker, &got))
+			require.Empty(t, cmp.Diff(bareWant, &got, protocmp.Transform()), "durable")
 		})
-		require.Error(t, err)
-		require.Nil(t, v1.ExpressionFailureOf(err), "an index out of bounds has no operator or key to report")
-	})
+	}
+
 }
