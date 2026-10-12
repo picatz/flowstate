@@ -151,27 +151,32 @@ func mcpToolDocs() []docsgen.MCPTool {
 			Request:     string(method.Input.FullName()),
 			Response:    string(method.Output.FullName()),
 			Local:       flowmcp.LocalTools[method.Name],
+			Effect:      flowmcp.EffectLabel(flowmcp.ToolAnnotationsForRPC(method.Name)),
 		})
 	}
 
 	tools = append(tools, docsgen.MCPTool{
 		Name:        flowmcp.RunLocalToolName,
 		Description: flowmcp.RunLocalToolDescription,
+		Effect:      flowmcp.EffectLabel(flowmcp.RunLocalTool().Annotations),
 		Local:       true,
 	})
 	tools = append(tools, docsgen.MCPTool{
 		Name:        flowmcp.TestToolName,
 		Description: flowmcp.TestToolDescription,
+		Effect:      flowmcp.EffectLabel(flowmcp.TestTool().Annotations),
 		Local:       true,
 	})
 	tools = append(tools, docsgen.MCPTool{
 		Name:        flowmcp.DebugToolName,
 		Description: flowmcp.DebugToolDescription,
+		Effect:      flowmcp.EffectLabel(flowmcp.DebugTool().Annotations),
 		Local:       true,
 	})
 	tools = append(tools, docsgen.MCPTool{
 		Name:        flowmcp.CheckPolicyToolName,
 		Description: flowmcp.CheckPolicyToolDescription,
+		Effect:      flowmcp.EffectLabel(flowmcp.CheckPolicyTool().Annotations),
 		Local:       true,
 	})
 
@@ -183,7 +188,8 @@ func mcpToolDocs() []docsgen.MCPTool {
 			Description: registration.Tool.Description,
 			// Attach drives a durable run on the configured server; the
 			// others work a session of either kind in this process.
-			Local: registration.Tool.Name != debugSessionAttachTool,
+			Local:  registration.Tool.Name != debugSessionAttachTool,
+			Effect: flowmcp.EffectLabel(registration.Tool.Annotations),
 		})
 	}
 

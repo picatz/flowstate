@@ -31,6 +31,11 @@ type MCPTool struct {
 	// Local marks a tool that answers in the `flow mcp` process itself, with no
 	// server and no Temporal.
 	Local bool
+
+	// Effect is what calling the tool does, rendered from the annotations it
+	// advertises: read, idempotent write or write, with destructive and
+	// open-world where they hold.
+	Effect string
 }
 
 // reach is the "Answers" column.
@@ -60,6 +65,12 @@ func (g *Generator) renderMCPReference() string {
 	b.WriteString("(validate, compile, read the catalog, rehearse a run) works with nothing else\n")
 	b.WriteString("stood up. The rest address durable runs, which only a server has, and say so\n")
 	b.WriteString("rather than failing opaquely when `--address` was not given.\n\n")
+	b.WriteString("**Effect** is the tool's `annotations` as a client reads them, derived from the\n")
+	b.WriteString("`method_rules` option on the RPC (and declared in Go for the tools that are not\n")
+	b.WriteString("RPCs): whether it reads or writes, whether repeating a write changes nothing\n")
+	b.WriteString("further, whether it destroys something, and whether it reaches beyond this\n")
+	b.WriteString("deployment. They are hints for deciding whether to ask a person first and carry\n")
+	b.WriteString("no authority; authorization is the caller's scope.\n\n")
 	b.WriteString("Every proto-derived RPC tool advertises an `outputSchema` for its response and\n")
 	b.WriteString("answers with two forms of one document. The text block is the document\n")
 	b.WriteString("`--output json` prints, so a `jq` expression written against the CLI reads an\n")
@@ -71,10 +82,10 @@ func (g *Generator) renderMCPReference() string {
 	b.WriteString("because both leave the process. Local-only tools keep their purpose-built text\n")
 	b.WriteString("contracts and do not advertise a schema-owned result message.\n\n")
 
-	b.WriteString("| Tool | Answers | Request message | Response message |\n|---|---|---|---|\n")
+	b.WriteString("| Tool | Answers | Effect | Request message | Response message |\n|---|---|---|---|---|\n")
 	for _, tool := range g.src.MCPTools {
-		fmt.Fprintf(&b, "| `%s` | %s | %s | %s |\n",
-			cell(tool.Name), tool.reach(), orDash(codeOrEmpty(tool.Request)), orDash(codeOrEmpty(tool.Response)))
+		fmt.Fprintf(&b, "| `%s` | %s | %s | %s | %s |\n",
+			cell(tool.Name), tool.reach(), orDash(cell(tool.Effect)), orDash(codeOrEmpty(tool.Request)), orDash(codeOrEmpty(tool.Response)))
 	}
 	b.WriteString("\n")
 

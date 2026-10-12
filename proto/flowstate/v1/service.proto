@@ -13,9 +13,60 @@ import "flowstate/v1/schedule.proto";
 import "flowstate/v1/value.proto";
 import "flowstate/v1/workflow.proto";
 import "google/api/field_behavior.proto";
+import "google/protobuf/descriptor.proto";
 import "google/protobuf/timestamp.proto";
 
 option go_package = "flowstatev1";
+
+// MethodEffect is what calling a WorkflowService method does to the world, on
+// the same READ / IDEMPOTENT_WRITE / WRITE vocabulary a task's effect uses.
+// It is a fact about the method, not a grant: the authorization action decides
+// who may call, and this describes what the call does, so a client can
+// decide whether to ask a person first.
+enum MethodEffect {
+  // METHOD_EFFECT_UNSPECIFIED means the method declares no effect. A method
+  // without one is refused by TestEveryRPCDeclaresAnEffect.
+  METHOD_EFFECT_UNSPECIFIED = 0;
+  // METHOD_EFFECT_READ means the call changes nothing.
+  METHOD_EFFECT_READ = 1;
+  // METHOD_EFFECT_IDEMPOTENT_WRITE means the call changes state, and repeating
+  // it with the same arguments changes nothing further.
+  METHOD_EFFECT_IDEMPOTENT_WRITE = 2;
+  // METHOD_EFFECT_WRITE means the call changes state and repeating it may
+  // change it again.
+  METHOD_EFFECT_WRITE = 3;
+}
+
+// MethodRules are the per-method facts that are about the method itself rather
+// than about who may call it. `flow mcp` derives each tool's annotations from
+// them.
+message MethodRules {
+  // Effect is what the call does. Required on every WorkflowService method.
+  MethodEffect effect = 1;
+
+  // Destructive marks a write that discards something it cannot restore, such
+  // as terminating a run or deleting a schedule. It has no meaning on READ.
+  //
+  // One rule covers task execution: any call that starts, releases or resumes
+  // task execution is both destructive and open_world, because tasks can run
+  // commands and write irreversibly. A call that only holds a run that does,
+  // such as DebugAttach, is open_world alone. Terminate is destructive only
+  // because it runs no workflow code; Cancel also runs compensation, so it is
+  // open_world too.
+  bool destructive = 2;
+
+  // Open_world marks a call that can start, release, resume or compensate task
+  // execution, or hold a run that does, where tasks can reach beyond this
+  // deployment, such as the network, rather than only recording state.
+  bool open_world = 3;
+}
+
+extend google.protobuf.MethodOptions {
+  // method_rules are the rules a WorkflowService method declares about itself,
+  // set on the method so the declaration and the RPC cannot drift. Its number
+  // follows authorization_action's.
+  MethodRules method_rules = 50002;
+}
 
 // RunRequest is the request message for running a workflow.
 message RunRequest {
@@ -1028,6 +1079,11 @@ service WorkflowService {
   // submission may be retried, so a retry cannot start the workload twice.
   rpc Run(RunRequest) returns (RunResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_RUN;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // Get reports one run: its status, its timing, where it has reached, its
@@ -1046,6 +1102,9 @@ service WorkflowService {
   // the gate opened will refuse it.
   rpc Get(GetRequest) returns (GetResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // Signal delivers a signal to a run waiting for one, which is how a human
@@ -1064,6 +1123,11 @@ service WorkflowService {
   // did with it. Call [Get] afterward to see whether a waiting step consumed it.
   rpc Signal(SignalRequest) returns (SignalResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_SIGNAL;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // GetGate reads one open approval gate for the caller who would answer it.
@@ -1088,6 +1152,9 @@ service WorkflowService {
     // caller who may answer a gate can see the question it asks, and no more of
     // the run than that.
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_SIGNAL;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // ListGates lists the open approval gates of one run, for the caller who would
@@ -1110,6 +1177,9 @@ service WorkflowService {
   rpc ListGates(ListGatesRequest) returns (ListGatesResponse) {
     // ListGates is bound to workload.signal for the reason GetGate is.
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_SIGNAL;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // SignalWithStart delivers a signal to the entity holding a business key, an
@@ -1124,6 +1194,11 @@ service WorkflowService {
   // happened.
   rpc SignalWithStart(SignalWithStartRequest) returns (SignalWithStartResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_RUN;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // List returns a page of the runs belonging to the caller's tenant.
@@ -1147,6 +1222,9 @@ service WorkflowService {
   // namespace.
   rpc List(ListRequest) returns (ListResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // GetTimeline reports what a run did, event by event, read back from its own
@@ -1172,6 +1250,9 @@ service WorkflowService {
     // scope would grant strictly less than the one beside it: a distinction
     // with no security difference.
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // GetCheckpoint reports whether a run segment started from a point a new run
@@ -1189,6 +1270,9 @@ service WorkflowService {
     // workload.read, because the answer discloses only names, a digest and a
     // size, which [GetTimeline] already discloses at that level.
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // ResumeRun starts a new run from the checkpoint a run segment started from,
@@ -1209,6 +1293,11 @@ service WorkflowService {
   // workflow's `manual:` policy decides whether this caller may start it.
   rpc ResumeRun(ResumeRunRequest) returns (ResumeRunResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_RUN;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // Cancel asks a run to stop and lets it clean up on the way out.
@@ -1221,6 +1310,11 @@ service WorkflowService {
   // the run has stopped. Call [Get] afterward to see the run's final status.
   rpc Cancel(CancelRequest) returns (CancelResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_CANCEL;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+      destructive: true
+          open_world: true
+    };
   }
 
   // Terminate stops a run immediately, running none of its cleanup.
@@ -1234,6 +1328,10 @@ service WorkflowService {
   // returns, so a follow-up call to [Get] confirms status rather than awaiting it.
   rpc Terminate(TerminateRequest) returns (TerminateResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_TERMINATE;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+      destructive: true
+    };
   }
 
   // DebugAttach asks a durable run to hold at its next step boundary under a
@@ -1246,6 +1344,10 @@ service WorkflowService {
   // every later command must carry it. Retry with the same `request_id`.
   rpc DebugAttach(DebugAttachRequest) returns (DebugAttachResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_DEBUG;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+      open_world: true
+    };
   }
 
   // DebugGet reads a durable run's debug session: state, stop reason, position,
@@ -1255,6 +1357,9 @@ service WorkflowService {
   // polling in a tight loop.
   rpc DebugGet(DebugGetRequest) returns (DebugGetResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_DEBUG;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // DebugHistory reads a durable run as it was at one point of its recorded
@@ -1268,6 +1373,9 @@ service WorkflowService {
   // build, and one over the bound are refused rather than guessed.
   rpc DebugHistory(DebugHistoryRequest) returns (DebugHistoryResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_DEBUG;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // DebugResume releases a held durable run: continue, step in, step over,
@@ -1279,12 +1387,20 @@ service WorkflowService {
   // the next one. Detach ends the session; it never ends the run.
   rpc DebugResume(DebugResumeRequest) returns (DebugResumeResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_DEBUG;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // DebugSetBreakpoints replaces a durable session's breakpoints and failure
   // stops, atomically. Only the session's holder may set them.
   rpc DebugSetBreakpoints(DebugSetBreakpointsRequest) returns (DebugSetBreakpointsResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_DEBUG;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+    };
   }
 
   // DebugInspect evaluates a read-only CEL expression against a held durable
@@ -1297,6 +1413,9 @@ service WorkflowService {
   // cannot dispatch a task, write history, or change what the run computes.
   rpc DebugInspect(DebugInspectRequest) returns (DebugInspectResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_DEBUG_INSPECT;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // Validate checks Flowfiles and returns their diagnostics, executing nothing.
@@ -1307,6 +1426,9 @@ service WorkflowService {
   // writes and starts nothing, so it is safe to call repeatedly while editing.
   rpc Validate(ValidateRequest) returns (ValidateResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_VALIDATE;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // Compile turns one Flowfile into the workflow specification that [Run]
@@ -1318,6 +1440,9 @@ service WorkflowService {
   // unchanged to [Run] or [CreateSchedule]. The same compiler as the CLI.
   rpc Compile(CompileRequest) returns (CompileResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_WORKLOAD_COMPILE;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // GetCatalog returns what this deployment can execute: every task with its
@@ -1332,6 +1457,9 @@ service WorkflowService {
   // not listed.
   rpc GetCatalog(GetCatalogRequest) returns (GetCatalogResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_CATALOG_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // CreateSchedule arranges for a workflow to run on a cadence.
@@ -1349,6 +1477,11 @@ service WorkflowService {
   // reports the times it would fire without taking any of them.
   rpc CreateSchedule(CreateScheduleRequest) returns (CreateScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_CREATE;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // ListSchedules returns the schedules belonging to the caller's tenant, each
@@ -1358,12 +1491,18 @@ service WorkflowService {
   // the bound stopped it with schedules unexamined.
   rpc ListSchedules(ListSchedulesRequest) returns (ListSchedulesResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // DescribeSchedule reports one schedule: its cadence, its arguments, when it
   // next fires and what it has done lately.
   rpc DescribeSchedule(DescribeScheduleRequest) returns (DescribeScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 
   // DeleteSchedule removes a schedule, so that it fires no more.
@@ -1372,6 +1511,10 @@ service WorkflowService {
   // stopping one is [Cancel].
   rpc DeleteSchedule(DeleteScheduleRequest) returns (DeleteScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_DELETE;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+      destructive: true
+    };
   }
 
   // PauseSchedule stops a schedule firing without removing it, which is what an
@@ -1381,6 +1524,9 @@ service WorkflowService {
   // The `note` it records is what the next person to find it paused will read.
   rpc PauseSchedule(PauseScheduleRequest) returns (PauseScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_PAUSE;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+    };
   }
 
   // ResumeSchedule lets a paused schedule fire again.
@@ -1389,6 +1535,11 @@ service WorkflowService {
   // schedule from now.
   rpc ResumeSchedule(ResumeScheduleRequest) returns (ResumeScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_RESUME;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_IDEMPOTENT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // TriggerSchedule fires a schedule now, without waiting for its cadence.
@@ -1401,6 +1552,11 @@ service WorkflowService {
   // what the firing started is read back with [DescribeSchedule].
   rpc TriggerSchedule(TriggerScheduleRequest) returns (TriggerScheduleResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_SCHEDULE_TRIGGER;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_WRITE
+      destructive: true
+      open_world: true
+    };
   }
 
   // Whoami answers with the caller's own [Principal]: the issuer, subject,
@@ -1415,6 +1571,9 @@ service WorkflowService {
   // principal, not with an error. The answer never contains the credential.
   rpc Whoami(WhoamiRequest) returns (WhoamiResponse) {
     option (flowstate.v1.authorization_action) = AUTHORIZATION_ACTION_IDENTITY_READ;
+    option (flowstate.v1.method_rules) = {
+      effect: METHOD_EFFECT_READ
+    };
   }
 }
 
