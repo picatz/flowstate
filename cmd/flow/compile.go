@@ -3,9 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -63,7 +67,16 @@ func newCompileCommand() *cobra.Command {
 			"`$defs`. It is a projection of the same declarations binding a run enforces, for " +
 			"an editor form, an agent choosing arguments, or a gateway validating a request " +
 			"before it reaches a run; a `must:` rule and a `sensitive:` mark ride along as " +
-			"`x-flowstate-` annotations because JSON Schema cannot state them.",
+			"`x-flowstate-` annotations because JSON Schema cannot state them.\n\n" +
+			"`--source-map PATH` also writes the step debugger's source map (a `DebugSourceMap`, " +
+			"protojson) to PATH: where each step of the specification just written is on its " +
+			"line, bound to that specification by its `ir_digest` and to the exact bytes of every " +
+			"file it names by content digest, from the same read of the file. The specification " +
+			"on standard output is unchanged. PATH is written only after the specification was, " +
+			"never when the file is refused, and a map the schema's bounds would cut short is an " +
+			"error rather than a partial file. The flag only creates PATH or replaces an earlier " +
+			"source map: any other existing file, a Flowfile above all, is refused. It cannot be " +
+			"combined with `--schema`.",
 		Args:          cobra.ExactArgs(1),
 		RunE:          runCompile,
 		SilenceErrors: true,
@@ -82,7 +95,11 @@ flow compile examples/hello-world/workflow.yaml > hello-world.json
 flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 
 # Write the JSON Schema of what a run takes:
-flow compile examples/record-types/workflow.yaml --schema inputs`,
+flow compile examples/record-types/workflow.yaml --schema inputs
+
+# Write the specification and the source map that locates its steps:
+flow compile examples/hello-world/workflow.yaml \\
+  --source-map hello-world.map.json > hello-world.json`,
 	}
 
 	// The specification is a schema message, so `--output json` means here what it
@@ -98,8 +115,13 @@ flow compile examples/record-types/workflow.yaml --schema inputs`,
 			return []string{schemaInputs, schemaOutputs}, cobra.ShellCompDirectiveNoFileComp
 		})
 
+	cmd.Flags().String(sourceMapFlag, "", "also write the workflow's debug source map (protojson) to this `path`, which must be new or an earlier source map")
+
 	return cmd
 }
+
+// sourceMapFlag is `flow compile --source-map`.
+const sourceMapFlag = "source-map"
 
 // The values of `flow compile --schema`.
 const (
@@ -128,6 +150,11 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return newUsageError(fmt.Errorf("--%s takes %q or %q, not %q", schemaFlag, schemaInputs, schemaOutputs, which))
 	}
 
+	sourceMapPath, err := resolveSourceMapPath(cmd, which, args[0])
+	if err != nil {
+		return err
+	}
+
 	_, closePlugins, err := startPluginsQuietly(cmd, nil)
 	if err != nil {
 		if isUsageError(err) {
@@ -151,7 +178,22 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	// the validator does — a parse can succeed on a file validation would still
 	// object to — so the full check runs too, on the workflow already in hand
 	// rather than on the file a second time.
-	workflow, positions, diagnostics, err := flowfile.ParseAndValidateFileAt(path)
+	//
+	// The bytes are read here, once, so the source map is made from the very
+	// read the specification was compiled from.
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	data, err := flowfile.ReadSource(path)
+	var (
+		workflow    *v1.Workflow
+		positions   *flowfile.Positions
+		diagnostics flowfile.Diagnostics
+	)
+	if err == nil {
+		workflow, positions, diagnostics, err = flowfile.ParseAndValidateSourceAt(data, path)
+	}
 	surface := newSurface(cmd)
 	if err != nil {
 		if _, ok := errors.AsType[*os.PathError](err); ok {
@@ -204,5 +246,162 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		document = FormatJSON
 	}
 
-	return writeJSON(surface, document, workflow)
+	if err := writeJSON(surface, document, workflow); err != nil {
+		return err
+	}
+	if sourceMapPath == "" {
+		return nil
+	}
+
+	// Made from the workflow just printed, after its locations were attached:
+	// the digest ignores them, so it names the program rather than the print.
+	encoded, err := encodeSourceMap(flowfile.SourceMap(absolute, data, workflow, positions), document == FormatJSON)
+	if err != nil {
+		return fmt.Errorf("--%s: %w; nothing was written to %s", sourceMapFlag, err, sourceMapPath)
+	}
+	if err := writeFileAtomic(sourceMapPath, encoded, 0o644); err != nil {
+		return fmt.Errorf("--%s: %w", sourceMapFlag, err)
+	}
+
+	return nil
+}
+
+// resolveSourceMapPath validates `--source-map` before anything is compiled, so
+// a refusal creates nothing. It returns "" when the flag was not given.
+func resolveSourceMapPath(cmd *cobra.Command, schema, input string) (string, error) {
+	if !cmd.Flags().Changed(sourceMapFlag) {
+		return "", nil
+	}
+	path, _ := cmd.Flags().GetString(sourceMapFlag)
+	if path == "" {
+		return "", newUsageError(fmt.Errorf("--%s needs a file path, not an empty one", sourceMapFlag))
+	}
+	if schema != "" {
+		return "", newUsageError(fmt.Errorf("--%s describes the specification, and --%s writes a JSON Schema instead of it; use one or the other", sourceMapFlag, schemaFlag))
+	}
+	if info, err := os.Stat(path); err == nil && info.IsDir() {
+		return "", newUsageError(fmt.Errorf("--%s %s is a directory; name the file to write", sourceMapFlag, path))
+	}
+	if sameFileAs(path, input) {
+		return "", newUsageError(fmt.Errorf("--%s %s is the Flowfile being compiled, and writing the map there would replace it; name another file", sourceMapFlag, path))
+	}
+	if err := refuseReplacingAnythingButASourceMap(path); err != nil {
+		return "", newUsageError(fmt.Errorf("--%s %w", sourceMapFlag, err))
+	}
+	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
+		return "", newUsageError(fmt.Errorf("--%s %s: its directory does not exist", sourceMapFlag, path))
+	}
+
+	return path, nil
+}
+
+// maxExistingSourceMapBytes bounds what is read of a file already at PATH to
+// decide whether it is an earlier source map. The schema's own bounds put a
+// full map well under it.
+const maxExistingSourceMapBytes = 8 << 20
+
+// refuseReplacingAnythingButASourceMap is the rule that makes `--source-map` safe
+// to point anywhere: it only creates PATH or replaces an earlier source map.
+// Whatever else exists there (a Flowfile, a module it uses, a callee reached
+// through a symlink) is refused, so the flag cannot be the way a source file is
+// lost, whichever file the compile happened to read.
+//
+// An absent PATH, an empty file, and a regular file that parses as a
+// DebugSourceMap are replaceable. It needs only PATH, so it runs before anything
+// is compiled.
+func refuseReplacingAnythingButASourceMap(path string) error {
+	f, err := flowfile.OpenRegular(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+
+		return fmt.Errorf("%s exists and cannot be replaced: %w", path, err)
+	}
+	defer f.Close()
+
+	existing, err := io.ReadAll(io.LimitReader(f, maxExistingSourceMapBytes+1))
+	if err != nil {
+		return fmt.Errorf("%s exists and could not be read: %w", path, err)
+	}
+	if len(existing) == 0 {
+		return nil
+	}
+	if len(existing) <= maxExistingSourceMapBytes {
+		var previous v1.DebugSourceMap
+		if protojson.Unmarshal(existing, &previous) == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%s exists and is not a source map, so writing one there would replace it; "+
+		"name a new file or an earlier source map", path)
+}
+
+// encodeSourceMap renders sourceMap as the protojson written to PATH, with the
+// one trailing newline, refusing a map at either bound of the schema:
+// [flowfile.Env.SourceMap] stops silently there, so a map at a bound may have
+// been cut short and is an error rather than a partial file.
+func encodeSourceMap(sourceMap *v1.DebugSourceMap, indent bool) ([]byte, error) {
+	if len(sourceMap.GetDocuments()) >= flowfile.MaxSourceMapDocuments || len(sourceMap.GetEntries()) >= flowfile.MaxSourceMapEntries {
+		return nil, fmt.Errorf("the source map reaches the schema's bounds (%d documents, %d entries), so it would be partial",
+			flowfile.MaxSourceMapDocuments, flowfile.MaxSourceMapEntries)
+	}
+	encoded, err := v1.MarshalSchemaJSON(sourceMap, indent)
+	if err != nil {
+		return nil, fmt.Errorf("rendering the source map: %w", err)
+	}
+
+	return append(encoded, '\n'), nil
+}
+
+// sameFileAs reports whether a and b name one file, through a symlink or a
+// hard link as well as by spelling. A name that does not exist is not any file.
+func sameFileAs(a, b string) bool {
+	infoA, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(b)
+
+	return err == nil && os.SameFile(infoA, infoB)
+}
+
+// maxTempBaseBytes keeps the temporary name [writeFileAtomic] derives from the
+// target's under the 255 byte NAME_MAX of common file systems.
+const maxTempBaseBytes = 100
+
+// writeFileAtomic writes data to path through a temporary file in the same
+// directory and a rename, so a reader never sees a half-written file and a
+// failure leaves any previous file intact.
+func writeFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
+	// A file already there keeps its permission bits: replacing it must not
+	// widen who can read it.
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	base := filepath.Base(path)
+	if len(base) > maxTempBaseBytes {
+		base = base[:maxTempBaseBytes]
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+base+"-*")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			err = errors.Join(err, os.Remove(temp.Name()))
+		}
+	}()
+	if _, err = temp.Write(data); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if err = temp.Chmod(mode); err != nil {
+		return errors.Join(err, temp.Close())
+	}
+	if err = temp.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(temp.Name(), path)
 }

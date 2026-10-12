@@ -1083,6 +1083,13 @@ move a line, is not). Otherwise the pane shows the held step's address and one
 sentence saying why it does not show lines, never a line that could mark the
 wrong step, and a click or `B` on the source says the same and sends nothing.
 
+To keep that map beside a specification, `flow compile FILE --source-map PATH`
+writes it (protojson) while printing the specification, from the same read of the
+file: its `ir_digest` is the printed workflow's, and each document carries the
+content digest of the bytes it was made from. It is not written when the file is
+refused, nor when the map would exceed the schema's bounds, and it cannot be
+combined with `--schema`.
+
 A run in this process is given the same: `flow run local --debug` reads the file
 once for both the program and its source map, so the map is of the program it
 runs, and the Flowfile's text is the one it compiled. A file it `call:`s is read

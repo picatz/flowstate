@@ -360,6 +360,8 @@ The specification is a protobuf message, and protojson is the only faithful way 
 
 `--schema inputs` or `--schema outputs` writes the workflow's contract instead: a JSON Schema (2020-12) of what a run takes or answers with, record types under `$defs`. It is a projection of the same declarations binding a run enforces, for an editor form, an agent choosing arguments, or a gateway validating a request before it reaches a run; a `must:` rule and a `sensitive:` mark ride along as `x-flowstate-` annotations because JSON Schema cannot state them.
 
+`--source-map PATH` also writes the step debugger's source map (a `DebugSourceMap`, protojson) to PATH: where each step of the specification just written is on its line, bound to that specification by its `ir_digest` and to the exact bytes of every file it names by content digest, from the same read of the file. The specification on standard output is unchanged. PATH is written only after the specification was, never when the file is refused, and a map the schema's bounds would cut short is an error rather than a partial file. The flag only creates PATH or replaces an earlier source map: any other existing file, a Flowfile above all, is refused. It cannot be combined with `--schema`.
+
 Examples:
 
 ```sh
@@ -374,6 +376,10 @@ flow compile examples/hello-world/workflow.yaml | jq '.steps[0]'
 
 # Write the JSON Schema of what a run takes:
 flow compile examples/record-types/workflow.yaml --schema inputs
+
+# Write the specification and the source map that locates its steps:
+flow compile examples/hello-world/workflow.yaml \\
+  --source-map hello-world.map.json > hello-world.json
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -389,6 +395,7 @@ flow compile examples/record-types/workflow.yaml --schema inputs
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
 | `--schema <string>` | `string` | — | — | write the JSON Schema of the workflow's inputs or outputs instead of the specification |
+| `--source-map <string>` | `string` | — | — | also write the workflow's debug source map (protojson) to this `path`, which must be new or an earlier source map |
 
 ## `flow dap`
 
