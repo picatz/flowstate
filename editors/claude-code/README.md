@@ -250,7 +250,7 @@ never passes `--live`, and contacts no server.
   document states no nesting the rows stay in node order and a note says so. A node
   in a containment cycle is listed unnested, once, and the graph is marked partial.
 - **Where a step is.** The graph's `sources` layer says where the engine found each
-  step, and a located row ends `· line N` (`○ build — task "log" · line 4`, and
+  step, and a located row carries `· line N` (`○ build — task "log" · line 4`, and
   `✓ build · line 4 · succeeded` under live status). The line is read only if it is
   a whole line (1 to 1 048 576) of the first document, for a node in the graph, once;
   anything else, and any step the graph does not locate, is drawn without it. It is
