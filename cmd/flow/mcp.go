@@ -276,6 +276,7 @@ func runMCP(cmd *cobra.Command, args []string) error {
 			return redactGetResponse(response, nil, revealSensitiveRequested(cmd))
 		},
 		RevealSensitive: revealSensitiveRequested(cmd),
+		ReadOnly:        readOnlyRequested(cmd),
 
 		RemoteCatalogAddress: remoteCatalogAddressFor(cmd, flags),
 		DecorateRPCError:     mcpRPCErrorDecorator(cmd, flags, addressExplicitlyConfigured(cmd)),
@@ -409,6 +410,25 @@ type runLocalArguments struct {
 	// file's own contract. A name the source does not declare is refused, with
 	// the declared names listed, before any step runs.
 	Inputs map[string]json.RawMessage `json:"inputs,omitempty"`
+}
+
+const readOnlyFlag = "read-only"
+
+// addReadOnlyFlag declares --read-only on both MCP surfaces, `flow mcp` and
+// `flow mcp serve`, so one spelling and one help text say the same thing.
+func addReadOnlyFlag(cmd *cobra.Command) {
+	cmd.Flags().Bool(readOnlyFlag, false,
+		"serve only the tools that declare readOnlyHint, the ones that cannot change state, and refuse "+
+			"(and audit) a call to any other. It narrows what is served and grants nothing: the caller's "+
+			"actions are checked as usual")
+}
+
+// readOnlyRequested reports whether the command was run with --read-only; a
+// command that does not declare the flag is not read-only.
+func readOnlyRequested(cmd *cobra.Command) bool {
+	readOnly, _ := cmd.Flags().GetBool(readOnlyFlag)
+
+	return readOnly
 }
 
 // addLocalRunFlags declares the flags that decide what a run_local call may do.

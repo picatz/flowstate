@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -938,11 +939,53 @@ func TestMCPServeHandlerRefusesToBeBuiltUnauthenticated(t *testing.T) {
 
 	limits := mcpServeLimits{maxRequestBytes: 1 << 10, maxSessions: 1, maxSessionRequests: 1, sessionIdle: time.Minute}
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false, false)
 	require.NoError(t, err)
 
 	_, err = mcpServeHandler(slog.Default(), tools, nil, nil, limits)
 	require.Error(t, err, "no protected resource and no verifier must not produce a servable handler")
+}
+
+// TestMCPServeReadOnlyServesTheSameReadOnlyList: every tool the HTTP surface
+// serves today declares readOnlyHint, so --read-only changes nothing it lists;
+// what the flag buys is that a future write tool cannot be served by accident.
+// Both commands declare it, and the flag is read from the command that ran.
+func TestMCPServeReadOnlyServesTheSameReadOnlyList(t *testing.T) {
+	t.Parallel()
+
+	names := func(readOnly bool) []string {
+		tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false, readOnly)
+		require.NoError(t, err)
+
+		serverTransport, clientTransport := mcp.NewInMemoryTransports()
+		go func() { _ = tools.Run(t.Context(), serverTransport) }()
+		session, err := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "test"}, nil).Connect(t.Context(), clientTransport, nil)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = session.Close() })
+
+		listed, err := session.ListTools(t.Context(), nil)
+		require.NoError(t, err)
+
+		var out []string
+		for _, tool := range listed.Tools {
+			require.True(t, tool.Annotations != nil && tool.Annotations.ReadOnlyHint, "%s is not read-only", tool.Name)
+			out = append(out, tool.Name)
+		}
+		slices.Sort(out)
+
+		return out
+	}
+	require.Equal(t, names(false), names(true))
+
+	root := newRootCommand()
+	for _, path := range [][]string{{"mcp"}, {"mcp", "serve"}} {
+		command, _, err := root.Find(path)
+		require.NoError(t, err)
+		require.NotNil(t, command.Flags().Lookup(readOnlyFlag), "`flow %s` must declare --%s", strings.Join(path, " "), readOnlyFlag)
+		require.False(t, readOnlyRequested(command))
+		require.NoError(t, command.Flags().Set(readOnlyFlag, "true"))
+		require.True(t, readOnlyRequested(command))
+	}
 }
 
 // TestStdioMCPCommandDeclaresNoListener pins #558's decision 4 from the flag
@@ -1255,7 +1298,7 @@ func TestMCPServeAtABareOriginServesOnlyTheRootPath(t *testing.T) {
 	require.Equal(t, "/", protectedResource.ResourcePath(),
 		"a bare-origin resource is the shape this test exists for")
 
-	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false)
+	tools, err := mcpServeTools(newMCPServeRegistryGuard(), mcpServeDefaultTestTimeout, nil, nil, false, false)
 	require.NoError(t, err)
 
 	handler, err := mcpServeHandler(slog.New(slog.NewTextHandler(io.Discard, nil)),

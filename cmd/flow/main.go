@@ -3674,6 +3674,7 @@ flow mcp --plugin-dir ./plugins`,
 	// long-lived process serving a model cannot take it per call: an opt-in a
 	// caller can send is not an opt-in. See mcp.go.
 	addLocalRunFlags(mcpCmd)
+	addReadOnlyFlag(mcpCmd)
 
 	// `flow mcp` was, until #241, the only plugin-relevant command without this:
 	// worker, server, plugins and lsp all call addPluginFlags, and an agent asked

@@ -174,6 +174,27 @@ always on but best-effort, with stderr as the unconditional sink. The local
 stdio surface has one process-trusted caller rather than a bearer authorization
 decision and does not emit these MCP records.
 
+### Serving only read-only tools
+
+`--read-only`, on `flow mcp serve` and on `flow mcp`, serves only the tools whose
+annotations declare `readOnlyHint` (the Effect column of
+[reference/mcp.md](reference/mcp.md)); `tools/list` shows exactly those. The
+decision reads the annotations each tool is already served with, so there is no
+second list to drift, and a tool with no annotations is withheld. A call that
+names a withheld tool anyway, from a client holding a stale list, is refused
+with a tool error naming the flag and, on `flow mcp serve`, recorded as one
+`POLICY_DENIED` authorization record.
+
+The flag narrows what is served and grants nothing: the action check above still
+applies to every tool that remains. It is not a scope match. Authorization here
+is action-based (a trust policy entry's actions intersected with the token's
+`scope`) and there is no separate read scope vocabulary, so a token cannot yet
+be limited to "read" as such; it is limited by the actions it carries, which a
+per-tool check already enforces. Every tool `flow mcp serve` serves today is
+read-only, so on that surface the flag changes nothing it lists; it keeps a
+tool added later that is not read-only off a server the operator asked to keep
+read-only.
+
 ### Session topology: one process, one replica
 
 `flow mcp serve` is stateful today. The MCP SDK handler stores every session in

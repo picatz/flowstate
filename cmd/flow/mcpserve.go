@@ -182,6 +182,7 @@ func addMCPServeFlags(cmd *cobra.Command) {
 	// only validated, compiled and rehearsed under stubs, never run, which is
 	// the property addPluginCatalogFlag requires of the verbs that take it.
 	addPluginCatalogFlag(cmd)
+	addReadOnlyFlag(cmd)
 
 	cmd.Flags().Int64("max-request-bytes", mcpServeDefaultMaxRequestBytes,
 		"largest request body this surface will read, in bytes. A request over the limit is "+
@@ -875,6 +876,7 @@ func mcpServeTools(
 	recorder *audit.Recorder,
 	reportAuditFailure func(error),
 	pluginCatalog bool,
+	readOnly bool,
 ) (*mcp.Server, error) {
 	srv := flowmcp.NewServer(version)
 
@@ -899,6 +901,11 @@ func mcpServeTools(
 			// [loadPluginCatalog] before this server was built, and the tool
 			// descriptions say whether that happened.
 			PluginCatalog: pluginCatalog,
+
+			// --read-only: everything served here today already declares
+			// readOnlyHint, so this is the guard that keeps a future write
+			// tool off the surface when the operator asked for none.
+			ReadOnly: readOnly,
 
 			// Nothing on this surface answers with a GetResponse — the tool
 			// that would (flowstate_get) is not served — but Deps documents a
@@ -956,7 +963,7 @@ func mcpServeToolsFromFlags(
 			pluginCatalogFlag, err)
 	}
 
-	return mcpServeTools(guard, testTimeout, recorder, reportAuditFailure, pluginCatalog != nil)
+	return mcpServeTools(guard, testTimeout, recorder, reportAuditFailure, pluginCatalog != nil, readOnlyRequested(cmd))
 }
 
 // mcpServeRegistryGuard serializes this surface's tools against the one piece
