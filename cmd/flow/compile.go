@@ -145,7 +145,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 		return newUsageError(fmt.Errorf("--%s takes %q or %q, not %q", schemaFlag, schemaInputs, schemaOutputs, which))
 	}
 
-	sourceMapPath, err := resolveSourceMapPath(cmd, which)
+	sourceMapPath, err := resolveSourceMapPath(cmd, which, args[0])
 	if err != nil {
 		return err
 	}
@@ -180,15 +180,15 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-	data, err := readBoundedFile(path, "a Flowfile", maxFlowfileSourceBytes)
-	if err != nil {
-		if _, ok := errors.AsType[*os.PathError](err); ok {
-			return fmt.Errorf("error reading %s: %w", path, err)
-		}
-
-		return fmt.Errorf("%s: %w", path, err)
+	data, err := flowfile.ReadSource(path)
+	var (
+		workflow    *v1.Workflow
+		positions   *flowfile.Positions
+		diagnostics flowfile.Diagnostics
+	)
+	if err == nil {
+		workflow, positions, diagnostics, err = flowfile.ParseAndValidateSourceAt(data, path)
 	}
-	workflow, positions, diagnostics, err := flowfile.ParseAndValidateSourceAt(data, path)
 	surface := newSurface(cmd)
 	if err != nil {
 		if _, ok := errors.AsType[*os.PathError](err); ok {
@@ -251,9 +251,14 @@ func runCompile(cmd *cobra.Command, args []string) error {
 	// Made from the workflow just printed, after its locations were attached:
 	// the digest ignores them, so it names the program rather than the print.
 	sourceMap := flowfile.SourceMap(absolute, data, workflow, positions)
-	if len(sourceMap.GetDocuments()) >= flowfile.MaxSourceMapDocuments || len(sourceMap.GetEntries()) >= flowfile.MaxSourceMapEntries {
+	if sourceMapReachesBounds(sourceMap) {
 		return fmt.Errorf("--%s: the source map reaches the schema's bounds (%d documents, %d entries), so it would be partial; nothing was written to %s",
 			sourceMapFlag, flowfile.MaxSourceMapDocuments, flowfile.MaxSourceMapEntries, sourceMapPath)
+	}
+	for _, document := range sourceMap.GetDocuments() {
+		if sameFileAs(sourceMapPath, document.GetUri()) {
+			return newUsageError(fmt.Errorf("--%s %s is %s, a Flowfile the map describes, and writing the map there would replace it; name another file", sourceMapFlag, sourceMapPath, document.GetUri()))
+		}
 	}
 	encoded, err := v1.MarshalSchemaJSON(sourceMap, document == FormatJSON)
 	if err != nil {
@@ -268,7 +273,7 @@ func runCompile(cmd *cobra.Command, args []string) error {
 
 // resolveSourceMapPath validates `--source-map` before anything is compiled, so
 // a refusal creates nothing. It returns "" when the flag was not given.
-func resolveSourceMapPath(cmd *cobra.Command, schema string) (string, error) {
+func resolveSourceMapPath(cmd *cobra.Command, schema, input string) (string, error) {
 	if !cmd.Flags().Changed(sourceMapFlag) {
 		return "", nil
 	}
@@ -282,6 +287,9 @@ func resolveSourceMapPath(cmd *cobra.Command, schema string) (string, error) {
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		return "", newUsageError(fmt.Errorf("--%s %s is a directory; name the file to write", sourceMapFlag, path))
 	}
+	if sameFileAs(path, input) {
+		return "", newUsageError(fmt.Errorf("--%s %s is the Flowfile being compiled, and writing the map there would replace it; name another file", sourceMapFlag, path))
+	}
 	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
 		return "", newUsageError(fmt.Errorf("--%s %s: its directory does not exist", sourceMapFlag, path))
 	}
@@ -289,11 +297,44 @@ func resolveSourceMapPath(cmd *cobra.Command, schema string) (string, error) {
 	return path, nil
 }
 
+// sourceMapReachesBounds reports whether sourceMap is at either bound of the
+// schema. [flowfile.Env.SourceMap] stops silently there, so a map at a bound
+// may have been cut short and is refused rather than written partial.
+func sourceMapReachesBounds(sourceMap *v1.DebugSourceMap) bool {
+	return len(sourceMap.GetDocuments()) >= flowfile.MaxSourceMapDocuments ||
+		len(sourceMap.GetEntries()) >= flowfile.MaxSourceMapEntries
+}
+
+// sameFileAs reports whether a and b name one file, through a symlink or a
+// hard link as well as by spelling. A name that does not exist is not any file.
+func sameFileAs(a, b string) bool {
+	infoA, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	infoB, err := os.Stat(b)
+
+	return err == nil && os.SameFile(infoA, infoB)
+}
+
+// maxTempBaseBytes keeps the temporary name [writeFileAtomic] derives from the
+// target's under the 255 byte NAME_MAX of common file systems.
+const maxTempBaseBytes = 100
+
 // writeFileAtomic writes data to path through a temporary file in the same
 // directory and a rename, so a reader never sees a half-written file and a
 // failure leaves any previous file intact.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) (err error) {
-	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+"-*")
+	// A file already there keeps its permission bits: replacing it must not
+	// widen who can read it.
+	if info, statErr := os.Stat(path); statErr == nil {
+		mode = info.Mode().Perm()
+	}
+	base := filepath.Base(path)
+	if len(base) > maxTempBaseBytes {
+		base = base[:maxTempBaseBytes]
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+base+"-*")
 	if err != nil {
 		return err
 	}

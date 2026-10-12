@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -420,4 +421,190 @@ func TestCompileSourceMapRefusesAnUnwritablePath(t *testing.T) {
 	entries, err := os.ReadDir(dir)
 	require.NoError(t, err)
 	assert.Empty(t, entries)
+}
+
+// copyExample copies an example directory into a temporary one, so a test whose
+// failure would overwrite a Flowfile overwrites a copy.
+func copyExample(t *testing.T, name string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	require.NoError(t, os.CopyFS(dir, os.DirFS(filepath.Join("..", "..", "examples", name))))
+
+	return dir
+}
+
+// A map written over a Flowfile it describes destroys the source; each spelling
+// of that file is refused, and the bytes and the directory are left as they were.
+func TestCompileSourceMapRefusesToReplaceAFlowfile(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// target names the source map path, given the caller and callee paths.
+		target func(t *testing.T, caller, callee string) string
+	}{
+		{"same path", func(t *testing.T, caller, callee string) string { return caller }},
+		{"symlink alias", func(t *testing.T, caller, callee string) string {
+			link := filepath.Join(filepath.Dir(caller), "alias.yaml")
+			require.NoError(t, os.Symlink(caller, link))
+			return link
+		}},
+		{"hard link", func(t *testing.T, caller, callee string) string {
+			link := filepath.Join(filepath.Dir(caller), "hard.yaml")
+			require.NoError(t, os.Link(caller, link))
+			return link
+		}},
+		{"callee", func(t *testing.T, caller, callee string) string { return callee }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := copyExample(t, "call-a-workflow")
+			caller := filepath.Join(dir, "workflow.yaml")
+			callee := filepath.Join(dir, "workflows", "provision-tenant.yaml")
+			target := tc.target(t, caller, callee)
+
+			before := map[string][]byte{}
+			for _, file := range []string{caller, callee} {
+				data, err := os.ReadFile(file)
+				require.NoError(t, err)
+				before[file] = data
+			}
+			names := dirNames(t, dir)
+			calleeNames := dirNames(t, filepath.Dir(callee))
+
+			out, _, err := compileOutput(t, caller, "--source-map", target)
+			require.Error(t, err, "a map was written over a Flowfile")
+			if target != callee {
+				assert.Empty(t, out, "the input was refused only after compiling it")
+			}
+			assert.Contains(t, err.Error(), "--source-map")
+
+			for file, want := range before {
+				got, err := os.ReadFile(file)
+				require.NoError(t, err)
+				assert.Equal(t, string(want), string(got), "%s was changed", file)
+			}
+			assert.Equal(t, names, dirNames(t, dir), "a file was created or left behind")
+			assert.Equal(t, calleeNames, dirNames(t, filepath.Dir(callee)))
+		})
+	}
+}
+
+func dirNames(t *testing.T, dir string) []string {
+	t.Helper()
+
+	entries, err := os.ReadDir(dir)
+	require.NoError(t, err)
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+
+	return names
+}
+
+// A map replaces a file already at PATH without widening who can read it, and a
+// refused compile leaves that file as it was.
+func TestCompileSourceMapKeepsTheModeOfAFileItReplaces(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "hello-world", "workflow.yaml")
+	mapPath := filepath.Join(t.TempDir(), "map.json")
+	require.NoError(t, os.WriteFile(mapPath, []byte("old"), 0o600))
+
+	_, _, raw := compileSourceMap(t, path, mapPath)
+
+	info, err := os.Stat(mapPath)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o600), info.Mode().Perm(), "the replaced file's mode was widened")
+	data, err := os.ReadFile(mapPath)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(data))
+
+	// A new file takes the neighbours' mode.
+	fresh := filepath.Join(t.TempDir(), "fresh.json")
+	compileSourceMap(t, path, fresh)
+	info, err = os.Stat(fresh)
+	require.NoError(t, err)
+	assert.Equal(t, os.FileMode(0o644), info.Mode().Perm())
+
+	// A refused compile does not touch what is there.
+	broken := writeWorkflow(t, "broken.yaml", brokenWorkflow)
+	_, _, err = compileOutput(t, broken, "--source-map", mapPath)
+	require.Error(t, err)
+	data, err = os.ReadFile(mapPath)
+	require.NoError(t, err)
+	assert.Equal(t, raw, string(data), "a refused compile replaced the previous map")
+}
+
+func TestCompileSourceMapAcceptsALongFileName(t *testing.T) {
+	path := filepath.Join("..", "..", "examples", "hello-world", "workflow.yaml")
+	mapPath := filepath.Join(t.TempDir(), strings.Repeat("m", 250)+".json")
+
+	compileSourceMap(t, path, mapPath)
+	assert.FileExists(t, mapPath)
+}
+
+// Without --source-map the refusals of a path that is not a readable Flowfile
+// are the ones they were before the flag existed.
+func TestCompileRefusesWhatIsNotAReadableFlowfileInTheWordsItAlwaysUsed(t *testing.T) {
+	dir := t.TempDir()
+
+	directory := filepath.Join(dir, "dir.yaml")
+	require.NoError(t, os.Mkdir(directory, 0o755))
+	fifo := filepath.Join(dir, "fifo.yaml")
+	require.NoError(t, syscall.Mkfifo(fifo, 0o600))
+	big := filepath.Join(dir, "big.yaml")
+	require.NoError(t, os.WriteFile(big, make([]byte, 1<<20+1), 0o600))
+
+	for _, tc := range []struct{ path, want string }{
+		{directory, directory + ": " + directory + " is a directory; name the Flowfile inside it"},
+		{fifo, fifo + ": " + fifo + " is not a regular file (named pipe); name a regular file instead"},
+		{big, big + ": " + big + " is larger than the 1048576 byte limit a Flowfile is compiled up to; nothing was read"},
+	} {
+		out, errOut, err := compileOutput(t, tc.path)
+		require.ErrorIs(t, err, errCompileRefused)
+		assert.Empty(t, out)
+		assert.Contains(t, errOut, tc.want)
+	}
+}
+
+func TestSourceMapReachesBounds(t *testing.T) {
+	documents := func(n int) *v1.DebugSourceMap {
+		m := &v1.DebugSourceMap{}
+		for range n {
+			m.Documents = append(m.Documents, &v1.DebugSourceDocument{})
+		}
+		return m
+	}
+	entries := func(n int) *v1.DebugSourceMap {
+		m := &v1.DebugSourceMap{}
+		for range n {
+			m.Entries = append(m.Entries, &v1.DebugSourceEntry{})
+		}
+		return m
+	}
+
+	assert.True(t, sourceMapReachesBounds(documents(flowfile.MaxSourceMapDocuments)))
+	assert.True(t, sourceMapReachesBounds(entries(flowfile.MaxSourceMapEntries)))
+	assert.False(t, sourceMapReachesBounds(documents(flowfile.MaxSourceMapDocuments-1)))
+	assert.False(t, sourceMapReachesBounds(entries(flowfile.MaxSourceMapEntries-1)))
+	assert.False(t, sourceMapReachesBounds(&v1.DebugSourceMap{}))
+}
+
+// A relative input is mapped by absolute path, callee included, and the map
+// belongs to the printed workflow in every output form.
+func TestCompileSourceMapFromARelativePathInEveryOutputForm(t *testing.T) {
+	t.Chdir(filepath.Join("..", "..", "examples"))
+	root, err := os.Getwd()
+	require.NoError(t, err)
+
+	for _, format := range []string{"json", "jsonl", "text"} {
+		t.Run(format, func(t *testing.T) {
+			mapPath := filepath.Join(t.TempDir(), "map.json")
+
+			workflow, sourceMap, raw := compileSourceMap(t, filepath.Join("call-a-workflow", "workflow.yaml"), mapPath, "-o", format)
+
+			assert.Equal(t, flowfile.IRDigest(workflow), sourceMap.GetIrDigest())
+			require.Len(t, sourceMap.GetDocuments(), 2, raw)
+			assert.Equal(t, filepath.Join(root, "call-a-workflow", "workflow.yaml"), sourceMap.GetDocuments()[0].GetUri())
+			assert.Equal(t, filepath.Join(root, "call-a-workflow", "workflows", "provision-tenant.yaml"), sourceMap.GetDocuments()[1].GetUri())
+		})
+	}
 }

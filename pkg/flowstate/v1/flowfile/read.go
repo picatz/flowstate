@@ -48,6 +48,13 @@ func OpenRegular(path string) (*os.File, error) {
 	return f, nil
 }
 
+// ReadSource reads the Flowfile at path under the bound the compiler applies
+// to a file it is handed, refusing what is not a regular file, with the same
+// messages [ParseAndValidateFileAt] reports. A caller that needs the bytes
+// beside the compilation of them reads them here and compiles with
+// [ParseAndValidateSourceAt], so both come from one read.
+func ReadSource(path string) ([]byte, error) { return readBoundedSource(path) }
+
 // readBoundedSource is the fix, in the shape [pkg/flowstate/v1/flowtest]'s
 // readBounded already established for the same failure: open once, ask the
 // *open file* what it is (never the path — a second lookup is a window for a
