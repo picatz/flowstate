@@ -269,6 +269,9 @@ func TestDiagnosticCodesAreAssigned(t *testing.T) {
 	// TestAUsePinIsStrict assert the code on the diagnostics a compile returns.
 	producedByCompile := map[v1.DiagnosticCode]bool{
 		v1.DiagnosticCodeModulePinMismatch: true,
+		v1.DiagnosticCodeCallCycle:         true,
+		v1.DiagnosticCodeCallUnreadable:    true,
+		v1.DiagnosticCodeCalleeFailed:      true,
 	}
 
 	for _, info := range v1.DiagnosticCodes() {

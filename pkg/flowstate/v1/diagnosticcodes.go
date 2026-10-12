@@ -114,6 +114,24 @@ const (
 	// changed and repins.
 	DiagnosticCodeModulePinMismatch DiagnosticCode = "module-pin-mismatch"
 
+	// DiagnosticCodeCallCycle marks a `call:` whose target is a file already being
+	// compiled further up the chain, reported at the call that closes the loop. A
+	// loop through other files closes inside the callee, so the outermost caller
+	// reports it as [DiagnosticCodeCalleeFailed] with the chain in the message.
+	DiagnosticCodeCallCycle DiagnosticCode = "call-cycle"
+
+	// DiagnosticCodeCallUnreadable marks a `call:` whose target resolved to a path
+	// but could not be read: missing or unopenable, a directory or other file that
+	// is not a regular file, over the size bound, or an I/O error. A file that
+	// reads but does not parse is [DiagnosticCodeCalleeFailed].
+	DiagnosticCodeCallUnreadable DiagnosticCode = "call-unreadable"
+
+	// DiagnosticCodeCalleeFailed marks a `call:` whose target was read but did not
+	// compile; the message carries the callee's own diagnostics. Distinct from
+	// the caller's own mistakes at the same step because the defect is in
+	// another file.
+	DiagnosticCodeCalleeFailed DiagnosticCode = "callee-failed"
+
 	// DiagnosticCodeExpectationUnmet marks a claim a test file made that the run
 	// contradicted — a step the case said would run and did not, a `check:` that
 	// came back false, an outcome `expect.failed` named and the run did not
@@ -249,6 +267,26 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 			Description: "A `use:` entry's `digest:` does not verify: the module file hashes to " +
 				"something other than the pin, or the pin is not a `sha256:` digest. The message " +
 				"names the digest the file has now; read what changed, then `flow fix --repin`.",
+		},
+		{
+			Code: DiagnosticCodeCallCycle,
+			Description: "A `call:` names a file already being compiled further up the chain, " +
+				"reported at the call that closes the loop. The message lists the chain. A loop " +
+				"through other files closes inside the callee, so the outermost caller reports " +
+				"it as `callee-failed`.",
+		},
+		{
+			Code: DiagnosticCodeCallUnreadable,
+			Description: "A `call:` target resolved to a path but could not be read: it is missing " +
+				"or cannot be opened, is a directory or other file that is not a regular file, " +
+				"is over the size bound, or failed with an I/O error. A file that reads but does " +
+				"not parse is `callee-failed`.",
+		},
+		{
+			Code: DiagnosticCodeCalleeFailed,
+			Description: "A `call:` target was read but did not compile. The message carries the " +
+				"callee's own diagnostics; fix them in the callee, which `flow validate` reports " +
+				"on its own.",
 		},
 	}
 }

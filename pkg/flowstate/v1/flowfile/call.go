@@ -270,7 +270,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		if resolved == self {
 			form = "calls itself"
 		}
-		c.report(spanOfNode(pathNode), callRef,
+		c.reportCode(v1.DiagnosticCodeCallCycle, spanOfNode(pathNode), callRef,
 			"%s, which the parser catches the same way it catches an anchor "+
 				"referring to its own value: %s",
 			form, strings.Join(chain, " -> "))
@@ -279,7 +279,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 
 	data, err := readBoundedSource(resolved)
 	if err != nil {
-		c.report(spanOfNode(pathNode), callRef,
+		c.reportCode(v1.DiagnosticCodeCallUnreadable, spanOfNode(pathNode), callRef,
 			"calls %q, which could not be read: %s", target, err.Error())
 		return nil
 	}
@@ -307,7 +307,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 
 	callee, _, err := parse(c.env, data, resolved, ancestors, c.callBudget, nil)
 	if err != nil {
-		c.report(spanOfNode(pathNode), callRef,
+		c.reportCode(v1.DiagnosticCodeCalleeFailed, spanOfNode(pathNode), callRef,
 			"calls %q, which failed to compile:\n%s", target, indentLines(err.Error()))
 		return nil
 	}
