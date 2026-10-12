@@ -264,10 +264,16 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 
 	if slices.Contains(ancestors, resolved) {
 		chain := append(append([]string{}, ancestors...), resolved)
+		// The cycle is the chain from the first occurrence of the repeated file;
+		// it is direct exactly when that file is the one doing the calling.
+		form := "calls itself through a chain of files rather than directly"
+		if resolved == self {
+			form = "calls itself"
+		}
 		c.report(spanOfNode(pathNode), callRef,
-			"calls itself through a chain of files rather than directly, which the parser "+
-				"catches the same way it catches an anchor referring to its own value: %s",
-			strings.Join(chain, " -> "))
+			"%s, which the parser catches the same way it catches an anchor "+
+				"referring to its own value: %s",
+			form, strings.Join(chain, " -> "))
 		return nil
 	}
 
