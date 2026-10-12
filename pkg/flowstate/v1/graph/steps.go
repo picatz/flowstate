@@ -142,15 +142,15 @@ func (l locations) add(g *v1.Graph, sourceMap *v1.DebugSourceMap, node string, p
 	if !ok || loc.GetDocument() < 0 || int(loc.GetDocument()) >= len(sourceMap.GetDocuments()) {
 		return
 	}
-	doc := sourceMap.GetDocuments()[loc.GetDocument()]
+	// generated_from indexes the source map's documents, not this graph's, so it
+	// is dropped rather than left pointing at the wrong one. The copy is what
+	// is compared, so one document is stored once however many steps it holds.
+	doc := proto.CloneOf(sourceMap.GetDocuments()[loc.GetDocument()])
+	doc.GeneratedFrom = 0
 	index := slices.IndexFunc(g.Documents, func(d *v1.DebugSourceDocument) bool { return proto.Equal(d, doc) })
 	if index < 0 {
 		index = len(g.Documents)
-		// generated_from indexes the source map's documents, not this graph's,
-		// so it is dropped rather than left pointing at the wrong one.
-		copied := proto.CloneOf(doc)
-		copied.GeneratedFrom = 0
-		g.Documents = append(g.Documents, copied)
+		g.Documents = append(g.Documents, doc)
 	}
 	located := proto.CloneOf(loc)
 	located.Document = int32(index)

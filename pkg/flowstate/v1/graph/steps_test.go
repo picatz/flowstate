@@ -275,12 +275,17 @@ func TestStepsFromWithholdsALocationWhoseDocumentIndexIsOutOfRange(t *testing.T)
 	}
 }
 
-func TestStepsFromDoesNotCarryAGeneratedFromIndexIntoTheGraphsDocuments(t *testing.T) {
-	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("build", "exec")}}
-	sm := mapOf(wf, map[string]uint32{"build": 4}, map[string][]string{"build": {"build"}})
+func TestStepsFromDoesNotCarryAGeneratedFromIndexAndStoresADocumentOnce(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("a", "exec"), task("b", "exec"), task("c", "exec")}}
+	sm := mapOf(wf, map[string]uint32{"a": 4, "b": 6, "c": 8},
+		map[string][]string{"a": {"a"}, "b": {"b"}, "c": {"c"}})
 	sm.Documents[0].GeneratedFrom = 1
 
 	g := graph.StepsFrom(wf, sm)
 	require.Len(t, g.GetDocuments(), 1)
 	require.Zero(t, g.GetDocuments()[0].GetGeneratedFrom())
+	require.Len(t, g.GetSources(), 3)
+	for _, s := range g.GetSources() {
+		require.Zero(t, s.GetLocation().GetDocument())
+	}
 }
