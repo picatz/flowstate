@@ -249,6 +249,12 @@ never passes `--live`, and contacts no server.
   `WAITS`) order nothing and are not drawn; no dependency order is derived. If the
   document states no nesting the rows stay in node order and a note says so. A node
   in a containment cycle is listed unnested, once, and the graph is marked partial.
+- **Where a step is.** The graph's `sources` layer says where the engine found each
+  step, and a located row carries `· line N` (`○ build — task "log" · line 4`, and
+  `✓ build · line 4 · succeeded` under live status). The line is read only if it is
+  a whole line (1 to 1 048 576) of the first document, for a node in the graph, once;
+  anything else, and any step the graph does not locate, is drawn without it. It is
+  the line, not an editor jump: the mod API has no open-at-line action.
 - **No status without a run.** With no run open, `○` means not run: the graph is
   what the file declares and no row carries a success, failure or colour.
 - **Live status from the open run.** When a run is open in the Runs detail card,

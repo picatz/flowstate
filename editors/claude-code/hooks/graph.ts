@@ -26,6 +26,8 @@ const MAX_DETAIL = 80
 const MAX_ADDRESS = 200
 /** The schema's longest workflow name. */
 export const MAX_NAME = 128
+/** A start line past this is not a line of a Flowfile (the CLI reads at most a MiB). */
+export const MAX_LINE = 1 << 20
 /** Nesting deeper than this is drawn at this depth; the schema's steps nest a few levels, not dozens. */
 export const MAX_DEPTH = 8
 /** A graph read is stopped after this long and reported as unreadable. */
@@ -69,6 +71,8 @@ export interface Row {
   detail: string
   /** The node's `address` (`decision?0/deploy`; empty for the workflow itself), cleaned. The one key a run's status is matched on. */
   address: string
+  /** The 1-based line the step starts on in the Flowfile, from the graph's `sources` layer; 0 when the graph does not say. */
+  line: number
 }
 
 export interface Graph {
@@ -146,7 +150,7 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
     index.set(n.id, rows.length)
     const kind = typeof n.kind === 'string' && Object.hasOwn(KIND, n.kind) ? KIND[n.kind] : 'node'
     if (kind === 'workflow' && workflowId === '') workflowId = clean(n.label, MAX_NAME + 1)
-    rows.push({ depth: 1, kind, label: clean(n.label, MAX_LABEL) || clean(n.id, MAX_LABEL), detail: clean(n.detail, MAX_DETAIL), address: clean(n.address, MAX_ADDRESS) })
+    rows.push({ depth: 1, kind, label: clean(n.label, MAX_LABEL) || clean(n.id, MAX_LABEL), detail: clean(n.detail, MAX_DETAIL), address: clean(n.address, MAX_ADDRESS), line: 0 })
   }
   if (doc.nodes.length > MAX_NODES) {
     partial = true
@@ -156,7 +160,20 @@ export const parseGraph = (stdout: unknown, cut = false): Parsed => {
     partial = true
     note(`${skipped} nodes could not be read`)
   }
-  const ids = [...index.keys()]
+
+  // Where each node starts, from the `sources` layer. Only the first document is the Flowfile the view was asked about (a
+  // `--workflow` graph holds no other); an entry that names a node twice, another document or a non-line is not trusted.
+  const located = new Set<number>()
+  for (const raw of Array.isArray(doc.sources) ? doc.sources.slice(0, MAX_NODES) : []) {
+    const src = obj(raw)
+    const loc = src === undefined ? undefined : obj(src.location)
+    const range = loc === undefined ? undefined : obj(loc.range)
+    const at = typeof src?.node === 'string' ? index.get(src.node) : undefined
+    const start = range?.startLine
+    if (at === undefined || located.has(at) || (loc?.document ?? 0) !== 0 || typeof start !== 'number' || !Number.isInteger(start) || start < 1 || start > MAX_LINE) continue
+    located.add(at)
+    rows[at].line = start
+  }
 
   // CONTAINS edges only; each node keeps the first parent the edges give it.
   const edges = Array.isArray(doc.edges) ? doc.edges : []
@@ -231,7 +248,7 @@ export const rowText = (r: Row): string => markedText(r, NOT_RUN)
 /** The same row with another mark and words after it: what a run's status adds, nothing else. */
 export const markedText = (r: Row, mark: string, after = ''): string => {
   const what = r.detail !== '' ? r.detail : r.kind === 'step' || r.kind === 'workflow' ? '' : r.kind
-  return `${'  '.repeat(r.depth)}${r.kind === 'workflow' ? 'workflow' : mark} ${r.label}${what === '' ? '' : ` — ${what}`}${after}`
+  return `${'  '.repeat(r.depth)}${r.kind === 'workflow' ? 'workflow' : mark} ${r.label}${what === '' ? '' : ` — ${what}`}${r.line > 0 ? ` · line ${r.line}` : ''}${after}`
 }
 
 /** The section's headline: what the rows are, and that nothing has run. */

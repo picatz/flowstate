@@ -254,3 +254,36 @@ test('nesting past the depth cap marks the graph partial and says rows were draw
   expect(at.partial).toBe(false)
   expect(at.notes).toEqual([])
 })
+
+const withSources = (sources: unknown[]) => JSON.stringify({ ...JSON.parse(APPROVAL), sources })
+const at = (nodeId: string, startLine: unknown, document: unknown = 0) => ({ node: nodeId, location: { document, range: { startLine, startColumn: 5 } } })
+
+test('a step the graph locates shows its line, and one it does not stays as it was', () => {
+  const g = graphOrFail(withSources([at('step:approval-gate/request', 4), at('step:approval-gate/decision?0/deploy', 21)]))
+  expect(graphLines(g, 'workflow.yaml').slice(1)).toEqual([
+    'workflow approval-gate',
+    `  ${NOT_RUN} request — task "log" · line 4`,
+    `  ${NOT_RUN} approval — wait_for_signal "deploy-approved"`,
+    `  ${NOT_RUN} decision — switch`,
+    `    ${NOT_RUN} deploy — task "log" · line 21`,
+    `    ${NOT_RUN} rejected — task "log"`,
+  ])
+})
+
+test('a location is trusted only if it is a whole line of the first document for a node that is there, once', () => {
+  const bad = [
+    at('step:approval-gate/request', 0),
+    at('step:approval-gate/approval', -3),
+    at('step:approval-gate/decision', 2.5),
+    at('step:approval-gate/decision?0/deploy', '7'),
+    at('step:approval-gate/decision?1/rejected', 9, 1),
+    at('step:approval-gate/nowhere', 5),
+    at('step:approval-gate/request', 1 << 30),
+    'not an object',
+  ]
+  const g = graphOrFail(withSources(bad))
+  expect(g.rows.map(r => r.line)).toEqual([0, 0, 0, 0, 0, 0])
+
+  const twice = graphOrFail(withSources([at('step:approval-gate/request', 4), at('step:approval-gate/request', 9)]))
+  expect(twice.rows[1].line).toBe(4)
+})
