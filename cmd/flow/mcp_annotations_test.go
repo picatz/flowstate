@@ -9,6 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
+	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
 )
 
 // rpcsWithoutEffect names the service methods that declare no effect in their
@@ -60,9 +62,91 @@ func TestEveryToolAdvertisesAnnotations(t *testing.T) {
 	}
 }
 
-// TestToolAnnotationsFollowTheDeclaredEffect pins the hints a client reads for
-// the cases the issue names, over tools/list.
-func TestToolAnnotationsFollowTheDeclaredEffect(t *testing.T) {
+type toolHints struct{ readOnly, idempotent, destructive, openWorld bool }
+
+func hintsOf(a *mcp.ToolAnnotations) toolHints {
+	return toolHints{a.ReadOnlyHint, a.IdempotentHint, a.DestructiveHint != nil && *a.DestructiveHint, a.OpenWorldHint != nil && *a.OpenWorldHint}
+}
+
+// TestEveryRPCToolAnnotationsArePinned pins the hints of every RPC's tool over
+// tools/list, so flipping any one declaration in service.proto fails here.
+func TestEveryRPCToolAnnotationsArePinned(t *testing.T) {
+	t.Parallel()
+
+	r := toolHints{readOnly: true, idempotent: true}
+	want := map[string]toolHints{
+		"Run":                 {destructive: true, openWorld: true},
+		"Get":                 r,
+		"Signal":              {destructive: true, openWorld: true},
+		"GetGate":             r,
+		"ListGates":           r,
+		"SignalWithStart":     {destructive: true, openWorld: true},
+		"List":                r,
+		"GetTimeline":         r,
+		"GetCheckpoint":       r,
+		"ResumeRun":           {destructive: true, openWorld: true},
+		"Cancel":              {idempotent: true, destructive: true},
+		"Terminate":           {idempotent: true, destructive: true},
+		"DebugAttach":         {idempotent: true, openWorld: true},
+		"DebugGet":            r,
+		"DebugHistory":        r,
+		"DebugResume":         {destructive: true, openWorld: true},
+		"DebugSetBreakpoints": {idempotent: true},
+		"DebugInspect":        r,
+		"Validate":            r,
+		"Compile":             r,
+		"GetCatalog":          r,
+		"CreateSchedule":      {destructive: true, openWorld: true},
+		"ListSchedules":       r,
+		"DescribeSchedule":    r,
+		"DeleteSchedule":      {idempotent: true, destructive: true},
+		"PauseSchedule":       {idempotent: true},
+		"ResumeSchedule":      {idempotent: true, destructive: true, openWorld: true},
+		"TriggerSchedule":     {destructive: true, openWorld: true},
+		"Whoami":              r,
+	}
+	require.Len(t, want, len(serviceMethodNames(t)), "the table must cover every RPC")
+
+	byName := map[string]*mcp.ToolAnnotations{}
+	for _, tool := range registeredTools(t) {
+		byName[tool.Name] = tool.Annotations
+	}
+	for rpc, h := range want {
+		a := byName[flowmcp.ToolName(rpc)]
+		if assert.NotNil(t, a, "%s is not served", rpc) {
+			assert.Equal(t, h, hintsOf(a), rpc)
+		}
+	}
+}
+
+// TestTaskDispatchingRPCsAreDestructiveAndOpenWorld holds the one rule the
+// MethodRules comment states: a call that starts, releases or resumes task
+// execution is destructive and open-world.
+func TestTaskDispatchingRPCsAreDestructiveAndOpenWorld(t *testing.T) {
+	t.Parallel()
+
+	dispatching := []string{
+		"Run", "SignalWithStart", "ResumeRun", "TriggerSchedule",
+		"Signal", "DebugResume", "CreateSchedule", "ResumeSchedule",
+	}
+	for _, rpc := range dispatching {
+		rules, ok := v1.MethodRulesForRPC(rpc)
+		require.True(t, ok, rpc)
+		assert.True(t, rules.GetDestructive() && rules.GetOpenWorld(), "%s dispatches task execution", rpc)
+	}
+}
+
+// TestUndeclaredRPCIsAnnotatedCautiously: a method with no declared effect is
+// presented as the worst case, so a missing declaration can only make a client ask more.
+func TestUndeclaredRPCIsAnnotatedCautiously(t *testing.T) {
+	t.Parallel()
+
+	a := flowmcp.ToolAnnotationsForRPC("NotAnRPC")
+	assert.Equal(t, toolHints{destructive: true, openWorld: true}, hintsOf(a))
+}
+
+// TestHandWrittenToolAnnotations pins the hints of the tools that are not RPCs.
+func TestHandWrittenToolAnnotations(t *testing.T) {
 	t.Parallel()
 
 	byName := map[string]*mcp.ToolAnnotations{}
@@ -70,15 +154,7 @@ func TestToolAnnotationsFollowTheDeclaredEffect(t *testing.T) {
 		byName[tool.Name] = tool.Annotations
 	}
 
-	type hints struct{ readOnly, idempotent, destructive, openWorld bool }
-	want := map[string]hints{
-		"flowstate_validate":              {readOnly: true, idempotent: true},
-		"flowstate_get":                   {readOnly: true, idempotent: true},
-		"flowstate_terminate":             {idempotent: true, destructive: true},
-		"flowstate_delete_schedule":       {idempotent: true, destructive: true},
-		"flowstate_pause_schedule":        {idempotent: true},
-		"flowstate_signal":                {},
-		"flowstate_run":                   {openWorld: true},
+	want := map[string]toolHints{
 		"flowstate_run_local":             {destructive: true, openWorld: true},
 		"flowstate_debug_session_command": {destructive: true, openWorld: true},
 		"flowstate_debug_session_observe": {readOnly: true, idempotent: true, openWorld: true},
@@ -88,10 +164,8 @@ func TestToolAnnotationsFollowTheDeclaredEffect(t *testing.T) {
 	}
 	for name, h := range want {
 		a := byName[name]
-		if !assert.NotNil(t, a, "%s is not served", name) {
-			continue
+		if assert.NotNil(t, a, "%s is not served", name) {
+			assert.Equal(t, h, hintsOf(a), name)
 		}
-		got := hints{a.ReadOnlyHint, a.IdempotentHint, a.DestructiveHint != nil && *a.DestructiveHint, a.OpenWorldHint != nil && *a.OpenWorldHint}
-		assert.Equal(t, h, got, name)
 	}
 }

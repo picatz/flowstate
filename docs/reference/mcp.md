@@ -35,31 +35,31 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_validate` | locally | read | `flowstate.v1.ValidateRequest` | `flowstate.v1.ValidateResponse` |
 | `flowstate_compile` | locally | read | `flowstate.v1.CompileRequest` | `flowstate.v1.CompileResponse` |
 | `flowstate_get_catalog` | locally | read | `flowstate.v1.GetCatalogRequest` | `flowstate.v1.GetCatalogResponse` |
-| `flowstate_run` | via a server | write, open-world | `flowstate.v1.RunRequest` | `flowstate.v1.RunResponse` |
+| `flowstate_run` | via a server | write, destructive, open-world | `flowstate.v1.RunRequest` | `flowstate.v1.RunResponse` |
 | `flowstate_get` | via a server | read | `flowstate.v1.GetRequest` | `flowstate.v1.GetResponse` |
 | `flowstate_get_timeline` | via a server | read | `flowstate.v1.GetTimelineRequest` | `flowstate.v1.GetTimelineResponse` |
 | `flowstate_get_checkpoint` | via a server | read | `flowstate.v1.GetCheckpointRequest` | `flowstate.v1.GetCheckpointResponse` |
-| `flowstate_resume_run` | via a server | write, open-world | `flowstate.v1.ResumeRunRequest` | `flowstate.v1.ResumeRunResponse` |
-| `flowstate_signal` | via a server | write | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
+| `flowstate_resume_run` | via a server | write, destructive, open-world | `flowstate.v1.ResumeRunRequest` | `flowstate.v1.ResumeRunResponse` |
+| `flowstate_signal` | via a server | write, destructive, open-world | `flowstate.v1.SignalRequest` | `flowstate.v1.SignalResponse` |
 | `flowstate_get_gate` | via a server | read | `flowstate.v1.GetGateRequest` | `flowstate.v1.GetGateResponse` |
 | `flowstate_list_gates` | via a server | read | `flowstate.v1.ListGatesRequest` | `flowstate.v1.ListGatesResponse` |
-| `flowstate_signal_with_start` | via a server | write, open-world | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
+| `flowstate_signal_with_start` | via a server | write, destructive, open-world | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
 | `flowstate_list` | via a server | read | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
 | `flowstate_cancel` | via a server | idempotent write, destructive | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
 | `flowstate_terminate` | via a server | idempotent write, destructive | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
-| `flowstate_debug_attach` | via a server | idempotent write | `flowstate.v1.DebugAttachRequest` | `flowstate.v1.DebugAttachResponse` |
+| `flowstate_debug_attach` | via a server | idempotent write, open-world | `flowstate.v1.DebugAttachRequest` | `flowstate.v1.DebugAttachResponse` |
 | `flowstate_debug_get` | via a server | read | `flowstate.v1.DebugGetRequest` | `flowstate.v1.DebugGetResponse` |
 | `flowstate_debug_history` | via a server | read | `flowstate.v1.DebugHistoryRequest` | `flowstate.v1.DebugHistoryResponse` |
-| `flowstate_debug_resume` | via a server | write | `flowstate.v1.DebugResumeRequest` | `flowstate.v1.DebugResumeResponse` |
+| `flowstate_debug_resume` | via a server | write, destructive, open-world | `flowstate.v1.DebugResumeRequest` | `flowstate.v1.DebugResumeResponse` |
 | `flowstate_debug_set_breakpoints` | via a server | idempotent write | `flowstate.v1.DebugSetBreakpointsRequest` | `flowstate.v1.DebugSetBreakpointsResponse` |
 | `flowstate_debug_inspect` | via a server | read | `flowstate.v1.DebugInspectRequest` | `flowstate.v1.DebugInspectResponse` |
-| `flowstate_create_schedule` | via a server | write | `flowstate.v1.CreateScheduleRequest` | `flowstate.v1.CreateScheduleResponse` |
+| `flowstate_create_schedule` | via a server | write, destructive, open-world | `flowstate.v1.CreateScheduleRequest` | `flowstate.v1.CreateScheduleResponse` |
 | `flowstate_list_schedules` | via a server | read | `flowstate.v1.ListSchedulesRequest` | `flowstate.v1.ListSchedulesResponse` |
 | `flowstate_describe_schedule` | via a server | read | `flowstate.v1.DescribeScheduleRequest` | `flowstate.v1.DescribeScheduleResponse` |
 | `flowstate_delete_schedule` | via a server | idempotent write, destructive | `flowstate.v1.DeleteScheduleRequest` | `flowstate.v1.DeleteScheduleResponse` |
 | `flowstate_pause_schedule` | via a server | idempotent write | `flowstate.v1.PauseScheduleRequest` | `flowstate.v1.PauseScheduleResponse` |
-| `flowstate_resume_schedule` | via a server | idempotent write | `flowstate.v1.ResumeScheduleRequest` | `flowstate.v1.ResumeScheduleResponse` |
-| `flowstate_trigger_schedule` | via a server | write, open-world | `flowstate.v1.TriggerScheduleRequest` | `flowstate.v1.TriggerScheduleResponse` |
+| `flowstate_resume_schedule` | via a server | idempotent write, destructive, open-world | `flowstate.v1.ResumeScheduleRequest` | `flowstate.v1.ResumeScheduleResponse` |
+| `flowstate_trigger_schedule` | via a server | write, destructive, open-world | `flowstate.v1.TriggerScheduleRequest` | `flowstate.v1.TriggerScheduleResponse` |
 | `flowstate_whoami` | via a server | read | `flowstate.v1.WhoamiRequest` | `flowstate.v1.WhoamiResponse` |
 | `flowstate_run_local` | locally | write, destructive, open-world | — | — |
 | `flowstate_test` | locally | read | — | — |

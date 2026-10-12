@@ -237,9 +237,15 @@ type MethodRules struct {
 	Effect MethodEffect `protobuf:"varint,1,opt,name=effect,proto3,enum=flowstate.v1.MethodEffect" json:"effect,omitempty"`
 	// Destructive marks a write that discards something it cannot restore, such
 	// as terminating a run or deleting a schedule. It has no meaning on READ.
+	//
+	// One rule covers task execution: any call that starts, releases or resumes
+	// task execution is both destructive and open_world, because tasks can run
+	// commands and write irreversibly. A call that only holds or records state,
+	// such as DebugAttach, is open_world alone.
 	Destructive bool `protobuf:"varint,2,opt,name=destructive,proto3" json:"destructive,omitempty"`
-	// Open_world marks a call that starts or resumes work which reaches beyond
-	// this deployment, such as the network, rather than only recording state.
+	// Open_world marks a call that starts, releases or resumes work whose tasks
+	// can reach beyond this deployment, such as the network, rather than only
+	// recording state.
 	OpenWorld     bool `protobuf:"varint,3,opt,name=open_world,json=openWorld,proto3" json:"open_world,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3879,35 +3885,32 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	" SENSITIVE_DISCLOSURE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"SENSITIVE_DISCLOSURE_NONE_DECLARED\x10\x01\x12!\n" +
 	"\x1dSENSITIVE_DISCLOSURE_WITHHELD\x10\x02\x12!\n" +
-	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\xc0\x15\n" +
-	"\x0fWorkflowService\x12H\n" +
-	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\f\x88\xb5\x18\x01\x92\xb5\x18\x04\b\x03\x18\x01\x12F\n" +
+	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\xda\x15\n" +
+	"\x0fWorkflowService\x12J\n" +
+	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\x0e\x88\xb5\x18\x01\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12F\n" +
 	"\x03Get\x12\x18.flowstate.v1.GetRequest\x1a\x19.flowstate.v1.GetResponse\"\n" +
-	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12O\n" +
-	"\x06Signal\x12\x1b.flowstate.v1.SignalRequest\x1a\x1c.flowstate.v1.SignalResponse\"\n" +
-	"\x88\xb5\x18\x03\x92\xb5\x18\x02\b\x03\x12R\n" +
+	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12S\n" +
+	"\x06Signal\x12\x1b.flowstate.v1.SignalRequest\x1a\x1c.flowstate.v1.SignalResponse\"\x0e\x88\xb5\x18\x03\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12R\n" +
 	"\aGetGate\x12\x1c.flowstate.v1.GetGateRequest\x1a\x1d.flowstate.v1.GetGateResponse\"\n" +
 	"\x88\xb5\x18\x03\x92\xb5\x18\x02\b\x01\x12X\n" +
 	"\tListGates\x12\x1e.flowstate.v1.ListGatesRequest\x1a\x1f.flowstate.v1.ListGatesResponse\"\n" +
-	"\x88\xb5\x18\x03\x92\xb5\x18\x02\b\x01\x12l\n" +
-	"\x0fSignalWithStart\x12$.flowstate.v1.SignalWithStartRequest\x1a%.flowstate.v1.SignalWithStartResponse\"\f\x88\xb5\x18\x01\x92\xb5\x18\x04\b\x03\x18\x01\x12I\n" +
+	"\x88\xb5\x18\x03\x92\xb5\x18\x02\b\x01\x12n\n" +
+	"\x0fSignalWithStart\x12$.flowstate.v1.SignalWithStartRequest\x1a%.flowstate.v1.SignalWithStartResponse\"\x0e\x88\xb5\x18\x01\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12I\n" +
 	"\x04List\x12\x19.flowstate.v1.ListRequest\x1a\x1a.flowstate.v1.ListResponse\"\n" +
 	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12^\n" +
 	"\vGetTimeline\x12 .flowstate.v1.GetTimelineRequest\x1a!.flowstate.v1.GetTimelineResponse\"\n" +
 	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12d\n" +
 	"\rGetCheckpoint\x12\".flowstate.v1.GetCheckpointRequest\x1a#.flowstate.v1.GetCheckpointResponse\"\n" +
-	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12Z\n" +
-	"\tResumeRun\x12\x1e.flowstate.v1.ResumeRunRequest\x1a\x1f.flowstate.v1.ResumeRunResponse\"\f\x88\xb5\x18\x01\x92\xb5\x18\x04\b\x03\x18\x01\x12Q\n" +
+	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12\\\n" +
+	"\tResumeRun\x12\x1e.flowstate.v1.ResumeRunRequest\x1a\x1f.flowstate.v1.ResumeRunResponse\"\x0e\x88\xb5\x18\x01\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12Q\n" +
 	"\x06Cancel\x12\x1b.flowstate.v1.CancelRequest\x1a\x1c.flowstate.v1.CancelResponse\"\f\x88\xb5\x18\x04\x92\xb5\x18\x04\b\x02\x10\x01\x12Z\n" +
-	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\f\x88\xb5\x18\x05\x92\xb5\x18\x04\b\x02\x10\x01\x12^\n" +
-	"\vDebugAttach\x12 .flowstate.v1.DebugAttachRequest\x1a!.flowstate.v1.DebugAttachResponse\"\n" +
-	"\x88\xb5\x18\x12\x92\xb5\x18\x02\b\x02\x12U\n" +
+	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\f\x88\xb5\x18\x05\x92\xb5\x18\x04\b\x02\x10\x01\x12`\n" +
+	"\vDebugAttach\x12 .flowstate.v1.DebugAttachRequest\x1a!.flowstate.v1.DebugAttachResponse\"\f\x88\xb5\x18\x12\x92\xb5\x18\x04\b\x02\x18\x01\x12U\n" +
 	"\bDebugGet\x12\x1d.flowstate.v1.DebugGetRequest\x1a\x1e.flowstate.v1.DebugGetResponse\"\n" +
 	"\x88\xb5\x18\x12\x92\xb5\x18\x02\b\x01\x12a\n" +
 	"\fDebugHistory\x12!.flowstate.v1.DebugHistoryRequest\x1a\".flowstate.v1.DebugHistoryResponse\"\n" +
-	"\x88\xb5\x18\x12\x92\xb5\x18\x02\b\x01\x12^\n" +
-	"\vDebugResume\x12 .flowstate.v1.DebugResumeRequest\x1a!.flowstate.v1.DebugResumeResponse\"\n" +
-	"\x88\xb5\x18\x12\x92\xb5\x18\x02\b\x03\x12v\n" +
+	"\x88\xb5\x18\x12\x92\xb5\x18\x02\b\x01\x12b\n" +
+	"\vDebugResume\x12 .flowstate.v1.DebugResumeRequest\x1a!.flowstate.v1.DebugResumeResponse\"\x0e\x88\xb5\x18\x12\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12v\n" +
 	"\x13DebugSetBreakpoints\x12(.flowstate.v1.DebugSetBreakpointsRequest\x1a).flowstate.v1.DebugSetBreakpointsResponse\"\n" +
 	"\x88\xb5\x18\x12\x92\xb5\x18\x02\b\x02\x12a\n" +
 	"\fDebugInspect\x12!.flowstate.v1.DebugInspectRequest\x1a\".flowstate.v1.DebugInspectResponse\"\n" +
@@ -3918,9 +3921,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x88\xb5\x18\a\x92\xb5\x18\x02\b\x01\x12[\n" +
 	"\n" +
 	"GetCatalog\x12\x1f.flowstate.v1.GetCatalogRequest\x1a .flowstate.v1.GetCatalogResponse\"\n" +
-	"\x88\xb5\x18\b\x92\xb5\x18\x02\b\x01\x12g\n" +
-	"\x0eCreateSchedule\x12#.flowstate.v1.CreateScheduleRequest\x1a$.flowstate.v1.CreateScheduleResponse\"\n" +
-	"\x88\xb5\x18\t\x92\xb5\x18\x02\b\x03\x12d\n" +
+	"\x88\xb5\x18\b\x92\xb5\x18\x02\b\x01\x12k\n" +
+	"\x0eCreateSchedule\x12#.flowstate.v1.CreateScheduleRequest\x1a$.flowstate.v1.CreateScheduleResponse\"\x0e\x88\xb5\x18\t\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12d\n" +
 	"\rListSchedules\x12\".flowstate.v1.ListSchedulesRequest\x1a#.flowstate.v1.ListSchedulesResponse\"\n" +
 	"\x88\xb5\x18\n" +
 	"\x92\xb5\x18\x02\b\x01\x12m\n" +
@@ -3929,10 +3931,9 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x92\xb5\x18\x02\b\x01\x12i\n" +
 	"\x0eDeleteSchedule\x12#.flowstate.v1.DeleteScheduleRequest\x1a$.flowstate.v1.DeleteScheduleResponse\"\f\x88\xb5\x18\v\x92\xb5\x18\x04\b\x02\x10\x01\x12d\n" +
 	"\rPauseSchedule\x12\".flowstate.v1.PauseScheduleRequest\x1a#.flowstate.v1.PauseScheduleResponse\"\n" +
-	"\x88\xb5\x18\f\x92\xb5\x18\x02\b\x02\x12g\n" +
-	"\x0eResumeSchedule\x12#.flowstate.v1.ResumeScheduleRequest\x1a$.flowstate.v1.ResumeScheduleResponse\"\n" +
-	"\x88\xb5\x18\r\x92\xb5\x18\x02\b\x02\x12l\n" +
-	"\x0fTriggerSchedule\x12$.flowstate.v1.TriggerScheduleRequest\x1a%.flowstate.v1.TriggerScheduleResponse\"\f\x88\xb5\x18\x0e\x92\xb5\x18\x04\b\x03\x18\x01\x12O\n" +
+	"\x88\xb5\x18\f\x92\xb5\x18\x02\b\x02\x12k\n" +
+	"\x0eResumeSchedule\x12#.flowstate.v1.ResumeScheduleRequest\x1a$.flowstate.v1.ResumeScheduleResponse\"\x0e\x88\xb5\x18\r\x92\xb5\x18\x06\b\x02\x10\x01\x18\x01\x12n\n" +
+	"\x0fTriggerSchedule\x12$.flowstate.v1.TriggerScheduleRequest\x1a%.flowstate.v1.TriggerScheduleResponse\"\x0e\x88\xb5\x18\x0e\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12O\n" +
 	"\x06Whoami\x12\x1b.flowstate.v1.WhoamiRequest\x1a\x1c.flowstate.v1.WhoamiResponse\"\n" +
 	"\x88\xb5\x18\x17\x92\xb5\x18\x02\b\x01:^\n" +
 	"\fmethod_rules\x12\x1e.google.protobuf.MethodOptions\x18҆\x03 \x01(\v2\x19.flowstate.v1.MethodRulesR\vmethodRulesB\xab\x01\n" +

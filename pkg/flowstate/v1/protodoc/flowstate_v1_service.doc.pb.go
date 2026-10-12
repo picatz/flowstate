@@ -22,12 +22,18 @@ func init() {
 		{
 			Name: "flowstate.v1.MethodRules.destructive",
 			Leading: " Destructive marks a write that discards something it cannot restore, such\n" +
-				" as terminating a run or deleting a schedule. It has no meaning on READ.\n",
+				" as terminating a run or deleting a schedule. It has no meaning on READ.\n" +
+				"\n" +
+				" One rule covers task execution: any call that starts, releases or resumes\n" +
+				" task execution is both destructive and open_world, because tasks can run\n" +
+				" commands and write irreversibly. A call that only holds or records state,\n" +
+				" such as DebugAttach, is open_world alone.\n",
 		},
 		{
 			Name: "flowstate.v1.MethodRules.open_world",
-			Leading: " Open_world marks a call that starts or resumes work which reaches beyond\n" +
-				" this deployment, such as the network, rather than only recording state.\n",
+			Leading: " Open_world marks a call that starts, releases or resumes work whose tasks\n" +
+				" can reach beyond this deployment, such as the network, rather than only\n" +
+				" recording state.\n",
 		},
 		{
 			Name:    "flowstate.v1.RunRequest",

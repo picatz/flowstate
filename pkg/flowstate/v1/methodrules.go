@@ -9,7 +9,7 @@ import (
 )
 
 // methodRules reads the method_rules option off every WorkflowService method,
-// once, in the schema's declaration order. A method that declares none maps to
+// once. A method that declares none maps to
 // the zero rules, whose effect is METHOD_EFFECT_UNSPECIFIED, which
 // TestEveryRPCDeclaresAnEffect refuses. Lazy for the reason [boundActions] is.
 var methodRules = sync.OnceValue(func() map[string]*MethodRules {
