@@ -367,6 +367,17 @@ type Deps struct {
 	// loaded into. Read only by [AddLocalCapabilities].
 	PluginCatalog bool
 
+	// ReadOnly serves only the tools whose annotations declare readOnlyHint
+	// (`flow mcp --read-only`, `flow mcp serve --read-only`), decided from the
+	// annotations each tool already carries: a tool with none is withheld,
+	// because the cautious reading of a missing declaration is a write. A call
+	// naming a withheld tool, which a client holding a stale tools/list can
+	// still send, is refused and audited as a denial ([refuseWithheld]).
+	//
+	// It narrows what is served and grants nothing: the action check and the
+	// token's scopes apply unchanged to what remains.
+	ReadOnly bool
+
 	// reduced marks the registration [AddLocalCapabilities] performs, where
 	// several tools and resources the full surface serves are absent. It
 	// selects the descriptions that are true there — see [toolDescription]
@@ -464,13 +475,15 @@ func AddLocalCapabilities(
 	// holds is changed.
 	deps.reduced = true
 
+	var withheld []string
+
 	for _, method := range WorkflowServiceMethods() {
 		if !LocalTools[method.Name] {
 			continue
 		}
 
 		name := ToolName(method.Name)
-		srv.AddTool(&mcp.Tool{
+		tool := &mcp.Tool{
 			Name:         name,
 			Description:  toolDescription(method.Name, deps.reduced, deps.PluginCatalog),
 			InputSchema:  SchemaForMessage(method.Input),
@@ -479,13 +492,23 @@ func AddLocalCapabilities(
 			// No Meta: [ToolViews] names no local tool today, and a view
 			// declared here would point at a resource this function does not
 			// mount. If that ever changes, it changes here deliberately.
-		}, wrapToolHandler(deps, name, dispatch(method, local, noRemoteClient, deps)))
+		}
+		if !deps.serves(tool) {
+			withheld = append(withheld, name)
+			continue
+		}
+		srv.AddTool(tool, wrapToolHandler(deps, name, dispatch(method, local, noRemoteClient, deps)))
 	}
 
 	for _, reg := range extra {
+		if !deps.serves(reg.Tool) {
+			withheld = append(withheld, reg.Tool.Name)
+			continue
+		}
 		srv.AddTool(reg.Tool, wrapToolHandler(deps, reg.Tool.Name, reg.Handler))
 	}
 
+	refuseWithheld(srv, deps, withheld)
 	addResources(srv, local, deps)
 }
 
@@ -543,18 +566,8 @@ func withMCPActions(extra authz.Decider, recorder *audit.Recorder, reportFailure
 		}
 		scope := decision.Scope
 
-		if recorder != nil {
-			if err := recorder.Deny(ctx, audit.Subject{
-				MCPTool:    tool,
-				Identity:   v1.ProtoWorkloadIdentity(auth.IdentityFromPrincipal(principal, principal.Namespace, "")),
-				IssuerName: principal.IssuerName,
-				Role:       principal.Role,
-			}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
-				if reportFailure != nil {
-					reportFailure(err)
-				}
-				return ToolError(errors.New("the authorization decision could not be recorded; try again")), nil
-			}
+		if failed := recordDenial(ctx, recorder, reportFailure, tool, principal); failed != nil {
+			return failed, nil
 		}
 
 		if decision.Embedder {
@@ -563,6 +576,40 @@ func withMCPActions(extra authz.Decider, recorder *audit.Recorder, reportFailure
 
 		return ToolError(fmt.Errorf("the caller is not authorized for required action %q", scope)), nil
 	}
+}
+
+// recordDenial records one POLICY_DENIED decision for the tool when a recorder
+// is set. It returns the fixed public refusal when the record could not be
+// written (the operator-facing detail goes to reportFailure), nil otherwise.
+func recordDenial(ctx context.Context, recorder *audit.Recorder, reportFailure func(error), tool string, principal auth.Principal) *mcp.CallToolResult {
+	if recorder == nil {
+		return nil
+	}
+
+	if err := recorder.Deny(ctx, audit.Subject{
+		MCPTool:    tool,
+		Identity:   v1.ProtoWorkloadIdentity(auth.IdentityFromPrincipal(principal, principal.Namespace, "")),
+		IssuerName: principal.IssuerName,
+		Role:       principal.Role,
+	}, v1.AuditDenyCode_AUDIT_DENY_CODE_POLICY_DENIED); err != nil {
+		if reportFailure != nil {
+			reportFailure(err)
+		}
+		return ToolError(errors.New("the authorization decision could not be recorded; try again"))
+	}
+
+	return nil
+}
+
+// denyTool records a denial and returns the refusal naming reason, or the
+// fixed record-failure refusal when the denial could not be recorded.
+func denyTool(ctx context.Context, recorder *audit.Recorder, reportFailure func(error), tool string, reason error) *mcp.CallToolResult {
+	principal, _ := auth.PrincipalFromContext(ctx)
+	if failed := recordDenial(ctx, recorder, reportFailure, tool, principal); failed != nil {
+		return failed
+	}
+
+	return ToolError(reason)
 }
 
 // withMCPPrincipal installs the verified, token-free caller on the same
@@ -650,6 +697,8 @@ func AddTools(
 	deps Deps,
 	extra ...ToolRegistration,
 ) {
+	var withheld []string
+
 	for _, method := range WorkflowServiceMethods() {
 		tool := &mcp.Tool{
 			Name:         ToolName(method.Name),
@@ -657,6 +706,10 @@ func AddTools(
 			InputSchema:  SchemaForMessage(method.Input),
 			OutputSchema: SchemaForMessage(method.Output),
 			Annotations:  ToolAnnotationsForRPC(method.Name),
+		}
+		if !deps.serves(tool) {
+			withheld = append(withheld, tool.Name)
+			continue
 		}
 		if view, ok := ToolViews[method.Name]; ok {
 			tool.Meta = uiToolMeta(view)
@@ -678,7 +731,60 @@ func AddTools(
 	}
 
 	for _, reg := range extra {
+		if !deps.serves(reg.Tool) {
+			withheld = append(withheld, reg.Tool.Name)
+			continue
+		}
 		srv.AddTool(reg.Tool, reg.Handler)
+	}
+
+	refuseWithheld(srv, deps, withheld)
+}
+
+// ReadOnlyTool reports whether a tool declares readOnlyHint. It is the one
+// reading of "read-only" that `--read-only` uses, taken from the annotations
+// the tool is served with so no second table can disagree with them; a tool
+// with no annotations is not read-only.
+func ReadOnlyTool(tool *mcp.Tool) bool {
+	return tool != nil && tool.Annotations != nil && tool.Annotations.ReadOnlyHint
+}
+
+// serves reports whether the tool is registered under these deps.
+func (d Deps) serves(tool *mcp.Tool) bool {
+	return !d.ReadOnly || ReadOnlyTool(tool)
+}
+
+// refuseWithheld is the defense in depth under [Deps.ReadOnly]: tools/list
+// omits a withheld tool, but a client with a stale list can still name it, and
+// the SDK would answer an unregistered name with an anonymous protocol error
+// that no audit trail sees. This answers the call as a tool error naming the
+// flag and records the denial the way [withMCPActions] does, before the SDK
+// resolves a tool. Only names this package withheld are caught, so an unknown
+// name keeps the SDK's own answer.
+func refuseWithheld(srv *mcp.Server, deps Deps, withheld []string) {
+	if len(withheld) == 0 {
+		return
+	}
+
+	srv.AddReceivingMiddleware(withheldRefusal(deps, withheld))
+}
+
+// withheldRefusal is the middleware [refuseWithheld] installs.
+func withheldRefusal(deps Deps, withheld []string) mcp.Middleware {
+	return func(next mcp.MethodHandler) mcp.MethodHandler {
+		return func(ctx context.Context, method string, req mcp.Request) (mcp.Result, error) {
+			call, ok := req.(*mcp.CallToolRequest)
+			if method != "tools/call" || !ok || call.Params == nil || !slices.Contains(withheld, call.Params.Name) {
+				return next(ctx, method, req)
+			}
+
+			refuse := withMCPPrincipal(func(ctx context.Context, call *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+				return denyTool(ctx, deps.Audit, deps.AuditFailure, call.Params.Name,
+					fmt.Errorf("%s is not served: this server is read-only (--read-only) and the tool is not declared read-only", call.Params.Name)), nil
+			})
+
+			return refuse(ctx, call)
+		}
 	}
 }
 
