@@ -45,7 +45,7 @@ contracts and do not advertise a schema-owned result message.
 | `flowstate_list_gates` | via a server | read | `flowstate.v1.ListGatesRequest` | `flowstate.v1.ListGatesResponse` |
 | `flowstate_signal_with_start` | via a server | write, destructive, open-world | `flowstate.v1.SignalWithStartRequest` | `flowstate.v1.SignalWithStartResponse` |
 | `flowstate_list` | via a server | read | `flowstate.v1.ListRequest` | `flowstate.v1.ListResponse` |
-| `flowstate_cancel` | via a server | idempotent write, destructive | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
+| `flowstate_cancel` | via a server | idempotent write, destructive, open-world | `flowstate.v1.CancelRequest` | `flowstate.v1.CancelResponse` |
 | `flowstate_terminate` | via a server | idempotent write, destructive | `flowstate.v1.TerminateRequest` | `flowstate.v1.TerminateResponse` |
 | `flowstate_debug_attach` | via a server | idempotent write, open-world | `flowstate.v1.DebugAttachRequest` | `flowstate.v1.DebugAttachResponse` |
 | `flowstate_debug_get` | via a server | read | `flowstate.v1.DebugGetRequest` | `flowstate.v1.DebugGetResponse` |

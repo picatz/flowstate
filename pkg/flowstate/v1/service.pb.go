@@ -240,12 +240,14 @@ type MethodRules struct {
 	//
 	// One rule covers task execution: any call that starts, releases or resumes
 	// task execution is both destructive and open_world, because tasks can run
-	// commands and write irreversibly. A call that only holds or records state,
-	// such as DebugAttach, is open_world alone.
+	// commands and write irreversibly. A call that only holds a run that does,
+	// such as DebugAttach, is open_world alone. Terminate is destructive only
+	// because it runs no workflow code; Cancel also runs compensation, so it is
+	// open_world too.
 	Destructive bool `protobuf:"varint,2,opt,name=destructive,proto3" json:"destructive,omitempty"`
-	// Open_world marks a call that starts, releases or resumes work whose tasks
-	// can reach beyond this deployment, such as the network, rather than only
-	// recording state.
+	// Open_world marks a call that can start, release, resume or compensate task
+	// execution, or hold a run that does, where tasks can reach beyond this
+	// deployment, such as the network, rather than only recording state.
 	OpenWorld     bool `protobuf:"varint,3,opt,name=open_world,json=openWorld,proto3" json:"open_world,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -3885,7 +3887,7 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	" SENSITIVE_DISCLOSURE_UNSPECIFIED\x10\x00\x12&\n" +
 	"\"SENSITIVE_DISCLOSURE_NONE_DECLARED\x10\x01\x12!\n" +
 	"\x1dSENSITIVE_DISCLOSURE_WITHHELD\x10\x02\x12!\n" +
-	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\xda\x15\n" +
+	"\x1dSENSITIVE_DISCLOSURE_REVEALED\x10\x032\xdc\x15\n" +
 	"\x0fWorkflowService\x12J\n" +
 	"\x03Run\x12\x18.flowstate.v1.RunRequest\x1a\x19.flowstate.v1.RunResponse\"\x0e\x88\xb5\x18\x01\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12F\n" +
 	"\x03Get\x12\x18.flowstate.v1.GetRequest\x1a\x19.flowstate.v1.GetResponse\"\n" +
@@ -3902,8 +3904,8 @@ const file_flowstate_v1_service_proto_rawDesc = "" +
 	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12d\n" +
 	"\rGetCheckpoint\x12\".flowstate.v1.GetCheckpointRequest\x1a#.flowstate.v1.GetCheckpointResponse\"\n" +
 	"\x88\xb5\x18\x02\x92\xb5\x18\x02\b\x01\x12\\\n" +
-	"\tResumeRun\x12\x1e.flowstate.v1.ResumeRunRequest\x1a\x1f.flowstate.v1.ResumeRunResponse\"\x0e\x88\xb5\x18\x01\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12Q\n" +
-	"\x06Cancel\x12\x1b.flowstate.v1.CancelRequest\x1a\x1c.flowstate.v1.CancelResponse\"\f\x88\xb5\x18\x04\x92\xb5\x18\x04\b\x02\x10\x01\x12Z\n" +
+	"\tResumeRun\x12\x1e.flowstate.v1.ResumeRunRequest\x1a\x1f.flowstate.v1.ResumeRunResponse\"\x0e\x88\xb5\x18\x01\x92\xb5\x18\x06\b\x03\x10\x01\x18\x01\x12S\n" +
+	"\x06Cancel\x12\x1b.flowstate.v1.CancelRequest\x1a\x1c.flowstate.v1.CancelResponse\"\x0e\x88\xb5\x18\x04\x92\xb5\x18\x06\b\x02\x10\x01\x18\x01\x12Z\n" +
 	"\tTerminate\x12\x1e.flowstate.v1.TerminateRequest\x1a\x1f.flowstate.v1.TerminateResponse\"\f\x88\xb5\x18\x05\x92\xb5\x18\x04\b\x02\x10\x01\x12`\n" +
 	"\vDebugAttach\x12 .flowstate.v1.DebugAttachRequest\x1a!.flowstate.v1.DebugAttachResponse\"\f\x88\xb5\x18\x12\x92\xb5\x18\x04\b\x02\x18\x01\x12U\n" +
 	"\bDebugGet\x12\x1d.flowstate.v1.DebugGetRequest\x1a\x1e.flowstate.v1.DebugGetResponse\"\n" +

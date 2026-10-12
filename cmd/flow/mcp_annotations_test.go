@@ -85,7 +85,7 @@ func TestEveryRPCToolAnnotationsArePinned(t *testing.T) {
 		"GetTimeline":         r,
 		"GetCheckpoint":       r,
 		"ResumeRun":           {destructive: true, openWorld: true},
-		"Cancel":              {idempotent: true, destructive: true},
+		"Cancel":              {idempotent: true, destructive: true, openWorld: true},
 		"Terminate":           {idempotent: true, destructive: true},
 		"DebugAttach":         {idempotent: true, openWorld: true},
 		"DebugGet":            r,
@@ -126,7 +126,7 @@ func TestTaskDispatchingRPCsAreDestructiveAndOpenWorld(t *testing.T) {
 	t.Parallel()
 
 	dispatching := []string{
-		"Run", "SignalWithStart", "ResumeRun", "TriggerSchedule",
+		"Run", "SignalWithStart", "ResumeRun", "TriggerSchedule", "Cancel",
 		"Signal", "DebugResume", "CreateSchedule", "ResumeSchedule",
 	}
 	for _, rpc := range dispatching {
@@ -161,6 +161,9 @@ func TestHandWrittenToolAnnotations(t *testing.T) {
 		"flowstate_debug_session_start":   {},
 		"flowstate_check_policy":          {readOnly: true, idempotent: true},
 		"flowstate_test":                  {readOnly: true, idempotent: true},
+		"flowstate_debug":                 {readOnly: true, idempotent: true},
+		"flowstate_debug_session_attach":  {idempotent: true, openWorld: true},
+		"flowstate_debug_session_end":     {idempotent: true, destructive: true, openWorld: true},
 	}
 	for name, h := range want {
 		a := byName[name]

@@ -49,13 +49,15 @@ message MethodRules {
   //
   // One rule covers task execution: any call that starts, releases or resumes
   // task execution is both destructive and open_world, because tasks can run
-  // commands and write irreversibly. A call that only holds or records state,
-  // such as DebugAttach, is open_world alone.
+  // commands and write irreversibly. A call that only holds a run that does,
+  // such as DebugAttach, is open_world alone. Terminate is destructive only
+  // because it runs no workflow code; Cancel also runs compensation, so it is
+  // open_world too.
   bool destructive = 2;
 
-  // Open_world marks a call that starts, releases or resumes work whose tasks
-  // can reach beyond this deployment, such as the network, rather than only
-  // recording state.
+  // Open_world marks a call that can start, release, resume or compensate task
+  // execution, or hold a run that does, where tasks can reach beyond this
+  // deployment, such as the network, rather than only recording state.
   bool open_world = 3;
 }
 
@@ -1311,6 +1313,7 @@ service WorkflowService {
     option (flowstate.v1.method_rules) = {
       effect: METHOD_EFFECT_IDEMPOTENT_WRITE
       destructive: true
+          open_world: true
     };
   }
 

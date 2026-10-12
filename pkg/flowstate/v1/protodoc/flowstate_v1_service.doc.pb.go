@@ -26,14 +26,16 @@ func init() {
 				"\n" +
 				" One rule covers task execution: any call that starts, releases or resumes\n" +
 				" task execution is both destructive and open_world, because tasks can run\n" +
-				" commands and write irreversibly. A call that only holds or records state,\n" +
-				" such as DebugAttach, is open_world alone.\n",
+				" commands and write irreversibly. A call that only holds a run that does,\n" +
+				" such as DebugAttach, is open_world alone. Terminate is destructive only\n" +
+				" because it runs no workflow code; Cancel also runs compensation, so it is\n" +
+				" open_world too.\n",
 		},
 		{
 			Name: "flowstate.v1.MethodRules.open_world",
-			Leading: " Open_world marks a call that starts, releases or resumes work whose tasks\n" +
-				" can reach beyond this deployment, such as the network, rather than only\n" +
-				" recording state.\n",
+			Leading: " Open_world marks a call that can start, release, resume or compensate task\n" +
+				" execution, or hold a run that does, where tasks can reach beyond this\n" +
+				" deployment, such as the network, rather than only recording state.\n",
 		},
 		{
 			Name:    "flowstate.v1.RunRequest",
