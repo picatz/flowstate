@@ -487,7 +487,25 @@ steps:
 
 	_, _, err := flowfile.ParseFile(filepath.Join(dir, "a.yaml"))
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "calls itself through a chain of files")
+	require.Contains(t, err.Error(), "calls itself through a chain of files rather than directly")
+}
+
+// TestCallDetectsDirectSelfCall pins the direct form of the cycle diagnostic:
+// a file calling itself is said to call itself, not to do so "through a chain
+// of files rather than directly".
+func TestCallDetectsDirectSelfCall(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.yaml", `edition: v2026.4
+name: a
+steps:
+  - id: next
+    call: ./a.yaml
+`)
+
+	_, _, err := flowfile.ParseFile(filepath.Join(dir, "a.yaml"))
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "calls itself, which the parser catches")
+	require.NotContains(t, err.Error(), "chain of files")
 }
 
 // TestCallArgumentSecretRefused is the decision the coordinator asked to be
