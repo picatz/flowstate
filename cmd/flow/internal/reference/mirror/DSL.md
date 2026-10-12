@@ -5995,19 +5995,68 @@ just as before.
 #### What a diagnostic that descended looks like
 
 Descent means an author can be told about a defect in a file they did not write, so
-the diagnostic owes them the way back. The shape, which the compiler already
-established for a callee that fails to compile:
+the diagnostic owes them the way back, and the position it prints must be one that
+exists in the file it names. A problem in a callee is therefore reported twice, once
+in each place an author might be standing:
 
-- **Position at the call site**, in the file being compiled. That is the line the
-  author can act on, and the only position they can see from where they are.
-- **Name the callee**, as written in the `call:` — `"./workflows/inner.yaml"`, the
-  path the author typed, not a resolved absolute one.
-- **Then say what was found there**, quoting the callee's own message.
+- **Under the callee's own file**, at the callee's own line and column, with the
+  callee's own code, step and field. This is a second report in `flow validate`'s
+  answer (and a second `files[]` entry in `-o json`), and the language server
+  publishes it on the callee's URI. Its `related` entry is the `call:` that caused
+  the callee to be compiled, in the caller's file.
+- **At the call site, in the caller**, as one `callee-failed` per `call:` step. It
+  names the callee as written in the `call:` (`"./lib/callee.yaml"`, not a resolved
+  path) and does not repeat the callee's text; its `related` entry points at the
+  callee's first problem. Many problems in one callee are still one
+  `callee-failed` per call site.
 
-A callee that will not compile is reported as *calls "./workflows/x.yaml", which
-failed to compile:* followed by that file's own diagnostics, indented beneath. The
-nested-loop refusal follows it: positioned on the *caller's* `loop:` step, naming the
-callee holding the inner loop and the `call:` step that reaches it.
+A callee reached from several call sites, or through several callees, is reported
+once under its own file, with each call site added to `related` (bounded at 16).
+The caller's report holds only the caller's own diagnostics plus those
+`callee-failed` markers.
+
+Two forms of the same rule. A callee whose default breaks its own `must:`:
+
+```text
+$ flow validate workflow.yaml
+workflow.yaml:5:11: step "place": call calls "./lib/callee.yaml", which has problems of its own, reported under lib/callee.yaml
+lib/callee.yaml:6:14: inputs.shards.default: input "shards" must satisfy `this >= 1`; got 0
+```
+
+```text
+$ flow validate -o json workflow.yaml
+{"files": [
+  {"file": "workflow.yaml", "diagnostics": [{"line": 5, "column": 11, "step": "place",
+    "code": "callee-failed",
+    "related": [{"file": "lib/callee.yaml", "line": 6, "column": 14,
+                 "message": "first problem reported here"}]}]},
+  {"file": "lib/callee.yaml", "diagnostics": [{"line": 6, "column": 14,
+    "field": "inputs.shards.default", "code": "general",
+    "related": [{"file": "workflow.yaml", "line": 5, "column": 11,
+                 "message": "compiled because step \"place\" calls it"}]}]}]}
+```
+
+(Output trimmed to the fields that matter; `-o jsonl` prints each element of
+`files` as one line.) A callee that calls itself, or that closes a loop through other
+files, is a `call-cycle` reported at the call that closes it, in the file that holds
+that call. The outermost caller sees it as `callee-failed`, the same as any other
+callee problem:
+
+```text
+workflow.yaml:5:11: step "place": call calls "./lib/callee.yaml", which has problems of its own, reported under lib/callee.yaml
+lib/callee.yaml:10:11: step "loop": call calls itself, which the parser catches the same way it catches an anchor referring to its own value: workflow.yaml -> lib/callee.yaml -> lib/callee.yaml
+```
+
+When a callee is also named on the command line, its derived report is merged into
+the report for that path rather than printed twice. A callee finding that a second
+call site repeats is printed once in text output, as the machine reports already
+do. The root file's report comes first, in the order the paths were given, and
+callee files follow.
+
+The nested-loop refusal is still positioned on the *caller's* `loop:` step, naming
+the callee holding the inner loop and the `call:` step that reaches it. A
+workflow the compile did not build falls back to the old shape: the call step, with
+the callee's name in front of its message.
 
 One gap, stated rather than papered over. `CheckPolicyPlacement` is the server-side
 gate on a specification arriving over the RPC path — a hand-built `Workflow` with no

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
 
 import type { FileReport } from '../types'
-import type { RunSummary } from '../types/flowstate'
+import type { DiagnosticReport, RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
@@ -85,8 +85,9 @@ const validate = async (
     const ran = await $.process.run([flow, 'validate', '-o', 'jsonl', '--', path], {
       timeoutMs: 20000,
     })
-    const found = parseReports(ran.stdout).find(r => r.file === path)
-    if (found) return toFileReport(found)
+    const all = parseReports(ran.stdout)
+    const found = all.find(r => r.file === path)
+    if (found) return toFileReport(found, all)
     return { file: path, diagnostics: [], failure: ran.stderr.trim().split('\n')[0] || 'no report' }
   } catch (err) {
     return { file: path, diagnostics: [], failure: String(err) }
@@ -182,17 +183,17 @@ const envAddress = async ($: Engine): Promise<string | undefined | null> => {
  */
 const gather = async ($: Engine, flow: string, file: string): Promise<string | undefined> => {
   // Independent legs, started together: a stalled one costs its own timeout, not both.
-  const [tasks, report] = await Promise.all([
+  const [tasks, validated] = await Promise.all([
     $.process.run([flow, 'tasks', '-o', 'json'], { timeoutMs: 10000 }).then(
       ran => (ran.exitCode === 0 ? parseTaskNames(ran.stdout) : []),
       () => [],
     ),
     $.process.run([flow, 'validate', '-o', 'jsonl', '--', file], { timeoutMs: 20000 }).then(
-      ran => reportFor(ran.stdout, file),
-      () => undefined,
+      ran => ({ report: reportFor(ran.stdout, file), all: parseReports(ran.stdout) }),
+      () => ({ report: undefined, all: [] as DiagnosticReport[] }),
     ),
   ])
-  return formatContext({ file, tasks: tasks.length > 0 ? tasks : undefined, report })
+  return formatContext({ file, tasks: tasks.length > 0 ? tasks : undefined, ...validated })
 }
 
 /** The Flowfiles the run form may offer: the working directory's, and its `workflows/` directory's. Nothing here throws. */

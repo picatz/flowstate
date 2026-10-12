@@ -109,6 +109,15 @@ name the editor offers is always one the workflow can resolve:
 - A step cannot reference the block that contains it, since that block has not
   finished while the step runs.
 
+A problem in a file a `call:` reads is published on that file's own URI, at its own
+line and column, even if the editor never opened it, with `relatedInformation`
+pointing at the caller's `call:`; the caller keeps one `callee-failed` whose
+related information points back at the callee's first problem. While the callee is
+open in the editor, its own buffer's diagnostics win and the workflow's view of the
+disk is withheld until it closes. Fixing the callee, or the caller's `call:`,
+retracts what was published on it, and saving the callee republishes the open
+workflows that called it. One workflow publishes on at most 64 files.
+
 Each diagnostic carries a stable code you can filter on. Three of them belong to
 this server, for the problems it finds itself: `yaml-syntax`, `cel-syntax`, and
 `document-too-large`. Everything else is the shared validator's own code, published

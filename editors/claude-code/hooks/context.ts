@@ -1,5 +1,5 @@
 import type { DiagnosticReport } from '../types/flowstate'
-import { isFlowfile, parseReports } from './flowfile'
+import { calledLine, calledProblems, isFlowfile, parseReports } from './flowfile'
 import { clean } from './runs'
 
 /** The model reads task names, not the catalog: its own `flow tasks <name>` gives the rest. */
@@ -60,13 +60,15 @@ export interface Gathered {
   tasks?: string[]
   /** Undefined when `flow validate` could not answer. */
   report?: DiagnosticReport
+  /** Every report from the same run: a callee's problems arrive under the callee's file. */
+  all?: DiagnosticReport[]
 }
 
 /**
  * The context block, or undefined when neither leg answered: a missing `flow`
  * adds nothing, and a leg that failed alone is said once rather than guessed.
  */
-export const formatContext = ({ file, tasks, report }: Gathered): string | undefined => {
+export const formatContext = ({ file, tasks, report, all }: Gathered): string | undefined => {
   if (tasks === undefined && report === undefined) return undefined
   const lines: string[] = []
   if (tasks !== undefined) {
@@ -81,7 +83,7 @@ export const formatContext = ({ file, tasks, report }: Gathered): string | undef
   const shown = clean(file, MAX_PATH)
   if (report === undefined) {
     lines.push(`flow validate ${shown}: no result`)
-  } else if (report.diagnostics.length === 0) {
+  } else if (report.diagnostics.length === 0 && calledProblems(all ?? [], report.file).length === 0) {
     lines.push(`flow validate ${shown}: valid`)
   } else {
     const found = report.diagnostics
@@ -91,6 +93,7 @@ export const formatContext = ({ file, tasks, report }: Gathered): string | undef
         .slice(0, MAX_DIAGNOSTICS)
         .map(d => `  ${d.line > 0 ? `line ${d.line}: ` : ''}${clean(d.message, 120).replaceAll('`', "'")}`),
       ...(found.length > MAX_DIAGNOSTICS ? [`  and ${found.length - MAX_DIAGNOSTICS} more`] : []),
+      ...calledLine(calledProblems(all ?? [], report.file).map(c => ({ ...c, file: clean(c.file, MAX_PATH) }))),
     )
   }
   return [

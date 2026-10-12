@@ -38,6 +38,21 @@ test('parses jsonl and skips the summary lines', () => {
   expect(summarize(toFileReport(reports[0]))).toBe('a.flow.yaml: valid')
 })
 
+test('names the called files that have problems of their own', () => {
+  const out = [
+    '{"file":"workflow.yaml","diagnostics":[{"line":5,"column":11,"message":"call calls \\"./lib/callee.yaml\\", which has problems of its own","code":"callee-failed"}]}',
+    '{"file":"lib/callee.yaml","diagnostics":[{"line":6,"column":14,"message":"input \\"shards\\" must satisfy"}]}',
+    '{"file":"lib/clean.yaml","diagnostics":[]}',
+  ].join('\n')
+  const reports = parseReports(out)
+  const mine = toFileReport(reports[0], reports)
+  expect(mine.diagnostics.length).toBe(1)
+  expect(mine.called).toEqual([{ file: 'lib/callee.yaml', problems: 1 }])
+  expect(summarize(mine)).toContain('called files with problems of their own: lib/callee.yaml (1)')
+  // Without the other reports there is nothing to name.
+  expect(toFileReport(reports[0]).called).toBeUndefined()
+})
+
 test('ignores malformed lines', () => {
   expect(parseReports('{not json\n{"x":1}')).toEqual([])
 })

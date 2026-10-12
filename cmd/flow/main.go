@@ -3310,7 +3310,12 @@ flow server --insecure-no-auth`,
 			"It also applies every rule the specification's schema declares — a step list " +
 			"over its bound, an id over its length — in the words the server refuses a " +
 			"submission with, so a rule the schema would refuse at submit is refused here " +
-			"first. What a deployment decides for itself at submit — the plugins it has " +
+			"first. A defect in a file a `call:` reads is reported under that file, at its " +
+			"own line, with the call as related information; the caller gets one " +
+			"`callee-failed` per call site. With `-o json` or `jsonl` the files are the " +
+			"report of each path in the order given, then the callee files after them, " +
+			"and a callee that is also named on the command line is merged into its own " +
+			"report. What a deployment decides for itself at submit — the plugins it has " +
 			"pinned, the tasks it can run, its credential and signal policies — is still " +
 			"the server's answer.\n\n" +
 			"A file naming a plugin's task is checked against that plugin given " +
