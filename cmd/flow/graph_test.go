@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -220,6 +221,44 @@ func TestGraphWorkflowZoomsToOneWorkflowsSteps(t *testing.T) {
 		}
 	}
 	assert.Contains(t, addresses, "decision?1/rejected", "a step carries the address the debugger writes")
+}
+
+func TestGraphWorkflowCarriesWhereEachStepWasWritten(t *testing.T) {
+	file := filepath.Join("..", "..", "examples", "approval-gate", "workflow.yaml")
+	data, err := os.ReadFile(file)
+	require.NoError(t, err)
+	lines := strings.Split(string(data), "\n")
+
+	res := runFlow(t, "graph", file, "--workflow", "approval-gate", "-o", "json")
+	require.NoError(t, res.Err, res.Stderr)
+	var g v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(res.Stdout), &g))
+	require.NoError(t, v1.Validate(&g))
+	require.Len(t, g.GetDocuments(), 1)
+	assert.Equal(t, v1.ContentDigest(data), g.GetDocuments()[0].GetDigest(), "the map is bound to the exact bytes read")
+
+	// Every located step's first line is the step's own `- id: <step>` line, so
+	// a click lands on the step and not near it.
+	located := map[string]bool{}
+	for _, src := range g.GetSources() {
+		node := strings.TrimPrefix(src.GetNode(), "step:approval-gate/")
+		step := node[strings.LastIndex(node, "/")+1:]
+		start := int(src.GetLocation().GetRange().GetStartLine())
+		require.Positive(t, start)
+		assert.Contains(t, lines[start-1], "id: "+step, src.GetNode())
+		located[step] = true
+	}
+	for _, n := range g.GetNodes() {
+		if n.GetKind() == v1.GraphNodeKind_GRAPH_NODE_KIND_STEP {
+			assert.True(t, located[n.GetLabel()], "step %q has a source", n.GetLabel())
+		}
+	}
+
+	fleet := runFlow(t, "graph", file, "-o", "json")
+	require.NoError(t, fleet.Err, fleet.Stderr)
+	var f v1.Graph
+	require.NoError(t, protojson.Unmarshal([]byte(fleet.Stdout), &f))
+	assert.Empty(t, f.GetSources(), "the fleet view carries no locations")
 }
 
 func TestGraphWorkflowNamesWhatTheFilesDeclareWhenTheNameIsWrong(t *testing.T) {

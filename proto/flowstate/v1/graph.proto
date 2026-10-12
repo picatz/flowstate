@@ -3,6 +3,7 @@ syntax = "proto3";
 package flowstate.v1;
 
 import "buf/validate/validate.proto";
+import "flowstate/v1/debug.proto";
 
 option go_package = "flowstatev1";
 
@@ -52,6 +53,28 @@ message Graph {
   // kind order. They are separate from the structure so a graph built from files
   // alone and the same graph with a running system's state differ only here.
   repeated GraphOverlay overlays = 5 [(buf.validate.field).repeated = {max_items: 8}];
+
+  // Documents are the source documents the locations in [sources] index, the
+  // same message a [DebugSourceMap] carries, so a document's identity is spelled
+  // once. Empty when the graph was built without provenance.
+  repeated DebugSourceDocument documents = 6 [(buf.validate.field).repeated = {max_items: 256}];
+
+  // Sources say where nodes were written, one layer over the nodes above like
+  // [overlays], in node order. A node absent from the layer has no known
+  // location, and a consumer then shows its address and says so rather than
+  // guessing a line.
+  repeated GraphSource sources = 7 [(buf.validate.field).repeated = {max_items: 1000}];
+}
+
+// GraphSource is where one node was written.
+message GraphSource {
+  // Node is the id of the node this is about, as in GraphNode.
+  string node = 1 [(buf.validate.field).string = {min_len: 3, max_len: 300}];
+
+  // Location indexes [Graph.documents] and carries the span within it. It is
+  // the debugger's own location type, so a click-through and a breakpoint
+  // resolve a step to the same place.
+  DebugSourceLocation location = 2 [(buf.validate.field).required = true];
 }
 
 // GraphOverlay is one layer of live state over a graph's nodes.

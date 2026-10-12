@@ -61,6 +61,33 @@ func init() {
 				" alone and the same graph with a running system's state differ only here.\n",
 		},
 		{
+			Name: "flowstate.v1.Graph.documents",
+			Leading: " Documents are the source documents the locations in [sources] index, the\n" +
+				" same message a [DebugSourceMap] carries, so a document's identity is spelled\n" +
+				" once. Empty when the graph was built without provenance.\n",
+		},
+		{
+			Name: "flowstate.v1.Graph.sources",
+			Leading: " Sources say where nodes were written, one layer over the nodes above like\n" +
+				" [overlays], in node order. A node absent from the layer has no known\n" +
+				" location, and a consumer then shows its address and says so rather than\n" +
+				" guessing a line.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphSource",
+			Leading: " GraphSource is where one node was written.\n",
+		},
+		{
+			Name:    "flowstate.v1.GraphSource.node",
+			Leading: " Node is the id of the node this is about, as in GraphNode.\n",
+		},
+		{
+			Name: "flowstate.v1.GraphSource.location",
+			Leading: " Location indexes [Graph.documents] and carries the span within it. It is\n" +
+				" the debugger's own location type, so a click-through and a breakpoint\n" +
+				" resolve a step to the same place.\n",
+		},
+		{
 			Name:    "flowstate.v1.GraphOverlay",
 			Leading: " GraphOverlay is one layer of live state over a graph's nodes.\n",
 		},

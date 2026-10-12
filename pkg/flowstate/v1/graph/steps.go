@@ -4,6 +4,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
+
+	"google.golang.org/protobuf/proto"
 
 	"github.com/picatz/flowstate/internal/textbound"
 
@@ -25,7 +28,17 @@ import (
 // part of what the graph says; the result is the same bytes for the same
 // workflow. A bound or a name the schema cannot hold leaves the graph partial,
 // with a note, as it does for [Static].
-func Steps(wf *v1.Workflow) *v1.Graph {
+func Steps(wf *v1.Workflow) *v1.Graph { return StepsFrom(wf, nil) }
+
+// StepsFrom is [Steps] with the sources layer filled from sourceMap: each STEP
+// node whose site the map locates gets a [v1.GraphSource], and the documents
+// those locations index are carried beside them. A nil map, or a step it does
+// not locate, leaves the node without a location rather than guessing one.
+//
+// The map is applied only to a workflow it describes: a map whose IrDigest is
+// not [v1.WorkflowIRDigest] of wf is ignored, with a note, so a stale map cannot
+// move a click onto a line that no longer holds the step.
+func StepsFrom(wf *v1.Workflow, sourceMap *v1.DebugSourceMap) *v1.Graph {
 	g := &v1.Graph{}
 	if wf == nil {
 		return g
@@ -41,6 +54,15 @@ func Steps(wf *v1.Workflow) *v1.Graph {
 		return finishSteps(g, notes)
 	}
 	g.Nodes = append(g.Nodes, &v1.GraphNode{Id: root, Kind: v1.GraphNodeKind_GRAPH_NODE_KIND_WORKFLOW, Label: wf.GetName()})
+
+	located := locations{}
+	if sourceMap != nil {
+		if sourceMap.GetIrDigest() == v1.WorkflowIRDigest(wf) {
+			located = indexLocations(wf.GetName(), sourceMap)
+		} else {
+			note("the source map describes a different program than this workflow, so no locations are shown")
+		}
+	}
 
 	sites, truncated := v1.DebugOwnSites(wf)
 	if truncated {
@@ -83,6 +105,7 @@ func Steps(wf *v1.Workflow) *v1.Graph {
 		}
 
 		ids[address] = id
+		located.add(g, sourceMap, id, path)
 		g.Nodes = append(g.Nodes, &v1.GraphNode{
 			Id: id, Kind: v1.GraphNodeKind_GRAPH_NODE_KIND_STEP, Label: step, Address: address,
 			Detail: textbound.Cut(site.Site.GetKind(), maxDetailBytes),
@@ -91,6 +114,43 @@ func Steps(wf *v1.Workflow) *v1.Graph {
 	}
 
 	return finishSteps(g, notes)
+}
+
+// locations indexes a source map's entries for one workflow by site path.
+type locations map[string]*v1.DebugSourceLocation
+
+func indexLocations(workflow string, sourceMap *v1.DebugSourceMap) locations {
+	out := locations{}
+	for _, entry := range sourceMap.GetEntries() {
+		site := entry.GetSite()
+		if site.GetWorkflow() != workflow || entry.GetLocation() == nil {
+			continue
+		}
+		// First wins, as [flowfile.Positions.StepPath] does.
+		if _, dup := out[strings.Join(site.GetPath(), "\x00")]; !dup {
+			out[strings.Join(site.GetPath(), "\x00")] = entry.GetLocation()
+		}
+	}
+
+	return out
+}
+
+// add records where the step at path was written, copying the document it
+// lives in into g on first use so the layer indexes g's own documents.
+func (l locations) add(g *v1.Graph, sourceMap *v1.DebugSourceMap, node string, path []string) {
+	loc, ok := l[strings.Join(path, "\x00")]
+	if !ok || int(loc.GetDocument()) >= len(sourceMap.GetDocuments()) {
+		return
+	}
+	doc := sourceMap.GetDocuments()[loc.GetDocument()]
+	index := slices.IndexFunc(g.Documents, func(d *v1.DebugSourceDocument) bool { return proto.Equal(d, doc) })
+	if index < 0 {
+		index = len(g.Documents)
+		g.Documents = append(g.Documents, proto.CloneOf(doc))
+	}
+	located := proto.CloneOf(loc)
+	located.Document = int32(index)
+	g.Sources = append(g.Sources, &v1.GraphSource{Node: node, Location: located})
 }
 
 // The schema's own bounds on what a step node carries.
