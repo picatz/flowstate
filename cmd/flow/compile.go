@@ -3,10 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
@@ -71,7 +74,9 @@ func newCompileCommand() *cobra.Command {
 			"file it names by content digest, from the same read of the file. The specification " +
 			"on standard output is unchanged. PATH is written only after the specification was, " +
 			"never when the file is refused, and a map the schema's bounds would cut short is an " +
-			"error rather than a partial file. It cannot be combined with `--schema`.",
+			"error rather than a partial file. The flag only creates PATH or replaces an earlier " +
+			"source map: any other existing file, a Flowfile above all, is refused. It cannot be " +
+			"combined with `--schema`.",
 		Args:          cobra.ExactArgs(1),
 		RunE:          runCompile,
 		SilenceErrors: true,
@@ -110,7 +115,7 @@ flow compile examples/hello-world/workflow.yaml \\
 			return []string{schemaInputs, schemaOutputs}, cobra.ShellCompDirectiveNoFileComp
 		})
 
-	cmd.Flags().String(sourceMapFlag, "", "also write the workflow's debug source map (protojson) to this `path`")
+	cmd.Flags().String(sourceMapFlag, "", "also write the workflow's debug source map (protojson) to this `path`, which must be new or an earlier source map")
 
 	return cmd
 }
@@ -250,21 +255,11 @@ func runCompile(cmd *cobra.Command, args []string) error {
 
 	// Made from the workflow just printed, after its locations were attached:
 	// the digest ignores them, so it names the program rather than the print.
-	sourceMap := flowfile.SourceMap(absolute, data, workflow, positions)
-	if sourceMapReachesBounds(sourceMap) {
-		return fmt.Errorf("--%s: the source map reaches the schema's bounds (%d documents, %d entries), so it would be partial; nothing was written to %s",
-			sourceMapFlag, flowfile.MaxSourceMapDocuments, flowfile.MaxSourceMapEntries, sourceMapPath)
-	}
-	for _, document := range sourceMap.GetDocuments() {
-		if sameFileAs(sourceMapPath, document.GetUri()) {
-			return newUsageError(fmt.Errorf("--%s %s is %s, a Flowfile the map describes, and writing the map there would replace it; name another file", sourceMapFlag, sourceMapPath, document.GetUri()))
-		}
-	}
-	encoded, err := v1.MarshalSchemaJSON(sourceMap, document == FormatJSON)
+	encoded, err := encodeSourceMap(flowfile.SourceMap(absolute, data, workflow, positions), document == FormatJSON)
 	if err != nil {
-		return fmt.Errorf("--%s: rendering the source map: %w", sourceMapFlag, err)
+		return fmt.Errorf("--%s: %w; nothing was written to %s", sourceMapFlag, err, sourceMapPath)
 	}
-	if err := writeFileAtomic(sourceMapPath, append(encoded, '\n'), 0o644); err != nil {
+	if err := writeFileAtomic(sourceMapPath, encoded, 0o644); err != nil {
 		return fmt.Errorf("--%s: %w", sourceMapFlag, err)
 	}
 
@@ -290,6 +285,9 @@ func resolveSourceMapPath(cmd *cobra.Command, schema, input string) (string, err
 	if sameFileAs(path, input) {
 		return "", newUsageError(fmt.Errorf("--%s %s is the Flowfile being compiled, and writing the map there would replace it; name another file", sourceMapFlag, path))
 	}
+	if err := refuseReplacingAnythingButASourceMap(path); err != nil {
+		return "", newUsageError(fmt.Errorf("--%s %w", sourceMapFlag, err))
+	}
 	if info, err := os.Stat(filepath.Dir(path)); err != nil || !info.IsDir() {
 		return "", newUsageError(fmt.Errorf("--%s %s: its directory does not exist", sourceMapFlag, path))
 	}
@@ -297,12 +295,64 @@ func resolveSourceMapPath(cmd *cobra.Command, schema, input string) (string, err
 	return path, nil
 }
 
-// sourceMapReachesBounds reports whether sourceMap is at either bound of the
-// schema. [flowfile.Env.SourceMap] stops silently there, so a map at a bound
-// may have been cut short and is refused rather than written partial.
-func sourceMapReachesBounds(sourceMap *v1.DebugSourceMap) bool {
-	return len(sourceMap.GetDocuments()) >= flowfile.MaxSourceMapDocuments ||
-		len(sourceMap.GetEntries()) >= flowfile.MaxSourceMapEntries
+// maxExistingSourceMapBytes bounds what is read of a file already at PATH to
+// decide whether it is an earlier source map. The schema's own bounds put a
+// full map well under it.
+const maxExistingSourceMapBytes = 8 << 20
+
+// refuseReplacingAnythingButASourceMap is the rule that makes `--source-map` safe
+// to point anywhere: it only creates PATH or replaces an earlier source map.
+// Whatever else exists there (a Flowfile, a module it uses, a callee reached
+// through a symlink) is refused, so the flag cannot be the way a source file is
+// lost, whichever file the compile happened to read.
+//
+// An absent PATH, an empty file, and a regular file that parses as a
+// DebugSourceMap are replaceable. It needs only PATH, so it runs before anything
+// is compiled.
+func refuseReplacingAnythingButASourceMap(path string) error {
+	f, err := flowfile.OpenRegular(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+
+		return fmt.Errorf("%s exists and cannot be replaced: %w", path, err)
+	}
+	defer f.Close()
+
+	existing, err := io.ReadAll(io.LimitReader(f, maxExistingSourceMapBytes+1))
+	if err != nil {
+		return fmt.Errorf("%s exists and could not be read: %w", path, err)
+	}
+	if len(existing) == 0 {
+		return nil
+	}
+	if len(existing) <= maxExistingSourceMapBytes {
+		var previous v1.DebugSourceMap
+		if protojson.Unmarshal(existing, &previous) == nil {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%s exists and is not a source map, so writing one there would replace it; "+
+		"name a new file or an earlier source map", path)
+}
+
+// encodeSourceMap renders sourceMap as the protojson written to PATH, with the
+// one trailing newline, refusing a map at either bound of the schema:
+// [flowfile.Env.SourceMap] stops silently there, so a map at a bound may have
+// been cut short and is an error rather than a partial file.
+func encodeSourceMap(sourceMap *v1.DebugSourceMap, indent bool) ([]byte, error) {
+	if len(sourceMap.GetDocuments()) >= flowfile.MaxSourceMapDocuments || len(sourceMap.GetEntries()) >= flowfile.MaxSourceMapEntries {
+		return nil, fmt.Errorf("the source map reaches the schema's bounds (%d documents, %d entries), so it would be partial",
+			flowfile.MaxSourceMapDocuments, flowfile.MaxSourceMapEntries)
+	}
+	encoded, err := v1.MarshalSchemaJSON(sourceMap, indent)
+	if err != nil {
+		return nil, fmt.Errorf("rendering the source map: %w", err)
+	}
+
+	return append(encoded, '\n'), nil
 }
 
 // sameFileAs reports whether a and b name one file, through a symlink or a
