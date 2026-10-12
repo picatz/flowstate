@@ -651,6 +651,11 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 	rejoin["maxLength"] = v1.MaxDebugSessionIDBytes
 
 	return []flowmcp.ToolRegistration{
+		// start runs a stubbed case in this process (closed-world). attach, observe,
+		// command and end also serve a session on a durable run, so they reach the
+		// deployment (open-world); command can resume or step that run and end
+		// detaches it so it continues, which change it, hence destructive. observe
+		// only reads.
 		{Tool: &mcp.Tool{
 			Name: debugSessionStartTool,
 			Description: "Start a retained debug session over one test case of a Flowfile — the same stubbed, egress-free, " +
@@ -665,6 +670,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 				"case":       str("The case to debug, when `tests` names more than one."),
 				"request_id": request,
 			}, "workflow", "tests"),
+			Annotations: flowmcp.ToolAnnotations(false, false, false, false),
 		}, Handler: r.start},
 		{Tool: &mcp.Tool{
 			Name: debugSessionAttachTool,
@@ -689,6 +695,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 				"session_id": rejoin,
 				"request_id": request,
 			}, "workflow_id"),
+			Annotations: flowmcp.ToolAnnotations(false, true, false, true),
 		}, Handler: r.attach},
 		{Tool: &mcp.Tool{
 			Name: debugSessionObserveTool,
@@ -699,6 +706,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 				"after_revision": map[string]any{"type": "integer", "minimum": 0},
 				"wait_seconds":   map[string]any{"type": "integer", "minimum": 0, "maximum": 30},
 			}, "session_id"),
+			Annotations: flowmcp.ToolAnnotations(true, true, false, true),
 		}, Handler: r.observe},
 		{Tool: &mcp.Tool{
 			Name: debugSessionCommandTool,
@@ -716,6 +724,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 				"expected_revision": map[string]any{"type": "integer", "minimum": 0},
 				"request_id":        request,
 			}, "session_id", "command"),
+			Annotations: flowmcp.ToolAnnotations(false, false, true, true),
 		}, Handler: r.command},
 		{Tool: &mcp.Tool{
 			Name: debugSessionEndTool,
@@ -726,6 +735,7 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 				"session_id": session,
 				"keep":       map[string]any{"type": "boolean"},
 			}, "session_id"),
+			Annotations: flowmcp.ToolAnnotations(false, true, true, true),
 		}, Handler: r.end},
 	}
 }

@@ -475,6 +475,7 @@ func AddLocalCapabilities(
 			Description:  toolDescription(method.Name, deps.reduced, deps.PluginCatalog),
 			InputSchema:  SchemaForMessage(method.Input),
 			OutputSchema: SchemaForMessage(method.Output),
+			Annotations:  ToolAnnotationsForRPC(method.Name),
 			// No Meta: [ToolViews] names no local tool today, and a view
 			// declared here would point at a resource this function does not
 			// mount. If that ever changes, it changes here deliberately.
@@ -655,6 +656,7 @@ func AddTools(
 			Description:  ToolDescription(method.Name),
 			InputSchema:  SchemaForMessage(method.Input),
 			OutputSchema: SchemaForMessage(method.Output),
+			Annotations:  ToolAnnotationsForRPC(method.Name),
 		}
 		if view, ok := ToolViews[method.Name]; ok {
 			tool.Meta = uiToolMeta(view)
@@ -678,6 +680,70 @@ func AddTools(
 	for _, reg := range extra {
 		srv.AddTool(reg.Tool, reg.Handler)
 	}
+}
+
+// ToolAnnotationsForRPC derives the MCP tool annotations of an RPC from the
+// method_rules option its method declares, through the same descriptor walk
+// that reads authorization_action. All four hints are always set, because the
+// specification's defaults for an unset destructive or open-world hint are true.
+// A method declaring no effect is annotated as the most cautious reading, a
+// destructive open-world write, so a missing declaration can only make a client
+// ask more; TestEveryRPCDeclaresAnEffect is what refuses it. Annotations are
+// hints and carry no authority.
+func ToolAnnotationsForRPC(rpc string) *mcp.ToolAnnotations {
+	rules, ok := v1.MethodRulesForRPC(rpc)
+	if !ok || rules.GetEffect() == v1.MethodEffect_METHOD_EFFECT_UNSPECIFIED {
+		return &mcp.ToolAnnotations{DestructiveHint: new(true), OpenWorldHint: new(true)}
+	}
+
+	read := rules.GetEffect() == v1.MethodEffect_METHOD_EFFECT_READ
+
+	return &mcp.ToolAnnotations{
+		ReadOnlyHint:    read,
+		IdempotentHint:  rules.GetEffect() != v1.MethodEffect_METHOD_EFFECT_WRITE,
+		DestructiveHint: new(rules.GetDestructive() && !read),
+		OpenWorldHint:   new(rules.GetOpenWorld()),
+	}
+}
+
+// ToolAnnotations declares a hand-written tool's hints, which are not an RPC's
+// and so are not in the schema. Claim destructive=false and openWorld=false
+// only for a tool that cannot run a task, reach a durable run or the network,
+// or discard anything: a client uses the hints to decide whether to ask first,
+// so the cautious reading is the default to reach for. A read-only tool is
+// idempotent by nature.
+func ToolAnnotations(readOnly, idempotent, destructive, openWorld bool) *mcp.ToolAnnotations {
+	return &mcp.ToolAnnotations{
+		ReadOnlyHint:    readOnly,
+		IdempotentHint:  readOnly || idempotent,
+		DestructiveHint: new(destructive && !readOnly),
+		OpenWorldHint:   new(openWorld),
+	}
+}
+
+// EffectLabel renders a tool's annotations for the reference document, from
+// the same hints a client reads: "read", "idempotent write" or "write", then
+// ", destructive" and ", open-world" where they hold.
+func EffectLabel(a *mcp.ToolAnnotations) string {
+	if a == nil {
+		return ""
+	}
+
+	label := "write"
+	switch {
+	case a.ReadOnlyHint:
+		label = "read"
+	case a.IdempotentHint:
+		label = "idempotent write"
+	}
+	if a.DestructiveHint != nil && *a.DestructiveHint {
+		label += ", destructive"
+	}
+	if a.OpenWorldHint != nil && *a.OpenWorldHint {
+		label += ", open-world"
+	}
+
+	return label
 }
 
 // ToolName renders an RPC name as a tool name: GetCatalog becomes
@@ -1452,6 +1518,9 @@ func RunLocalTool() *mcp.Tool {
 		Name:        RunLocalToolName,
 		Description: RunLocalToolDescription,
 		InputSchema: runLocalInputSchema(),
+		// Runs the Flowfile's real tasks in this process: they can execute
+		// commands, write files and reach the network, none of it undoable.
+		Annotations: ToolAnnotations(false, false, true, true),
 	}
 }
 
@@ -1538,6 +1607,10 @@ func TestTool() *mcp.Tool {
 		Name:        TestToolName,
 		Description: TestToolDescription,
 		InputSchema: testInputSchema(),
+		// Every task is replaced by a stub and an unstubbed one is refused rather
+		// than run (see [TestToolDescription]), with a virtual clock and no
+		// egress, so no task side effect is reachable: read-only, closed-world.
+		Annotations: ToolAnnotations(true, true, false, false),
 	}
 }
 
@@ -1589,6 +1662,9 @@ func DebugTool() *mcp.Tool {
 		Name:        DebugToolName,
 		Description: DebugToolDescription,
 		InputSchema: debugInputSchema(),
+		// Runs on the same stubs as [TestToolName]: no egress, no secret
+		// resolved, no real task, so nothing outside the call can change.
+		Annotations: ToolAnnotations(true, true, false, false),
 	}
 }
 
@@ -1629,6 +1705,9 @@ func CheckPolicyTool() *mcp.Tool {
 		Name:        CheckPolicyToolName,
 		Description: CheckPolicyToolDescription,
 		InputSchema: checkPolicyInputSchema(),
+		// A static question over a policy document: it runs no task and reads
+		// nothing but its arguments.
+		Annotations: ToolAnnotations(true, true, false, false),
 	}
 }
 

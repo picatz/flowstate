@@ -10,6 +10,26 @@ import (
 func init() {
 	protodocimpl.RegisterFile("flowstate/v1/service.proto", []protodocimpl.Comment{
 		{
+			Name: "flowstate.v1.MethodRules",
+			Leading: " MethodRules are the per-method facts that are about the method itself rather\n" +
+				" than about who may call it. `flow mcp` derives each tool's annotations from\n" +
+				" them.\n",
+		},
+		{
+			Name:    "flowstate.v1.MethodRules.effect",
+			Leading: " Effect is what the call does. Required on every WorkflowService method.\n",
+		},
+		{
+			Name: "flowstate.v1.MethodRules.destructive",
+			Leading: " Destructive marks a write that discards something it cannot restore, such\n" +
+				" as terminating a run or deleting a schedule. It has no meaning on READ.\n",
+		},
+		{
+			Name: "flowstate.v1.MethodRules.open_world",
+			Leading: " Open_world marks a call that starts or resumes work which reaches beyond\n" +
+				" this deployment, such as the network, rather than only recording state.\n",
+		},
+		{
 			Name:    "flowstate.v1.RunRequest",
 			Leading: " RunRequest is the request message for running a workflow.\n",
 		},
@@ -1342,6 +1362,33 @@ func init() {
 				" vocabulary may grow.\n",
 		},
 		{
+			Name: "flowstate.v1.MethodEffect",
+			Leading: " MethodEffect is what calling a WorkflowService method does to the world, on\n" +
+				" the same READ / IDEMPOTENT_WRITE / WRITE vocabulary a task's effect uses.\n" +
+				" It is a fact about the method, not a grant: the authorization action decides\n" +
+				" who may call, and this describes what the call does, so a client can\n" +
+				" decide whether to ask a person first.\n",
+		},
+		{
+			Name: "flowstate.v1.METHOD_EFFECT_UNSPECIFIED",
+			Leading: " METHOD_EFFECT_UNSPECIFIED means the method declares no effect. A method\n" +
+				" without one is refused by TestEveryRPCDeclaresAnEffect.\n",
+		},
+		{
+			Name:    "flowstate.v1.METHOD_EFFECT_READ",
+			Leading: " METHOD_EFFECT_READ means the call changes nothing.\n",
+		},
+		{
+			Name: "flowstate.v1.METHOD_EFFECT_IDEMPOTENT_WRITE",
+			Leading: " METHOD_EFFECT_IDEMPOTENT_WRITE means the call changes state, and repeating\n" +
+				" it with the same arguments changes nothing further.\n",
+		},
+		{
+			Name: "flowstate.v1.METHOD_EFFECT_WRITE",
+			Leading: " METHOD_EFFECT_WRITE means the call changes state and repeating it may\n" +
+				" change it again.\n",
+		},
+		{
 			Name: "flowstate.v1.SensitiveDisclosure",
 			Leading: " SensitiveDisclosure is what a server did with a run's `sensitive: true`\n" +
 				" values when it answered.\n" +
@@ -1371,6 +1418,12 @@ func init() {
 			Name: "flowstate.v1.SENSITIVE_DISCLOSURE_REVEALED",
 			Leading: " The caller asked for the values and holds workload.reveal_sensitive, so\n" +
 				" they are in the clear.\n",
+		},
+		{
+			Name: "flowstate.v1.method_rules",
+			Leading: " method_rules are the rules a WorkflowService method declares about itself,\n" +
+				" set on the method so the declaration and the RPC cannot drift. Its number\n" +
+				" follows authorization_action's.\n",
 		},
 		{
 			Name:    "flowstate.v1.WorkflowService",
