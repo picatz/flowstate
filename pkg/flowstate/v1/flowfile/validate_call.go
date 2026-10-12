@@ -99,13 +99,106 @@ func validateCallAtDepth(id string, call *v1.Call, scope refScope, index int, wf
 	// The callee's own steps, vars, and outputs, validated on its own terms and
 	// in its own — isolated — scope: not the scope above, which is the caller's
 	// and exactly what [v1.CallScope] refuses a callee.
-	for _, d := range validateAtDepth(scope.env, callee, calleeProfile, depth, placement.IntoCall()) {
-		d.Step = id
-		d.Message = fmt.Sprintf("workflow %q: %s", callee.GetName(), d.Message)
+	//
+	// Each problem stays the callee's own — its step, field, kind and code — and
+	// is noted as having come through this call. This validator runs on the
+	// compiled workflow, which carries no positions, so where in which file that
+	// is waits for [positionDiagnostics], which has them; see [Diagnostic.via].
+	problems := validateAtDepth(scope.env, callee, calleeProfile, depth, placement.IntoCall())
+	attachPaths(problems, callee)
+	if len(problems) > 0 {
+		// Ahead of the problems it names, so that the files a run of
+		// diagnostics reaches are in the order a reader meets them: the caller's
+		// callee first, and that callee's own callees after it.
+		ds = append(ds, Diagnostic{
+			Step: id, Kind: "call", Code: v1.DiagnosticCodeCalleeFailed, callee: call,
+			Message: fmt.Sprintf("call calls %q, which has problems of its own", call.GetSource()),
+		})
+	}
+	for _, d := range problems {
+		d.via = append([]callHop{{call: call, step: id}}, d.via...)
 		ds = append(ds, d)
 	}
 
 	return ds
+}
+
+// positionThroughCalls places a problem found inside a callee in the callee's
+// file, walking the calls it was raised through from the file being checked
+// down to the callee that holds it, and reports whether it could.
+//
+// It cannot when the compile did not build one of those callees — the
+// workflow was cloned or built by hand between compile and validate — and the
+// caller then falls back to the call step, so that the problem is never lost.
+func positionThroughCalls(d *Diagnostic, root *Positions) bool {
+	at := root
+	var caller *Positions
+	var display string
+	for _, hop := range d.via {
+		frame := at.calleeFrame(hop.call)
+		if frame == nil || frame.positions == nil {
+			return false
+		}
+		caller, at, display = at, frame.positions, frame.display
+	}
+
+	// The reason this file was compiled is the call that reached it, in the file
+	// that wrote it: the nearest one, as the chain above it is a report of its own.
+	last := d.via[len(d.via)-1]
+	var site Position
+	if span, ok := caller.LocateKind(last.step, "call"); ok {
+		site = span.Start
+	}
+
+	d.File = display
+	d.Related = unionRelated(d.Related, calledFrom(caller.file, site, last.step))
+	placeIn(d, at)
+
+	return true
+}
+
+// nameWhereCalleeFailed completes each callee-failed finding validation raised,
+// now that the callee's problems have places: it says which file they are
+// reported under and points at the first of them.
+func nameWhereCalleeFailed(ds Diagnostics) {
+	for i := range ds {
+		if ds[i].callee == nil {
+			continue
+		}
+		call := ds[i].callee
+		ds[i].callee = nil
+		at := slices.IndexFunc(ds, func(e Diagnostic) bool {
+			return e.File != "" && len(e.via) > 0 && e.via[len(e.via)-1].call == call
+		})
+		if at < 0 {
+			continue
+		}
+		first := ds[at]
+		ds[i].Message += ", reported under " + first.File
+		ds[i].Related = unionRelated([]*v1.RelatedLocation{{
+			File:    first.File,
+			Line:    uint32(max(first.Line, 0)),
+			Column:  uint32(max(first.Column, 0)),
+			Message: "first problem reported here",
+		}}, ds[i].Related)
+	}
+}
+
+// flattenCalls reports a problem found inside a callee at the call step that
+// reached it, with the callee's name in front of its message. It is how a
+// workflow with no source to place the problem in has always reported it.
+func (d *Diagnostic) flattenCalls() {
+	if len(d.via) == 0 {
+		return
+	}
+	for _, hop := range slices.Backward(d.via) {
+		d.Message = fmt.Sprintf("workflow %q: %s", hop.call.GetWorkflow().GetName(), d.Message)
+	}
+	d.Step = d.via[0].step
+	d.Path = nil
+	d.File = ""
+	d.Related = nil
+	d.via = nil
 }
 
 // checkCallArgumentType reports whether one `with:` argument's type can be

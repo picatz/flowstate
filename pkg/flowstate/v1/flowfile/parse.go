@@ -585,6 +585,13 @@ func (e Env) ParseAtWithoutModulePins(data []byte, path string) (*v1.Workflow, *
 // total of nodes a call has compiled so far, shared across the whole tree —
 // see call.go.
 func parse(env Env, data []byte, path string, callStack []string, callBudget *int, session *moduleSession) (*v1.Workflow, *Positions, error) {
+	return parseDisplayed(env, data, path, path, callStack, callBudget, session)
+}
+
+// parseDisplayed is [parse] for a file whose diagnostics are reported under a
+// name other than the path it is read from: a callee, reached by its resolved
+// real path and reported by the spelling its caller wrote ([calleeDisplayName]).
+func parseDisplayed(env Env, data []byte, path, display string, callStack []string, callBudget *int, session *moduleSession) (*v1.Workflow, *Positions, error) {
 	if len(data) > maxBytes {
 		return nil, nil, Diagnostics{{
 			Line:   1,
@@ -612,10 +619,12 @@ func parse(env Env, data []byte, path string, callStack []string, callBudget *in
 		pos:        newPositions(env),
 		anchors:    make(map[string]ast.Node),
 		filePath:   path,
+		display:    display,
 		callStack:  callStack,
 		callBudget: callBudget,
 		session:    session,
 	}
+	c.pos.file = display
 	workflow := c.compile(file)
 	if len(c.diags) > 0 {
 		// The partial workflow and positions are returned alongside the
@@ -731,6 +740,16 @@ type compiler struct {
 	// relative to its directory. Empty when this file was compiled from bytes
 	// with no path — see [Parse] — in which case a `call:` here is refused.
 	filePath string
+
+	// display is the name this file's diagnostics are reported under: filePath
+	// for the file being checked, and for a callee the spelling its caller
+	// reached it by, which is what a reader opens. See [calleeDisplayName].
+	display string
+
+	// adopted holds the callee diagnostics already in diags by finding, so that
+	// a callee reached from several call sites, or through several callees, is
+	// kept once with each site in its Related.
+	adopted map[diagnosticKey]int
 
 	// callStack is the chain of files already being compiled to reach this one,
 	// outermost first, not including this file itself. Checked in call.go
@@ -885,8 +904,22 @@ func (c *compiler) reportWith(span Span, r ref, edits []*v1.SuggestedEdit, forma
 
 // sorted returns the diagnostics in source order, so the same file always reports
 // the same way.
+//
+// A callee's diagnostics sit beside this file's own, each file ordered by
+// itself: this file first, then each callee in the order it was first reached,
+// so the order is a fact of the compile and not of which file has the lower
+// line number.
 func (c *compiler) sorted() Diagnostics {
+	rank := map[string]int{"": 0}
+	for _, d := range c.diags {
+		if _, ok := rank[d.File]; !ok {
+			rank[d.File] = len(rank)
+		}
+	}
 	slices.SortStableFunc(c.diags, func(a, b Diagnostic) int {
+		if a.File != b.File {
+			return rank[a.File] - rank[b.File]
+		}
 		if a.Line != b.Line {
 			return a.Line - b.Line
 		}

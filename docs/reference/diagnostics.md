@@ -27,7 +27,7 @@ everything else is `general`, and that is documented rather than pretended away.
 | `module-pin-mismatch` | A `use:` entry's `digest:` does not verify: the module file hashes to something other than the pin, or the pin is not a `sha256:` digest. The message names the digest the file has now; read what changed, then `flow fix --repin`. |
 | `call-cycle` | A `call:` names a file already being compiled further up the chain, reported at the call that closes the loop. The message lists the chain. A loop through other files closes inside the callee, so the outermost caller reports it as `callee-failed`. |
 | `call-unreadable` | A `call:` target resolved to a path but could not be read: it is missing or cannot be opened, is a directory or other file that is not a regular file, is over the size bound, or failed with an I/O error. A file that reads but does not parse is `callee-failed`. |
-| `callee-failed` | A `call:` target was read but did not compile. The message carries the callee's own diagnostics; fix them in the callee, which `flow validate` reports on its own. |
+| `callee-failed` | A `call:` target was read but did not compile or validate. Its problems are reported under the callee's file, at the callee's own lines and with the callee's own codes, and this diagnostic points at the first of them. Fix them in the callee, which `flow validate` reports on its own. |
 
 ## Shape
 

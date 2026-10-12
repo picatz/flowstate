@@ -132,6 +132,32 @@ type Diagnostic struct {
 	// checker that cannot name the exact replacement leaves this empty.
 	Edits []*v1.SuggestedEdit
 
+	// File names the file the diagnostic is in, when that is not the file being
+	// checked: a problem found while compiling or validating a `call:`'s callee
+	// is positioned in the callee, so Line and Column mean that file's lines.
+	// Empty means the file being checked, which is every diagnostic that does
+	// not come from a callee. It is spelled as a [v1.DiagnosticReport.File] is,
+	// and [Diagnostics.Reports] groups on it.
+	File string
+
+	// Related lists other places that explain this diagnostic; for a callee's,
+	// the `call:` that caused the callee to be compiled. Held as the schema type
+	// for the reason Edits is. At most [maxRelatedLocations].
+	Related []*v1.RelatedLocation
+
+	// via is the chain of call steps a callee-validation diagnostic was raised
+	// through, outermost first, while it is still positioned in nobody's file:
+	// the validator runs on the compiled workflow, which carries no positions,
+	// so [positionDiagnostics] walks this through [Positions] to find the
+	// callee's own file and line. Never rendered. Empty for every diagnostic
+	// raised in the file itself.
+	via []callHop
+
+	// callee is the call a [v1.DiagnosticCodeCalleeFailed] raised by validation
+	// is about, so the positioning pass can name where the callee's problems
+	// were reported. Never rendered.
+	callee *v1.Call
+
 	// bareWord is the identifier an expression consists of entirely, when that
 	// identifier resolves to nothing — set by [validateInputRefs], read by
 	// [positionDiagnostics], and never rendered. It is the hand-off between the
@@ -307,6 +333,22 @@ func Validate(wf *v1.Workflow) Diagnostics {
 
 // Validate is [Validate] against this Env's registry.
 func (e Env) Validate(wf *v1.Workflow) Diagnostics {
+	ds := e.validateThroughCalls(wf)
+
+	// A workflow with no source has nowhere to place a callee's problems, so each
+	// is reported at the call step that reached it, saying whose it is.
+	for i := range ds {
+		ds[i].flattenCalls()
+	}
+	attachPaths(ds, wf)
+
+	return ds
+}
+
+// validateThroughCalls is [Env.Validate] with a callee's problems still the
+// callee's own (see [Diagnostic.via]), for the one caller that can place them:
+// [validateParsed], which holds the positions the compile recorded.
+func (e Env) validateThroughCalls(wf *v1.Workflow) Diagnostics {
 	if wf == nil {
 		return Diagnostics{{Message: "workflow is empty"}}
 	}
@@ -2507,9 +2549,12 @@ func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (
 	if v1.IsModule(wf) {
 		ds = env.ValidateModule(wf)
 	} else {
-		ds = env.Validate(wf)
+		ds = env.validateThroughCalls(wf)
 	}
 	positionDiagnostics(ds, positions)
+	// A callee's problem that could not be placed in its file is now the call
+	// step's, and takes that step's path.
+	attachPaths(ds, wf)
 
 	// What the schema refuses, in the schema's own words, so that nothing this
 	// package accepts is refused at submit for a rule an author could have read
@@ -2534,21 +2579,48 @@ func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (
 // positionDiagnostics places each diagnostic at its source position, when the
 // compiler recorded one.
 func positionDiagnostics(ds Diagnostics, positions *Positions) {
-	if positions == nil || len(ds) == 0 {
+	if len(ds) == 0 {
 		return
 	}
+
+	// A problem validation found inside a callee is placed in the callee's file,
+	// by the positions the compile recorded for that callee. One whose callee the
+	// compile did not build (a workflow cloned between compile and validate, or
+	// no positions at all) is reported at the call step instead, as it always
+	// was, so that nothing it found goes unsaid.
 	for i := range ds {
-		span, ok := positions.Locate(ds[i].Step, ds[i].Field)
-		if ds[i].Kind != "" {
-			span, ok = positions.LocateKind(ds[i].Step, ds[i].Kind)
+		if len(ds[i].via) == 0 {
+			continue
 		}
-		if ok {
-			ds[i].Line = span.Start.Line
-			ds[i].Column = span.Start.Column
+		if !positionThroughCalls(&ds[i], positions) {
+			ds[i].flattenCalls()
 		}
-		if ds[i].bareWord != "" {
-			offerStringSpelling(&ds[i], positions)
+	}
+	nameWhereCalleeFailed(ds)
+
+	for i := range ds {
+		if len(ds[i].via) > 0 {
+			continue
 		}
+		placeIn(&ds[i], positions)
+	}
+}
+
+// placeIn gives d the position of what it names in the file positions describe.
+func placeIn(d *Diagnostic, positions *Positions) {
+	if positions == nil {
+		return
+	}
+	span, ok := positions.Locate(d.Step, d.Field)
+	if d.Kind != "" {
+		span, ok = positions.LocateKind(d.Step, d.Kind)
+	}
+	if ok {
+		d.Line = span.Start.Line
+		d.Column = span.Start.Column
+	}
+	if d.bareWord != "" {
+		offerStringSpelling(d, positions)
 	}
 }
 
@@ -3920,10 +3992,13 @@ func (d Diagnostic) Proto() *v1.Diagnostic {
 		Code:    string(code),
 		Edits:   d.Edits,
 		Path:    slices.Clone(d.Path),
+		Related: slices.Clone(d.Related),
 	}
 }
 
-// Report renders a file's diagnostics as the schema message.
+// Report renders the diagnostics that are in file itself as the schema message,
+// leaving out any a callee's file owns ([Diagnostic.File]); [Diagnostics.Reports]
+// is the form that keeps those under the callee.
 //
 // A file with no diagnostics still produces a report, with an empty list. "Checked and
 // clean" and "not checked" are different facts, and a consumer that only ever saw
@@ -3934,6 +4009,9 @@ func (ds Diagnostics) Report(file string) *v1.DiagnosticReport {
 		Diagnostics: make([]*v1.Diagnostic, 0, len(ds)),
 	}
 	for _, d := range ds {
+		if d.File != "" {
+			continue
+		}
 		report.Diagnostics = append(report.Diagnostics, d.Proto())
 	}
 

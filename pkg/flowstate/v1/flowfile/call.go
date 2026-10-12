@@ -1,6 +1,8 @@
 package flowfile
 
 import (
+	"cmp"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -305,8 +307,19 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	callee, _, err := parse(c.env, data, resolved, ancestors, c.callBudget, nil)
+	// The callee is compiled under the name its own diagnostics are reported by,
+	// which is how its caller reached it and not the real path it was read from.
+	display := calleeDisplayName(cmp.Or(c.display, c.filePath), target)
+	callee, calleePos, err := parseDisplayed(c.env, data, resolved, display, ancestors, c.callBudget, nil)
 	if err != nil {
+		// A callee that did not compile has problems of its own, each already at
+		// its own line in its own file. They are kept as that file's diagnostics
+		// and this file says only that they exist.
+		if problems, ok := errors.AsType[Diagnostics](err); ok && len(problems) > 0 {
+			c.adoptCalleeDiagnostics(spanOfNode(pathNode), callRef, target, display, problems)
+			return nil
+		}
+
 		c.reportCode(v1.DiagnosticCodeCalleeFailed, spanOfNode(pathNode), callRef,
 			"calls %q, which failed to compile:\n%s", target, indentLines(err.Error()))
 		return nil
@@ -332,6 +345,10 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	// pin buys: the same string, from the same read, checked once here rather
 	// than written down twice and never compared.
 	call := &v1.Call{Workflow: callee, Source: target, SourceDigest: sourceDigest}
+	if c.pos.callees == nil {
+		c.pos.callees = map[*v1.Call]*calleeFrame{}
+	}
+	c.pos.callees[call] = &calleeFrame{display: display, positions: calleePos}
 
 	args := map[string]*v1.Value{}
 	if hasWith {
@@ -374,6 +391,51 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	}
 
 	return call
+}
+
+// adoptCalleeDiagnostics keeps the problems a callee failed to compile with as
+// diagnostics of the callee's own file, and reports at the `call:` that this file
+// has a callee with problems of its own.
+//
+// Each problem the callee itself found gains the `call:` as a Related location,
+// the reason the callee was compiled at all; problems from files the callee in
+// turn called already name that callee as their reason, and are left so. The
+// same finding reached again, from another call site here or through another
+// callee, is kept once with that site added, so a callee called from many places
+// is retained once however many call it.
+func (c *compiler) adoptCalleeDiagnostics(site Span, r ref, target, display string, problems Diagnostics) {
+	if c.adopted == nil {
+		c.adopted = map[diagnosticKey]int{}
+	}
+	reason := calledFrom(cmp.Or(c.display, c.filePath), site.Start, r.step)
+
+	var first Diagnostic
+	for i, d := range problems {
+		if d.File == "" {
+			d.File = display
+			d.Related = unionRelated(slices.Clone(d.Related), reason)
+		}
+		if i == 0 {
+			first = d
+		}
+		if at, again := c.adopted[d.key()]; again {
+			c.diags[at].Related = unionRelated(slices.Clone(c.diags[at].Related), d.Related)
+			continue
+		}
+		c.adopted[d.key()] = len(c.diags)
+		c.diags = append(c.diags, d)
+	}
+
+	// One per call site, each pointing at the first problem rather than copying
+	// any of them.
+	c.reportCode(v1.DiagnosticCodeCalleeFailed, site, r,
+		"calls %q, which has problems of its own, reported under %s", target, first.File)
+	c.diags[len(c.diags)-1].Related = []*v1.RelatedLocation{{
+		File:    first.File,
+		Line:    uint32(max(first.Line, 0)),
+		Column:  uint32(max(first.Column, 0)),
+		Message: "first problem reported here",
+	}}
 }
 
 // A `digest:` pin is written as the algorithm, a colon, and the hash in hex:
