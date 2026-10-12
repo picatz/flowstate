@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"slices"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -81,14 +80,15 @@ type FlowfileServer struct {
 	// published for; see recheck.go.
 	interfaces interfaceMemo
 
-	// testDiagnosticsBySource retains each open test document's contribution
-	// to every URI it diagnoses. A suite may diagnose its included
-	// testdefaults.yaml; aggregation prevents one clean suite from clearing a
-	// defaults problem another open suite still reports, and lets closing the
-	// source retract only its own contribution.
-	testDiagnosticsMu       sync.Mutex
-	testDiagnosticsBySource map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic
-	testSourcesByTarget     map[lsp.DocumentURI]map[lsp.DocumentURI]bool
+	// diagnosticsBySource retains each open document's contribution to every URI
+	// it diagnoses, and sourcesByTarget is the same relation read the other way.
+	// A suite may diagnose its included testdefaults.yaml, and a workflow the
+	// file it calls; aggregation prevents one clean source from clearing a problem
+	// another open source still reports, and lets closing a source retract only
+	// its own contribution. See contributions.go.
+	diagnosticsMu           sync.Mutex
+	diagnosticsBySource     map[lsp.DocumentURI]map[lsp.DocumentURI][]publishedDiagnostic
+	sourcesByTarget         map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 	testSuitesByDefaults    map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testOverflowsByDefaults map[lsp.DocumentURI]map[lsp.DocumentURI]bool
@@ -291,6 +291,11 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 			for _, dependent := range s.dependentsToRecheck(doc) {
 				s.afterQueued(ctx, dependent.uri, func(current *document) { s.publish(ctx, conn, current) })
 			}
+			// A saved file may be the callee another open document reports
+			// problems in; those were computed from what the file held before.
+			for _, source := range s.calleeSourcesFor(doc) {
+				s.afterQueued(ctx, source, func(current *document) { s.publish(ctx, conn, current) })
+			}
 		}
 		return nil, nil
 
@@ -328,10 +333,7 @@ func (s *FlowfileServer) dispatch(ctx context.Context, conn *jsonrpc2.Conn, req 
 		}
 		// Diagnostics belong to the editor's problem list until the server
 		// clears them, and a closed document's problems are no longer actionable.
-		s.notify(ctx, conn, lsp.PublishDiagnosticsParams{
-			URI:         params.TextDocument.URI,
-			Diagnostics: []lsp.Diagnostic{},
-		})
+		s.clearWorkflowDiagnostics(ctx, conn, params.TextDocument.URI)
 		return nil, nil
 
 	case "textDocument/hover":
@@ -749,15 +751,7 @@ func (s *FlowfileServer) publish(ctx context.Context, conn *jsonrpc2.Conn, doc *
 		s.publishTestDiagnostics(ctx, conn, doc.uri, publications, guards...)
 		return
 	}
-	diagnostics := publishable(doc, diagnoseCarried(doc))
-	s.logger().Debug("published diagnostics",
-		"uri", doc.uri, "version", doc.version, "count", len(diagnostics))
-	if err := conn.Notify(ctx, "textDocument/publishDiagnostics", publishDiagnosticsParams{
-		URI:         doc.uri,
-		Diagnostics: diagnostics,
-	}); err != nil {
-		s.logger().Warn("publishing diagnostics failed", "uri", doc.uri, "error", err)
-	}
+	s.publishWorkflowDiagnostics(ctx, conn, doc)
 }
 
 // siblingDocumentURI retains the client's spelling of a local file URI while
@@ -788,8 +782,8 @@ const (
 )
 
 func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
+	s.diagnosticsMu.Lock()
+	defer s.diagnosticsMu.Unlock()
 	sources := make([]lsp.DocumentURI, 0, len(s.testSuitesByDefaults[target]))
 	for source := range s.testSuitesByDefaults[target] {
 		sources = append(sources, source)
@@ -801,8 +795,8 @@ func (s *FlowfileServer) testDiagnosticSourcesFor(target lsp.DocumentURI) []lsp.
 // testOverflowSourcesFor is [FlowfileServer.testDiagnosticSourcesFor] for the
 // suites waiting past the dependent bound.
 func (s *FlowfileServer) testOverflowSourcesFor(target lsp.DocumentURI) []lsp.DocumentURI {
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
+	s.diagnosticsMu.Lock()
+	defer s.diagnosticsMu.Unlock()
 	sources := slices.Collect(maps.Keys(s.testOverflowsByDefaults[target]))
 	slices.Sort(sources)
 	return sources
@@ -812,8 +806,8 @@ func (s *FlowfileServer) testOverflowSourcesFor(target lsp.DocumentURI) []lsp.Do
 // limits one defaults keystroke to a fixed number of suite parses; callers that
 // do not fit use the saved defaults and publish an explicit warning.
 func (s *FlowfileServer) rememberTestDefaults(suite *document, defaults lsp.DocumentURI) (tracked, current bool) {
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
+	s.diagnosticsMu.Lock()
+	defer s.diagnosticsMu.Unlock()
 	open, ok := s.docs.get(suite.uri)
 	if !ok || open != suite {
 		return false, false
@@ -864,8 +858,8 @@ func (s *FlowfileServer) publishTestDiagnostics(ctx context.Context, conn *jsonr
 // saved-file positions, so the buffer is withheld until the last one is current
 // and then published once (#1273).
 func (s *FlowfileServer) publishTestDiagnosticsWithholding(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI, publications []diagnosticPublication, withheld []lsp.DocumentURI, guards ...*document) {
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
+	s.diagnosticsMu.Lock()
+	defer s.diagnosticsMu.Unlock()
 	for _, guard := range guards {
 		current, ok := s.docs.get(guard.uri)
 		if !ok || current != guard {
@@ -884,21 +878,7 @@ func (s *FlowfileServer) publishTestDiagnosticsWithholding(ctx context.Context, 
 			}
 		}
 	}
-	if s.testDiagnosticsBySource == nil {
-		s.testDiagnosticsBySource = make(map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic)
-	}
-	if s.testSourcesByTarget == nil {
-		s.testSourcesByTarget = make(map[lsp.DocumentURI]map[lsp.DocumentURI]bool)
-	}
-	touched := map[lsp.DocumentURI]bool{source: true}
-	for uri := range s.testDiagnosticsBySource[source] {
-		touched[uri] = true
-		delete(s.testSourcesByTarget[uri], source)
-		if len(s.testSourcesByTarget[uri]) == 0 {
-			delete(s.testSourcesByTarget, uri)
-		}
-	}
-	next := make(map[lsp.DocumentURI][]lsp.Diagnostic, len(publications))
+	next := make(map[lsp.DocumentURI][]publishedDiagnostic, len(publications))
 	var overflowDiagnostics []lsp.Diagnostic
 	for _, publication := range publications {
 		if source != publication.uri {
@@ -916,18 +896,13 @@ func (s *FlowfileServer) publishTestDiagnosticsWithholding(ctx context.Context, 
 				continue
 			}
 		}
-		next[publication.uri] = publication.diagnostics
-		touched[publication.uri] = true
-		if s.testSourcesByTarget[publication.uri] == nil {
-			s.testSourcesByTarget[publication.uri] = make(map[lsp.DocumentURI]bool)
-		}
-		s.testSourcesByTarget[publication.uri][source] = true
+		next[publication.uri] = wrapDiagnostics(publication.diagnostics)
 	}
 	if len(overflowDiagnostics) > 0 {
-		next[source] = append(next[source], overflowDiagnostics...)
+		next[source] = append(next[source], wrapDiagnostics(overflowDiagnostics)...)
 	}
-	s.testDiagnosticsBySource[source] = next
-	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
+	touched := s.replaceContributionsLocked(source, next)
+	for _, publication := range sourceFirst(source, s.aggregateDiagnostics(touched)) {
 		if slices.Contains(withheld, publication.URI) {
 			continue
 		}
@@ -938,23 +913,15 @@ func (s *FlowfileServer) publishTestDiagnosticsWithholding(ctx context.Context, 
 // clearTestDiagnostics removes a closed document's contributions and publishes
 // the aggregates needed to retract them without erasing another suite's.
 func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, source lsp.DocumentURI) lsp.DocumentURI {
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
+	s.diagnosticsMu.Lock()
+	defer s.diagnosticsMu.Unlock()
 	// A later didOpen may already have installed and published a new generation
 	// for this URI while the old didClose handler was waiting for this lock.
 	// Its cache and dependency state belong to the reopened document.
 	if _, reopened := s.docs.get(source); reopened {
 		return ""
 	}
-	touched := map[lsp.DocumentURI]bool{source: true}
-	for uri := range s.testDiagnosticsBySource[source] {
-		touched[uri] = true
-		delete(s.testSourcesByTarget[uri], source)
-		if len(s.testSourcesByTarget[uri]) == 0 {
-			delete(s.testSourcesByTarget, uri)
-		}
-	}
-	delete(s.testDiagnosticsBySource, source)
+	touched := s.dropContributionsLocked(source)
 	var promoted lsp.DocumentURI
 	var promotionDefaults lsp.DocumentURI
 	if defaults, ok := s.testDefaultsBySuite[source]; ok {
@@ -989,7 +956,7 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 			delete(s.testOverflowsByDefaults, defaults)
 		}
 	}
-	for _, publication := range sourceFirst(source, s.aggregateTestDiagnostics(touched)) {
+	for _, publication := range sourceFirst(source, s.aggregateDiagnostics(touched)) {
 		s.notify(ctx, conn, publication)
 	}
 	if promoted != "" {
@@ -999,67 +966,9 @@ func (s *FlowfileServer) clearTestDiagnostics(ctx context.Context, conn *jsonrpc
 	return promoted
 }
 
-func sourceFirst(source lsp.DocumentURI, publications []lsp.PublishDiagnosticsParams) []lsp.PublishDiagnosticsParams {
-	for i := range publications {
-		if publications[i].URI == source {
-			publications[0], publications[i] = publications[i], publications[0]
-			break
-		}
-	}
-	return publications
-}
-
-func (s *FlowfileServer) aggregateTestDiagnostics(touched map[lsp.DocumentURI]bool) []lsp.PublishDiagnosticsParams {
-	uris := make([]lsp.DocumentURI, 0, len(touched))
-	for uri := range touched {
-		uris = append(uris, uri)
-	}
-	slices.Sort(uris)
-	out := make([]lsp.PublishDiagnosticsParams, 0, len(uris))
-	for _, uri := range uris {
-		var diagnostics []lsp.Diagnostic
-		seen := map[string]bool{}
-		ordered := make([]lsp.DocumentURI, 0, len(s.testSourcesByTarget[uri]))
-		for source := range s.testSourcesByTarget[uri] {
-			ordered = append(ordered, source)
-		}
-		slices.Sort(ordered)
-		// A directly open document owns the code for an otherwise identical
-		// diagnostic an including suite also reports on its URI.
-		if own := slices.Index(ordered, uri); own >= 0 {
-			ordered[0], ordered[own] = ordered[own], ordered[0]
-		}
-		for _, source := range ordered {
-			byURI := s.testDiagnosticsBySource[source]
-			for _, d := range byURI[uri] {
-				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,
-					d.Range.End.Line, d.Range.End.Character, d.Message)
-				if !seen[key] {
-					seen[key] = true
-					diagnostics = append(diagnostics, d)
-				}
-			}
-		}
-		if diagnostics == nil {
-			diagnostics = []lsp.Diagnostic{}
-		}
-		slices.SortStableFunc(diagnostics, func(a, b lsp.Diagnostic) int {
-			if a.Range.Start.Line != b.Range.Start.Line {
-				return a.Range.Start.Line - b.Range.Start.Line
-			}
-			if a.Range.Start.Character != b.Range.Start.Character {
-				return a.Range.Start.Character - b.Range.Start.Character
-			}
-			return strings.Compare(a.Message, b.Message)
-		})
-		out = append(out, lsp.PublishDiagnosticsParams{URI: uri, Diagnostics: diagnostics})
-	}
-	return out
-}
-
 // notify sends a notification, logging a failure rather than propagating it: there
 // is no caller to return an error to.
-func (s *FlowfileServer) notify(ctx context.Context, conn *jsonrpc2.Conn, params lsp.PublishDiagnosticsParams) {
+func (s *FlowfileServer) notify(ctx context.Context, conn *jsonrpc2.Conn, params publishDiagnosticsParams) {
 	if err := conn.Notify(ctx, "textDocument/publishDiagnostics", params); err != nil {
 		s.logger().Warn("publishing diagnostics failed", "uri", params.URI, "error", err)
 	}

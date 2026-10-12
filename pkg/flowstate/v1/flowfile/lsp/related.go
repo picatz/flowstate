@@ -40,12 +40,12 @@ type publishDiagnosticsParams struct {
 }
 
 // publishable attaches related information to each diagnostic that has some.
-func publishable(doc *document, carried []carriedDiagnostic) []publishedDiagnostic {
+func publishable(loc *locator, carried []carriedDiagnostic) []publishedDiagnostic {
 	out := make([]publishedDiagnostic, 0, len(carried))
 	for _, c := range carried {
 		out = append(out, publishedDiagnostic{
 			Diagnostic:         c.published,
-			RelatedInformation: relatedFor(doc, c),
+			RelatedInformation: relatedFor(loc, c),
 		})
 	}
 
@@ -60,11 +60,22 @@ var (
 	referencedStepMessage = regexp.MustCompile(`^references step "([^"]+)"`)
 )
 
-// relatedFor finds the other place a diagnostic is about, if it names one.
+// relatedFor finds the other places a diagnostic is about: the ones the validator
+// recorded on it (the call that caused a called file to be compiled, the first
+// problem in a called file), then, within the document, the other declaration of
+// a duplicated or forward-referenced step.
 //
 // A duplicate id is reported on one declaration (the validator positions by id, so
 // the first), which leaves the others as the places to look: each is listed.
-func relatedFor(doc *document, c carriedDiagnostic) []relatedInformation {
+func relatedFor(loc *locator, c carriedDiagnostic) []relatedInformation {
+	recorded := loc.related(c.source.Related)
+
+	return append(recorded, relatedWithin(loc.doc, c)...)
+}
+
+// relatedWithin is the part of [relatedFor] that is read off the document's own
+// model.
+func relatedWithin(doc *document, c carriedDiagnostic) []relatedInformation {
 	if doc.parsed == nil {
 		return nil
 	}
