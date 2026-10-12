@@ -94,7 +94,8 @@ message Diagnostic {
   // without going through a source line.
   //
   // Empty when the step cannot be named uniquely (the same id is declared in
-  // more than one scope) or the problem is not on a step. [step] and [field]
+  // more than one scope), the problem is not on a step, or the diagnostic was
+  // raised before a workflow existed (a parse failure). [step] and [field]
   // keep their meaning, and Path adds to them rather than replacing either.
   //
   // It carries no digest: what binds a path to one version of the IR is

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -504,14 +505,33 @@ func TestValidateCorpusReportsRestOfFileAfterARewritableEdition(t *testing.T) {
 		"the misspelled key must be reported alongside the edition line, not only after `flow fix`")
 }
 
-// A diagnostic with no line but a step the IR can name renders that step's
-// address where the position would be; a line, when there is one, wins.
+// A workflow with no source has no lines, so a validator diagnostic on a nested
+// step renders the step's IR address where the position would be.
 func TestDiagnosticLineFallsBackToIRAddress(t *testing.T) {
-	d := flowfile.Diagnostic{Step: "b", Path: []string{"a", "b"}, Message: "bad"}
+	wf := &v1.Workflow{
+		Name: "hand-built",
+		Steps: []*v1.Node{{
+			Id: "pages",
+			Kind: &v1.Node_ForEach{ForEach: &v1.ForEach{Body: []*v1.Node{
+				{Id: "fetch", Kind: &v1.Node_Task{Task: &v1.Task{Name: "nosuchtask"}}},
+			}}},
+		}},
+	}
 
-	assert.Equal(t, `f.yaml: a/b: step "b": bad`, diagnosticLine("f.yaml", d))
+	var rendered []string
+	for _, d := range flowfile.Validate(wf) {
+		if d.Step == "fetch" {
+			require.Zero(t, d.Line)
+			rendered = append(rendered, diagnosticLine("f.yaml", d))
+		}
+	}
+	require.NotEmpty(t, rendered)
+	for _, line := range rendered {
+		assert.True(t, strings.HasPrefix(line, `f.yaml: pages/fetch: step "fetch"`), line)
+	}
 
-	d.Line, d.Column = 7, 3
+	// A line, when there is one, wins; and no path leaves the old rendering.
+	d := flowfile.Diagnostic{Step: "b", Path: []string{"a", "b"}, Message: "bad", Line: 7, Column: 3}
 	assert.Equal(t, `f.yaml:7:3: step "b": bad`, diagnosticLine("f.yaml", d))
 
 	assert.Equal(t, "f.yaml: bad", diagnosticLine("f.yaml", flowfile.Diagnostic{Message: "bad"}))

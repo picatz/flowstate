@@ -110,7 +110,8 @@ func init() {
 				" without going through a source line.\n" +
 				"\n" +
 				" Empty when the step cannot be named uniquely (the same id is declared in\n" +
-				" more than one scope) or the problem is not on a step. [step] and [field]\n" +
+				" more than one scope), the problem is not on a step, or the diagnostic was\n" +
+				" raised before a workflow existed (a parse failure). [step] and [field]\n" +
 				" keep their meaning, and Path adds to them rather than replacing either.\n" +
 				"\n" +
 				" It carries no digest: what binds a path to one version of the IR is\n" +
