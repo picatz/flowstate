@@ -933,3 +933,56 @@ steps:
 		})
 	}
 }
+
+// callBoundaryCodes compiles the file and returns the codes on the diagnostics
+// it reports, so a test can pin the class a consumer would switch on.
+func callBoundaryCodes(t *testing.T, path string) []v1.DiagnosticCode {
+	t.Helper()
+
+	_, _, err := flowfile.ParseFile(path)
+	var ds flowfile.Diagnostics
+	require.ErrorAs(t, err, &ds, "a refused call is reported as diagnostics: %v", err)
+
+	codes := make([]v1.DiagnosticCode, 0, len(ds))
+	for _, d := range ds {
+		codes = append(codes, d.Code)
+	}
+	return codes
+}
+
+// TestCallBoundaryFailuresCarryTheirOwnCodes pins one code per failure class at
+// the `call:` boundary, so a consumer can tell a cycle from an unreadable
+// target from a callee that does not compile without reading prose (#1555).
+func TestCallBoundaryFailuresCarryTheirOwnCodes(t *testing.T) {
+	caller := func(target string) string {
+		return "edition: v2026.4\nname: caller\nsteps:\n  - id: next\n    call: " + target + "\n"
+	}
+
+	t.Run("direct cycle", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFile(t, dir, "a.yaml", caller("./a.yaml"))
+		require.Equal(t, []v1.DiagnosticCode{v1.DiagnosticCodeCallCycle}, callBoundaryCodes(t, path))
+	})
+
+	t.Run("transitive cycle", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFile(t, dir, "a.yaml", caller("./b.yaml"))
+		writeFile(t, dir, "b.yaml", caller("./a.yaml"))
+		// The outer file sees its callee fail; the cycle itself is inside the
+		// callee's report, wrapped in the message.
+		require.Equal(t, []v1.DiagnosticCode{v1.DiagnosticCodeCalleeFailed}, callBoundaryCodes(t, path))
+	})
+
+	t.Run("unreadable callee", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFile(t, dir, "a.yaml", caller("./missing.yaml"))
+		require.Equal(t, []v1.DiagnosticCode{v1.DiagnosticCodeCallUnreadable}, callBoundaryCodes(t, path))
+	})
+
+	t.Run("callee that does not compile", func(t *testing.T) {
+		dir := t.TempDir()
+		path := writeFile(t, dir, "a.yaml", caller("./b.yaml"))
+		writeFile(t, dir, "b.yaml", "edition: v2026.4\nname: b\nsteps:\n  - id: x\n    bogus_key: 1\n")
+		require.Equal(t, []v1.DiagnosticCode{v1.DiagnosticCodeCalleeFailed}, callBoundaryCodes(t, path))
+	})
+}
