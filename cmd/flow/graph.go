@@ -162,6 +162,7 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 
 	var (
 		workflows []*v1.Workflow
+		maps      = map[*v1.Workflow]*v1.DebugSourceMap{}
 		skipped   []string
 	)
 	for _, path := range files {
@@ -169,7 +170,20 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 		if isTestFilePath(path) {
 			continue
 		}
-		wf, _, err := flowfile.ParseFile(path)
+		var (
+			wf  *v1.Workflow
+			err error
+		)
+		if s.workflow != "" {
+			// Only the zoom on one workflow's steps carries locations, so the
+			// fleet view does not pay for a source map per file.
+			var sm *v1.DebugSourceMap
+			if wf, sm, err = (flowfile.Env{}).ParseFileMapped(path); err == nil {
+				maps[wf] = sm
+			}
+		} else {
+			wf, _, err = flowfile.ParseFile(path)
+		}
 		if err != nil {
 			skipped = append(skipped, fmt.Sprintf("%s does not compile and was left out", truncateNote(path)))
 
@@ -179,7 +193,7 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 	}
 
 	if s.workflow != "" {
-		return stepsOf(workflows, skipped, s.workflow)
+		return stepsOf(workflows, maps, skipped, s.workflow)
 	}
 
 	g := graph.Static(workflows...)
@@ -200,17 +214,24 @@ func (s graphSources) build(cmd *cobra.Command) (*v1.Graph, error) {
 // no file declares is answered with the names that are, so a misspelling is one
 // glance from its fix; files that did not compile are named in the graph, since
 // the workflow wanted may be one of them.
-func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph, error) {
-	var found []*v1.Workflow
+func stepsOf(workflows []*v1.Workflow, maps map[*v1.Workflow]*v1.DebugSourceMap, skipped []string, name string) (*v1.Graph, error) {
+	var (
+		found   []*v1.Workflow
+		origins []*v1.Workflow
+		sources []*v1.DebugSourceMap
+	)
 	for _, wf := range workflows {
 		if wf.GetName() != name {
 			continue
 		}
 		// Files that differ only in where they were read from declare one workflow.
+		origin, sm := wf, maps[wf]
 		wf = proto.CloneOf(wf)
 		wf.SourceDigest = ""
 		if !slices.ContainsFunc(found, func(other *v1.Workflow) bool { return proto.Equal(other, wf) }) {
 			found = append(found, wf)
+			origins = append(origins, origin)
+			sources = append(sources, sm)
 		}
 	}
 	switch {
@@ -222,7 +243,7 @@ func stepsOf(workflows []*v1.Workflow, skipped []string, name string) (*v1.Graph
 		return nil, noWorkflowNamed(workflows, skipped, name)
 	}
 
-	g := graph.Steps(found[0])
+	g := graph.StepsFrom(origins[0], sources[0])
 	if len(skipped) > 0 {
 		g.Partial = true
 		g.Notes = append(skipped[:min(len(skipped), 100)], g.Notes...)

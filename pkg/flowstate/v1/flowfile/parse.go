@@ -519,6 +519,22 @@ func (e Env) ParseFile(path string) (*v1.Workflow, *Positions, error) {
 	return wf, pos, nil
 }
 
+// ParseFileMapped is [Env.ParseFile] that also returns the [v1.DebugSourceMap]
+// of the bytes it compiled, so the map is bound to exactly the file that was
+// read and not to a second read that could differ.
+func (e Env) ParseFileMapped(path string) (*v1.Workflow, *v1.DebugSourceMap, error) {
+	data, err := readBoundedSource(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	wf, pos, err := parse(e, data, path, nil, new(int), nil)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return wf, e.SourceMap(path, data, wf, pos), nil
+}
+
 // ParseAt is [Parse] for bytes that did not come from path but should be
 // treated as if they were about to be written there — an editor's in-memory
 // buffer for a file that may hold unsaved changes, most notably. A `call:` step

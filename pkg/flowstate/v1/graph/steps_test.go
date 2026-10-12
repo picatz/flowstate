@@ -199,3 +199,93 @@ func TestTextWritesACyclicContainmentOnceNotOncePerPath(t *testing.T) {
 	require.NoError(t, graph.Text(&sb, g))
 	require.Equal(t, "w\n  steps\n    a\n      b\n      c\n", sb.String())
 }
+
+// mapOf is a source map for wf that locates the given step paths on line n,
+// bound to wf the way a compiler binds one.
+func mapOf(wf *v1.Workflow, lines map[string]uint32, paths map[string][]string) *v1.DebugSourceMap {
+	sm := &v1.DebugSourceMap{
+		IrDigest:  v1.WorkflowIRDigest(wf),
+		Documents: []*v1.DebugSourceDocument{{Uri: "w.yaml", Digest: "sha256:abc", Language: "flowfile"}},
+	}
+	for id, path := range paths {
+		sm.Entries = append(sm.Entries, &v1.DebugSourceEntry{
+			Site: &v1.DebugSite{Workflow: wf.GetName(), Path: path},
+			Location: &v1.DebugSourceLocation{
+				Range: &v1.SourceRange{StartLine: lines[id], StartColumn: 3, EndLine: lines[id] + 1, EndColumn: 1},
+			},
+		})
+	}
+
+	return sm
+}
+
+func TestStepsFromLocatesNodesIncludingNestedStepsAndLeavesTheRestUnlocated(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{
+		task("build", "exec"),
+		loopOf("each", task("push", "http")),
+		task("notify", "http"),
+	}}
+	sm := mapOf(wf,
+		map[string]uint32{"build": 4, "push": 9},
+		map[string][]string{"build": {"build"}, "push": {"each", "push"}})
+
+	g := graph.StepsFrom(wf, sm)
+	require.NoError(t, v1.Validate(g))
+	require.False(t, g.GetPartial())
+	require.Len(t, g.GetDocuments(), 1)
+
+	got := map[string]uint32{}
+	for _, s := range g.GetSources() {
+		require.Zero(t, s.GetLocation().GetDocument())
+		got[s.GetNode()] = s.GetLocation().GetRange().GetStartLine()
+	}
+	require.Equal(t, map[string]uint32{
+		"step:deploy/build":        4,
+		"step:deploy/each[0]/push": 9,
+	}, got, "a step the map does not locate has no source, not a guessed one")
+}
+
+func TestStepsFromIgnoresAMapForADifferentProgramAndSaysSo(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("build", "exec")}}
+	sm := mapOf(wf, map[string]uint32{"build": 4}, map[string][]string{"build": {"build"}})
+	sm.IrDigest = "sha256:stale"
+
+	g := graph.StepsFrom(wf, sm)
+	require.Empty(t, g.GetSources())
+	require.Empty(t, g.GetDocuments())
+	require.True(t, g.GetPartial())
+	require.Contains(t, strings.Join(g.GetNotes(), "\n"), "different program")
+}
+
+func TestStepsWithoutAMapCarryNoSources(t *testing.T) {
+	g := graph.Steps(&v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("build", "exec")}})
+	require.Empty(t, g.GetSources())
+	require.False(t, g.GetPartial())
+}
+
+func TestStepsFromWithholdsALocationWhoseDocumentIndexIsOutOfRange(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("build", "exec")}}
+	for _, bad := range []int32{-1, 1, 1 << 30} {
+		sm := mapOf(wf, map[string]uint32{"build": 4}, map[string][]string{"build": {"build"}})
+		sm.Entries[0].Location.Document = bad
+
+		g := graph.StepsFrom(wf, sm)
+		require.Empty(t, g.GetSources(), "document %d", bad)
+		require.Empty(t, g.GetDocuments(), "document %d", bad)
+	}
+}
+
+func TestStepsFromDoesNotCarryAGeneratedFromIndexAndStoresADocumentOnce(t *testing.T) {
+	wf := &v1.Workflow{Name: "deploy", Steps: []*v1.Node{task("a", "exec"), task("b", "exec"), task("c", "exec")}}
+	sm := mapOf(wf, map[string]uint32{"a": 4, "b": 6, "c": 8},
+		map[string][]string{"a": {"a"}, "b": {"b"}, "c": {"c"}})
+	sm.Documents[0].GeneratedFrom = 1
+
+	g := graph.StepsFrom(wf, sm)
+	require.Len(t, g.GetDocuments(), 1)
+	require.Zero(t, g.GetDocuments()[0].GetGeneratedFrom())
+	require.Len(t, g.GetSources(), 3)
+	for _, s := range g.GetSources() {
+		require.Zero(t, s.GetLocation().GetDocument())
+	}
+}
