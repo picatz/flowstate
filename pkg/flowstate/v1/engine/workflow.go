@@ -874,7 +874,7 @@ func runWorkflow(ctx workflow.Context, dc converter.DataConverter, st *v1.RunSta
 			// not become acceptable because the failure arrived after the last
 			// step rather than during one.
 			return v1.PartialTranscript(stepOutputs),
-				compensate(ctx, exec, &ErrRunFailed{Message: outputsErr.Error()})
+				compensate(ctx, exec, &ErrRunFailed{Message: outputsErr.Error(), Kind: v1.ClassifyError(outputsErr)})
 		}
 		exec.debugRunCompleted()
 

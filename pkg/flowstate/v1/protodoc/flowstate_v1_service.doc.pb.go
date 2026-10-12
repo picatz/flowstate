@@ -246,9 +246,13 @@ func init() {
 		},
 		{
 			Name: "flowstate.v1.RunResponse.Error.expression",
-			Leading: " Expression says which operation failed and what it saw, when `kind` is\n" +
-				" `Expression` and the cause was an operator with no overload for its\n" +
-				" operands or a selection of a missing key. Unset for every other failure.\n",
+			Leading: " Expression is the structured account of a failed expression, when `kind`\n" +
+				" is `Expression` and a step claimed the failure: at least that step's\n" +
+				" `step` and `location`. `operator`, `operand_types`, `subexpression` and\n" +
+				" `caret` are set only when the cause was an operator with no overload for\n" +
+				" its operands or a selection of a missing key; a division by zero or an\n" +
+				" index out of bounds carries `step` and `location` alone. Unset when no\n" +
+				" step claimed the failure, and for every other kind of failure.\n",
 		},
 		{
 			Name:    "flowstate.v1.RunResponse.Status",

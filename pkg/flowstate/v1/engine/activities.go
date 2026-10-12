@@ -62,6 +62,15 @@ func WorkflowVars(ctx context.Context, declared *v1.Scope) (*v1.Scope, error) {
 		// nothing that changes — no step outputs, no clock, no network. Retrying would
 		// turn an author's mistake into a run that takes its whole retry budget to
 		// report the same sentence.
+		//
+		// A var that failed on an expression is classified and carries its
+		// structured account through the same path a task's activity uses, so the
+		// run reports kind Expression and the step the call claims it for, as the
+		// local driver does (#1568). Anything else keeps its type.
+		if v1.ExpressionFailureOf(err) != nil {
+			return nil, activityError("WorkflowVars", err, false)
+		}
+
 		return nil, temporal.NewNonRetryableApplicationError(
 			err.Error(), "InvalidWorkflowVars", err)
 	}
@@ -343,7 +352,8 @@ func activityError(taskName string, err error, continueOnError bool) error {
 
 	// The structured account of an expression failure travels as the error's
 	// detail, so the run's `RunResponse.error.expression` reads the same fields
-	// under either driver (#1551). Absent for every other failure.
+	// under either driver (#1551). Present for any expression failure, empty
+	// until a step claims it (#1568); absent for every other failure.
 	var details []any
 	if detail := v1.ExpressionFailureOf(err); detail != nil {
 		details = []any{detail}

@@ -34,3 +34,24 @@ steps:
 	assert.Contains(t, stdout, `"step": "boom"`)
 	assert.Contains(t, stdout, `"line": 4`)
 }
+
+// TestAnExpressionFailureOutsideAnyStepReportsNoAccount pins that a failure no
+// step claimed (a declared output) reports no `expression` in the JSON document,
+// rather than the empty account an evaluation failure carries until a step does.
+func TestAnExpressionFailureOutsideAnyStepReportsNoAccount(t *testing.T) {
+	t.Parallel()
+
+	stdout, _, err := runLocal(t, `edition: v2026.4
+name: outputs-divide
+steps:
+  - id: fine
+    log:
+      message: hello
+outputs:
+  r:
+    value: ${1 / size([])}
+`, "--output", "json")
+	require.Error(t, err)
+	assert.Contains(t, stdout, `"kind": "Expression"`)
+	assert.Contains(t, stdout, `"expression": null`)
+}

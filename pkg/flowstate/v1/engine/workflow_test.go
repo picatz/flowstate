@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2869,122 +2868,14 @@ func TestPendingLoopCompensationsSurviveContinueAsNew(t *testing.T) {
 		"the effects that happened, and their order, are not what unwinding a suspended rollout should have produced")
 }
 
-// TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers pins #1551's
-// second half: the fields a failed expression knew about itself (the operator,
-// the operand types, the subexpression) reach a program the same under either
-// driver, as `RunResponse.error.expression` does. The local run carries them on
-// the error chain; the durable run carries them as the run failure's detail, the
-// way the server reads them back.
-func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.T) {
-	wf := &v1.Workflow{
-		Name: "expression-failure-structured",
-		Steps: []*v1.Node{
-			{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
-			{Id: "bad", Source: &v1.SourceLocation{File: "w.yaml", Line: 6, Column: 5}, Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
-		},
-	}
-	want := &v1.ExpressionFailure{
-		Operator:      "+",
-		OperandTypes:  []string{"int", "string"},
-		Subexpression: `steps.n.value + "x"`,
-		Offset:        proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
-		Caret:         proto.Int32(int32(strings.Index(`steps.n.value + "x"`, "+"))),
-		Step:          "bad",
-		Location:      &v1.SourceLocation{File: "w.yaml", Line: 6, Column: 5},
-	}
-
-	t.Run("local", func(t *testing.T) {
-		_, err := v1.Run(t.Context(), wf)
-		require.Error(t, err)
-		require.Empty(t, cmp.Diff(want, v1.ExpressionFailureOf(err), protocmp.Transform()))
-	})
-
-	t.Run("durable", func(t *testing.T) {
-		testSuite := &testsuite.WorkflowTestSuite{}
-		env := testSuite.NewTestWorkflowEnvironment()
-		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
-		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
-
-		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: wf})
-		require.True(t, env.IsWorkflowCompleted())
-
-		app, ok := errors.AsType[*temporal.ApplicationError](env.GetWorkflowError())
-		require.True(t, ok, "a terminal run failure must reach the client as an ApplicationError")
-
-		var (
-			marker string
-			got    v1.ExpressionFailure
-		)
-		require.NoError(t, app.Details(&marker, &got))
-		require.Equal(t, engine.RunFailureMarker, marker, "the marker still leads the details")
-		require.Empty(t, cmp.Diff(want, &got, protocmp.Transform()))
-	})
-
-	// A step id is only meaningful in the file that declares it, so a failure
-	// that crossed a call carries its step qualified by the callee on both
-	// drivers.
-	t.Run("a failure inside a callee is qualified by it", func(t *testing.T) {
-		callee := &v1.Workflow{
-			Name: "callee",
-			Steps: []*v1.Node{
-				{Id: "n", Kind: &v1.Node_Value{Value: v1.NewExpr("2")}},
-				{Id: "bad", Source: &v1.SourceLocation{File: "callee.yaml", Line: 9, Column: 3}, Kind: &v1.Node_Value{Value: v1.NewExpr(`steps.n.value + "x"`)}},
-			},
-		}
-		caller := &v1.Workflow{
-			Name:  "caller",
-			Steps: []*v1.Node{{Id: "called", Kind: &v1.Node_Call{Call: &v1.Call{Workflow: callee}}}},
-		}
-		qualified := proto.CloneOf(want)
-		qualified.Step = "callee/bad"
-		qualified.Location = nil
-
-		_, err := v1.Run(t.Context(), caller)
-		require.Error(t, err)
-		require.Empty(t, cmp.Diff(qualified, v1.ExpressionFailureOf(err), protocmp.Transform()), "local")
-
-		testSuite := &testsuite.WorkflowTestSuite{}
-		env := testSuite.NewTestWorkflowEnvironment()
-		env.RegisterWorkflow(engine.Run)
-		env.OnActivity(engine.Task, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.Task)
-		env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
-		env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
-
-		env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: caller})
-		require.True(t, env.IsWorkflowCompleted())
-
-		app, ok := errors.AsType[*temporal.ApplicationError](env.GetWorkflowError())
-		require.True(t, ok)
-
-		var (
-			marker string
-			got    v1.ExpressionFailure
-		)
-		require.NoError(t, app.Details(&marker, &got))
-		require.Empty(t, cmp.Diff(qualified, &got, protocmp.Transform()), "durable")
-	})
-
-	// A failure whose words are complete (#1568) reports no operator or key, but
-	// still says which step and where, the same on both drivers.
-	for name, expression := range map[string]string{
-		"an index out of bounds": `[1][5]`,
-		"a division by zero":     `1 / 0`,
-	} {
-		t.Run(name+" carries its step and location", func(t *testing.T) {
-			bare := &v1.Workflow{
-				Name: "expression-failure-bare",
-				Steps: []*v1.Node{
-					{Id: "bad", Source: &v1.SourceLocation{File: "w.yaml", Line: 4, Column: 7}, Kind: &v1.Node_Value{Value: v1.NewExpr(expression)}},
-				},
-			}
-			bareWant := &v1.ExpressionFailure{Step: "bad", Location: &v1.SourceLocation{File: "w.yaml", Line: 4, Column: 7}}
-
-			_, err := v1.Run(t.Context(), bare)
-			require.Error(t, err)
-			require.Empty(t, cmp.Diff(bareWant, v1.ExpressionFailureOf(err), protocmp.Transform()), "local")
-
+// TestRunWorkflowExpressionFailure runs the shared
+// [conformance.ExpressionFailureCases] against the durable driver: the account
+// a failed expression carries (#1551, #1568) is read off the run failure's
+// details the way the server reads it, and must be the one the local driver
+// reports in flowstatev1_test.TestRunWorkflowExpressionFailure.
+func TestRunWorkflowExpressionFailure(t *testing.T) {
+	for _, tc := range conformance.ExpressionFailureCases() {
+		t.Run(tc.Name, func(t *testing.T) {
 			testSuite := &testsuite.WorkflowTestSuite{}
 			env := testSuite.NewTestWorkflowEnvironment()
 			env.RegisterWorkflow(engine.Run)
@@ -2992,19 +2883,35 @@ func TestAnExpressionFailureCarriesItsStructuredAccountOnBothDrivers(t *testing.
 			env.OnActivity(engine.TaskInScope, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(engine.TaskInScope)
 			env.OnActivity(engine.WorkflowVars, mock.Anything, mock.Anything).Return(engine.WorkflowVars)
 
-			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: bare})
+			env.ExecuteWorkflow(engine.Run, &v1.RunState{Workflow: tc.Workflow})
 			require.True(t, env.IsWorkflowCompleted())
 
 			app, ok := errors.AsType[*temporal.ApplicationError](env.GetWorkflowError())
-			require.True(t, ok)
+			require.True(t, ok, "a terminal run failure must reach the client as an ApplicationError")
 
+			kind, ok := v1.ParseErrorKind(app.Type())
+			require.True(t, ok, "the application error's Type %q must be a recognized ErrorKind", app.Type())
+			require.Equal(t, tc.WantKind, kind)
+
+			// Read the way the server does: only an error bearing the run-failure
+			// marker carries an account, and one that fails before any step (the
+			// run's own `vars:`) keeps the activity's error and bears none.
 			var (
-				marker string
-				got    v1.ExpressionFailure
+				marker   string
+				got      v1.ExpressionFailure
+				reported *v1.ExpressionFailure
 			)
-			require.NoError(t, app.Details(&marker, &got))
-			require.Empty(t, cmp.Diff(bareWant, &got, protocmp.Transform()), "durable")
+			if app.HasDetails() && app.Details(&marker) == nil && marker == engine.RunFailureMarker &&
+				app.Details(&marker, &got) == nil {
+				reported = got.Reportable()
+			}
+
+			if tc.Want == nil {
+				require.Nil(t, reported, "no step claimed the failure, so no account is reported")
+
+				return
+			}
+			require.Empty(t, cmp.Diff(tc.Want, reported, protocmp.Transform()))
 		})
 	}
-
 }

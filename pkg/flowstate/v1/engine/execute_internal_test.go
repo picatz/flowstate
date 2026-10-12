@@ -384,14 +384,19 @@ func TestAnActivityExpressionFailureWithNoExplanationKeepsItsAccount(t *testing.
 	require.True(t, ok)
 	require.True(t, app.HasDetails())
 
-	got := expressionOf(err, nil)
+	// Through the failure converter, as the workflow side receives it: the
+	// cause chain is gone and only the type and details remain.
+	fc := temporal.GetDefaultFailureConverter()
+	received := fc.FailureToError(fc.ErrorToFailure(err))
+
+	got := expressionOf(received, nil)
 	require.NotNil(t, got, "the account must survive the activity boundary to be attributed")
 	got.AttributeStep("boom", &v1.SourceLocation{File: "f.yaml", Line: 2, Column: 3})
 	require.NotNil(t, got.Reportable())
 
 	// Across the wire the cause chain is gone and only the details remain: an
 	// empty account on an Expression error is read, on any other kind it is not.
-	fc := temporal.GetDefaultFailureConverter()
+	fc = temporal.GetDefaultFailureConverter()
 	wire := fc.FailureToError(fc.ErrorToFailure(temporal.NewApplicationError("boom", v1.ErrorKindExpression.String(), &v1.ExpressionFailure{})))
 	require.NotNil(t, expressionOf(wire, nil), "the empty account of an Expression failure is kept")
 	other := fc.FailureToError(fc.ErrorToFailure(temporal.NewApplicationError("boom", v1.ErrorKindUpstream.String(), &v1.ExpressionFailure{})))
