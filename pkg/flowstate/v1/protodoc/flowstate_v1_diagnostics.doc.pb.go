@@ -102,6 +102,22 @@ func init() {
 				" person or an agent to choose between. They are never applied together.\n",
 		},
 		{
+			Name: "flowstate.v1.Diagnostic.path",
+			Leading: " Path is the chain of step ids from the workflow root to the step the\n" +
+				" problem was found in: `[\"pages\", \"page\"]` for a step `page` in the body of\n" +
+				" a loop `pages`. It is the key [DebugSourceMap] entries use (see\n" +
+				" [DebugSite.path]), so a consumer can address the step in the compiled IR\n" +
+				" without going through a source line.\n" +
+				"\n" +
+				" Empty when the step cannot be named uniquely (the same id is declared in\n" +
+				" more than one scope) or the problem is not on a step. [step] and [field]\n" +
+				" keep their meaning, and Path adds to them rather than replacing either.\n" +
+				"\n" +
+				" It carries no digest: what binds a path to one version of the IR is\n" +
+				" [DebugSourceMap.ir_digest], and a second binding here would be a second\n" +
+				" spelling of that integrity check.\n",
+		},
+		{
 			Name: "flowstate.v1.SourceRange",
 			Leading: " SourceRange is a region of a file's source text, in the units [Diagnostic]\n" +
 				" already positions itself in.\n" +

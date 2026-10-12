@@ -86,6 +86,26 @@ message Diagnostic {
   // More than one entry means the repairs are alternatives, offered for a
   // person or an agent to choose between. They are never applied together.
   repeated SuggestedEdit edits = 9;
+
+  // Path is the chain of step ids from the workflow root to the step the
+  // problem was found in: `["pages", "page"]` for a step `page` in the body of
+  // a loop `pages`. It is the key [DebugSourceMap] entries use (see
+  // [DebugSite.path]), so a consumer can address the step in the compiled IR
+  // without going through a source line.
+  //
+  // Empty when the step cannot be named uniquely (the same id is declared in
+  // more than one scope) or the problem is not on a step. [step] and [field]
+  // keep their meaning, and Path adds to them rather than replacing either.
+  //
+  // It carries no digest: what binds a path to one version of the IR is
+  // [DebugSourceMap.ir_digest], and a second binding here would be a second
+  // spelling of that integrity check.
+  repeated string path = 10 [(buf.validate.field).repeated = {
+    max_items: 129
+    items: {
+      string: {max_len: 256}
+    }
+  }];
 }
 
 // SourceRange is a region of a file's source text, in the units [Diagnostic]

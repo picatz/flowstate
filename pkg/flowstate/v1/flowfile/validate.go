@@ -108,6 +108,13 @@ type Diagnostic struct {
 	// classes worth branching on.
 	Code v1.DiagnosticCode
 
+	// Path is the chain of step ids from the workflow root to Step, the key
+	// [v1.DebugSourceMap] entries use. Empty when the problem is not on a step
+	// or the step's id is declared in more than one scope. It is filled by
+	// [positionDiagnostics], so a diagnostic from a path that has no positions
+	// leaves it empty.
+	Path []string
+
 	// Edits are repairs a program may apply to the source, each complete and
 	// independently applyable, and each an alternative to its siblings rather
 	// than a step in a sequence.
@@ -2523,7 +2530,11 @@ func positionDiagnostics(ds Diagnostics, positions *Positions) {
 	if positions == nil {
 		return
 	}
+	unique := positions.UniqueStepPaths()
 	for i := range ds {
+		if path, ok := unique[ds[i].Step]; ok && ds[i].Step != "" {
+			ds[i].Path = positions.sitePath(path)
+		}
 		span, ok := positions.Locate(ds[i].Step, ds[i].Field)
 		if ds[i].Kind != "" {
 			span, ok = positions.LocateKind(ds[i].Step, ds[i].Kind)
@@ -3905,6 +3916,7 @@ func (d Diagnostic) Proto() *v1.Diagnostic {
 		Value:   d.Value,
 		Code:    string(code),
 		Edits:   d.Edits,
+		Path:    slices.Clone(d.Path),
 	}
 }
 

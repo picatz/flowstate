@@ -94,7 +94,21 @@ type Diagnostic struct {
 	//
 	// More than one entry means the repairs are alternatives, offered for a
 	// person or an agent to choose between. They are never applied together.
-	Edits         []*SuggestedEdit `protobuf:"bytes,9,rep,name=edits,proto3" json:"edits,omitempty"`
+	Edits []*SuggestedEdit `protobuf:"bytes,9,rep,name=edits,proto3" json:"edits,omitempty"`
+	// Path is the chain of step ids from the workflow root to the step the
+	// problem was found in: `["pages", "page"]` for a step `page` in the body of
+	// a loop `pages`. It is the key [DebugSourceMap] entries use (see
+	// [DebugSite.path]), so a consumer can address the step in the compiled IR
+	// without going through a source line.
+	//
+	// Empty when the step cannot be named uniquely (the same id is declared in
+	// more than one scope) or the problem is not on a step. [step] and [field]
+	// keep their meaning, and Path adds to them rather than replacing either.
+	//
+	// It carries no digest: what binds a path to one version of the IR is
+	// [DebugSourceMap.ir_digest], and a second binding here would be a second
+	// spelling of that integrity check.
+	Path          []string `protobuf:"bytes,10,rep,name=path,proto3" json:"path,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -188,6 +202,13 @@ func (x *Diagnostic) GetCode() string {
 func (x *Diagnostic) GetEdits() []*SuggestedEdit {
 	if x != nil {
 		return x.Edits
+	}
+	return nil
+}
+
+func (x *Diagnostic) GetPath() []string {
+	if x != nil {
+		return x.Path
 	}
 	return nil
 }
@@ -612,7 +633,7 @@ var File_flowstate_v1_diagnostics_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_diagnostics_proto_rawDesc = "" +
 	"\n" +
-	"\x1eflowstate/v1/diagnostics.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xf5\x01\n" +
+	"\x1eflowstate/v1/diagnostics.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x9b\x02\n" +
 	"\n" +
 	"Diagnostic\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12\x16\n" +
@@ -623,7 +644,10 @@ const file_flowstate_v1_diagnostics_proto_rawDesc = "" +
 	"\x04kind\x18\x06 \x01(\tR\x04kind\x12\x14\n" +
 	"\x05value\x18\a \x01(\tR\x05value\x12\x12\n" +
 	"\x04code\x18\b \x01(\tR\x04code\x121\n" +
-	"\x05edits\x18\t \x03(\v2\x1b.flowstate.v1.SuggestedEditR\x05edits\"\x89\x01\n" +
+	"\x05edits\x18\t \x03(\v2\x1b.flowstate.v1.SuggestedEditR\x05edits\x12$\n" +
+	"\x04path\x18\n" +
+	" \x03(\tB\x10\xbaH\r\x92\x01\n" +
+	"\x10\x81\x01\"\x05r\x03\x18\x80\x02R\x04path\"\x89\x01\n" +
 	"\vSourceRange\x12\x1d\n" +
 	"\n" +
 	"start_line\x18\x01 \x01(\rR\tstartLine\x12!\n" +

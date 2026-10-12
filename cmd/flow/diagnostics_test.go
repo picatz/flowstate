@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
 // The shape is the contract, and three spellings arose precisely because nothing
@@ -500,4 +502,17 @@ func TestValidateCorpusReportsRestOfFileAfterARewritableEdition(t *testing.T) {
 	rest := strings.Join(lines[1:], "\n")
 	assert.Contains(t, rest, `did you mean "if"?`,
 		"the misspelled key must be reported alongside the edition line, not only after `flow fix`")
+}
+
+// A diagnostic with no line but a step the IR can name renders that step's
+// address where the position would be; a line, when there is one, wins.
+func TestDiagnosticLineFallsBackToIRAddress(t *testing.T) {
+	d := flowfile.Diagnostic{Step: "b", Path: []string{"a", "b"}, Message: "bad"}
+
+	assert.Equal(t, `f.yaml: a/b: step "b": bad`, diagnosticLine("f.yaml", d))
+
+	d.Line, d.Column = 7, 3
+	assert.Equal(t, `f.yaml:7:3: step "b": bad`, diagnosticLine("f.yaml", d))
+
+	assert.Equal(t, "f.yaml: bad", diagnosticLine("f.yaml", flowfile.Diagnostic{Message: "bad"}))
 }
