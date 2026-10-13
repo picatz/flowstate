@@ -3,6 +3,8 @@ package main
 import (
 	"os"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -404,7 +406,7 @@ func TestBuildPlan(t *testing.T) {
 				docs:          true,
 				examples:      true,
 				repoTestData:  true,
-				repoDataRoots: []string{agentConfigDataRoot, "docs"},
+				repoDataRoots: []string{"CLAUDE.md", agentConfigDataRoot, "docs"},
 				reasons: map[string]string{
 					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
@@ -447,8 +449,14 @@ func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
 			if !p.repoTestData {
 				t.Fatal("agent configuration must be repository test data")
 			}
-			if !reflect.DeepEqual(p.repoDataRoots, []string{agentConfigDataRoot}) {
-				t.Fatalf("repoDataRoots = %v, want [%q]", p.repoDataRoots, agentConfigDataRoot)
+			want := []string{agentConfigDataRoot}
+			if isRootMarkdown(changed) {
+				// Also a root Markdown file, so cmd/flow's tree walk reads it.
+				want = append(want, changed)
+				sort.Strings(want)
+			}
+			if !reflect.DeepEqual(p.repoDataRoots, want) {
+				t.Fatalf("repoDataRoots = %v, want %v", p.repoDataRoots, want)
 			}
 			if got := repoDataDepPackages(nil, p.repoDataRoots); !reflect.DeepEqual(got, []string{agentConfigPkg}) {
 				t.Fatalf("repoDataDepPackages = %v, want [%q]", got, agentConfigPkg)
@@ -992,7 +1000,7 @@ func TestEveryRootMarkdownFileIsRepositoryTestData(t *testing.T) {
 		}
 		found[e.Name()] = true
 		p := buildPlan([]string{e.Name()})
-		if !p.repoTestData || len(p.repoDataRoots) != 1 {
+		if !p.repoTestData || !slices.Contains(p.repoDataRoots, e.Name()) {
 			t.Errorf("%s: repoTestData = %v, roots = %v; a root Markdown file is read by tests", e.Name(), p.repoTestData, p.repoDataRoots)
 		}
 		mustRun(t, decide(t, []string{e.Name()}, nil, "pull_request"), "test")
@@ -1015,9 +1023,13 @@ func TestARootMarkdownDiffSeedsTheTreeWalkers(t *testing.T) {
 		m + "/cmd/flow":  []byte(`root := filepath.Join("..", "..")`),
 		m + "/pkg/other": []byte(`os.ReadFile("fixture.txt")`),
 	}
-	p := buildPlan([]string{"THREAT_MODEL.md"})
-	got := repoDataDepPackages(testSrc, p.repoDataRoots)
-	if !reflect.DeepEqual(got, []string{m + "/cmd/flow"}) {
-		t.Errorf("repoDataDepPackages = %v, want exactly cmd/flow", got)
+	// CLAUDE.md and REVIEW.md are agent configuration too; the overlap must
+	// still reach the tree walker as well as tools/agentconfig.
+	for _, f := range []string{"THREAT_MODEL.md", "CLAUDE.md", "REVIEW.md"} {
+		p := buildPlan([]string{f})
+		got := repoDataDepPackages(testSrc, p.repoDataRoots)
+		if !slices.Contains(got, m+"/cmd/flow") || slices.Contains(got, m+"/pkg/other") {
+			t.Errorf("%s: repoDataDepPackages = %v, want cmd/flow and not pkg/other", f, got)
+		}
 	}
 }

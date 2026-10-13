@@ -293,7 +293,7 @@ GO_TEST_RACE = GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1
 # so in whichever lane owns them and in the tree-reader set, with every
 # assertion intact; only the instrumentation differs. A Temporal owner never
 # belongs here: the recipe fails if the two lists overlap. tools/gate's
-# TestTheRepositoryLintPackagesAreToolsAndNotTemporalOwners pins the list.
+# TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem pins the list.
 REPO_LINT_PACKAGES := ./tools/agentconfig ./tools/citations ./tools/doclinks ./tools/dupbodies ./tools/gate ./tools/vacuity ./tools/wallclock
 GO_TEST_NORACE = $(subst -race ,,$(GO_TEST_RACE))
 

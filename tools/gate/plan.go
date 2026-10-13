@@ -339,7 +339,13 @@ func buildPlan(changed []string) plan {
 		// Repository-level files read directly by tests rather than
 		// imported, the same #589 shape examples/ has — see
 		// p.repoTestData's doc.
-		if root := repoDataRoot(f); root != "" {
+		// A root Markdown file that is also agent configuration (CLAUDE.md,
+		// REVIEW.md) belongs to both roots: tools/agentconfig validates it
+		// and cmd/flow's tree walk reads it.
+		for _, root := range []string{repoDataRoot(f), rootMarkdownRoot(f)} {
+			if root == "" {
+				continue
+			}
 			p.repoTestData = true
 			reason("test", f)
 			if !rootSeen[root] {
@@ -633,6 +639,15 @@ func repoDataRoot(f string) string {
 // repository root.
 func isRootMarkdown(f string) bool {
 	return !strings.Contains(f, "/") && strings.HasSuffix(f, ".md")
+}
+
+// rootMarkdownRoot is f when it is a root Markdown file, whatever else
+// repoDataRoot classifies it as.
+func rootMarkdownRoot(f string) string {
+	if isRootMarkdown(f) {
+		return f
+	}
+	return ""
 }
 
 func isAgentConfigData(f string) bool {

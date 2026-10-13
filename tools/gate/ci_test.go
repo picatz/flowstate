@@ -1357,6 +1357,18 @@ func TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem(t *testing
 	}
 	lint, temporal := pick("REPO_LINT_PACKAGES"), pick("TEMPORAL_TEST_PACKAGES")
 
+	// The intended set, written out so deleting a package from the Makefile
+	// list fails here rather than silently putting it back under -race.
+	var intended []string
+	for _, n := range []string{"agentconfig", "dupbodies", "gate", "vacuity", "doclinks", "wallclock", "citations"} {
+		intended = append(intended, modulePath+"/tools/"+n)
+	}
+	for _, ip := range intended {
+		if !contains(lint, ip) {
+			t.Errorf("REPO_LINT_PACKAGES lacks %s, which would run under -race again", ip)
+		}
+	}
+
 	all := moduleImportPaths(t)
 	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "event is push, not a pull request: the full set runs")
 	for _, ip := range lint {
