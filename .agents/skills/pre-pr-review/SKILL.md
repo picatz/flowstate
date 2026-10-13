@@ -29,8 +29,9 @@ Copilot's exact-head review each cost both.
 6. **Regression evidence** — tests fail for the defect they claim to catch. Use a
    mutation proof when the test's connection to the mechanism is not otherwise
    obvious or the risk justifies it; do not turn mutation into ceremony.
-7. **Generated and public surfaces** — generation, examples, CLI reference, and
-   user-facing docs agree with the implementation.
+7. **Generated and public surfaces** — `make regen` leaves `git status` clean,
+   and examples, CLI reference, and user-facing docs agree with the
+   implementation.
 8. **Verification honesty** — the final report and PR body name exactly what ran,
    what passed, and what did not run.
 9. **Receiver effort** — remove repetition, file tours, unsupported absolutes,

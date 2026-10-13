@@ -81,6 +81,7 @@ jobs:
       test_plugins: ${{ steps.plan.outputs.test_plugins }}
       test_ordering: ${{ steps.plan.outputs.test_ordering }}
       proto: ${{ steps.plan.outputs.proto }}
+      regen: ${{ steps.plan.outputs.regen }}
       vulncheck: ${{ steps.plan.outputs.vulncheck }}
       staticcheck: ${{ steps.plan.outputs.staticcheck }}
       fuzz_smoke: ${{ steps.plan.outputs.fuzz_smoke }}
@@ -338,26 +339,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # The same mechanism as the proto job's generated-code check, on the four
-      # reference documents that are derived rather than written: the task
-      # reference from the registry, the CLI reference from the cobra tree, the
-      # MCP tool list, and the env-var table. Those four are exactly the tables
-      # the doc audit found had drifted, and they drift silently — a task gains a
-      # field, a flag gains an env default, and the prose stays confidently wrong
-      # until somebody follows it and fails.
-      #
-      # Here rather than in the proto job because what it pins is Go values, not
-      # the schema: `flow docs generate` runs the binary, so a failure here is a
-      # tree whose documentation disagrees with its own code.
-      - name: Verify generated reference docs are current
-        if: matrix.lane == 'rest'
-        run: |
-          go run ./cmd/flow docs generate
-          git diff --exit-code -- docs/reference/ || {
-            echo "::error::generated reference docs do not match the code; run 'make docs' and commit the result"
-            exit 1
-          }
-
       # `flow fix --check` is the command this exists to protect: examples are
       # already in the current edition, and a PR that leaves one behind should fail
       # here rather than at the next person's `flow fix .`. Not advisory — the
@@ -587,6 +568,43 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # Every derived file, by one mechanism: `make regen` rewrites them all (the
+  # generated schema code and its comments, the reference documents, the
+  # reference table, the examples' edition, the plugin example catalog) and
+  # this fails when that changed or created anything. They drift silently: the
+  # build stays green on stale generated code, and a flag gains a default while
+  # the prose stays confidently wrong.
+  #
+  # A job of its own rather than a step in test/rest: regen is minutes of buf,
+  # docs and a plugin build, and a step there would sit on the critical path the
+  # lane split exists to shorten. The plan selects it on the root suite's own
+  # trigger, which includes proto/, so a flag, docs or schema change is always
+  # drift-checked; verdict fails a selected run that did not pass.
+  regen:
+    needs: plan
+    if: needs.plan.outputs.regen == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # persist-credentials / cache: see the test job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `buf breaking` is not run here, so no base fetch; buf and the plugin
+      # builds need the module cache, keyed on go.sum files of their own.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/external/go.sum
+            .github/cache-scope/regen
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Generated files are current
+        run: make regen-check
+
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
   # plugin in the wild rather than producing a compile error someone can see. That
@@ -656,37 +674,6 @@ jobs:
       # rules from the start and nothing ran them.
       - name: Check for breaking changes
         run: go tool -modfile=tools/external/go.mod buf breaking --against '.git#branch=origin/main'
-
-      # Generated code is committed, so it can disagree with the schema it came
-      # from. That disagreement is invisible locally — the build stays green using
-      # the stale generated code — and shows up as a mystery when someone else
-      # regenerates. Several people editing one schema at once makes this likely
-      # rather than theoretical.
-      #
-      # The schema's comments are generated too (#2147): protoc strips
-      # SourceCodeInfo from what a .pb.go embeds, so protoc-gen-flowstate-doc,
-      # run by the same `buf generate`, writes them as Go source into
-      # pkg/flowstate/v1/protodoc, under the same pin as the types.
-      #
-      # The example plugin is a separate buf module, so it has its own
-      # generate: its .pb.go and the comments that carry a plugin author's
-      # field prose to an editor (#723, #2148), under the same pin, because a
-      # plugin's prose can go stale exactly the way the engine's can. --clean
-      # empties its gen/ first, so output whose .proto is gone cannot survive.
-      #
-      # The first-party plugins under plugins/ share one template and are
-      # generated by `make plugin-proto`, for the same reason.
-      - name: Verify generated code is current
-        run: |
-          go tool -modfile=tools/external/go.mod buf generate
-          E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
-          go tool -modfile=tools/external/go.mod buf generate --config "{\"version\":\"v2\",\"modules\":[{\"path\":\"proto\"},{\"path\":\"$E/proto\"}],\"deps\":[\"buf.build/bufbuild/protovalidate\",\"buf.build/googleapis/googleapis\"]}" --template "$E/buf.gen.yaml" --clean --path "$E/proto/example" -o "$E"
-          make plugin-proto
-          git add --intent-to-add -- .
-          git diff --exit-code -- . || {
-            echo "::error::generated code does not match the schema; run 'make check' (or the 'buf generate' lines above and 'make plugin-proto') and commit the result"
-            exit 1
-          }
 
   vulncheck:
     needs: plan
@@ -1001,7 +988,7 @@ jobs:
   # even when it failed, and that came off on 2026-08-31 (#1319). Every result
   # this job reads is now the job's own.
   verdict:
-    needs: [plan, test, test-plugins, test-ordering, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
+    needs: [plan, test, test-plugins, test-ordering, proto, regen, vulncheck, staticcheck, fuzz-smoke, appearance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

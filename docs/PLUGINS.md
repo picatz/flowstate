@@ -1375,7 +1375,7 @@ catalog built from the first-party plugin binaries. The portable descriptors and
 security claims from that build must match the reviewed
 `examples/plugins/plugins.lock.json` artifact. A new plugin example that cannot
 be checked by `make plugin-examples` is not evidence that the plugin is
-reachable; update the artifact with `make plugin-example-catalog-update` and
+reachable; update the artifact with `make regen` and
 review the task descriptor and security-claim changes it records. Native
 executable digests vary by platform, so the gate retains them in its temporary
 validation catalog but does not put them in the portable reviewed artifact.

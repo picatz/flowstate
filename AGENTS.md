@@ -98,12 +98,12 @@ and session updates.
 ## Verification
 
 Use the narrowest deterministic check that can falsify the change, then broaden
-with the diff's reach. The `flowstate-verify` skill owns the selection and the
-reporting contract.
+with the diff's reach. `flowstate-verify` owns the selection and the reporting contract.
 
 ```sh
 GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...  # bounded targeted run
 go run ./tools/gate                                                  # diff-scoped gate; the default before a PR
+make regen   # every derived file; commit it
 make check                                                           # full CI-parity rehearsal
 go run ./tools/fleet                                                 # lanes allowed now; run before a wide suite
 ```
@@ -113,7 +113,7 @@ Gotchas the tree does not announce:
 - `make fmt`, never a bare `gofmt`: one from `PATH` can differ from the pinned
   toolchain's and disagree with CI on a clean tree.
 - Kill the PID you started, never a pattern: `pkill -f` matches every sibling
-  agent's processes, and once ended its own shell.
+  agent's processes.
 - In a shared checkout another agent may be editing: re-read a file before
   changing it, and verify the pushed revision, not a dirty tree.
 - A skipped, unavailable, timed-out, or omitted leg is **not verified**.

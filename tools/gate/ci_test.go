@@ -65,7 +65,7 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 // that adapter and its relationship to the shared contract.
 func TestAnUnvalidatedMarkdownOnlyDiffReachesNothing(t *testing.T) {
 	ds := decide(t, []string{"SECURITY.md"}, nil, "pull_request")
-	mustSkip(t, ds, "test", "test-plugins", "test-ordering", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "test", "test-plugins", "test-ordering", "proto", "regen", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
@@ -123,7 +123,7 @@ func TestDocsOnlySourcesStillReachTheTestJob(t *testing.T) {
 // examples/ off disk.
 func TestAnExampleOnlyChangeReachesTheTestJobs(t *testing.T) {
 	ds := decide(t, []string{"examples/observability/docker-compose.yaml"}, nil, "pull_request")
-	mustRun(t, ds, "test", "test-plugins", "test-ordering")
+	mustRun(t, ds, "test", "regen", "test-plugins", "test-ordering")
 	mustSkip(t, ds, "staticcheck", "vulncheck", "fuzz-smoke")
 }
 
@@ -144,7 +144,7 @@ func TestAnExampleOnlyChangeReachesTheTestJobs(t *testing.T) {
 func TestAPluginOnlyChangeReachesTestPluginsAndNotTheRootSuite(t *testing.T) {
 	ds := decide(t, []string{"plugins/openai/main.go"}, nil, "pull_request")
 	mustRun(t, ds, "test-plugins", "vulncheck", "staticcheck")
-	mustSkip(t, ds, "test", "test-ordering", "proto", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "test", "test-ordering", "regen", "proto", "fuzz-smoke", "appearance")
 }
 
 // TestAGoChangeReachesTestPlugins: every plugin module replaces
@@ -262,7 +262,7 @@ func TestFuzzSmokeDoesNotRunOnAPullRequestThatOnlyTouchesCode(t *testing.T) {
 // is not one; and a change to the harness is a change to the thing computing the plan, which the plan cannot
 // reason about.
 func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
-	all := []string{"test", "test-plugins", "test-ordering", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
+	all := []string{"test", "test-plugins", "test-ordering", "proto", "regen", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
 
 	for _, tc := range []struct {
 		name    string
@@ -1009,4 +1009,15 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	if job.TimeoutMinutes*60 < seconds+120 {
 		t.Errorf("the job limit is %d minutes, which leaves under two minutes above the %ds test timeout for the build and the upload", job.TimeoutMinutes, seconds)
 	}
+}
+
+// TestRegenRunsWhereverTheRootSuiteDoes pins the drift check's trigger: a
+// change to a flag, a doc source, an example or the schema moves a derived
+// file, so every diff that reaches the root suite (proto/ included) reaches
+// the regen job, and one that reaches neither reaches neither.
+func TestRegenRunsWhereverTheRootSuiteDoes(t *testing.T) {
+	for _, f := range []string{"docs/DSL.md", "proto/flowstate/v1/run.proto", "examples/hello/workflow.yaml"} {
+		mustRun(t, decide(t, []string{f}, nil, "pull_request"), "test", "regen")
+	}
+	mustSkip(t, decide(t, []string{"SECURITY.md"}, nil, "pull_request"), "test", "regen")
 }

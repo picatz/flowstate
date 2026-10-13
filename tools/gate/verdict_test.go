@@ -94,7 +94,7 @@ func fullResults(plan map[string]bool) map[string]string {
 func samplePlan() map[string]bool {
 	return map[string]bool{
 		"test": true, "test-plugins": true, "vulncheck": true, "staticcheck": true,
-		"test-ordering": false, "proto": false, "fuzz-smoke": false, "appearance": false,
+		"test-ordering": false, "proto": false, "regen": true, "fuzz-smoke": false, "appearance": false,
 	}
 }
 
