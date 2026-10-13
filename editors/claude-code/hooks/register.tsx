@@ -645,6 +645,8 @@ export const register: Register = (on, options) => {
     const kept = 'offline' in listed ? lastGood.recall(expr) : undefined
     const runs: Listing = kept !== undefined ? { runs: kept } : listed
     const staleWhy = kept !== undefined && 'offline' in listed ? listed.offline : undefined
+    /** A credential that expired after a good list: the kept list stays, and the sign-in is offered under it. */
+    const staleSignIn = staleWhy !== undefined && 'offline' in listed && listed.signin === true
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
     const rawDetail = account && 'detail' in account ? account.detail : undefined
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
@@ -804,7 +806,8 @@ export const register: Register = (on, options) => {
             </Button>
           ))}
         </Box>
-        {staleWhy !== undefined && <Text dimColor>  Showing the last list; the server did not answer ({staleWhy}).</Text>}
+        {staleWhy !== undefined && (staleSignIn ? <Text dimColor>  Showing the last list; the server no longer accepts your credentials.</Text> : <Text dimColor>  Showing the last list; the server did not answer ({staleWhy}).</Text>)}
+        {staleWhy !== undefined && staleSignIn && signInCard('runs')}
         {expr !== '' && chipFor(expr) === undefined && (
           <Box>
             <Text dimColor>  Filter: {clean(expr, 120)}  </Text>

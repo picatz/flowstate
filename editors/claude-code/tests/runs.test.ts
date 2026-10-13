@@ -160,3 +160,28 @@ test('an id that spells the code does not pass for the refusal', () => {
   expect(needsSignIn('ERROR\nrefused while reading the timeline of "x: unauthenticated: y": permission_denied: no\n')).toBe(false)
   expect(needsSignIn('ERROR\nreading the timeline of "x": connection reset (refused while a: unauthenticated: b)\n')).toBe(false)
 })
+
+test('a credential that expires after a good list keeps the list and still offers the sign-in', async ($, on) => {
+  const auth = 'ERROR\nrefused while listing runs: unauthenticated: token expired\n'
+  let expired = false
+  on('process.run', () => ({
+    value: expired
+      ? { exitCode: 1, stdout: '', stderr: auth, isStdoutTruncated: false, isStderrTruncated: false }
+      : { exitCode: 0, stdout: page([run('w-1', 'STATUS_RUNNING', 'Deploy')]), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+  on('ui.status', () => ({ value: undefined }))
+  on('env.get', () => ({ value: 'dev.example.com:9233' }))
+  const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
+  expect(await ui.find({ type: 'Button', text: /running Deploy/ })).toBeDefined()
+
+  expired = true
+  await ui.input({ key: 'filter', text: 'status == "FAILED"' })
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeDefined()
+  await ui.input({ key: 'filter', text: '' })
+
+  expect(await ui.find({ type: 'Button', text: /running Deploy/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /server no longer accepts your credentials/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /the server did not answer/ })).toBeUndefined()
+  await ui.unmount()
+})
