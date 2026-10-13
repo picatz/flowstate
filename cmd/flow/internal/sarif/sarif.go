@@ -39,9 +39,9 @@ const (
 	MaxResults = 25000
 
 	// MaxBytes bounds the text the results carry (messages, file names, edit
-	// titles and replacements) before encoding. It keeps the log under the size
-	// code-scanning uploads accept however large the diagnostics are; the run
-	// says how many results were left out.
+	// titles and replacements) before encoding. It keeps the log to a constant
+	// multiple of this however large the diagnostics are; the run says how many
+	// results were left out.
 	MaxBytes = 16 << 20
 )
 
@@ -138,8 +138,8 @@ func rulesFor(used map[string]bool) ([]rule, map[string]int) {
 	return rules, index
 }
 
-// weigh is the text one diagnostic adds to the log, an upper-bound estimate of
-// what resultOf writes for it.
+// weigh is the text one diagnostic adds to the log, an estimate of the text
+// resultOf writes for it, before encoding.
 func weigh(file string, d *v1.Diagnostic) int {
 	n := len(file) + len(d.GetMessage()) + len(d.GetCode())
 	for _, id := range d.GetPath() {
