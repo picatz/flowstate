@@ -488,6 +488,7 @@ func TestSavingAMissingCalleeRepublishesItsOpenCaller(t *testing.T) {
 		f.c.openNoWait(string(f.callerURI), calleeCaller)
 		f.settled(t, f.callerURI, "call-unreadable", hasDiagnostics)
 		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
 
 		f.writeCallee(t, fixedCallee)
 		f.notifySaved(t, f.calleeURI)
@@ -506,6 +507,7 @@ func TestSavingACalleeThatFailedItsPinRepublishesItsOpenCaller(t *testing.T) {
 		f.c.openNoWait(string(f.callerURI), pinned)
 		f.settled(t, f.callerURI, "a pin failure", hasDiagnostics)
 		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
 
 		f.writeCallee(t, fixedCallee)
 		f.notifySaved(t, f.calleeURI)
@@ -535,6 +537,7 @@ func TestSavingAnyCalleeRepublishesAWorkflowWhoseReadsOverflowed(t *testing.T) {
 		c.openNoWait(string(callerURI), head+"  - id: p\n    call: ./a.yaml\n  - id: q\n    call: ./b.yaml\n")
 		f.settled(t, callerURI, "a clean caller", isEmpty)
 		c.openNoWait(string(bURI), head+"  - id: s\n    log:\n      message: hi\n")
+		synctest.Wait() // the buffer is open before it is saved
 
 		broken := calleeHead + "  - id: work\n    log:\n      message: hi\n"
 		require.NoError(t, os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(broken), 0o644))
@@ -571,6 +574,7 @@ func TestSavingACalleeCreatedUnderASymlinkedDirectoryRepublishesItsCaller(t *tes
 		require.NoError(t, os.WriteFile(calleePath, []byte(fixedCallee), 0o644))
 		calleeURI := fileURI(calleePath)
 		c.openNoWait(string(calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
 		f.notifySaved(t, calleeURI)
 
 		f.settled(t, callerURI, "a clean caller", isEmpty)
