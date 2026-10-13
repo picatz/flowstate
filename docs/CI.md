@@ -295,7 +295,11 @@ Since #1726:
   else, so the critical path is `plan` plus the root suite. `ciDecisions`
   selects them separately — a plugin-only diff runs `test-plugins` and not
   the root suite; a root Go change runs both, because every plugin module
-  replaces `github.com/picatz/flowstate` with `../..`; `test-ordering` follows
+  replaces `github.com/picatz/flowstate` with `../..`; `regen` (`make regen-check`: every generator, then one `git diff --exit-code`,
+  failing with "run make regen and commit the result") is its own job on the
+  root suite's trigger, proto/ included, so it runs beside the test lanes and
+  never lengthens `rest`; `verdict` requires it whenever the plan selects it.
+  `test-ordering` follows
   the local tier's ordering trigger plus `examples/`, which the flowtest fuzz
   seeds read off disk. This is a split of independent Make targets, not a shard
   of `make test`, so the objection under "Considered and excluded" still holds:
@@ -308,8 +312,7 @@ Since #1726:
   `test` is therefore one four-lane matrix: those three packages each own a
   runner and `rest` receives the exact `go list ./...` complement. Every lane
   still calls the one `make test` recipe with its package set, retains `-race
-  -p=1`, and reports through `tools/testsum`; build, vet, formatting, generated
-  files (`make regen-check`: `make regen` followed by one `git diff --exit-code`),
+  -p=1`, and reports through `tools/testsum`; build, vet, formatting,
   examples, breaking, and compose checks run once in `rest`. `fail-fast:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
   matrix result, so a missing or failed lane remains red. Four cache-scope
@@ -555,7 +558,7 @@ measured effect on run 31909221065: `vulncheck` scanned in **5s** against a warm
 from source and `proto` spent **52s** rebuilding `buf`, with nothing in the file
 explaining the difference.
 
-`proto`, `staticcheck`, and the test jobs (each `test` lane, `test-plugins`
+`proto`, `regen`, `staticcheck`, and the test jobs (each `test` lane, `test-plugins`
 and `test-ordering`), each name a file under `.github/cache-scope/` alongside `go.sum`, which gives each a key of its
 own; `test-plugins` also keys on `plugins/*/go.sum`, so the plugin modules keep
 the warm cache they had when they shared the `test` job. The files' contents

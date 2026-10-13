@@ -220,6 +220,11 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		{Job: "test-plugins", Output: "test_plugins", Run: pluginsRun, Why: pluginsWhy},
 		{Job: "test-ordering", Output: "test_ordering", Run: orderingRun, Why: orderingWhy},
 
+		// regen: `make regen-check`, which runs the binary and the plugin
+		// builds, so it needs everything the root suite does; testRun already
+		// includes p.proto, which is what the schema-only proto job reads.
+		{Job: "regen", Output: "regen", Run: testRun, Why: testWhy},
+
 		{Job: "proto", Output: "proto",
 			Run: p.proto,
 			Why: pick(p.proto, p.reasons["proto"]+" changed", "no changes under proto/ or to buf config")},

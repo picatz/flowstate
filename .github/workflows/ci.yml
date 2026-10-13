@@ -103,6 +103,7 @@ jobs:
       test_plugins: ${{ steps.plan.outputs.test_plugins }}
       test_ordering: ${{ steps.plan.outputs.test_ordering }}
       proto: ${{ steps.plan.outputs.proto }}
+      regen: ${{ steps.plan.outputs.regen }}
       vulncheck: ${{ steps.plan.outputs.vulncheck }}
       staticcheck: ${{ steps.plan.outputs.staticcheck }}
       fuzz_smoke: ${{ steps.plan.outputs.fuzz_smoke }}
@@ -363,18 +364,6 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-      # Every derived file, by one mechanism: `make regen` rewrites them all (the
-      # generated schema code and its comments, the reference documents, the
-      # reference table, the examples' edition, the plugin example catalog) and
-      # this fails when that changed or created anything. They drift silently:
-      # the build stays green on stale generated code, and a flag gains a
-      # default while the prose stays confidently wrong. Here rather than in the
-      # proto job because the plan runs this lane for every change that can move
-      # a derived file, Go source and examples included, not only proto/.
-      - name: Verify generated files are current
-        if: matrix.lane == 'rest'
-        run: make regen-check
-
       # `flow fix --check` is the command this exists to protect: examples are
       # already in the current edition, and a PR that leaves one behind should fail
       # here rather than at the next person's `flow fix .`. Not advisory — the
@@ -600,6 +589,43 @@ jobs:
           path: go-test-ordering.json
           if-no-files-found: ignore
           retention-days: 14
+
+  # Every derived file, by one mechanism: `make regen` rewrites them all (the
+  # generated schema code and its comments, the reference documents, the
+  # reference table, the examples' edition, the plugin example catalog) and
+  # this fails when that changed or created anything. They drift silently: the
+  # build stays green on stale generated code, and a flag gains a default while
+  # the prose stays confidently wrong.
+  #
+  # A job of its own rather than a step in test/rest: regen is minutes of buf,
+  # docs and a plugin build, and a step there would sit on the critical path the
+  # lane split exists to shorten. The plan selects it on the root suite's own
+  # trigger, which includes proto/, so a flag, docs or schema change is always
+  # drift-checked; verdict fails a selected run that did not pass.
+  regen:
+    needs: plan
+    if: needs.plan.outputs.regen == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # persist-credentials / cache: see the test job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `buf breaking` is not run here, so no base fetch; buf and the plugin
+      # builds need the module cache, keyed on go.sum files of their own.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/external/go.sum
+            .github/cache-scope/regen
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Generated files are current
+        run: make regen-check
 
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
@@ -990,7 +1016,7 @@ jobs:
   # even when it failed, and that came off on 2026-08-31 (#1319). Every result
   # this job reads is now the job's own.
   verdict:
-    needs: [plan, test, test-plugins, test-ordering, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
+    needs: [plan, test, test-plugins, test-ordering, proto, regen, vulncheck, staticcheck, fuzz-smoke, appearance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5

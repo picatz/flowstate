@@ -1,0 +1,2 @@
+regen: every generator, built from source by make regen.
+See README.md beside this file for why this file exists.
