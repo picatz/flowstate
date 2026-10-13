@@ -293,7 +293,7 @@ Since #1726:
   `test` is therefore one matrix: those three packages each own a
   runner and `rest` receives the exact `go list ./...` complement. Every lane
   still calls the one `make test` recipe with its package set, retains
-  `-race`, and reports through `tools/testsum`; build, vet, formatting,
+  `-race` (except `REPO_LINT_PACKAGES`, below), and reports through `tools/testsum`; build, vet, formatting,
   examples, breaking, and compose checks run once in `rest`. `fail-fast:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
   matrix result, so a missing or failed lane remains red. One cache-scope
@@ -333,8 +333,8 @@ Since #1726:
     rules: every root Markdown file is test data (cmd/flow walks all Markdown
     for documented `flow server` commands; `tools/citations` reads the root
     documents), and the other root files tests read (the Makefile, the buf
-    config, `go.mod`) are classified as CI, schema or module graph. Only
-    `LICENSE` is read by nothing (#2730).
+    config, `go.mod`) are classified as CI, schema or module graph. The
+    rest (`LICENSE`, `.gitignore`, `.gitattributes`) is read by no test (#2730).
   - `make test` runs every selected package except `TEMPORAL_TEST_PACKAGES`
     at `go test`'s default `-p`, then those (cmd/flow, internal/temporaltest,
     engine, server, temporalclient) with `-p=1`, all into one `tools/testsum`.
