@@ -66,7 +66,7 @@ func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
 		`pull request base is "release"`,
 		"pull request is still a draft",
 		"auto-merge is enabled",
-		`check "Analyze Go" latest result is IN_PROGRESS/`,
+		`check "plan" latest result is IN_PROGRESS/`,
 		"independent code/security review has not passed on the exact final head",
 		"2 review thread(s) remain unresolved",
 	} {
@@ -403,16 +403,37 @@ func TestIndependentReviewMustFollowInlineReviewCommentEdits(t *testing.T) {
 func TestRequiredCheckCannotDisappear(t *testing.T) {
 	pr := passingPullRequest()
 	pr.StatusChecks = pr.StatusChecks[1:]
-	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "Analyze Go"`) {
-		t.Fatalf("missing CodeQL check was accepted: %s", problems)
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "plan"`) {
+		t.Fatalf("missing plan check was accepted: %s", problems)
 	}
 }
 
 func TestRequiredCheckCannotBeSkipped(t *testing.T) {
 	pr := passingPullRequest()
 	pr.StatusChecks[0].Conclusion = "SKIPPED"
-	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "Analyze Go"`) {
-		t.Fatalf("skipped CodeQL check was accepted: %s", problems)
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "plan"`) {
+		t.Fatalf("skipped plan check was accepted: %s", problems)
+	}
+}
+
+// TestCodeQLNeverGatesAMerge: the Analyze Go job is advisory. Absent, still
+// running, or failed, it adds no problem; its alerts are triaged on the
+// repository, not by holding a green, reviewed head.
+func TestCodeQLNeverGatesAMerge(t *testing.T) {
+	for name, check := range map[string]statusCheck{
+		"absent":      {},
+		"in progress": {Type: "CheckRun", Workflow: "CodeQL", Name: "Analyze Go", Status: "IN_PROGRESS"},
+		"failed":      {Type: "CheckRun", Workflow: "CodeQL", Name: "Analyze Go", Status: "COMPLETED", Conclusion: "FAILURE"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pr := passingPullRequest()
+			if check.Name != "" {
+				pr.StatusChecks = append(pr.StatusChecks, check)
+			}
+			if problems := evaluate(pr, 0); len(problems) != 0 {
+				t.Fatalf("an advisory CodeQL check blocked the merge: %v", problems)
+			}
+		})
 	}
 }
 

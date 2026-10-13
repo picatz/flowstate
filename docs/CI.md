@@ -63,10 +63,10 @@ any other, which sets `moduleWide` and `ciWide` and selects every conditional
 leg, so the widest plan is reached by the one computation rather than by a
 second code path meaning "everything". Wide and slow beats narrow and wrong:
 overrunning the true scope costs time, while underrunning it passes commits the
-checks reject. It is the same reasoning that makes the merge queue ignore the
+checks reject. It is the same reasoning that makes a push to `main` ignore the
 plan entirely.
 
-`ciForceReason` carries that as its fourth forcing, beside the event, the
+`ciForceReason` carries that as its third forcing, beside the event, the
 harness and the module — because "must this ignore the diff" is one question
 with one answer. It is there for the
 *reason* rather than the scope: the whole tree would force a wide run through
@@ -77,7 +77,7 @@ sends a reader looking for a workflow diff that does not exist.
 |---|---|---|
 | `go run ./tools/gate` | local, before a push | the diff |
 | CI on `pull_request` | the `plan` job | the diff |
-| CI on `merge_group` and `push` to main | everything | nothing; the full set always runs |
+| CI on `push` to main | everything | nothing; the full set always runs |
 | `make check` | everything, locally | nothing; the full rehearsal |
 
 The alternative — `paths:` filters in `ci.yml` — is the same value written down
@@ -161,10 +161,9 @@ reaches `verdict` like every other planned job's.
 
 `concurrency.cancel-in-progress` cancels a run when a newer push lands on the
 same ref, so only the newest push is ever tested — see the `concurrency:`
-block's own comment for why `main` and a merge group are excluded from that
-(`main`'s runs are the record of whether the commit that landed was good, and
-cancelling a merge group strands the queue rather than saving anything). A
-pull request's non-`main`, non-queue ref keeps cancelling on purpose: testing
+block's own comment for why `main` is excluded from that
+(`main`'s runs are the record of whether the commit that landed was good). A
+pull request's non-`main` ref keeps cancelling on purpose: testing
 a push nobody can merge any more is wasted runner time, and only the newest
 push's checks decide anything.
 
@@ -187,38 +186,18 @@ than `timed_out`, and it is a cause a diff can genuinely trigger: `appearance`
 runs a test up to 900s inside its 15-minute job, and `plan`'s `go run
 ./tools/gate -ci` has to finish inside 5. So the annotation names
 supersession as the common case on a pull request rather than as the
-established fact — main and a merge group are excluded from
+established fact — main is excluded from
 `cancel-in-progress` above, so a cancellation there is never supersession —
 and it stops short of calling the cancellation innocent, since a timeout is
 exactly a cancellation that *is* evidence about the diff. A check whose whole
 design is "never report a pass it cannot justify" should not report a cause, or
 an innocence, it cannot justify either (#2058).
 
-### The merge queue
-
-`merge_group` is the mechanism #489's lesson deserved. GitHub builds the
-*prospective* merge — this pull request on top of everything ahead of it — and
-runs the required checks against that, which is exactly the artifact nothing was
-testing. It batches, so N pull requests cost roughly N/batch-size runs instead
-of N serialized cycles, and a failure ejects the offending pull request rather
-than breaking `main`.
-
-Every `merge_group` run is a **full** run (`ciForceReason` in
-`tools/gate/ci.go`). The diff-scoping is a pull-request-lane optimisation; the
-queue is the last gate before `main` and the one place where being wrong about
-the plan is unrecoverable, so `main`'s protection never rests on the plan being
-right.
-
-`cancel-in-progress` excludes merge groups for a sharper reason than it excludes
-`main`: cancelling a merge group does not save work, it strands the queue —
-the required checks for that group never report and everything behind it waits
-on an answer that is never coming.
-
 ### `govulncheck` stays legible
 
 `vulncheck` skips when no Go package is affected and no plugin module changed,
-and that is safe only because of where it still runs: **every** push to `main`,
-**every** merge group, and the weekly `deep.yml` schedule, each fetching the
+and that is safe only because of where it still runs: **every** push to `main`
+and the weekly `deep.yml` schedule, each fetching the
 advisory database at run time. A new advisory therefore still arrives on a
 calendar rather than waiting for somebody to touch a `.go` file. What the skip
 removes is `govulncheck` being reported against the pull request that renamed a
@@ -313,22 +292,26 @@ Since #1726:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
   matrix result, so a missing or failed lane remains red. Four cache-scope
   files prevent the lanes racing to save one incomplete build cache.
-- `plan` publishes `fuzz_targets` beside the job booleans: the smoke-tier
-  targets whose package the diff reaches, in `targets.txt` order, and every
-  smoke target on a forced run. `fuzz-smoke` hands it to `make fuzz-smoke` as
-  `FUZZ_SMOKE_TARGETS`, and `tools/fuzztargets/list.sh` narrows to those names
-  — refusing a name the tier does not hold rather than fuzzing what is left.
-  Unset, the Makefile target runs the whole tier, which is what `make check`
-  wants. The job's own decision follows the list: it runs when there is at
-  least one target, so a diff reaching only a package with a deep-only target
-  (the engine) no longer runs a smoke job with nothing in it. Promoting a
-  target to smoke is an edit to `targets.txt`, which forces the full set.
+- `fuzz-smoke` no longer runs on a pull request that only touches code. It runs
+  on a push to `main`, and on a pull request only when the plan is forced wide
+  (a change to the workflow, the Makefile, the gate, `targets.txt` or the module
+  graph, so the job is proved by the change that reconfigures it). The seed
+  corpora it would mutate already run as ordinary tests in the test lanes —
+  `go test` executes every `f.Add` seed and committed corpus entry without
+  `-fuzz` — and `deep.yml` fuzzes every target weekly. What a pull request gave
+  up is 30s of random mutation per target; a crasher that mutation finds fails
+  `main`'s run and is fixed by the next pull request. The per-target narrowing
+  (`fuzz_targets`, `FUZZ_SMOKE_TARGETS` from the plan) went with it: a run that
+  happens is a forced run, which fuzzes the whole tier.
+- `test-ordering` runs `-count=10` on a pull request and `-count=20` on a push
+  to `main` (`ORDERING_COUNT` in the Makefile; the job passes 10 when
+  `github.event_name` is `pull_request`). Ten repetitions detect a defect that
+  reproduces three runs in ten with probability 97% against 99.9% at twenty;
+  `main` and the local gate keep the full sweep.
 
-`tools/gate/ci_test.go` pins the new decisions, the exact target list a
-flowfile and an lsp change produce, that the `plan` job's `outputs:` block
-forwards every output the plan publishes, and that the `fuzz-smoke` step reads
-`fuzz_targets` — because the Makefile's default is the whole tier, and a step
-that dropped the variable would stay green at the old cost.
+`tools/gate/ci_test.go` pins the new decisions, that the `plan` job's `outputs:`
+block forwards every output the plan publishes, that a code-only pull request
+skips `fuzz-smoke`, and that the `test-ordering` step passes `ORDERING_COUNT`.
 
 ### The breaking checks compare against a fixed base, not a moving one
 
@@ -373,7 +356,6 @@ checkout itself rather than read from a field that can go stale:
 | Event | Base commit |
 | --- | --- |
 | `pull_request` | `HEAD^1` of the checked-out merge ref — the actual base that ref was built against, verified by checking `HEAD^2` against `github.event.pull_request.head.sha` first |
-| `merge_group` | `github.event.merge_group.base_sha` — main as of the prospective merge this run tests |
 | `push` (to `main`) | `github.event.before` — main immediately before this push, so the diff is exactly what the push just landed |
 
 The `plan` job resolves this once, in a "Which commit the breaking checks
@@ -387,9 +369,8 @@ by anything `main` does afterward, because the merge ref itself is what fixed
 it, not a field this step reads again later. `HEAD^2` is checked against
 `pull_request.head.sha` before trusting `HEAD^1` at all — a mismatch means this
 checkout is not the two-parent merge ref the rule assumes, and the step fails
-closed rather than naming the wrong parent as the base. The `merge_group` and
-`push` fields need no such check: neither is `synchronize`-shaped, so both stay
-current for the run they describe. The event fields are read through `env:`
+closed rather than naming the wrong parent as the base. The `push` field needs no such check: it is not
+`synchronize`-shaped, so it stays current for the run it describes. The event fields are read through `env:`
 rather than interpolated into `run:`, and an event this workflow does not
 otherwise trigger on, or a recorded base that reads as empty or the all-zero
 SHA (a push creating a ref from nothing), fails the step rather than silently
@@ -663,23 +644,6 @@ diff has not been measured. #1922, merged 2026-09-09, made the root suite's
 packages run serially for deadline isolation, and its own `main` run,
 `34361369250`, took `test` 27m03s; the four-lane matrix above is the response.
 
-### What the queue is worth
-
-The serialization it replaces is not in those numbers, because it was never
-billed to CI: it was twenty-five six-minute waits by a person, roughly two and a
-half hours in one evening. The queue turns that into batched runs nobody has to
-watch. The compute arithmetic per merged pull request changes shape too — today
-it is a full PR run plus a full `main` push run; afterwards it is a diff-scoped
-PR run, an amortized share of a merge-group run, and an amortized share of a
-`main` push run — so the queue only pays for itself once it batches, which is a
-thing to check rather than assume after the first busy evening.
-
-`push: [main]` is deliberately kept, even though a merge group tests the exact
-tree that lands: it covers direct pushes and is the record of whether a commit
-was good when it landed. Dropping it, or reducing it to a nightly, is the
-obvious next saving once the queue has proven itself, and should be a separate
-change.
-
 ## What the owner has to apply, in settings
 
 **None of the following is in a file.** Everything above ships as code; this
@@ -724,25 +688,13 @@ gh api -X POST repos/picatz/flowstate/rulesets --input - <<'JSON'
           { "context": "verdict" }
         ]
       }
-    },
-    {
-      "type": "merge_queue",
-      "parameters": {
-        "merge_method": "SQUASH",
-        "grouping_strategy": "ALLGREEN",
-        "max_entries_to_build": 5,
-        "max_entries_to_merge": 5,
-        "min_entries_to_merge": 1,
-        "min_entries_to_merge_wait_minutes": 1,
-        "check_response_timeout_minutes": 45
-      }
     }
   ]
 }
 JSON
 ```
 
-Five parameters there are load-bearing and easy to get wrong:
+Two parameters there are load-bearing and easy to get wrong:
 
 - **`required_status_checks` names `plan` and `verdict` and nothing else.**
   Adding any of the conditional jobs reintroduces exactly the fail-open
@@ -754,56 +706,34 @@ Five parameters there are load-bearing and easy to get wrong:
   check runs at all, and a required check that never reports blocks the merge
   forever with no way to clear it. It is intentionally not required.
 - **`strict_required_status_checks_policy: false`.** "Require branches to be up
-  to date before merging" is the *old* answer to #489 and it fights the queue:
-  it would force a rebase and a re-run per merge, which is the serialization
-  written into settings. The queue is what handles staleness now.
-- **`min_entries_to_merge: 1` with a one-minute wait.** A larger minimum makes
-  a lone pull request sit idle waiting for company. Batching still emerges
-  naturally, because entries arriving while a group is building join the next
-  one, and `max_entries_to_build: 5` is what caps the group.
-- **`check_response_timeout_minutes: 45`** must exceed the slowest job. `test`
-  now has a 20-minute outer bound per matrix lane; 45 also accommodates the
-  remaining unsharded jobs and leaves final-check headroom without letting a
-  wedged group hold the queue indefinitely.
+  to date before merging" would force a rebase and a re-run per merge, which is
+  the serialization #489 recorded; merges are manual and exact-head instead
+  (`.agents/ship.md`). There is no merge queue, and none is wanted: it would add
+  a full run per merge on top of the pull request's own.
 
 Optionally pin the check provider by adding `"integration_id": <GitHub Actions'
 app id>` to each entry, which stops any other app reporting a context by that
 name. Read the id off an existing check run rather than typing one from memory.
 
-### 2. Turn the merge queue on for the branch
+### 2. Nothing else changes
 
-The `merge_queue` rule above is what enables it. Confirm afterwards that the
-repository's merge-queue settings show `Squash and merge`, matching
-`allowed_merge_methods`, and that `Merge when ready` appears on a pull request.
-
-### 3. Nothing else changes
-
-`allow_auto_merge` was `false` when read through the public API on 2026-09-28 and can stay so — the queue's "merge
-when ready" replaces it. `delete_branch_on_merge` is unrelated.
+`allow_auto_merge` can stay off: a pull request merges by hand once its head is
+green and reviewed. `delete_branch_on_merge` is unrelated.
 
 ### After applying
 
-Open one throwaway pull request touching only a markdown file and check three
-things: `plan` reports and its summary table says every job is skipped;
-`verdict` reports green; and the pull request is mergeable via **Merge when
-ready** rather than a direct merge. Then open one touching a `.go` file and
-check that the same two checks are the only required ones while the jobs the
-plan selects run beneath them.
+Open one throwaway pull request touching only a markdown file and check two
+things: `plan` reports and its summary table says every job is skipped, and
+`verdict` reports green. Then open one touching a `.go` file and check that the
+same two checks are the only required ones while the jobs the plan selects run
+beneath them.
 
 ## What is still unverified
 
-- **The merge queue has not run.** The `pull_request` path runs on every pull
-  request, and `tools/gate/verdict_test.go` executes the `verdict` script under
-  `bash` and `jq`. The `merge_group` path, the full unconditional set the force
-  branch in `ciForceReason` selects, runs only once this repository's settings
-  require a queue.
 - **The "after" numbers for #659 and the 12-file change are computed, not
   observed.** They multiply measured per-job durations from runs `31912978683`
   and `31909221065` by the plan's decisions on those diffs, plus modelled costs
   for `plan` (~30s) and `verdict` (~10s).
-- **Merge-queue behaviour is from the documented contract**, not from watching a
-  queue run here: in particular, that required checks are evaluated against the
-  `merge_group` ref, and that batching follows `max_entries_to_build`.
 
 ## The analysis workflows beside CI
 
@@ -813,7 +743,7 @@ request's code; they report on the tree's security posture (#1750), and
 listed.
 
 - `codeql.yml` analyses Go with the security-extended queries on every pull
-  request, on `main` and weekly. It crosses the plugin module boundary through
+  request, on `main` and weekly. Its `Analyze Go` job runs in parallel but is advisory: `tools/shipcheck` neither requires nor waits on it, and findings land as code-scanning alerts. It crosses the plugin module boundary through
   a `go.work` generated for the job by the Makefile's `.coverage/go.work`
   recipe and copied to the root of the checkout. Its manual traced build
   enumerates every module in that workspace: a plain `go build ./...` does not

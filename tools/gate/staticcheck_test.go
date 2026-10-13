@@ -198,3 +198,33 @@ func ranOrSkipped(run bool) string {
 	}
 	return "skips"
 }
+
+// TestEveryToolchainPinSpellsTheGatesRelease holds the three places that pin the
+// analysers' GOTOOLCHAIN to one value. The Makefile's GOVULNCHECK and
+// STATICCHECK variables, ci.yml's run lines and deep.yml's govulncheck lines
+// each spell it, and the Makefile and ci.yml had drifted (go1.27.0 against
+// go1.27.2) while the Makefile claimed to be what CI runs. The gate's
+// staticcheckToolchain is the reference because the test above already binds
+// ci.yml's staticcheck line to it.
+func TestEveryToolchainPinSpellsTheGatesRelease(t *testing.T) {
+	pin := regexp.MustCompile(`GOTOOLCHAIN=(go[0-9][0-9.a-z-]*) go tool`)
+	for _, path := range []string{
+		"../../Makefile",
+		"../../.github/workflows/ci.yml",
+		"../../.github/workflows/deep.yml",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		matches := pin.FindAllStringSubmatch(string(data), -1)
+		if len(matches) == 0 {
+			t.Errorf("%s pins no analyser toolchain; if that is deliberate, drop it from this list", path)
+		}
+		for _, m := range matches {
+			if m[1] != staticcheckToolchain {
+				t.Errorf("%s pins %s, but the gate's staticcheckToolchain is %s: move them together", path, m[1], staticcheckToolchain)
+			}
+		}
+	}
+}

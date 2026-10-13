@@ -13,8 +13,6 @@ import (
 	"testing"
 
 	yaml "github.com/goccy/go-yaml"
-
-	"github.com/picatz/flowstate/tools/fuzztargets"
 )
 
 // decide is a small reader for the slice ciDecisions returns.
@@ -212,134 +210,57 @@ func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
 	}
 }
 
-// TestTheNarrowJobsFollowTheAffectedSet pins the two jobs whose trigger is a
-// package rather than a path: fuzz-smoke's targets live in the packages
-// tools/fuzztargets/targets.txt names, and the appearance goldens record what
-// the cmd/flow binary prints.
-//
-// The diff is the secrets cache's rather than the engine's or netpolicy's, and
-// the swaps are the whole point of the case: this asserts what happens where
-// *no* target lives, so it has to name a package that holds none. It used to
-// name the engine, which held none until #403's item 4 put
-// FuzzSignalDeliveryDecode there, and then netpolicy, which held none until
-// #1721 put FuzzParseConfig there — at each point the assertion was still true
-// of the gate and false of the tree, which is the stale-expectation shape
-// rather than a defect. A package's arrival in targets.txt is supposed to move
-// this decision, and the next arrival moves this case to another package.
-func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
+// TestTheAppearanceJobFollowsTheAffectedSet pins the job whose trigger is a
+// package rather than a path: the appearance goldens record what the cmd/flow
+// binary prints.
+func TestTheAppearanceJobFollowsTheAffectedSet(t *testing.T) {
 	changed := []string{"pkg/flowstate/v1/secrets/cache.go"}
 
-	// A diff that reaches the secrets package and nothing else. It holds no
-	// fuzz target and prints nothing the appearance goldens record, so both
-	// narrow jobs skip.
+	// A diff that reaches the secrets package and nothing else prints nothing
+	// the appearance goldens record, so the job skips.
 	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/secrets"}, "pull_request")
 	mustRun(t, ds, "test", "test-plugins", "vulncheck", "staticcheck")
-	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto", "test-ordering")
-	if got := ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]; got != "" {
-		t.Errorf("fuzz-smoke is skipped but publishes targets %q; the job would fuzz them on a forced rerun of nothing", got)
-	}
+	mustSkip(t, ds, "appearance", "proto", "test-ordering")
 
 	// The same diff, in a tree where the secrets package is on cmd/flow's
-	// import path — which is what affectedPackages actually computes. cmd/flow
-	// holds one smoke target, and that one is what the job is handed: not the
-	// seven under flowfile, and not cmd/flow/internal/mcp's, which is a
-	// package of its own that this affected set does not name.
+	// import path — which is what affectedPackages actually computes.
 	ds = decide(t, changed, []string{
 		modulePath + "/pkg/flowstate/v1/secrets",
 		cmdFlowPkg,
 	}, "pull_request")
-	mustRun(t, ds, "fuzz-smoke", "appearance")
-	mustFuzz(t, ds, "FuzzMCPToolArguments")
+	mustRun(t, ds, "appearance")
 }
 
-// mustFuzz asserts the exact target list fuzz-smoke publishes, in order.
-func mustFuzz(t *testing.T, ds map[string]decision, targets ...string) {
-	t.Helper()
-	want := strings.Join(targets, " ")
-	if got := ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]; got != want {
-		t.Errorf("fuzz-smoke publishes %s=%q, want %q", fuzzTargetsOutput, got, want)
+// TestFuzzSmokeDoesNotRunOnAPullRequestThatOnlyTouchesCode. The job is 30s of
+// random mutation per target, thirteen targets, and the better part of seven
+// minutes of a flowfile PR's wait. What a pull request needs from the fuzz
+// targets is already in the test lanes: `go test` runs every f.Add seed and
+// committed corpus entry without -fuzz. The mutation runs on a push to main and
+// weekly in deep.yml, so a crasher it finds fails main's run minutes after the
+// merge and is fixed by the next pull request.
+func TestFuzzSmokeDoesNotRunOnAPullRequestThatOnlyTouchesCode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		changed  []string
+		affected []string
+	}{
+		{"a flowfile change",
+			[]string{"pkg/flowstate/v1/flowfile/parse.go"},
+			[]string{modulePath + "/pkg/flowstate/v1/flowfile", modulePath + "/pkg/flowstate/v1/flowfile/lsp"}},
+		{"a webhook change", []string{"pkg/flowstate/v1/webhook.go"}, []string{v1Pkg}},
+		{"a cmd/flow change", []string{"cmd/flow/main.go"}, []string{cmdFlowPkg}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := decide(t, tc.changed, tc.affected, "pull_request")
+			mustRun(t, ds, "test")
+			mustSkip(t, ds, "fuzz-smoke")
+		})
 	}
 }
 
-// TestFuzzSmokeRunsOnlyTheTargetsTheDiffReaches is #1726's second half. The
-// job used to run the whole tier on any diff that reached a package holding a
-// target — thirteen targets at 30s each, nine minutes of the run — because the
-// plan decided whether it ran and not what it ran. Now the plan publishes the
-// targets whose package is affected, and the job runs those.
-//
-// A flowfile change reaches lsp through the import graph, so it fuzzes the
-// five flowfile targets and the two lsp ones: seven, in targets.txt order, and
-// none of the six that live elsewhere.
-func TestFuzzSmokeRunsOnlyTheTargetsTheDiffReaches(t *testing.T) {
-	ds := decide(t,
-		[]string{"pkg/flowstate/v1/flowfile/parse.go"},
-		[]string{
-			modulePath + "/pkg/flowstate/v1/flowfile",
-			modulePath + "/pkg/flowstate/v1/flowfile/lsp",
-		},
-		"pull_request")
-	mustRun(t, ds, "fuzz-smoke")
-	mustFuzz(t, ds,
-		"FuzzRoundTrip", "FuzzCELCompile", "FuzzMarshalRoundTrip",
-		"FuzzFixIdempotent", "FuzzFormatIdempotent",
-		"FuzzLSPDocumentEdits", "FuzzLSPFrames")
-
-	// The published list is the smoke tier's and nothing outside it. A
-	// target listed only as deep would otherwise be fuzzed for 30s on the
-	// PR lane the moment its package was touched, which is the budget
-	// decision targets.txt records in the other direction.
-	for name := range strings.FieldsSeq(ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]) {
-		var found bool
-		for _, target := range fuzztargets.InTier(fuzztargets.TierSmoke) {
-			found = found || target.Name == name
-		}
-		if !found {
-			t.Errorf("fuzz-smoke was handed %s, which is not in the smoke tier", name)
-		}
-	}
-}
-
-// TestADeepOnlyTargetsPackageDoesNotReachFuzzSmoke inverts the case this
-// test used to pin, and says why.
-//
-// pkg/flowstate/v1/engine holds FuzzSignalDeliveryDecode, which is deep-only.
-// While the plan decided only whether the job ran, the engine's package
-// reached it, so that promoting the target to smoke did not silently alter
-// which diffs reach the job. With the plan deciding *which targets* run, that
-// same diff would select a job with nothing in it — a check that passes by
-// running nothing, which this repository's gate design exists to make
-// impossible. The promotion itself is safe on the other side: it is an edit
-// to targets.txt, and buildPlan forces every job wide for that file (see
-// TestTheFullSetRunsWhereBeingWrongIsUnrecoverable), so the newly promoted
-// target's first smoke run is on the PR that promotes it.
-func TestADeepOnlyTargetsPackageDoesNotReachFuzzSmoke(t *testing.T) {
-	ds := decide(t,
-		[]string{"pkg/flowstate/v1/engine/signal_compat.go"},
-		[]string{modulePath + "/pkg/flowstate/v1/engine"},
-		"pull_request")
-	mustRun(t, ds, "test")
-	mustSkip(t, ds, "fuzz-smoke")
-	mustFuzz(t, ds)
-}
-
-// TestAWebhookOnlyChangeReachesFuzzSmoke is the regression for #799:
-// FuzzWebhookEventBinding lives in the root pkg/flowstate/v1 package
-// (webhook.go's own directory), not in one of the three packages fuzz-smoke's
-// affectedness check already knew about — so a diff touching only webhook.go
-// used to compute an affected set with none of flowfilePkg, cmdFlowPkg or
-// pluginPkg in it, and the plan would have skipped fuzz-smoke on the one kind
-// of change most likely to move what that target exercises. It shares its
-// package with FuzzCELEvaluate, so both run and nothing else does.
-func TestAWebhookOnlyChangeReachesFuzzSmoke(t *testing.T) {
-	ds := decide(t, []string{"pkg/flowstate/v1/webhook.go"}, []string{v1Pkg}, "pull_request")
-	mustRun(t, ds, "fuzz-smoke")
-	mustFuzz(t, ds, "FuzzWebhookEventBinding", "FuzzCELEvaluate")
-}
-
-// TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Three forcing conditions,
+// TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Two forcing conditions,
 // each for its own reason: a push to main is the record and a record with holes
-// is not one; a merge group is the last gate before main; and a change to the
-// harness is a change to the thing computing the plan, which the plan cannot
+// is not one; and a change to the harness is a change to the thing computing the plan, which the plan cannot
 // reason about.
 func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 	all := []string{"test", "test-plugins", "test-ordering", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
@@ -350,7 +271,6 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 		event   string
 	}{
 		{"a push to main", []string{"CLAUDE.md"}, "push"},
-		{"a merge group", []string{"CLAUDE.md"}, "merge_group"},
 		{"a workflow change", []string{".github/workflows/ci.yml"}, "pull_request"},
 		{"a Makefile change", []string{"Makefile"}, "pull_request"},
 		{"a change to the gate itself", []string{"tools/gate/ci.go"}, "pull_request"},
@@ -372,13 +292,6 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 			ds := decide(t, tc.changed, nil, tc.event)
 			mustRun(t, ds, all...)
 
-			// And the whole smoke tier, not the targets an empty
-			// affected set reaches: a forced run that fuzzed nothing
-			// would be the fuzz job passing by not running.
-			mustFuzz(t, ds, allSmokeTargets()...)
-			if len(allSmokeTargets()) == 0 {
-				t.Fatal("the smoke tier is empty, so the assertion above held vacuously")
-			}
 		})
 	}
 }
@@ -462,13 +375,6 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	job := wf.Jobs["test"]
 	if got := job.TimeoutMinutes; got != 20 {
 		t.Fatalf("each root-suite lane needs headroom beyond go test's 15-minute package bound; timeout-minutes = %d, want 20", got)
-	}
-	docs, err := os.ReadFile("../../docs/CI.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(docs), `"check_response_timeout_minutes": 45`) {
-		t.Fatal("the documented merge-queue response bound must remain above every test lane's outer timeout")
 	}
 	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 		t.Fatal("test matrix must explicitly set fail-fast: false to retain every lane's result when another lane fails")
@@ -613,7 +519,7 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	const zeroSHA = "0000000000000000000000000000000000000000"
 
 	// run executes the script exactly as ci.yml stores it, in dir (empty for
-	// the merge_group/push cases, which never touch git), and reports the
+	// the push case, which never touch git), and reports the
 	// $GITHUB_OUTPUT sha= line, or ok=false if the script exited nonzero.
 	run := func(t *testing.T, dir string, env map[string]string) (sha string, ok bool) {
 		t.Helper()
@@ -649,10 +555,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	t.Run("pull_request uses HEAD^1 of the checked-out merge ref", func(t *testing.T) {
 		dir, baseSHA, headSHA := newMergeRefFixture(t)
 		sha, ok := run(t, dir, map[string]string{
-			"EVENT_NAME":           "pull_request",
-			"PR_HEAD_SHA":          headSHA,
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "pull_request",
+			"PR_HEAD_SHA":     headSHA,
+			"PUSH_BEFORE_SHA": "",
 		})
 		if !ok || sha != baseSHA {
 			t.Fatalf("got sha=%q ok=%v, want HEAD^1 = %q", sha, ok, baseSHA)
@@ -662,10 +567,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	t.Run("pull_request fails closed when HEAD^2 does not match the PR's head sha", func(t *testing.T) {
 		dir, _, _ := newMergeRefFixture(t)
 		_, ok := run(t, dir, map[string]string{
-			"EVENT_NAME":           "pull_request",
-			"PR_HEAD_SHA":          validSHA, // not this checkout's actual HEAD^2
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "pull_request",
+			"PR_HEAD_SHA":     validSHA, // not this checkout's actual HEAD^2
+			"PUSH_BEFORE_SHA": "",
 		})
 		if ok {
 			t.Fatal("a HEAD^2 mismatch must fail rather than name the wrong parent as the base")
@@ -675,34 +579,20 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	t.Run("pull_request fails closed on a checkout that is not a two-parent merge ref", func(t *testing.T) {
 		dir, headSHA := newSingleParentFixture(t)
 		_, ok := run(t, dir, map[string]string{
-			"EVENT_NAME":           "pull_request",
-			"PR_HEAD_SHA":          headSHA,
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "pull_request",
+			"PR_HEAD_SHA":     headSHA,
+			"PUSH_BEFORE_SHA": "",
 		})
 		if ok {
 			t.Fatal("a checkout with no HEAD^2 must fail rather than guess a base")
 		}
 	})
 
-	t.Run("merge_group uses the queue's base sha", func(t *testing.T) {
-		sha, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "merge_group",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": validSHA,
-			"PUSH_BEFORE_SHA":      "",
-		})
-		if !ok || sha != validSHA {
-			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
-		}
-	})
-
 	t.Run("push to main uses the sha before the push", func(t *testing.T) {
 		sha, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "push",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      validSHA,
+			"EVENT_NAME":      "push",
+			"PR_HEAD_SHA":     "",
+			"PUSH_BEFORE_SHA": validSHA,
 		})
 		if !ok || sha != validSHA {
 			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
@@ -711,10 +601,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 
 	t.Run("a push whose before is all zeroes fails closed", func(t *testing.T) {
 		_, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "push",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      zeroSHA,
+			"EVENT_NAME":      "push",
+			"PR_HEAD_SHA":     "",
+			"PUSH_BEFORE_SHA": zeroSHA,
 		})
 		if ok {
 			t.Fatal("a push with no real prior commit must fail rather than compare against nothing")
@@ -723,10 +612,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 
 	t.Run("an event this workflow does not otherwise trigger on fails closed", func(t *testing.T) {
 		_, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "workflow_dispatch",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "workflow_dispatch",
+			"PR_HEAD_SHA":     "",
+			"PUSH_BEFORE_SHA": "",
 		})
 		if ok {
 			t.Fatal("an unhandled event must fail rather than silently pick an empty base")
@@ -1030,39 +918,15 @@ func TestTheWorkflowAndThePlanDecideTheSameJobs(t *testing.T) {
 	// A step output the job's `outputs:` block does not name is invisible to
 	// `needs.plan.outputs`, which then reads as the empty string: for a
 	// boolean that is a job skipped on every run and a verdict that fails
-	// on every run, and for the fuzz target list it is `make fuzz-smoke`
-	// silently running the whole tier — the exact cost #1726 removes.
+	// on every run.
 	forwarded := wf.Jobs["plan"].Outputs
 	for _, name := range inPlan {
 		d := decided[name]
-		names := append([]string{d.Output}, sortedKeys(d.Outputs)...)
-		for _, output := range names {
-			want := fmt.Sprintf("${{ steps.plan.outputs.%s }}", output)
-			if got := forwarded[output]; got != want {
-				t.Errorf("the plan job forwards output %q as %q, want %q", output, got, want)
-			}
+		want := fmt.Sprintf("${{ steps.plan.outputs.%s }}", d.Output)
+		if got := forwarded[d.Output]; got != want {
+			t.Errorf("the plan job forwards output %q as %q, want %q", d.Output, got, want)
 		}
 	}
-}
-
-// TestFuzzSmokeIsHandedThePlansTargets pins the wiring between the target list
-// the plan publishes and the Makefile variable that narrows the run. The
-// Makefile's default is the whole tier, so a step that forgot the variable
-// would still be green — nine minutes of green — and nothing at run time would
-// say the plan's answer went unread.
-func TestFuzzSmokeIsHandedThePlansTargets(t *testing.T) {
-	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
-	for _, step := range wf.Jobs["fuzz-smoke"].Steps {
-		if !strings.Contains(step.Run, "make fuzz-smoke") {
-			continue
-		}
-		want := fmt.Sprintf("${{ needs.plan.outputs.%s }}", fuzzTargetsOutput)
-		if got := step.Env["FUZZ_SMOKE_TARGETS"]; got != want {
-			t.Fatalf("the fuzz-smoke step sets FUZZ_SMOKE_TARGETS to %q, want %q", got, want)
-		}
-		return
-	}
-	t.Fatal("the fuzz-smoke job has no step running make fuzz-smoke")
 }
 
 // TestPlanOutputNamesAreLegalInWorkflowExpressions. A job name may contain a
@@ -1083,11 +947,6 @@ func TestPlanOutputNamesAreLegalInWorkflowExpressions(t *testing.T) {
 		if !legal(d.Output) {
 			t.Errorf("job %q publishes output %q, which is not a legal identifier in a workflow expression", d.Job, d.Output)
 		}
-		for name := range d.Outputs {
-			if !legal(name) {
-				t.Errorf("job %q publishes output %q, which is not a legal identifier in a workflow expression", d.Job, name)
-			}
-		}
 	}
 }
 
@@ -1101,12 +960,16 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipe := regexp.MustCompile(`(?m)^\tGOMEMLIMIT=1GiB go test [^\n]*-count=20[^\n]*-timeout (\d+)s [^\n]*flowtest/`).FindSubmatch(makefile)
+	recipe := regexp.MustCompile(`(?m)^\tGOMEMLIMIT=1GiB go test [^\n]*-count=\$\(ORDERING_COUNT\)[^\n]*-timeout (\d+)s [^\n]*flowtest/`).FindSubmatch(makefile)
 	if recipe == nil {
 		t.Fatal("the Makefile's test-ordering recipe is not the one this test reads; update the test with the recipe")
 	}
 	if got, want := string(recipe[1])+"s", orderingTimeout; got != want {
 		t.Errorf("the Makefile's test-ordering timeout is %s and the gate's orderingTimeout is %s", got, want)
+	}
+
+	if !regexp.MustCompile(`(?m)^ORDERING_COUNT \?= 20$`).Match(makefile) {
+		t.Error("the Makefile's ORDERING_COUNT default is not 20: main, the weekly tier and the local gate run the full sweep")
 	}
 
 	workflow, err := os.ReadFile("../../.github/workflows/ci.yml")
@@ -1122,6 +985,19 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	job, ok := wf.Jobs["test-ordering"]
 	if !ok {
 		t.Fatal("ci.yml has no test-ordering job")
+	}
+	var ordered bool
+	for _, step := range job.Steps {
+		if strings.Contains(step.Run, "make test-ordering") {
+			ordered = true
+			want := "ORDERING_COUNT=${{ github.event_name == 'pull_request' && 10 || 20 }}"
+			if !strings.Contains(step.Run, want) {
+				t.Errorf("the test-ordering step is %q, want it to pass %s: 10 repetitions on a pull request, the Makefile's 20 on main", step.Run, want)
+			}
+		}
+	}
+	if !ordered {
+		t.Error("the test-ordering job has no step running make test-ordering")
 	}
 	if job.TimeoutMinutes == 0 {
 		t.Fatal("the test-ordering job sets no timeout-minutes, so a hang would run to GitHub's six-hour default")

@@ -4,25 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The merge queue. #489's lesson — four pull requests merged inside ninety
-  # seconds broke main, because each one's CI proved only "this branch merged
-  # with the main that existed when the run started" — was, until now,
-  # implemented as a human waiting between merges. That is a mechanism made of
-  # attention, and it costs a full six-minute main cycle per merge: twenty-five
-  # merges in one evening is two and a half hours of somebody watching.
-  #
-  # A merge queue is the mechanism that lesson deserved. GitHub builds the
-  # *prospective* merge — this pull request on top of everything ahead of it in
-  # the queue — and runs the required checks against that, which is precisely
-  # the artifact #489 says nothing was testing. It also batches, so N pull
-  # requests cost roughly N/batch-size runs rather than N serialized cycles, and
-  # a failure ejects the offending pull request instead of breaking main.
-  #
-  # Every merge_group run is a full run: see ciForceReason in tools/gate/ci.go.
-  # The diff-scoping below is a pull-request-lane optimisation, and the queue is
-  # the last gate before main, so main's protection never rests on the plan
-  # being right.
-  merge_group:
 
 # Read-only by default, and every job inherits it. A workflow that needs to write
 # something should say so on the job that needs it rather than here, so a token
@@ -66,13 +47,10 @@ env:
 #
 # main is deliberately excluded from cancellation: its runs are the record of
 # whether a commit was good when it landed, and cancelling one leaves a gap in
-# that record rather than saving anything worth having. A merge group is
-# excluded for a sharper reason: cancelling one does not save work, it strands
-# the queue — the required checks for that group never report, and everything
-# behind it waits on an answer that is never coming.
+# that record rather than saving anything worth having.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # ── Which of the jobs below can this diff actually reach? ─────────────────
@@ -106,13 +84,6 @@ jobs:
       vulncheck: ${{ steps.plan.outputs.vulncheck }}
       staticcheck: ${{ steps.plan.outputs.staticcheck }}
       fuzz_smoke: ${{ steps.plan.outputs.fuzz_smoke }}
-      # Not a boolean: the smoke targets whose package this diff reaches,
-      # space-separated, which the fuzz-smoke job hands to `make fuzz-smoke`
-      # so it runs those rather than the tier (#1726). Every smoke target on
-      # a forced run. tools/gate/ci_test.go pins that this block forwards it,
-      # because an output the job does not forward reads as the empty string
-      # below — and for this one the empty string means "the whole tier".
-      fuzz_targets: ${{ steps.plan.outputs.fuzz_targets }}
       appearance: ${{ steps.plan.outputs.appearance }}
       # The same answers again as one JSON object, which is what the verdict
       # job reads. Deliberately the *same* object the `if:` expressions on the
@@ -189,9 +160,8 @@ jobs:
       # this checkout is not the two-parent merge ref the rule assumes, and
       # the step fails closed rather than naming the wrong parent as the base.
       #
-      # `merge_group` and `push` keep their event-recorded fields (`base_sha`,
-      # `before`): both are ordinary fields, always current, with no
-      # `synchronize`-shaped staleness. Computed once, here, rather than
+      # `push` keeps its event-recorded field (`before`): an ordinary field,
+      # always current, with no `synchronize`-shaped staleness. Computed once, here, rather than
       # re-derived in each consuming job, so a fix to the rule is one edit and
       # the two breaking checks cannot answer this differently.
       - name: Which commit the breaking checks compare against
@@ -199,7 +169,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           case "$EVENT_NAME" in
@@ -217,7 +186,6 @@ jobs:
                 exit 1
               }
               ;;
-            merge_group) sha=$MERGE_GROUP_BASE_SHA ;;
             push) sha=$PUSH_BEFORE_SHA ;;
             *)
               echo "::error::no breaking-check base rule for event $EVENT_NAME" >&2
@@ -597,8 +565,11 @@ jobs:
       - name: Report toolchain
         run: go version
 
+      # Ten repetitions on a pull request, the Makefile's twenty on a push to
+      # main: the PR lane buys 97% detection of a defect that reproduces three
+      # runs in ten for half the wall clock, and main's record keeps 99.9%.
       - name: Ordering claims hold under a different schedule
-        run: make test-ordering TEST_JSON=go-test-ordering.json
+        run: make test-ordering ORDERING_COUNT=${{ github.event_name == 'pull_request' && 10 || 20 }} TEST_JSON=go-test-ordering.json
 
       - name: Upload the raw ordering go test -json stream
         if: always()
@@ -902,19 +873,13 @@ jobs:
       # will have started, and finished, after it. Its output is bounded per
       # target, and says so when it dropped anything.
       #
-      # Which targets is the plan's answer, not the tier's (#1726). Thirteen
-      # targets at 30s each plus a test-binary build per package was nine
-      # minutes of every run this job ran on, and a diff reaching flowfile
-      # cannot move what FuzzWebhookEventBinding explores. The plan publishes
-      # the smoke targets whose package the diff reaches — seven for a
-      # flowfile change, every one on a forced run — and the Makefile hands
-      # that list to tools/fuzztargets/list.sh, which refuses a name the tier
-      # does not hold rather than fuzzing what is left. tools/gate/ci_test.go
-      # pins this env line, because the Makefile's default is the whole tier
-      # and a step that dropped the variable would stay green at the old cost.
-      - name: Fuzz smoke (the targets in the smoke tier this diff reaches)
-        env:
-          FUZZ_SMOKE_TARGETS: ${{ needs.plan.outputs.fuzz_targets }}
+      # The whole smoke tier, every time the job runs. It runs on a push to main
+      # and on a pull request only when the plan is forced wide (a change to
+      # this workflow, the gate, the Makefile or the module graph): a pull
+      # request that merely touches code does not pay for 30s of mutation per
+      # target, because every seed corpus already runs as an ordinary test in
+      # the test lanes and main and deep.yml do the mutating.
+      - name: Fuzz smoke
         run: make fuzz-smoke
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a

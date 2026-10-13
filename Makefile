@@ -193,13 +193,10 @@ check-untracked-generated:
 #
 #     make fuzz-smoke FUZZ_SMOKE_TARGETS="FuzzRoundTrip FuzzCELCompile"
 #
-# Unset, every smoke target runs, which is what `make check` and a local
-# rehearsal want. CI's fuzz-smoke job sets it from the plan job's fuzz_targets
-# output — the smoke targets whose package the diff reaches, computed by
-# `tools/gate -ci` from the same targets.txt — so a flowfile change fuzzes the
-# seven targets it can move rather than all thirteen. The narrowing is list.sh's
-# and not a second filter here: a name that is not in the smoke tier is a
-# refusal from the one reader, not a silently shorter run.
+# Unset, every smoke target runs, which is what `make check`, CI's fuzz-smoke
+# job (push to main and forced-wide runs) and a local rehearsal want. The
+# narrowing is list.sh's and not a second filter here: a name that is not in the
+# smoke tier is a refusal from the one reader, not a silently shorter run.
 # 0 is the runner's own default — one job per two CPUs — spelled here so that an
 # unset variable expands to something the flag can parse rather than to nothing.
 FUZZ_SMOKE_JOBS ?= 0
@@ -393,11 +390,18 @@ check-tidy-plugins:
 # Piped through tools/testsum like `test`, with the same TEST_JSON hook, so a
 # failure under this schedule is reported in the same shape as one under the
 # default. No TEST_SHUFFLE here: this target's whole point is the schedule,
-# and -count=20 already varies what the interleaving reaches.
+# and the repetitions already vary what the interleaving reaches.
+#
+# ORDERING_COUNT is the repetitions: 20 by default, which is what a push to main
+# and the local gate run (1-0.7^20 is 99.9% to catch a defect that reproduces
+# three runs in ten), and CI's pull_request lane passes 10 (97%) to halve the
+# post-split critical path. Main and the weekly deep tier keep the full sweep, so
+# a defect only the second ten reach lands on main's record, not nowhere.
+ORDERING_COUNT ?= 20
 test-ordering: SHELL := /bin/bash
 test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
-	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 480s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=$(ORDERING_COUNT) -timeout 480s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # One Temporal dev server that stays up for the inner loop (#1738). The
 # packages sharing a dev server — engine, server, temporalclient, cmd/flow —
