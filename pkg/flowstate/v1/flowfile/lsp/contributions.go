@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -32,6 +33,11 @@ import (
 // on. Callees are another party's to write and a call tree fans out, so the
 // count is held down where the work is spent rather than where it is reported.
 const maxCalleeTargets = 64
+
+// maxRelatedPerDiagnostic bounds the related locations one published diagnostic
+// carries once several sources' views of the same problem are merged. It matches
+// the limit [v1.Diagnostic] holds its own related list to.
+const maxRelatedPerDiagnostic = 16
 
 // wrapDiagnostics lifts plain diagnostics into the stored form.
 func wrapDiagnostics(ds []lsp.Diagnostic) []publishedDiagnostic {
@@ -98,7 +104,7 @@ func (s *FlowfileServer) aggregateDiagnostics(touched map[lsp.DocumentURI]bool) 
 	out := make([]publishDiagnosticsParams, 0, len(uris))
 	for _, uri := range uris {
 		var diagnostics []publishedDiagnostic
-		seen := map[string]bool{}
+		seen := map[string]int{}
 		ordered := make([]lsp.DocumentURI, 0, len(s.sourcesByTarget[uri]))
 		for source := range s.sourcesByTarget[uri] {
 			ordered = append(ordered, source)
@@ -118,10 +124,15 @@ func (s *FlowfileServer) aggregateDiagnostics(touched map[lsp.DocumentURI]bool) 
 			for _, d := range byURI[uri] {
 				key := fmt.Sprintf("%d:%d:%d:%d:%s", d.Range.Start.Line, d.Range.Start.Character,
 					d.Range.End.Line, d.Range.End.Character, d.Message)
-				if !seen[key] {
-					seen[key] = true
-					diagnostics = append(diagnostics, d)
+				if i, dup := seen[key]; dup {
+					// The same problem reached through another source: keep every
+					// source's reason for it. Merged into a copy, so the stored
+					// contribution is never written to.
+					diagnostics[i].RelatedInformation = mergeRelated(diagnostics[i].RelatedInformation, d.RelatedInformation)
+					continue
 				}
+				seen[key] = len(diagnostics)
+				diagnostics = append(diagnostics, d)
 			}
 		}
 		if diagnostics == nil {
@@ -137,6 +148,27 @@ func (s *FlowfileServer) aggregateDiagnostics(touched map[lsp.DocumentURI]bool) 
 	}
 
 	return out
+}
+
+// mergeRelated is the union of two related-location lists as a new slice:
+// deduplicated, in a deterministic order, and no longer than
+// [maxRelatedPerDiagnostic].
+func mergeRelated(a, b []relatedInformation) []relatedInformation {
+	out := slices.Concat(a, b)
+	slices.SortStableFunc(out, func(x, y relatedInformation) int {
+		return cmp.Or(
+			strings.Compare(string(x.Location.URI), string(y.Location.URI)),
+			cmp.Compare(x.Location.Range.Start.Line, y.Location.Range.Start.Line),
+			cmp.Compare(x.Location.Range.Start.Character, y.Location.Range.Start.Character),
+			cmp.Compare(x.Location.Range.End.Line, y.Location.Range.End.Line),
+			cmp.Compare(x.Location.Range.End.Character, y.Location.Range.End.Character),
+			strings.Compare(x.Message, y.Message))
+	})
+	out = slices.CompactFunc(out, func(x, y relatedInformation) bool {
+		return x.Location == y.Location && x.Message == y.Message
+	})
+
+	return out[:min(len(out), maxRelatedPerDiagnostic)]
 }
 
 // isWorkflowSource reports whether source is an open workflow document.
@@ -251,20 +283,59 @@ func (s *FlowfileServer) clearWorkflowDiagnostics(ctx context.Context, conn *jso
 	}
 }
 
-// calleeSourcesFor lists the open workflows that last reported problems in the
-// file doc holds, so that saving it can bring their view of it up to date.
+// calleeSourcesFor lists the open workflows a save of the file doc holds should
+// bring up to date: those that last reported problems in it, and those whose
+// `call:` steps name it now, which includes a callee that was clean when they
+// were last published. The second set is read from the open documents' own
+// parsed text, as [FlowfileServer.dependentsToRecheck] reads `use:` entries, so a
+// workflow that is edited, republished or closed has no stale entry to retract.
+// At most [v1.MaxModules] workflows are named.
 func (s *FlowfileServer) calleeSourcesFor(doc *document) []lsp.DocumentURI {
+	set := map[lsp.DocumentURI]bool{}
 	s.diagnosticsMu.Lock()
-	defer s.diagnosticsMu.Unlock()
-	var out []lsp.DocumentURI
 	for source := range s.sourcesByTarget[canonicalURI(doc)] {
 		if source != doc.uri && s.isWorkflowSource(source) {
-			out = append(out, source)
+			set[source] = true
 		}
 	}
-	slices.Sort(out)
+	s.diagnosticsMu.Unlock()
+	if path, ok := doc.filesystemPath(); ok {
+		saved := canonicalPath(path)
+		for _, open := range s.docs.snapshot() {
+			if open != doc && open.kind == docWorkflow && callsFile(open, saved) {
+				set[open.uri] = true
+			}
+		}
+	}
+	out := slices.Sorted(maps.Keys(set))
+	if len(out) > v1.MaxModules {
+		s.logger().Warn("callee save changes more open files than are rechecked", "limit", v1.MaxModules)
+		out = out[:v1.MaxModules]
+	}
 
 	return out
+}
+
+// callsFile reports whether a step of doc has a `call:` that resolves to the
+// file at canonical path saved, by the rule the compiler resolves it under.
+func callsFile(doc *document, saved string) bool {
+	callerPath, ok := doc.filesystemPath()
+	if !ok || doc.parsed == nil {
+		return false
+	}
+
+	return slices.ContainsFunc(doc.parsed.steps, func(step *parsedStep) bool {
+		if step.callEntry == nil {
+			return false
+		}
+		target, err := flowfile.LiteralText(step.callEntry.valueText())
+		if target == "" || err != nil {
+			return false
+		}
+		located := flowfile.ResolveCallTarget(callerPath, target)
+
+		return located.Refusal == flowfile.CallTargetResolved && canonicalPath(located.Path) == saved
+	})
 }
 
 // A locator places the files a workflow's diagnostics name: the URI an editor

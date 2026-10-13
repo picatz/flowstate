@@ -298,3 +298,81 @@ func TestNoCodeActionOffersACalleeEditOnTheCallerBuffer(t *testing.T) {
 		assert.NotEmpty(t, callees[0].GetDiagnostics()[0].GetEdits(), "the fixture must carry a repair for the test to mean anything")
 	})
 }
+
+// Two open workflows that call the same broken file are two reasons for one
+// diagnostic on it, and the published copy keeps both call sites.
+func TestSharedCalleeDiagnosticKeepsEveryCallSite(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, plainCallee)
+		otherPath := filepath.Join(f.dir, "other.yaml")
+		otherURI := fileURI(otherPath)
+		f.c.openNoWait(string(f.callerURI), calleeCaller)
+		f.c.openNoWait(string(otherURI), strings.Replace(calleeCaller, "name: caller", "name: other", 1))
+
+		got := f.settled(t, f.calleeURI, "one diagnostic with both call sites", func(p publishDiagnosticsParams) bool {
+			return len(p.Diagnostics) == 1 && len(p.Diagnostics[0].RelatedInformation) == 2
+		})
+		var uris []lsp.DocumentURI
+		for _, r := range got.Diagnostics[0].RelatedInformation {
+			uris = append(uris, r.Location.URI)
+		}
+		assert.Equal(t, []lsp.DocumentURI{otherURI, f.callerURI}, uris, "sorted, one per caller")
+
+		// The stored contributions are what each source said, not the merge.
+		f.c.server.diagnosticsMu.Lock()
+		defer f.c.server.diagnosticsMu.Unlock()
+		for _, source := range []lsp.DocumentURI{f.callerURI, otherURI} {
+			stored := f.c.server.diagnosticsBySource[source][f.calleeURI]
+			require.Len(t, stored, 1)
+			assert.Len(t, stored[0].RelatedInformation, 1, "%s's own contribution is untouched", source)
+		}
+	})
+}
+
+func TestMergeRelatedDedupesSortsAndBounds(t *testing.T) {
+	t.Parallel()
+	at := func(uri string, line int) relatedInformation {
+		p := lsp.Position{Line: line}
+		return relatedInformation{Location: lsp.Location{URI: lsp.DocumentURI(uri), Range: lsp.Range{Start: p, End: p}}, Message: "m"}
+	}
+	var a, b []relatedInformation
+	for i := range maxRelatedPerDiagnostic {
+		a = append(a, at("file:///a", i))
+		b = append(b, at("file:///b", i))
+	}
+	a = append(a, at("file:///a", 0))
+	snapshot := append([]relatedInformation(nil), a...)
+
+	got := mergeRelated(b, a)
+	require.Len(t, got, maxRelatedPerDiagnostic, "bounded")
+	assert.Equal(t, at("file:///a", 0), got[0], "sorted by location, so the bound drops the same tail every time")
+	assert.Equal(t, at("file:///a", maxRelatedPerDiagnostic-1), got[len(got)-1], "duplicates collapsed before the cap")
+	assert.Equal(t, snapshot, a, "inputs are not mutated")
+}
+
+// A callee that is clean when its caller is published has no diagnostics for
+// the caller to be recorded against, but saving it broken must still reach the
+// caller.
+func TestSavingACleanCalleeBrokenRepublishesItsOpenCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		f.c.openNoWait(string(f.callerURI), calleeCaller)
+		f.settled(t, f.callerURI, "a clean caller", isEmpty)
+		f.c.openNoWait(string(f.calleeURI), plainCallee)
+
+		f.writeCallee(t, plainCallee)
+		require.NoError(t, f.c.conn.Notify(t.Context(), "textDocument/didSave", lsp.DidSaveTextDocumentParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: f.calleeURI},
+		}))
+		caller := f.settled(t, f.callerURI, "callee-failed", func(p publishDiagnosticsParams) bool {
+			return len(p.Diagnostics) == 1 && p.Diagnostics[0].Code == "callee-failed"
+		})
+		require.Len(t, caller.Diagnostics, 1)
+
+		// With the callee's buffer gone, the caller's view of it is what shows.
+		f.c.closeNoWait(string(f.calleeURI))
+		f.settled(t, f.calleeURI, "the caller's view of the callee", hasDiagnostics)
+	})
+}
