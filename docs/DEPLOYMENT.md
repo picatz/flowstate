@@ -1993,7 +1993,7 @@ are equally plaintext `httpGet` checks against the TLS-terminated port and
 fail the same way if left as they are. `exec` runs the command inside the
 container's own network namespace, which loopback is reachable from, and the
 internal listener never carries TLS or client-cert requirements of its own
-(`internalHandler`, `cmd/flow/routing.go:233`) regardless of what the public
+(`internalHandler`, `cmd/flow/routing.go:234`) regardless of what the public
 listener demands:
 
 ```yaml
