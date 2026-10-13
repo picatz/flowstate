@@ -7,8 +7,10 @@
 // tier ran (#857). They all read this package or the file behind it now. The
 // shell side reads it through list.sh; Go callers read it here, and the
 // package's test holds the two readers to the same answer and the file itself
-// to the tree. A pull request does not run the smoke tier: its seed corpora run
-// as ordinary tests, and the mutation runs on a push to main and weekly.
+// to the tree. A pull request does not run the smoke tier unless the plan is
+// forced wide (a change to CI, the Makefile, the gate, the module graph or the
+// target list itself): its seed corpora run as ordinary tests, and the
+// mutation runs on a push to main and weekly.
 package fuzztargets
 
 import (

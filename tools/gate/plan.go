@@ -191,10 +191,10 @@ func buildPlan(changed []string) plan {
 		//
 		// tools/fuzztargets is in this set because it *is* CI
 		// configuration: targets.txt decides which targets the smoke tier
-		// runs, which the deep tier runs, and which packages reach the
-		// fuzz job at all. Promoting a deep-only target to smoke changes
-		// nothing about any Go package, so without this the diff that
-		// reconfigures the fuzz job would skip it (#857).
+		// runs and which the deep tier runs. Promoting a deep-only target to
+		// smoke changes nothing about any Go package, so the target files
+		// are CI configuration whose own change forces the full job set,
+		// fuzz-smoke included (#857).
 		//
 		// tools/external is in it for the same reason: its go.mod pins the
 		// buf, govulncheck and staticcheck the proto, vulncheck and

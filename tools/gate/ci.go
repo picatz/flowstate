@@ -133,8 +133,9 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 	// touches code does not pay for 30s of mutation per target: every seed
 	// corpus already runs as an ordinary test in the test lanes (`go test`
 	// executes f.Add seeds without -fuzz), and main and deep.yml run the
-	// mutation. A forced pull request still runs it, so a change to the job
-	// itself is proved by the job.
+	// mutation. The fuzz target files (tools/fuzztargets, tools/fuzzrun) are CI
+	// configuration whose own change forces the full job set, so the job is
+	// proved by the change that reconfigures it.
 	fuzzWhy := "pull requests do not pay for mutation: seed corpora run in the test lanes, and main and the weekly deep tier fuzz"
 	if force != "" {
 		fuzzWhy = "the full set runs: " + force

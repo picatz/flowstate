@@ -9,8 +9,10 @@
 # Columns, whitespace-separated: target, package directory (module-relative),
 # tiers (comma-separated, no spaces).
 #
-#   smoke  30s per target, on every push to main (not on a PR, whose test lanes
-#          already run every seed corpus as an ordinary test). The bound
+#   smoke  30s per target, on every push to main. A PR runs it only when forced
+#          wide (a change to CI, the Makefile, the gate, the module graph or
+#          this list); otherwise its test lanes already run every seed corpus
+#          as an ordinary test. The bound
 #          that makes it safe to run that often is what keeps the list here short of every target: the job's
 #          budget is ten minutes and ten targets already spend most of it.
 #   deep   10m per target, weekly, on a schedule. Every target belongs to this

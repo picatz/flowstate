@@ -1033,7 +1033,7 @@ jobs:
           # asserting a specific cause, or a specific absence of fault, that
           # it cannot verify is a second, narrower way to read a check wrong
           # instead of a first.
-          cancelled_note="most often because a newer push superseded this run on this ref (disabled on main and a merge group); it can also be a hand cancellation, a runner fault, or a job hitting its own timeout-minutes — a cancellation alone says nothing either way about the diff: check whether a job timed out before re-running, or look at the superseding push's own run if there is one"
+          cancelled_note="most often because a newer push superseded this run on this ref (disabled on main); it can also be a hand cancellation, a runner fault, or a job hitting its own timeout-minutes — a cancellation alone says nothing either way about the diff: check whether a job timed out before re-running, or look at the superseding push's own run if there is one"
 
           if [ "${PLAN_RESULT}" = "cancelled" ]; then
             echo "::error::the plan job was cancelled, not failed — ${cancelled_note}"

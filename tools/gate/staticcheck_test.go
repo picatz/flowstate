@@ -208,18 +208,22 @@ func ranOrSkipped(run bool) string {
 // ci.yml's staticcheck line to it.
 func TestEveryToolchainPinSpellsTheGatesRelease(t *testing.T) {
 	pin := regexp.MustCompile(`GOTOOLCHAIN=(go[0-9][0-9.a-z-]*) go tool`)
-	for _, path := range []string{
-		"../../Makefile",
-		"../../.github/workflows/ci.yml",
-		"../../.github/workflows/deep.yml",
+	for _, file := range []struct {
+		path string
+		want int // the invocations that pin: exact, so one vanishing is a failure
+	}{
+		{"../../Makefile", 2},                   // GOVULNCHECK, STATICCHECK
+		{"../../.github/workflows/ci.yml", 3},   // plugin govulncheck, staticcheck, plugin staticcheck
+		{"../../.github/workflows/deep.yml", 2}, // plugin govulncheck run and its echoed command
 	} {
+		path := file.path
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
 		matches := pin.FindAllStringSubmatch(string(data), -1)
-		if len(matches) == 0 {
-			t.Errorf("%s pins no analyser toolchain; if that is deliberate, drop it from this list", path)
+		if len(matches) != file.want {
+			t.Errorf("%s has %d analyser toolchain pins, want %d: a pin was dropped or added; update this list with it", path, len(matches), file.want)
 		}
 		for _, m := range matches {
 			if m[1] != staticcheckToolchain {
