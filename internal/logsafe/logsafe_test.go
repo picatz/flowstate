@@ -45,7 +45,7 @@ func TestStringNeverEmitsUnsafe(t *testing.T) {
 		in.WriteRune(r)
 	}
 
-	in.WriteString("‮  \xff")
+	in.WriteString("\u202e\u2028\u2029\xff")
 
 	got := logsafe.String(in.String())
 	for _, r := range got {
