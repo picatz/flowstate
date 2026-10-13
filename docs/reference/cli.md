@@ -2752,6 +2752,8 @@ A file naming a plugin's task is checked against that plugin given `--plugin-dir
 
 Without `--plugin-dir` a step naming a plugin task is reported as not registered here, which is what it is: whether a plugin is installed is the deployment's decision and this process has not been told about one.
 
+`--spec` checks a compiled specification (`flow compile -o json`) instead of a Flowfile: the checks that need no source, with a problem named by its step's address. Given the specification's map (`--source-map`, from `flow compile --source-map`), a problem is placed at the file, line and column the map records. A map made for another program is refused and nothing is checked; a source file the map names that is on disk with different bytes has its locations withheld, so a problem is never shown at a shifted line. No file the map names is read except to hash it.
+
 Examples:
 
 ```sh
@@ -2775,6 +2777,10 @@ flow validate --plugin-catalog plugins.lock.json \
 
 # Check every claim a rule reads is carried by the deployment's auth policy:
 flow validate --auth-policy auth.yaml approval.yaml
+
+# Check a compiled specification, with each problem placed at its source:
+flow compile hello.yaml --source-map hello.map.json > hello.json
+flow validate --spec hello.json --source-map hello.map.json
 ```
 
 | Flag | Type | Default | Environment | Description |
@@ -2790,6 +2796,8 @@ flow validate --auth-policy auth.yaml approval.yaml
 | `--plugin-pin <string,...>` | `stringArray` | — | — | pin a plugin name to a digest, name=sha256:hex, repeatable; a discovered binary answering to that name must match it or is refused before it runs. A name with no pin, here or in `--plugin-pins`, launches unpinned, so pinning is adopted one plugin at a time |
 | `--plugin-pins <string>` | `string` | — | `FLOWSTATE_PLUGIN_PINS` | path to a YAML pins file (default $FLOWSTATE_PLUGIN_PINS), the file form of `--plugin-pin` for a deployment that pins more than a couple of plugins: `pins: {name: sha256:hex}`; merged with any `--plugin-pin`, and a name given by both is refused |
 | `--plugin-scheme <string,...>` | `stringArray` | — | — | secret reference scheme a plugin may claim, repeatable (default: any) |
+| `--source-map <string>` | `string` | — | — | with --spec, the `path` of the specification's source map (`flow compile --source-map`): a problem is then reported at the file, line and column the map records for its step instead of only its address |
+| `--spec` | `bool` | `false` | — | treat the argument as a compiled specification (`flow compile --output json`) rather than a Flowfile |
 
 ## `flow version`
 

@@ -2447,6 +2447,14 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	spec, mapPath, err := validateSpecOptions(cmd, args)
+	if err != nil {
+		return err
+	}
+	if spec {
+		return runValidateSpec(cmd, args, mapPath, format, catalog, claims)
+	}
+
 	if format.Machine() {
 		return validateMachine(cmd, args, format, catalog, claims)
 	}
@@ -3332,7 +3340,15 @@ flow server --insecure-no-auth`,
 			"every one of its tasks as unknown, which is a false report about the file.\n\n" +
 			"Without `--plugin-dir` a step naming a plugin task is reported as not " +
 			"registered here, which is what it is: whether a plugin is installed is the " +
-			"deployment's decision and this process has not been told about one.",
+			"deployment's decision and this process has not been told about one.\n\n" +
+			"`--spec` checks a compiled specification (`flow compile -o json`) instead of a " +
+			"Flowfile: the checks that need no source, with a problem named by its step's " +
+			"address. Given the specification's map (`--source-map`, from `flow compile " +
+			"--source-map`), a problem is placed at the file, line and column the map " +
+			"records. A map made for another program is refused and nothing is checked; a " +
+			"source file the map names that is on disk with different bytes has its " +
+			"locations withheld, so a problem is never shown at a shifted line. No file the " +
+			"map names is read except to hash it.",
 		Args:          cobra.MinimumNArgs(1),
 		RunE:          runValidate,
 		SilenceErrors: true,
@@ -3365,7 +3381,11 @@ flow validate --plugin-catalog plugins.lock.json \
   examples/plugins/greet/workflow.yaml
 
 # Check every claim a rule reads is carried by the deployment's auth policy:
-flow validate --auth-policy auth.yaml approval.yaml`,
+flow validate --auth-policy auth.yaml approval.yaml
+
+# Check a compiled specification, with each problem placed at its source:
+flow compile hello.yaml --source-map hello.map.json > hello.json
+flow validate --spec hello.json --source-map hello.map.json`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
@@ -3400,6 +3420,10 @@ flow validate --auth-policy auth.yaml approval.yaml`,
 	// claim no issuer entry carries can never match, and this is where an author
 	// learns that instead of from a denial in production.
 	addValidateAuthPolicyFlags(validateCmd)
+
+	// A compiled specification, and the source map that says where its steps
+	// were written (#1568).
+	addValidateSpecFlags(validateCmd)
 
 	// Get command, which asks a server what a run is doing.
 	//
