@@ -1961,3 +1961,62 @@ func TestTheToolListIsSmallEnoughForAHostToHold(t *testing.T) {
 			"dropping the schema must not drop the instruction for where the specification comes from")
 	}
 }
+
+// TestAnActionNeverMixesReadOnlyAndMutatingTools is the scope match #1543 asked
+// for, stated as the invariant that makes it true without a second vocabulary:
+// a token's scope is an authorization action, so an action that reaches a tool
+// that changes the world should not also be the only way to read. If a
+// read-only tool and a mutating one share an action, a token that needs the
+// read must be granted the mutation, whatever the client does with annotations.
+//
+// Three actions mix today, each by a deliberate coarse grain recorded below. They
+// are an exact list: a fourth fails, and an entry that stops mixing fails too,
+// so the list cannot outlive the reason for it.
+func TestAnActionNeverMixesReadOnlyAndMutatingTools(t *testing.T) {
+	t.Parallel()
+
+	mixedOnPurpose := map[v1.AuthorizationAction]string{
+		v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_SIGNAL: "reading a gate is the authority to answer it: who may act is one decision",
+		v1.AuthorizationAction_AUTHORIZATION_ACTION_MCP_DEBUG:       "a debug session is observed and driven under one grant; the tools that drive it are the point of the scope",
+		v1.AuthorizationAction_AUTHORIZATION_ACTION_WORKLOAD_DEBUG:  "stepping a held run and reading its history are one debugging capability",
+	}
+
+	readOnly := map[string]bool{}
+	for _, tool := range registeredTools(t) {
+		require.NotNil(t, tool.Annotations, "%s serves no annotations, so its effect cannot be checked", tool.Name)
+		readOnly[tool.Name] = tool.Annotations.ReadOnlyHint
+	}
+
+	mixed := map[v1.AuthorizationAction]bool{}
+	for _, binding := range v1.AuthorizationActionBindings() {
+		tools := append([]string(nil), binding.GetMcpTools()...)
+		for _, rpc := range binding.GetRpcs() {
+			tools = append(tools, v1.MCPToolNameForRPC(rpc))
+		}
+
+		var reading, mutating []string
+		for _, name := range tools {
+			effect, registered := readOnly[name]
+			if !registered {
+				continue
+			}
+			if effect {
+				reading = append(reading, name)
+			} else {
+				mutating = append(mutating, name)
+			}
+		}
+		if len(reading) > 0 && len(mutating) > 0 {
+			mixed[binding.GetAction()] = true
+			_, allowed := mixedOnPurpose[binding.GetAction()]
+			require.True(t, allowed,
+				"action %s binds read-only tools %v and mutating tools %v: a token that needs to read must also be able to mutate; "+
+					"split the action, or record why it is one grant in mixedOnPurpose",
+				binding.GetAction(), reading, mutating)
+		}
+	}
+
+	for action := range mixedOnPurpose {
+		require.True(t, mixed[action], "%s no longer mixes read-only and mutating tools; remove it from mixedOnPurpose", action)
+	}
+}
