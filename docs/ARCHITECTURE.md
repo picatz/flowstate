@@ -1101,10 +1101,17 @@ Honest notes on where the design strains, so future work does not rediscover the
   smaller and step scheduling cheaper, but it puts an evolving evaluator inside the replay
   path, where a semantic change breaks in-flight runs (invariant 4). This is a live
   tension rather than a settled one: conditions, loop `items:`, step `vars:` and most task
-  inputs *are* evaluated in workflow code today, and the exposure is held down by pinning
-  the interpreter per run rather than by moving the evaluation. Moving it would be a round
+  inputs *are* evaluated in workflow code today. Pinning the interpreter per run holds
+  down the *vocabulary*: profiles and the strings and lists extension versions freeze what
+  an expression may say. It does not hold down the *price*: the cost estimator is an
+  unpinned package-level singleton installed by `Limits.programOptions()`, so a change to
+  what an expression costs reaches a replaying history exactly as it reaches a fresh one,
+  and a run can cross its slice budget at a different node than its history recorded.
+  `workflowSliceCostChange` in `pkg/flowstate/v1/engine/execute.go` gates what a version
+  charges, not what the estimator prices, so sizing an estimator change means treating it
+  as a deploy-window exposure that no marker covers. Moving the evaluation would be a round
   trip per condition. If that trade is ever revisited, the thing to measure is what
-  pinning does not cover, which is the Continue-As-New seam.
+  pinning does not cover: pricing, and the Continue-As-New seam.
 
 - **Static reference analysis is conservative by necessity.** Compaction reads CEL ASTs to
   decide what to carry forward, which cannot see dynamically constructed expressions. When
