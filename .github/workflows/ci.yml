@@ -91,6 +91,9 @@ jobs:
       # jobs below are driven from: a verdict computed from a second source
       # could agree with a plan nobody ran.
       decisions: ${{ steps.plan.outputs.decisions }}
+      # The test matrix's package list per lane, as one JSON object. See the
+      # test job's Test step.
+      test_lanes: ${{ steps.plan.outputs.test_lanes }}
       # The commit the breaking checks (test/rest's `flow breaking` and
       # proto's `buf breaking`) diff against — see the step below. Computed
       # once, here, so both jobs read the same answer instead of each
@@ -211,7 +214,8 @@ jobs:
   # puts every other package in the rest lane, while every
   # lane still invokes the same `make test` recipe contributors run. The
   # matrix is one logical job to `needs.test.result`, so verdict remains the
-  # single fail-closed authority.
+  # single fail-closed authority. On a pull request each lane runs only the
+  # packages the plan says the diff can reach; a push to main runs them all.
   test:
     needs: plan
     if: needs.plan.outputs.test == 'true'
@@ -303,28 +307,28 @@ jobs:
       # minutes of plain text and a failure was a `--- FAIL` line somewhere in
       # it. TEST_JSON keeps the raw stream for the artifact step below, so
       # the summary is the short answer and the record is still there.
+      #
+      # The lane's packages come from the plan's test_lanes output, which
+      # tools/gate (testLanes, ciTestLanes) computes from `go list ./...`: on
+      # a pull request the affected set plus the tree readers, otherwise every
+      # package. A lane the plan does not name, or a plan output that never
+      # arrived, fails here; a lane the diff does not reach says so and runs
+      # nothing.
       - name: Test
         shell: bash
+        env:
+          LANE: ${{ matrix.lane }}
+          TEST_LANES: ${{ needs.plan.outputs.test_lanes }}
         run: |
-          # The four packages whose own package time is longest after the
-          # three lanes above (about 165s, 82s, 66s and 51s of 737s in run
-          # 38334741081). The flowfile import path covers its lsp subpackage.
-          heavy='./pkg/flowstate/v1/flowfile/... ./pkg/flowstate/v1/server ./pkg/flowstate/v1/plugin ./internal/strictyaml'
-          case "${{ matrix.lane }}" in
-            engine) packages='./pkg/flowstate/v1/engine' ;;
-            v1) packages='./pkg/flowstate/v1' ;;
-            cli) packages='./cmd/flow' ;;
-            heavy) packages="$heavy" ;;
-            rest)
-              packages=$(go list ./... | grep -vxF \
-                -e github.com/picatz/flowstate/pkg/flowstate/v1/engine \
-                -e github.com/picatz/flowstate/pkg/flowstate/v1 \
-                -e github.com/picatz/flowstate/cmd/flow \
-                $(go list $heavy | sed 's/^/-e /') | tr '\n' ' ')
-              ;;
-            *) echo "::error::unknown test lane ${{ matrix.lane }}"; exit 1 ;;
-          esac
-          make test TEST_PACKAGES="$packages" TEST_JSON="go-test-${{ matrix.lane }}.json"
+          : "${TEST_LANES:?no test_lanes output from plan}"
+          packages=$(jq -er --arg lane "$LANE" \
+            '.[$lane] | if type == "array" then join(" ") else error("the plan names no test lane \($lane)") end' \
+            <<<"$TEST_LANES")
+          if [ -z "$packages" ]; then
+            echo "::notice::no package in the $LANE lane is affected by this diff; the plan job's log says why"
+            exit 0
+          fi
+          make test TEST_PACKAGES="$packages" TEST_JSON="go-test-$LANE.json"
 
       # The raw stream, whatever the outcome (`if: always()`): a reader who
       # needs more than the summary — the log of a test that passed, the

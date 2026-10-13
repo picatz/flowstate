@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -196,6 +197,94 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 	return decisions
 }
 
+// testLane is one entry of the test job's matrix in ci.yml. owns is tested in
+// testLanes' order and rest owns everything, so every package of the root
+// module lands in exactly one lane by construction: a package added anywhere
+// runs in rest until it is given a lane of its own, and none is dropped.
+type testLane struct {
+	Name string
+	owns func(importPath string) bool
+}
+
+// testLanes is the test matrix. Each named lane is a package, or a few, whose
+// own run is long enough to want a runner (the measurements are in docs/CI.md);
+// TestTestLanesPartitionTheModule pins the names against ci.yml's matrix and
+// the partition against `go list ./...`.
+var testLanes = []testLane{
+	{"engine", func(ip string) bool { return ip == v1Pkg+"/engine" }},
+	{"v1", func(ip string) bool { return ip == v1Pkg }},
+	{"cli", func(ip string) bool { return ip == cmdFlowPkg }},
+	{"heavy", func(ip string) bool {
+		return ip == v1Pkg+"/flowfile" || strings.HasPrefix(ip, v1Pkg+"/flowfile/") ||
+			ip == v1Pkg+"/server" || ip == v1Pkg+"/plugin" || ip == modulePath+"/internal/strictyaml"
+	}},
+	{"rest", func(string) bool { return true }},
+}
+
+// ciTestLanes assigns the packages each test lane runs, and says why.
+//
+// A pull request runs the affected set plus the tree readers (packages whose
+// tests walk the source tree or run the go command, so a change they do not
+// import can still fail them; see treeReaderPattern). Everything else — a
+// forced plan, the data dependencies the import graph cannot see (examples/,
+// the repository-level files tests read, and proto/, which the MCP schema
+// tests read off disk), and a change in unowned, a directory no root package
+// owns — runs every package, as it did before the lanes were narrowed. What
+// is left unguarded is a test reading another package's files off disk.
+//
+// Every lane is always present in the result, as a list that may be empty, so
+// the Test step can tell a lane the diff does not reach from a plan output it
+// failed to read.
+func ciTestLanes(p plan, all, affected, treeReaders []string, unowned, force string) (map[string][]string, string) {
+	full := ""
+	switch {
+	case force != "":
+		full = force
+	case p.examples:
+		full = p.reasons["examples"] + " changed, and tests read examples/ off disk"
+	case p.repoTestData:
+		full = p.reasons["test"] + " changed, and it is read directly by tests rather than imported"
+	case p.proto:
+		full = p.reasons["proto"] + " changed, and tests read the schema off disk"
+	case unowned != "":
+		full = "a file in " + unowned + " changed, which no Go package owns, so no import says which tests read it"
+	}
+
+	selected := all
+	why := "every package: " + full
+	if full == "" {
+		set := map[string]bool{}
+		for _, ip := range affected {
+			set[ip] = true
+		}
+		for _, ip := range treeReaders {
+			set[ip] = true
+		}
+		selected = slices.DeleteFunc(slices.Clone(all), func(ip string) bool { return !set[ip] })
+		why = fmt.Sprintf("%d affected package(s) and %d tree reader(s), %d of %d package(s)",
+			len(affected), len(treeReaders), len(selected), len(all))
+	}
+
+	lanes := make(map[string][]string, len(testLanes))
+	for _, l := range testLanes {
+		lanes[l.Name] = []string{}
+	}
+	for _, ip := range selected {
+		lanes[laneOf(ip)] = append(lanes[laneOf(ip)], ip)
+	}
+	return lanes, why
+}
+
+// laneOf names the one lane that owns ip.
+func laneOf(ip string) string {
+	for _, l := range testLanes {
+		if l.owns(ip) {
+			return l.Name
+		}
+	}
+	panic("rest owns every package")
+}
+
 // needsAppearance reports whether this diff can move a recorded golden.
 //
 // Two triggers, the same pair needsDocs has and for the same reason. buildPlan's
@@ -283,7 +372,19 @@ func ciForceReason(event, base string, p plan) string {
 // The JSON object is what the verdict job reads. It is deliberately the *same*
 // object the `if:` expressions are driven from, so the two cannot disagree about
 // which jobs were meant to run.
-func writeCIDecisions(decisions []decision) error {
+//
+// lanes, from ciTestLanes, is published beside them as one `test_lanes` JSON
+// object (lane name to import paths), which the test matrix's Test step reads.
+func writeCIDecisions(decisions []decision, lanes map[string][]string, lanesWhy string) error {
+	for _, l := range testLanes {
+		fmt.Printf("plan: test lane %s: %d package(s)\n", l.Name, len(lanes[l.Name]))
+	}
+	fmt.Printf("plan: test lanes run %s\n", lanesWhy)
+	encodedLanes, err := json.Marshal(lanes)
+	if err != nil {
+		return err
+	}
+
 	obj := map[string]bool{}
 	for _, d := range decisions {
 		obj[d.Job] = d.Run
@@ -304,6 +405,7 @@ func writeCIDecisions(decisions []decision) error {
 			fmt.Fprintf(&b, "%s=%t\n", d.Output, d.Run)
 		}
 		fmt.Fprintf(&b, "decisions=%s\n", encoded)
+		fmt.Fprintf(&b, "test_lanes=%s\n", encodedLanes)
 		if err := appendFile(path, b.String()); err != nil {
 			return err
 		}
@@ -322,6 +424,11 @@ func writeCIDecisions(decisions []decision) error {
 			}
 			fmt.Fprintf(&b, "| `%s` | %s | %s |\n", d.Job, mark, d.Why)
 		}
+		fmt.Fprintf(&b, "\nThe test lanes run %s:", lanesWhy)
+		for _, l := range testLanes {
+			fmt.Fprintf(&b, " `%s` %d", l.Name, len(lanes[l.Name]))
+		}
+		b.WriteString(".\n")
 		b.WriteString("\nA skipped job here is not a check that passed: the `verdict` job re-reads this " +
 			"same plan and fails unless every job it selected actually succeeded.\n")
 		if err := appendFile(path, b.String()); err != nil {

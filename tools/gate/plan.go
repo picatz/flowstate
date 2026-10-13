@@ -403,6 +403,17 @@ func resolveDirs(dirs []string, pkgByDir map[string]string) []string {
 	return out
 }
 
+// unownedDir returns the first of dirs that no package in pkgByDir owns,
+// itself or as an ancestor, or "" when every one resolves.
+func unownedDir(dirs []string, pkgByDir map[string]string) string {
+	for _, d := range dirs {
+		if len(resolveDirs([]string{d}, pkgByDir)) == 0 {
+			return d
+		}
+	}
+	return ""
+}
+
 // hasUnresolvedGoDir reports whether any of goFiles' own directories is
 // missing from byDir — a changed .go file whose package `go list` cannot find
 // on the tree as it was checked out.
@@ -662,6 +673,28 @@ func repoDataDepPattern(roots []string) *regexp.Regexp {
 		return nil
 	}
 	return regexp.MustCompile(`"(\.\./)*(` + strings.Join(alternatives, "|") + `)`)
+}
+
+// treeReaderPattern matches a test that can see code outside its own import
+// graph: a literal naming an ancestor directory and nothing below it ("../..",
+// filepath.Join("..", "..") or filepath.Join(wd, "..", "..")), `git rev-parse
+// --show-toplevel`, or an exec of the go command. Those are the repository's
+// source-walking guards (one caller type, the scope guard, every YAML decode
+// contained, the wall-clock and duplicate-body ratchets) and the tests that
+// build another package by name. A change anywhere can break one of them
+// without reaching it through an import, so a CI test lane narrowed to the
+// affected set still runs them; see ciTestLanes.
+//
+// A single ".." is not enough: it is the traversal string the namespace and
+// secret-reference tests feed their validators, and a literal that continues
+// into a named directory ("../../examples") is a data dependency the
+// examples and repository-data rules already own.
+var treeReaderPattern = regexp.MustCompile(`"\.\.(/\.\.)+"|"\.\."(, "\.\.")+\)|--show-toplevel|exec\.Command(Context)?\(([\w.]+(\(\))?, )?"go"`)
+
+// treeReaderPackages reports which of testSrc's packages match
+// treeReaderPattern.
+func treeReaderPackages(testSrc map[string][]byte) []string {
+	return dataDepPackages(testSrc, treeReaderPattern)
 }
 
 // repoDataDepPackages reports which of testSrc's packages read the

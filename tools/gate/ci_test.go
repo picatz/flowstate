@@ -378,32 +378,319 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 		t.Fatal("test matrix must explicitly set fail-fast: false to retain every lane's result when another lane fails")
 	}
-	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), "[engine v1 cli heavy rest]"; got != want {
-		t.Fatalf("test matrix lanes = %s, want %s", got, want)
+	// The matrix and the gate's lanes are one list: a lane the gate assigns
+	// packages to and the matrix does not run is every one of those packages
+	// dropped, and a matrix lane the gate does not name fails its Test step.
+	var names []string
+	for _, l := range testLanes {
+		names = append(names, l.Name)
+	}
+	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), fmt.Sprint(names); got != want {
+		t.Fatalf("test matrix lanes = %s, tools/gate's testLanes = %s", got, want)
 	}
 
-	var testStep string
-	for _, step := range job.Steps {
-		if step.Name == "Test" {
-			testStep = step.Run
+	var step struct {
+		Run string
+		Env map[string]string
+	}
+	for _, s := range job.Steps {
+		if s.Name == "Test" {
+			step.Run, step.Env = s.Run, s.Env
 			break
 		}
 	}
-	for _, want := range []string{
-		"make test TEST_PACKAGES=", "./pkg/flowstate/v1/engine", "./pkg/flowstate/v1", "./cmd/flow",
-		"go list ./...", "grep -vxF", "github.com/picatz/flowstate/pkg/flowstate/v1/engine",
-		"github.com/picatz/flowstate/pkg/flowstate/v1", "github.com/picatz/flowstate/cmd/flow",
-		"heavy) packages=\"$heavy\"", "go list $heavy",
-	} {
-		if !strings.Contains(testStep, want) {
-			t.Errorf("test matrix does not preserve partition token %q:\n%s", want, testStep)
-		}
-	}
-	if testStep == "" {
+	if step.Run == "" {
 		t.Fatal("test matrix has no Test step")
 	}
-	if got := strings.Count(testStep, "-e github.com/picatz/flowstate/"); got != 3 {
-		t.Fatalf("rest lane excludes %d package(s), want exactly the three dedicated lanes (the heavy lane is excluded through go list)", got)
+	if got, want := step.Env["TEST_LANES"], "${{ needs.plan.outputs.test_lanes }}"; got != want {
+		t.Errorf("Test step reads TEST_LANES from %q, want %q", got, want)
+	}
+	if got, want := step.Env["LANE"], "${{ matrix.lane }}"; got != want {
+		t.Errorf("Test step reads LANE from %q, want %q", got, want)
+	}
+	if got, want := wf.Jobs["plan"].Outputs["test_lanes"], "${{ steps.plan.outputs.test_lanes }}"; got != want {
+		t.Errorf("the plan job forwards test_lanes as %q, want %q; unforwarded, every lane reads an empty string", got, want)
+	}
+	for _, want := range []string{
+		`: "${TEST_LANES:?`, "jq -er", `--arg lane "$LANE"`, `error("the plan names no test lane`,
+		`make test TEST_PACKAGES="$packages"`,
+	} {
+		if !strings.Contains(step.Run, want) {
+			t.Errorf("Test step lost %q, which is what makes a missing plan output or lane fail rather than run nothing:\n%s", want, step.Run)
+		}
+	}
+}
+
+// TestTheLaneStepFailsClosed runs the Test step's own script, read from
+// ci.yml, against a stub make: a lane the plan names runs exactly its
+// packages, an empty lane runs nothing and says so, and a missing output or
+// a lane the plan does not name is a failure rather than a green lane that
+// tested nothing.
+func TestTheLaneStepFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed; ubuntu-latest has it")
+	}
+	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
+	var script string
+	for _, s := range wf.Jobs["test"].Steps {
+		if s.Name == "Test" {
+			script = s.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("test matrix has no Test step")
+	}
+
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "make.log")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + strconv.Quote(log) + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "make"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(lane, lanes string) (string, string, error) {
+		os.Remove(log)
+		cmd := exec.Command("bash", "-eo", "pipefail", "-c", script)
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "LANE="+lane, "TEST_LANES="+lanes)
+		out, err := cmd.CombinedOutput()
+		made, _ := os.ReadFile(log)
+		return string(out), string(made), err
+	}
+
+	lanes := `{"engine":["a/engine"],"rest":["a/x","a/y"],"v1":[]}`
+	if _, made, err := run("rest", lanes); err != nil || made != "test\nTEST_PACKAGES=a/x a/y\nTEST_JSON=go-test-rest.json\n" {
+		t.Errorf("rest lane: err %v, make got %q", err, made)
+	}
+	if out, made, err := run("v1", lanes); err != nil || made != "" || !strings.Contains(out, "no package in the v1 lane") {
+		t.Errorf("an empty lane should run nothing and say so: err %v, make got %q, output %q", err, made, out)
+	}
+	if _, made, err := run("heavy", lanes); err == nil || made != "" {
+		t.Errorf("a lane the plan does not name must fail: err %v, make got %q", err, made)
+	}
+	if _, made, err := run("rest", ""); err == nil || made != "" {
+		t.Errorf("a missing test_lanes output must fail: err %v, make got %q", err, made)
+	}
+	if _, made, err := run("rest", `{"rest":"a/x"}`); err == nil || made != "" {
+		t.Errorf("a lane that is not a list must fail: err %v, make got %q", err, made)
+	}
+}
+
+// moduleImportPaths lists the root module's packages the way the plan job
+// does, from the repository root.
+func moduleImportPaths(t *testing.T) []string {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-e", "./...")
+	cmd.Dir = "../.."
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list ./...: %v", err)
+	}
+	return strings.Fields(string(out))
+}
+
+// TestTestLanesPartitionTheModule is the partition invariant over the real
+// tree: a forced plan puts every package in exactly one lane, no package is
+// dropped, and every named lane still owns something — a lane whose anchor
+// package moved would otherwise run nothing on every run while its packages
+// quietly joined rest.
+func TestTestLanesPartitionTheModule(t *testing.T) {
+	all := moduleImportPaths(t)
+	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "", "event is push, not a pull request: the full set runs")
+
+	seen := map[string]string{}
+	for _, l := range testLanes {
+		if len(lanes[l.Name]) == 0 {
+			t.Errorf("lane %s owns no package of the module; its anchor moved", l.Name)
+		}
+		for _, ip := range lanes[l.Name] {
+			if prev, ok := seen[ip]; ok {
+				t.Errorf("%s is in lanes %s and %s", ip, prev, l.Name)
+			}
+			seen[ip] = l.Name
+		}
+	}
+	if len(lanes) != len(testLanes) {
+		t.Errorf("ciTestLanes returned %d lanes, testLanes names %d", len(lanes), len(testLanes))
+	}
+	for _, ip := range all {
+		if _, ok := seen[ip]; !ok {
+			t.Errorf("%s is in no lane: the forced run would drop it", ip)
+		}
+	}
+	if len(seen) != len(all) {
+		t.Errorf("lanes hold %d package(s), the module has %d", len(seen), len(all))
+	}
+}
+
+// TestAPullRequestRunsTheAffectedLanesOnly is the narrowing itself: a leaf
+// change runs its affected packages and the tree readers, and nothing else; a
+// lane it does not reach is present and empty.
+func TestAPullRequestRunsTheAffectedLanesOnly(t *testing.T) {
+	all := []string{
+		cmdFlowPkg, v1Pkg, v1Pkg + "/engine", v1Pkg + "/flowfile", v1Pkg + "/flowfile/lsp", v1Pkg + "/server",
+		modulePath + "/internal/strictyaml", modulePath + "/tools/wallclock", modulePath + "/tools/doclinks",
+	}
+	p := buildPlan([]string{"pkg/flowstate/v1/flowfile/lsp/hover.go"})
+	lanes, why := ciTestLanes(p, all, []string{v1Pkg + "/flowfile/lsp"}, []string{modulePath + "/tools/wallclock"},
+		"", ciForceReason("pull_request", resolvedBase, p))
+
+	want := map[string][]string{
+		"engine": {}, "v1": {}, "cli": {},
+		"heavy": {v1Pkg + "/flowfile/lsp"},
+		"rest":  {modulePath + "/tools/wallclock"},
+	}
+	if fmt.Sprint(lanes) != fmt.Sprint(want) {
+		t.Errorf("lanes = %v, want %v", lanes, want)
+	}
+	if !strings.Contains(why, "1 affected package(s) and 1 tree reader(s)") {
+		t.Errorf("why = %q, want it to count the affected set and the tree readers", why)
+	}
+}
+
+// TestDataDependenciesAndForcingRunEveryLane: the import graph cannot see a
+// test reading examples/, a repository Markdown file, the schema or a
+// directory no package owns off disk, so those diffs, and every forced plan,
+// run each lane's whole share.
+func TestDataDependenciesAndForcingRunEveryLane(t *testing.T) {
+	all := []string{cmdFlowPkg, v1Pkg, v1Pkg + "/engine", v1Pkg + "/server", modulePath + "/tools/wallclock"}
+	for _, tc := range []struct {
+		name    string
+		changed []string
+		event   string
+		unowned string
+	}{
+		{"an example", []string{"examples/hello/workflow.yaml"}, "pull_request", ""},
+		{"README.md", []string{"README.md"}, "pull_request", ""},
+		{"a document", []string{"docs/DEPLOYMENT.md"}, "pull_request", ""},
+		{"the agent configuration", []string{"AGENTS.md"}, "pull_request", ""},
+		{"the schema", []string{"proto/flowstate/v1/run.proto"}, "pull_request", ""},
+		{"an editor's manifest", []string{"editors/vscode/package.json", "cmd/flow/main.go"}, "pull_request", "editors/vscode"},
+		{"a push to main", []string{"tools/wallclock/main.go"}, "push", ""},
+		{"the Makefile", []string{"Makefile"}, "pull_request", ""},
+		{"the module graph", []string{"go.mod"}, "pull_request", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := buildPlan(tc.changed)
+			lanes, why := ciTestLanes(p, all, nil, nil, tc.unowned, ciForceReason(tc.event, resolvedBase, p))
+			n := 0
+			for _, pkgs := range lanes {
+				n += len(pkgs)
+			}
+			if n != len(all) {
+				t.Errorf("%d of %d package(s) run (%s); a data or forced change must run every one", n, len(all), why)
+			}
+		})
+	}
+}
+
+// TestADirectoryNoPackageOwnsIsNamed: testdata under a package is that
+// package's, and editors/ or the repository root is nobody's.
+func TestADirectoryNoPackageOwnsIsNamed(t *testing.T) {
+	byDir := map[string]string{"pkg/flowstate/v1/engine": v1Pkg + "/engine", "cmd/flow": cmdFlowPkg}
+	if got := unownedDir([]string{"cmd/flow", "pkg/flowstate/v1/engine/testdata/x"}, byDir); got != "" {
+		t.Errorf("unownedDir = %q, want every directory owned", got)
+	}
+	for _, d := range []string{"editors/vscode", "."} {
+		if got := unownedDir([]string{"cmd/flow", d}, byDir); got != d {
+			t.Errorf("unownedDir = %q, want %q", got, d)
+		}
+	}
+}
+
+// TestTreeReadersAreFoundInTheTree pins treeReaderPattern against the guards
+// it exists for: each of these walks the source tree from an ancestor
+// directory or builds another package, so a diff that does not import it can
+// still fail it, and a pattern that stopped matching would skip it on every
+// leaf pull request. The negative half keeps the pattern from swallowing the
+// packages that only feed ".." to a validator.
+func TestTreeReadersAreFoundInTheTree(t *testing.T) {
+	var pkgs []pkgMeta
+	for _, ip := range moduleImportPaths(t) {
+		rel, ok := strings.CutPrefix(ip, modulePath+"/")
+		if !ok {
+			continue
+		}
+		pkgs = append(pkgs, pkgMeta{ImportPath: ip, Dir: filepath.Join("..", "..", rel)})
+	}
+	readers := treeReaderPackages(readTestSources(pkgs))
+	for _, want := range []string{
+		v1Pkg + "/engine",                         // the scope guard; builds the SDK plugin
+		v1Pkg + "/principal",                      // one caller type
+		v1Pkg + "/authz",                          // no action check outside authz
+		v1Pkg + "/flowdebug",                      // two capability constructors
+		v1Pkg + "/plugin",                         // builds the example plugin by import path
+		modulePath + "/internal/strictyaml",       // every YAML decode contained
+		modulePath + "/cmd/flow/internal/docsgen", // every environment read documented
+		modulePath + "/tools/wallclock",
+		modulePath + "/tools/dupbodies",
+		modulePath + "/tools/vacuity",
+		modulePath + "/tools/doclinks",
+		modulePath + "/tools/artifacts",
+		modulePath + "/tools/gate",
+	} {
+		if !contains(readers, want) {
+			t.Errorf("%s is not found as a tree reader; a leaf pull request would skip its guard", want)
+		}
+	}
+	for _, not := range []string{v1Pkg + "/secrets", v1Pkg + "/auth", v1Pkg + "/execpolicy"} {
+		if contains(readers, not) {
+			t.Errorf("%s is found as a tree reader; its \"..\" literals are validator input, not a walk", not)
+		}
+	}
+}
+
+// TestTheSerialTestPackagesAreTheTemporalOwners keeps the Makefile's
+// TEMPORAL_TEST_PACKAGES equal to the packages whose tests start a Temporal
+// dev server. One missing from the list runs beside other packages and
+// competes for the deadlines #1922 serialized them to protect; one left on it
+// after it stopped owning a server is only slower.
+func TestTheSerialTestPackagesAreTheTemporalOwners(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^TEMPORAL_TEST_PACKAGES := (.+)$`).FindSubmatch(makefile)
+	if m == nil {
+		t.Fatal("the Makefile has no TEMPORAL_TEST_PACKAGES")
+	}
+	var listed []string
+	for _, f := range strings.Fields(string(m[1])) {
+		listed = append(listed, strings.TrimPrefix(f, "./"))
+	}
+	sort.Strings(listed)
+
+	starts := regexp.MustCompile(`temporaltest\.(RunPackage|Start|StartWith)\(|testsuite\.StartDevServer\(`)
+	var owners []string
+	for _, root := range []string{"cmd", "internal", "pkg", "tools"} {
+		err := filepath.WalkDir(filepath.Join("..", "..", root), func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() && d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if starts.Match(src) {
+				rel, _ := filepath.Rel(filepath.Join("..", ".."), filepath.Dir(path))
+				if !contains(owners, filepath.ToSlash(rel)) {
+					owners = append(owners, filepath.ToSlash(rel))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(owners)
+	if fmt.Sprint(listed) != fmt.Sprint(owners) {
+		t.Errorf("TEMPORAL_TEST_PACKAGES = %v, but the packages whose tests start a Temporal server are %v", listed, owners)
 	}
 }
 

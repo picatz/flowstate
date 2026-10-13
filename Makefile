@@ -271,18 +271,35 @@ fuzz-smoke:
 # which rejects `set -o pipefail`, and that is why this is a per-target shell
 # rather than a line in the recipe.
 #
-# Packages run one at a time because several own real Temporal test processes.
-# Letting those processes compete made the admitted-bound workflow-slice
-# rehearsal spend its entire five-minute bound before its first task ran; the
-# same complete engine package passes under the production-derived deadlines
-# when it owns the runner. Tests within each package retain their own parallelism.
+# TEMPORAL_TEST_PACKAGES own a real Temporal dev server in their tests
+# (temporaltest.RunPackage, or the dev server itself), and they run one at a
+# time, after the rest: letting those processes compete made the admitted-bound
+# workflow-slice rehearsal spend its entire five-minute bound before its first
+# task ran, and the same complete engine package passes under the
+# production-derived deadlines when it owns the runner (#1922). Every other
+# selected package runs first at go test's default -p, one package binary per
+# core. tools/gate's TestTheSerialTestPackagesAreTheTemporalOwners keeps this
+# list equal to the packages whose tests start a server. Tests within each
+# package retain their own parallelism.
 TEST_SHUFFLE ?= on
 TEST_PACKAGES ?= ./...
+TEMPORAL_TEST_PACKAGES := ./cmd/flow ./internal/temporaltest ./pkg/flowstate/v1/engine ./pkg/flowstate/v1/server ./pkg/flowstate/v1/temporalclient
+GO_TEST_RACE = GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 900s
 
 test: SHELL := /bin/bash
 test: .SHELLFLAGS := -o pipefail -c
 test:
-	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -p=1 -timeout 900s $(TEST_PACKAGES) | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	@selected="$$(go list -e $(TEST_PACKAGES))" || exit 1; \
+	temporal="$$(go list $(TEMPORAL_TEST_PACKAGES))" || exit 1; \
+	[ -n "$$selected" ] || { echo "make test: TEST_PACKAGES='$(TEST_PACKAGES)' names no package" >&2; exit 1; }; \
+	serial="$$(grep -xF -f <(printf '%s\n' "$$temporal") <<<"$$selected")"; \
+	parallel="$$(grep -vxF -f <(printf '%s\n' "$$temporal") <<<"$$selected")"; \
+	[ "$$(printf '%s\n' $$serial $$parallel | sort)" = "$$(sort <<<"$$selected")" ] || \
+		{ echo "make test: splitting TEST_PACKAGES into Temporal and other packages lost one" >&2; exit 1; }; \
+	{ status=0; \
+	  if [ -n "$$parallel" ]; then $(GO_TEST_RACE) $$parallel || status=1; fi; \
+	  if [ -n "$$serial" ]; then $(GO_TEST_RACE) -p=1 $$serial || status=1; fi; \
+	  exit $$status; } | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every
