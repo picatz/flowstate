@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -100,4 +101,16 @@ func mustMarshal(t *testing.T, v any) string {
 	require.NoError(t, err)
 
 	return string(data)
+}
+
+// TestValidateSARIFEscapesTerminalControls: a message quotes author-controlled
+// text, so the log passes through the same escaper as the other JSON output.
+func TestValidateSARIFEscapesTerminalControls(t *testing.T) {
+	path := writeWorkflow(t, "hostile.yaml", strings.Replace(brokenWorkflow, "http:", "ht\u202etp:", 1))
+
+	res := runFlow(t, "validate", path, "-o", "sarif")
+
+	require.Error(t, res.Err)
+	assert.NotContains(t, res.Stdout, "\u202e", "a bidi override never reaches the log raw")
+	assert.Contains(t, res.Stdout, `\\u202e`)
 }

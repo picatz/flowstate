@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -35,6 +36,12 @@ const (
 	// most 25,000 per run, and a report is built from files another party wrote,
 	// so the work and the output stop here; the run says how many were left out.
 	MaxResults = 25000
+
+	// MaxBytes bounds the text the results carry (messages, file names, edit
+	// titles and replacements) before encoding. It keeps the log under the size
+	// code-scanning uploads accept however large the diagnostics are; the run
+	// says how many results were left out.
+	MaxBytes = 16 << 20
 )
 
 // Tool names the program that produced the results, §3.19.
@@ -48,17 +55,26 @@ type Tool struct {
 // deterministic for the same reports: results are in report and diagnostic order
 // and rules in the registry's order.
 func Marshal(reports []*v1.DiagnosticReport, tool Tool) ([]byte, error) {
-	doc := run{Results: []result{}, Tool: toolComponent{Driver: driver{
+	doc := run{ColumnKind: "unicodeCodePoints", Results: []result{}, Tool: toolComponent{Driver: driver{
 		Name: tool.Name, Version: tool.Version, InformationURI: tool.InformationURI,
 	}}}
 
 	used := map[string]bool{}
-	var dropped int
+	var dropped, budget int
+	full := false
 	for _, report := range reports {
-		for _, d := range report.GetDiagnostics() {
-			if len(doc.Results) >= MaxResults {
-				dropped++
-				continue
+		diagnostics := report.GetDiagnostics()
+		if full {
+			// Nothing more is projected; the omitted count is just a length.
+			dropped += len(diagnostics)
+			continue
+		}
+		for i, d := range diagnostics {
+			budget += weigh(report.GetFile(), d)
+			if len(doc.Results) >= MaxResults || budget > MaxBytes {
+				dropped += len(diagnostics) - i
+				full = true
+				break
 			}
 			code := d.GetCode()
 			if code == "" {
@@ -79,7 +95,7 @@ func Marshal(reports []*v1.DiagnosticReport, tool Tool) ([]byte, error) {
 		doc.Invocations[0].ToolExecutionNotifications = []notification{{
 			Level: "warning",
 			Message: message{Text: fmt.Sprintf(
-				"%d further results were left out: a run holds at most %d", dropped, MaxResults)},
+				"%d further results were left out: a run holds at most %d results and %d bytes of text", dropped, MaxResults, MaxBytes)},
 		}}
 	}
 
@@ -119,6 +135,26 @@ func rulesFor(used map[string]bool) ([]rule, map[string]int) {
 	}
 
 	return rules, index
+}
+
+// weigh is the text one diagnostic adds to the log, an upper-bound estimate of
+// what resultOf writes for it.
+func weigh(file string, d *v1.Diagnostic) int {
+	n := len(file) + len(d.GetMessage()) + len(d.GetCode())
+	for _, id := range d.GetPath() {
+		n += 2 * len(id)
+	}
+	for _, r := range d.GetRelated() {
+		n += len(r.GetFile()) + len(r.GetMessage())
+	}
+	for _, e := range d.GetEdits() {
+		n += len(e.GetTitle())
+		for _, c := range e.GetChanges() {
+			n += len(c.GetNewText())
+		}
+	}
+
+	return n
 }
 
 func resultOf(file, code string, d *v1.Diagnostic) result {
@@ -208,11 +244,38 @@ func uriOf(name string) string {
 		return ""
 	}
 	path := filepath.ToSlash(name)
-	if filepath.IsAbs(name) {
-		return (&url.URL{Scheme: "file", Path: path}).String()
+	if filepath.IsAbs(name) || isWindowsAbs(path) {
+		return fileURI(path)
 	}
 
 	return (&url.URL{Path: path}).String()
+}
+
+// isWindowsAbs reports whether a slash-form path starts with a drive letter or
+// a UNC prefix, which [filepath.IsAbs] only recognises on Windows.
+func isWindowsAbs(path string) bool {
+	if strings.HasPrefix(path, "//") {
+		return true
+	}
+
+	return len(path) >= 3 && path[1] == ':' && path[2] == '/' &&
+		(path[0] >= 'a' && path[0] <= 'z' || path[0] >= 'A' && path[0] <= 'Z')
+}
+
+// fileURI is the file URI of an absolute slash-form path (RFC 8089 §2): a drive
+// path keeps its drive in the path (`file:///C:/work/f.yaml`) and a UNC path's
+// host is the URI authority (`file://host/share/f.yaml`).
+func fileURI(path string) string {
+	u := url.URL{Scheme: "file", Path: path}
+	switch {
+	case strings.HasPrefix(path, "//"):
+		host, rest, _ := strings.Cut(strings.TrimPrefix(path, "//"), "/")
+		u.Host, u.Path = host, "/"+rest
+	case path[0] != '/':
+		u.Path = "/" + path
+	}
+
+	return u.String()
 }
 
 // The SARIF object model, only the properties this package writes. Names and
@@ -225,9 +288,12 @@ type (
 	}
 
 	run struct {
-		Tool        toolComponent `json:"tool"`
-		Invocations []invocation  `json:"invocations,omitempty"`
-		Results     []result      `json:"results"`
+		Tool toolComponent `json:"tool"`
+		// ColumnKind says how columns count: Flowstate counts code points, SARIF's
+		// default is UTF-16 code units, §3.14.13.
+		ColumnKind  string       `json:"columnKind,omitempty"`
+		Invocations []invocation `json:"invocations,omitempty"`
+		Results     []result     `json:"results"`
 	}
 
 	toolComponent struct {

@@ -2,6 +2,7 @@ package sarif_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -135,6 +136,8 @@ func TestMarshalSpellsFileNamesAsURIReferences(t *testing.T) {
 		"a b/c#d.yaml":      "a%20b/c%23d.yaml",
 		"/work/flow.yaml":   "file:///work/flow.yaml",
 		"./relative/f.yaml": "./relative/f.yaml",
+		"C:/work/f.yaml":    "file:///C:/work/f.yaml",
+		"//host/share/f.y":  "file://host/share/f.y",
 	} {
 		doc := decode(t, []*v1.DiagnosticReport{{File: name, Diagnostics: []*v1.Diagnostic{{Message: "x", Line: 1}}}})
 		physical := results(t, firstRun(t, doc))[0]["locations"].([]any)[0].(map[string]any)["physicalLocation"].(map[string]any)
@@ -169,8 +172,39 @@ func TestMarshalBoundsTheResultsAndSaysSo(t *testing.T) {
 	run := firstRun(t, doc)
 
 	assert.Len(t, results(t, run), sarif.MaxResults)
+	assert.Equal(t, "unicodeCodePoints", run["columnKind"], "Flowstate columns count code points")
 	note := run["invocations"].([]any)[0].(map[string]any)["toolExecutionNotifications"].([]any)[0].(map[string]any)
 	assert.Contains(t, note["message"].(map[string]any)["text"], "7 further results")
+}
+
+func TestMarshalBoundsTheTextAndSaysSo(t *testing.T) {
+	t.Parallel()
+
+	// Each message is 1 MiB: the byte budget, not the result count, stops the run.
+	big := strings.Repeat("a", 1<<20)
+	var diagnostics []*v1.Diagnostic
+	for range 40 {
+		diagnostics = append(diagnostics, &v1.Diagnostic{Message: big[:1<<20], Line: 1})
+	}
+	data, err := sarif.Marshal([]*v1.DiagnosticReport{{File: "f", Diagnostics: diagnostics}, {File: "g", Diagnostics: diagnostics}}, tool)
+	require.NoError(t, err)
+	assert.Less(t, len(data), sarif.MaxBytes+1<<20)
+
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(data, &doc))
+	run := firstRun(t, doc)
+	assert.Len(t, results(t, run), 15, "the 16th MiB message passes the budget")
+	note := run["invocations"].([]any)[0].(map[string]any)["toolExecutionNotifications"].([]any)[0].(map[string]any)
+	assert.Contains(t, note["message"].(map[string]any)["text"], "65 further results", "the rest of both reports is counted, not projected")
+}
+
+func TestMarshalOffersNoFixWithoutAPosition(t *testing.T) {
+	t.Parallel()
+
+	edit := &v1.SuggestedEdit{Title: "t", Changes: []*v1.TextChange{{NewText: "x"}}}
+	doc := decode(t, []*v1.DiagnosticReport{{File: "f", Diagnostics: []*v1.Diagnostic{{Message: "m", Edits: []*v1.SuggestedEdit{edit}}}}})
+
+	assert.NotContains(t, results(t, firstRun(t, doc))[0], "fixes")
 }
 
 func TestMarshalIsDeterministic(t *testing.T) {
