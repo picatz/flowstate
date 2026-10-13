@@ -6,9 +6,15 @@
 //
 // The SDK downloads the CLI from temporal.download with no checksum or
 // signature to pin (go.temporal.io/sdk testsuite.CachedDownload has neither),
-// so the integrity here is the SDK's TLS fetch, the file's name carrying the
-// SDK version, and a --version run before a cached file is trusted. CI caches
-// the file under a key naming the SDK version, OS and architecture.
+// so integrity is the SDK's TLS fetch plus the cache's scoping in CI (an exact
+// key with no restore-keys, saved only on a miss and never from a fork PR).
+// The --version run before a cached file is trusted is a liveness and
+// truncation check only, not integrity or poisoning protection.
+//
+// The key names the SDK version, OS and architecture, not the CLI binary: the
+// SDK's "default" CLI version is resolved by temporal.download at the first
+// download, so an entry can hold an older CLI until the SDK version changes or
+// the cache entry is evicted.
 package main
 
 import (

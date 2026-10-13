@@ -195,7 +195,7 @@ func CLICachePath() string { return cliCachePath() }
 // finds the file in place and [StartWith] never reaches the network.
 //
 // A cached file that cannot report its version (a truncated or corrupt cache
-// entry) is removed and fetched again rather than trusted.
+// entry) is removed and fetched again; that is a liveness check, not integrity.
 func PrefetchCLI(ctx context.Context, logger log.Logger) (string, error) {
 	path := cliCachePath()
 	if _, err := os.Stat(path); err == nil {

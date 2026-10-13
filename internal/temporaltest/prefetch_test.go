@@ -10,9 +10,10 @@ import (
 	"go.temporal.io/sdk/log"
 )
 
-// TestPrefetchCLIRefetchesACachedFileThatDoesNotRun is the poisoned or
-// truncated cache entry: a file at the cache path that cannot report its
-// version is replaced, not trusted; one that runs is left alone.
+// TestPrefetchCLIRefetchesACachedFileThatDoesNotRun is the truncated or
+// corrupt cache entry: a file at the cache path that cannot report its
+// version is replaced; one that runs is left alone. This is a liveness check,
+// not integrity or poisoning protection, which CI's cache scoping provides.
 func TestPrefetchCLIRefetchesACachedFileThatDoesNotRun(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake CLI is a shell script")
