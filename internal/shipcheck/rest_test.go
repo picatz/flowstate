@@ -1,4 +1,4 @@
-package main
+package shipcheck
 
 import (
 	"os"
@@ -399,5 +399,36 @@ func TestRESTPagesStopAtTheBound(t *testing.T) {
 	installFakeGH(t, "#!/bin/sh\nprintf '['\ni=0\nwhile [ $i -lt 100 ]; do [ $i -gt 0 ] && printf ','; printf '{}'; i=$((i+1)); done\nprintf ']'\n")
 	if _, err := restPages("repos/picatz/flowstate/pulls/7/files", ""); err == nil || !strings.Contains(err.Error(), "ran past") {
 		t.Fatalf("restPages on an endless list = %v, want the bound named", err)
+	}
+}
+
+// TestActivityOverRESTSeesAnEditedReviewBody: REST gives a review no update
+// time, so the only trace of an edit is its body. Activity read again with
+// nothing changed equals the verdict's digest; with the review body edited
+// it does not, which is what stops tools/shipmerge.
+func TestActivityOverRESTSeesAnEditedReviewBody(t *testing.T) {
+	dir := installFakeGH(t, fakeGH)
+	restFixtures(t, dir)
+	result, err := Check("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatalf("Check over REST: %v", err)
+	}
+	if !result.REST || result.Activity == "" {
+		t.Fatalf("Check = %+v, want REST evidence with an activity digest", result)
+	}
+	again, err := Activity("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != result.Activity {
+		t.Fatal("an unchanged pull request read again gave a different activity digest")
+	}
+	writeFixture(t, dir, "reviews.json", `[{"user":{"login":"copilot-pull-request-reviewer[bot]"},"state":"COMMENTED","body":"edited after the attestation","submitted_at":"2026-09-12T00:00:05Z"}]`)
+	edited, err := Activity("picatz/flowstate", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if edited == result.Activity {
+		t.Fatal("a review body edited after the verdict left the activity digest unchanged")
 	}
 }

@@ -43,6 +43,7 @@ Use this decision rule when an agent or reviewer proposes another instruction:
 | Repeatable procedure, rubric, or artifact contract | A skill |
 | Detailed architecture, examples, or historical incident | A referenced document |
 | Exact parsing, discovery, validation, or transformation | A script or typed tool |
+| A text or command sequence agents keep getting wrong (an attestation body, a pinned merge) | A tool that prints or performs it, such as `tools/shipcheck --attest` and `tools/shipmerge` |
 | Action that must be blocked or checked regardless of model judgment | Hook, permission rule, sandbox, or CI |
 | An independent judgment, or a procedure whose output should not share the main context | A Claude subagent under `.claude/agents/` preloading the relevant skill; other hosts run the skill inline |
 | A procedure that matters only while particular files are open, and only on Claude Code | `.claude/rules/*.md` with `paths:`; a portable equivalent is a nested `AGENTS.md` |
