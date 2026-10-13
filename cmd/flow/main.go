@@ -3346,9 +3346,10 @@ flow server --insecure-no-auth`,
 			"address. Given the specification's map (`--source-map`, from `flow compile " +
 			"--source-map`), a problem is placed at the file, line and column the map " +
 			"records. A map made for another program is refused and nothing is checked; a " +
-			"source file the map names that is on disk with different bytes has its " +
-			"locations withheld, so a problem is never shown at a shifted line. No file the " +
-			"map names is read except to hash it.",
+			"map is trusted for what its files hold unless `--check-sources` is given, which " +
+			"reads each source file the map names (only to hash it) and withholds the " +
+			"locations of one whose bytes differ, so a problem is never shown at a shifted " +
+			"line. A map's location in a document with no content digest is never shown.",
 		Args:          cobra.MinimumNArgs(1),
 		RunE:          runValidate,
 		SilenceErrors: true,
@@ -3385,7 +3386,7 @@ flow validate --auth-policy auth.yaml approval.yaml
 
 # Check a compiled specification, with each problem placed at its source:
 flow compile hello.yaml --source-map hello.map.json > hello.json
-flow validate --spec hello.json --source-map hello.map.json`,
+flow validate --spec hello.json --source-map hello.map.json --check-sources`,
 	}
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on

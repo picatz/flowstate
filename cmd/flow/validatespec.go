@@ -13,7 +13,10 @@ import (
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
-const specFlag = "spec"
+const (
+	specFlag         = "spec"
+	checkSourcesFlag = "check-sources"
+)
 
 // addValidateSpecFlags adds `--spec` and `--source-map` to `flow validate`: the
 // check for a program that is not a Flowfile on disk (#1568).
@@ -23,12 +26,18 @@ func addValidateSpecFlags(cmd *cobra.Command) {
 	cmd.Flags().String(sourceMapFlag, "",
 		"with --spec, the `path` of the specification's source map (`flow compile --source-map`): a problem is then "+
 			"reported at the file, line and column the map records for its step instead of only its address")
+	cmd.Flags().Bool(checkSourcesFlag, false,
+		"with --source-map, read the source files the map names and withhold the lines of any whose bytes differ from "+
+			"the map's digest; without it the map is trusted for what the files hold, and none is read")
 }
 
 // validateSpecOptions reads `--spec` and `--source-map` and refuses the
 // combinations that cannot mean anything.
 func validateSpecOptions(cmd *cobra.Command, args []string) (spec bool, mapPath string, err error) {
 	spec, _ = cmd.Flags().GetBool(specFlag)
+	if cmd.Flags().Changed(checkSourcesFlag) && !cmd.Flags().Changed(sourceMapFlag) {
+		return false, "", newUsageError(fmt.Errorf("--%s compares the files a source map names; add --%s", checkSourcesFlag, sourceMapFlag))
+	}
 	if !cmd.Flags().Changed(sourceMapFlag) {
 		return spec, "", nil
 	}
@@ -59,6 +68,7 @@ func runValidateSpec(cmd *cobra.Command, args []string, mapPath string, format O
 		return newUsageError(errors.New("--auth-policy checks the rules a Flowfile writes; it does not apply to a compiled specification"))
 	}
 
+	check, _ := cmd.Flags().GetBool(checkSourcesFlag)
 	var sourceMap *v1.DebugSourceMap
 	if mapPath != "" {
 		data, err := readBoundedFile(mapPath, "a source map", maxExistingSourceMapBytes)
@@ -75,7 +85,7 @@ func runValidateSpec(cmd *cobra.Command, args []string, mapPath string, format O
 	surface := newSurface(cmd)
 	var reports []*v1.DiagnosticReport
 	for _, path := range args {
-		diagnostics, err := validateSpecFile(path, sourceMap, catalog)
+		diagnostics, err := validateSpecFile(path, sourceMap, check, catalog)
 		if err != nil {
 			return err
 		}
@@ -114,7 +124,7 @@ func runValidateSpec(cmd *cobra.Command, args []string, mapPath string, format O
 
 // validateSpecFile checks one compiled specification, placing its problems
 // with sourceMap when there is one.
-func validateSpecFile(path string, sourceMap *v1.DebugSourceMap, catalog *v1.PluginCatalog) (flowfile.Diagnostics, error) {
+func validateSpecFile(path string, sourceMap *v1.DebugSourceMap, check bool, catalog *v1.PluginCatalog) (flowfile.Diagnostics, error) {
 	data, err := readBoundedFile(path, "a compiled specification", maxCompiledSpecBytes)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
@@ -124,7 +134,12 @@ func validateSpecFile(path string, sourceMap *v1.DebugSourceMap, catalog *v1.Plu
 		return nil, fmt.Errorf("%s is not a compiled specification (`flow compile --output json` writes one): %w", path, err)
 	}
 
+	// First, as source validation and the server do: a specification over the
+	// execution limit is refused at submit whatever else is right with it.
 	var diagnostics flowfile.Diagnostics
+	if err := v1.CheckSpecSize(&workflow); err != nil {
+		diagnostics = append(diagnostics, flowfile.Diagnostic{Message: err.Error()})
+	}
 	if err := v1.Validate(&workflow); err != nil {
 		diagnostics = append(diagnostics, flowfile.Diagnostic{Message: err.Error()})
 	}
@@ -136,7 +151,11 @@ func validateSpecFile(path string, sourceMap *v1.DebugSourceMap, catalog *v1.Plu
 	}
 
 	if sourceMap != nil {
-		if _, err := diagnostics.Locate(&workflow, sourceMap, documentChanged); err != nil {
+		var changed func(*v1.DebugSourceDocument) bool
+		if check {
+			changed = documentChanged
+		}
+		if _, err := diagnostics.Locate(&workflow, sourceMap, changed); err != nil {
 			return nil, fmt.Errorf("--%s: %w; compile it again with `flow compile --source-map`", sourceMapFlag, err)
 		}
 	}
@@ -147,9 +166,9 @@ func validateSpecFile(path string, sourceMap *v1.DebugSourceMap, catalog *v1.Plu
 // documentChanged reports whether the file a source map names is no longer the
 // bytes the map was made from, so that a line in it would point at other text.
 //
-// Only an absolute file name is looked at, and only to hash it: a map is data,
-// so it does not send this process to read a path it chose beyond that, and
-// nothing read is shown. A document that is not a file here (a canvas, or a path
+// Only called under --check-sources, because a map is data and does not send
+// this process to read a path it chose: the caller authorizes it. Only an
+// absolute file name is looked at, and only to hash it; nothing read is shown. A document that is not a file here (a canvas, or a path
 // from another machine) cannot be compared and is trusted as the map says. A
 // file that is there but cannot be read as a regular file of a Flowfile's size
 // is treated as changed, because what it holds cannot be shown to match.

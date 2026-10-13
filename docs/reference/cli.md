@@ -2752,7 +2752,7 @@ A file naming a plugin's task is checked against that plugin given `--plugin-dir
 
 Without `--plugin-dir` a step naming a plugin task is reported as not registered here, which is what it is: whether a plugin is installed is the deployment's decision and this process has not been told about one.
 
-`--spec` checks a compiled specification (`flow compile -o json`) instead of a Flowfile: the checks that need no source, with a problem named by its step's address. Given the specification's map (`--source-map`, from `flow compile --source-map`), a problem is placed at the file, line and column the map records. A map made for another program is refused and nothing is checked; a source file the map names that is on disk with different bytes has its locations withheld, so a problem is never shown at a shifted line. No file the map names is read except to hash it.
+`--spec` checks a compiled specification (`flow compile -o json`) instead of a Flowfile: the checks that need no source, with a problem named by its step's address. Given the specification's map (`--source-map`, from `flow compile --source-map`), a problem is placed at the file, line and column the map records. A map made for another program is refused and nothing is checked; a map is trusted for what its files hold unless `--check-sources` is given, which reads each source file the map names (only to hash it) and withholds the locations of one whose bytes differ, so a problem is never shown at a shifted line. A map's location in a document with no content digest is never shown.
 
 Examples:
 
@@ -2780,13 +2780,14 @@ flow validate --auth-policy auth.yaml approval.yaml
 
 # Check a compiled specification, with each problem placed at its source:
 flow compile hello.yaml --source-map hello.map.json > hello.json
-flow validate --spec hello.json --source-map hello.map.json
+flow validate --spec hello.json --source-map hello.map.json --check-sources
 ```
 
 | Flag | Type | Default | Environment | Description |
 |---|---|---|---|---|
 | `--allow-insecure-plugin-dir` | `bool` | `false` | — | permit a plugin directory other users can write to, which lets them choose what this worker runs |
 | `--auth-policy <string>` | `string` | — | — | path to the deployment's auth policy (YAML); when given, every identity expression in the checked files (`signals:`, `debug:`, `triggers: manual:`) and in the policy's own `secrets:` and `federation:` rules is checked against what its issuer entries carry (`carry_claims`, `groups_claim`), and a claim no entry carries is reported: a rule requiring it can never match; a rule reading `actors` or `delegated` is reported when no entry has a `delegation:` stanza |
+| `--check-sources` | `bool` | `false` | — | with --source-map, read the source files the map names and withhold the lines of any whose bytes differ from the map's digest; without it the map is trusted for what the files hold, and none is read |
 | `-o, --output <string>` | `string` | `text` | — | output format: text, json, or jsonl |
 | `--plugin <string,...>` | `stringArray` | — | — | launch only the named plugin, repeatable; a name with no binary is an error |
 | `--plugin-catalog <string>` | `string` | — | — | check against a saved plugin catalog (`flow plugins --plugin-dir <dir> --output json`) instead of launching plugins; no process is started |

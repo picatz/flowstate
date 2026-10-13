@@ -144,7 +144,7 @@ func TestLocateBoundsWhatTheMapAuthorChooses(t *testing.T) {
 	entry := func(uri string) *v1.DebugSourceMap {
 		return &v1.DebugSourceMap{
 			IrDigest:  flowfile.IRDigest(workflow),
-			Documents: []*v1.DebugSourceDocument{{Uri: uri}},
+			Documents: []*v1.DebugSourceDocument{{Uri: uri, Digest: "sha256:00"}},
 			Entries: []*v1.DebugSourceEntry{{
 				Site:     &v1.DebugSite{Workflow: "w", Path: []string{"a"}},
 				Location: &v1.DebugSourceLocation{Range: &v1.SourceRange{StartLine: 2, StartColumn: 3}},
@@ -170,4 +170,18 @@ func TestLocateBoundsWhatTheMapAuthorChooses(t *testing.T) {
 	require.NoError(t, err)
 	assert.LessOrEqual(t, len(ds[0].File), 512)
 	assert.True(t, strings.HasSuffix(ds[0].File, "é"), "cut on a rune boundary")
+}
+
+func TestLocateWithholdsALineInADocumentWithNoDigest(t *testing.T) {
+	t.Parallel()
+
+	workflow, sourceMap := locateFixture(t)
+	sourceMap.Documents[0].Digest = ""
+	ds := flowfile.Diagnostics{{Step: "page", Path: []string{"pages", "page"}, Message: "x"}}
+
+	placed, err := ds.Locate(workflow, sourceMap, nil)
+
+	require.NoError(t, err)
+	assert.Zero(t, placed, "a line bound to no bytes could be any version of the text")
+	assert.Zero(t, ds[0].Line)
 }

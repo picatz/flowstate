@@ -30,7 +30,7 @@ const maxLocatedFileBytes = 512
 // way. It returns the number of diagnostics placed.
 //
 // A diagnostic is left as it was when it names no step, the map does not locate
-// it, its location indexes no document, or changed reports that the document is
+// it, its location indexes no document, it gives a line in a document with no content digest, or changed reports that the document is
 // no longer the bytes the map was made from (changed may be nil, which trusts
 // the map). Nothing is guessed: such a diagnostic is rendered by its address.
 // A document that is not text (a canvas) has no line, so only File is set, and
@@ -72,6 +72,11 @@ func (ds Diagnostics) Locate(workflow *v1.Workflow, sourceMap *v1.DebugSourceMap
 			continue
 		}
 		document := sourceMap.GetDocuments()[loc.GetDocument()]
+		// A line in a document that names no bytes is bound to nothing: it
+		// could be any version of the text, so it is not shown.
+		if loc.GetRange() != nil && document.GetDigest() == "" {
+			continue
+		}
 		if changed != nil {
 			gone, known := stale[loc.GetDocument()]
 			if !known {

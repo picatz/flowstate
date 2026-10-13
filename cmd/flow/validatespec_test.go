@@ -12,6 +12,8 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
+
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
 
@@ -127,11 +129,37 @@ func TestValidateSpecWithholdsLinesOfASourceThatChanged(t *testing.T) {
 	spec, mapPath, source := brokenSpec(t)
 	require.NoError(t, os.WriteFile(source, []byte("# a comment that moves every line\n"+specSource), 0o600))
 
-	res := runFlow(t, "validate", "--spec", spec, "--source-map", mapPath)
+	res := runFlow(t, "validate", "--spec", spec, "--source-map", mapPath, "--check-sources")
 
 	require.Error(t, res.Err)
 	assert.NotContains(t, res.Output(), source, "the file is not the bytes the map was made from:\n%s", res.Output())
 	assert.Contains(t, res.Output(), "second", "the address is still there")
+
+	// Without the flag nothing the map names is opened, so the file's bytes
+	// cannot change the answer.
+	res = runFlow(t, "validate", "--spec", spec, "--source-map", mapPath)
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Output(), source+":7:5:")
+}
+
+func TestValidateSpecCheckSourcesNeedsAMap(t *testing.T) {
+	spec, _, _ := brokenSpec(t)
+
+	res := runFlow(t, "validate", "--spec", spec, "--check-sources")
+
+	require.Error(t, res.Err)
+	assert.Contains(t, res.Output(), "--source-map")
+}
+
+func TestValidateSpecChecksTheSpecificationSize(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.json")
+	workflow := &v1.Workflow{Name: "big", Description: proto.String(strings.Repeat("x", 2<<20))}
+	writeProto(t, path, workflow)
+
+	res := runFlow(t, "validate", "--spec", path)
+
+	require.Error(t, res.Err)
+	assert.NotContains(t, res.Output(), "ok")
 }
 
 // A source the map names that is not on this machine cannot be compared, and is
@@ -140,7 +168,7 @@ func TestValidateSpecTrustsAMapForASourceItCannotSee(t *testing.T) {
 	spec, mapPath, source := brokenSpec(t)
 	require.NoError(t, os.Remove(source))
 
-	res := runFlow(t, "validate", "--spec", spec, "--source-map", mapPath)
+	res := runFlow(t, "validate", "--spec", spec, "--source-map", mapPath, "--check-sources")
 
 	require.Error(t, res.Err)
 	assert.Contains(t, res.Output(), source+":7:5:")

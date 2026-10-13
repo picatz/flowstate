@@ -1096,7 +1096,9 @@ records for their step, and shown by their step's address when it records none.
 The map must be of that specification (the same digest test), or nothing is
 checked and the command says to compile again; a source file the map names that
 is on this machine with other bytes has its lines withheld, as the pane
-withholds them. A map from another producer works the same way: a document that
+withholds them, when `--check-sources` asks for the comparison (the map names
+the files; reading them is the caller's say, so by default none is opened). A
+line in a document the map gives no content digest for is never shown. A map from another producer works the same way: a document that
 is not text, such as a canvas, has no line to give, so the problem carries its
 document and its address.
 
