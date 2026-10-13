@@ -495,7 +495,7 @@ func moduleImportPaths(t *testing.T) []string {
 // quietly joined rest.
 func TestTestLanesPartitionTheModule(t *testing.T) {
 	all := moduleImportPaths(t)
-	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "", "event is push, not a pull request: the full set runs")
+	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "event is push, not a pull request: the full set runs")
 
 	seen := map[string]string{}
 	for _, l := range testLanes {
@@ -532,7 +532,7 @@ func TestAPullRequestRunsTheAffectedLanesOnly(t *testing.T) {
 	}
 	p := buildPlan([]string{"pkg/flowstate/v1/flowfile/lsp/hover.go"})
 	lanes, why := ciTestLanes(p, all, []string{v1Pkg + "/flowfile/lsp"}, []string{modulePath + "/tools/wallclock"},
-		"", ciForceReason("pull_request", resolvedBase, p))
+		ciForceReason("pull_request", resolvedBase, p))
 
 	want := map[string][]string{
 		"engine": {}, "v1": {}, "cli": {},
@@ -564,14 +564,22 @@ func TestDataDependenciesAndForcingRunEveryLane(t *testing.T) {
 		{"a document", []string{"docs/DEPLOYMENT.md"}, "pull_request", ""},
 		{"the agent configuration", []string{"AGENTS.md"}, "pull_request", ""},
 		{"the schema", []string{"proto/flowstate/v1/run.proto"}, "pull_request", ""},
-		{"an editor's manifest", []string{"editors/vscode/package.json", "cmd/flow/main.go"}, "pull_request", "editors/vscode"},
+		{"an editor's manifest", []string{"editors/vscode/package.json"}, "pull_request", "editors/vscode"},
+		{"an editor's manifest beside a Go change", []string{"editors/vscode/package.json", "cmd/flow/main.go"}, "pull_request", "editors/vscode"},
 		{"a push to main", []string{"tools/wallclock/main.go"}, "push", ""},
 		{"the Makefile", []string{"Makefile"}, "pull_request", ""},
 		{"the module graph", []string{"go.mod"}, "pull_request", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			p := buildPlan(tc.changed)
-			lanes, why := ciTestLanes(p, all, nil, nil, tc.unowned, ciForceReason(tc.event, resolvedBase, p))
+			p.unowned = tc.unowned
+			force := ciForceReason(tc.event, resolvedBase, p)
+			for _, d := range ciDecisions(p, nil, force) {
+				if d.Job == "test" && !d.Run {
+					t.Errorf("the test job is skipped (%s), so its full lanes never run", d.Why)
+				}
+			}
+			lanes, why := ciTestLanes(p, all, nil, nil, force)
 			n := 0
 			for _, pkgs := range lanes {
 				n += len(pkgs)
@@ -584,16 +592,19 @@ func TestDataDependenciesAndForcingRunEveryLane(t *testing.T) {
 }
 
 // TestADirectoryNoPackageOwnsIsNamed: testdata under a package is that
-// package's, and editors/ or the repository root is nobody's.
+// package's, editors/ is nobody's, and the repository root is left to
+// buildPlan's own rules.
 func TestADirectoryNoPackageOwnsIsNamed(t *testing.T) {
 	byDir := map[string]string{"pkg/flowstate/v1/engine": v1Pkg + "/engine", "cmd/flow": cmdFlowPkg}
 	if got := unownedDir([]string{"cmd/flow", "pkg/flowstate/v1/engine/testdata/x"}, byDir); got != "" {
 		t.Errorf("unownedDir = %q, want every directory owned", got)
 	}
-	for _, d := range []string{"editors/vscode", "."} {
-		if got := unownedDir([]string{"cmd/flow", d}, byDir); got != d {
-			t.Errorf("unownedDir = %q, want %q", got, d)
-		}
+	if got := unownedDir([]string{"cmd/flow", "editors/vscode"}, byDir); got != "editors/vscode" {
+		t.Errorf("unownedDir = %q, want editors/vscode", got)
+	}
+	// The root's files are classified by buildPlan or read by no test.
+	if got := unownedDir([]string{"."}, byDir); got != "" {
+		t.Errorf("unownedDir = %q, want the repository root left to buildPlan", got)
 	}
 }
 
@@ -612,8 +623,12 @@ func TestTreeReadersAreFoundInTheTree(t *testing.T) {
 		}
 		pkgs = append(pkgs, pkgMeta{ImportPath: ip, Dir: filepath.Join("..", "..", rel)})
 	}
-	readers := treeReaderPackages(readTestSources(pkgs))
+	sources := readTestSources(pkgs)
+	readers := treeReaderPackages(sources)
 	for _, want := range []string{
+		v1Pkg,                                     // no decision on an error's text, through testkit.RepoRoot
+		v1Pkg + "/metricschema",                   // every instrument registered, through testkit.RepoRoot
+		v1Pkg + "/payloadcodec",                   // one key-id writer, walking from os.Getwd
 		v1Pkg + "/engine",                         // the scope guard; builds the SDK plugin
 		v1Pkg + "/principal",                      // one caller type
 		v1Pkg + "/authz",                          // no action check outside authz
@@ -630,6 +645,15 @@ func TestTreeReadersAreFoundInTheTree(t *testing.T) {
 	} {
 		if !contains(readers, want) {
 			t.Errorf("%s is not found as a tree reader; a leaf pull request would skip its guard", want)
+		}
+	}
+	// Completeness over the helpers: any test that finds the repository root
+	// through a function named for it (testkit.RepoRoot, or a package's own
+	// repoRoot) is a tree reader, whatever that function is called with.
+	rootHelper := regexp.MustCompile(`(?i)\breporoot\w*\(`)
+	for ip, src := range sources {
+		if rootHelper.Match(src) && !contains(readers, ip) {
+			t.Errorf("%s calls a repository-root helper but is not found as a tree reader", ip)
 		}
 	}
 	for _, not := range []string{v1Pkg + "/secrets", v1Pkg + "/auth", v1Pkg + "/execpolicy"} {

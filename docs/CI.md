@@ -315,8 +315,10 @@ Since #1726:
     `TestTestLanesPartitionTheModule` pins the partition against `go list
     ./...`, and `TestTheLaneStepFailsClosed` runs the Test step's own script.
   - On a pull request a lane runs the affected set plus the *tree readers*:
-    packages whose tests walk the source tree from an ancestor directory, call
-    `git rev-parse --show-toplevel`, or run the go command (the one-caller,
+    packages whose tests walk the source tree from an ancestor directory or
+    from their own working directory, find the root through
+    `testkit.RepoRoot` or `git rev-parse --show-toplevel`, or run the go
+    command (the one-caller,
     scope, YAML-containment and environment-variable guards, the `tools/`
     ratchets, the tests that build a plugin by import path). A change can
     break one of those without being imported by it, so they run on every
@@ -324,8 +326,11 @@ Since #1726:
     `TestTreeReadersAreFoundInTheTree`). A forced plan (a push to `main`, a
     change to CI, the gate, the Makefile or the module graph), the data
     dependencies the import graph cannot see (`examples/`, the repository
-    files tests read, `proto/`), and a change in any directory no Go package
-    owns (`editors/`, a top-level file) run every package, as before.
+    files tests read, `proto/`), and a change in any directory below the root
+    that no Go package owns (`editors/vscode`, whose `package.json` flowdap's
+    tests read) run every package, as before; that last case also selects the
+    `test` job on its own. Top-level files are left to the plan's existing
+    rules: the ones tests read are already classified, and the rest is prose.
   - `make test` runs every selected package except `TEMPORAL_TEST_PACKAGES`
     at `go test`'s default `-p`, then those (cmd/flow, internal/temporaltest,
     engine, server, temporalclient) with `-p=1`, both into one `tools/testsum`.

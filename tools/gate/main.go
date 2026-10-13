@@ -106,7 +106,6 @@ func main() {
 type analysis struct {
 	plan            plan
 	packages        []pkgMeta
-	unowned         string
 	affected        []string
 	exampleDataDeps []string
 	repoDataDeps    []string
@@ -174,10 +173,11 @@ func analyse(seedRepoTestData bool, suppliedBase string) (analysis, error) {
 	// so the widest job it could possibly reach still runs.
 	unresolvedGoDir := hasUnresolvedGoDir(p.goFiles, byDir)
 
-	// A changed directory no root package owns (editors/, a top-level file)
-	// can be read off disk by any test, and no import says which one. The CI
-	// test lanes run every package for it; see ciTestLanes.
-	unowned := unownedDir(p.fileDirs, byDir)
+	// A changed directory no root package owns (editors/vscode, say) can be
+	// read off disk by any test, and no import says which one. CI selects the
+	// test job for it and runs every lane in full; see ciDecisions and
+	// ciTestLanes.
+	p.unowned = unownedDir(p.fileDirs, byDir)
 
 	var affected []string
 	var exampleDataDeps, repoDataDeps []string
@@ -234,7 +234,6 @@ func analyse(seedRepoTestData bool, suppliedBase string) (analysis, error) {
 	return analysis{
 		plan:            p,
 		packages:        pkgs,
-		unowned:         unowned,
 		affected:        affected,
 		exampleDataDeps: exampleDataDeps,
 		repoDataDeps:    repoDataDeps,
@@ -284,7 +283,7 @@ func runCI(event, suppliedBase string) error {
 		all = append(all, m.ImportPath)
 	}
 	slices.Sort(all)
-	lanes, lanesWhy := ciTestLanes(a.plan, all, a.affected, treeReaderPackages(readTestSources(a.packages)), a.unowned, force)
+	lanes, lanesWhy := ciTestLanes(a.plan, all, a.affected, treeReaderPackages(readTestSources(a.packages)), force)
 	return writeCIDecisions(ciDecisions(a.plan, a.affected, force), lanes, lanesWhy)
 }
 

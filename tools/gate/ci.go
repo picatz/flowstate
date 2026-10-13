@@ -65,7 +65,12 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 	// this job was the only one that ran `make test-plugins`; that step has
 	// a job of its own below, and this one — the five-minute root suite — is
 	// what a plugin change should not have to wait for (#1726).
-	testRun := goAffected || p.examples || p.docs || p.proto || p.repoTestData
+	//
+	// p.unowned is the same shape again, one step wider: a directory no Go
+	// package owns (editors/vscode's package.json, which flowdap's tests
+	// read) can be read by any test, so it selects the job, and ciTestLanes
+	// runs every lane in full for it.
+	testRun := goAffected || p.examples || p.docs || p.proto || p.repoTestData || p.unowned != ""
 	testWhy := "no Go package is affected, and nothing under examples/ or proto/, and none of the derived-docs sources or repository-level test data changed"
 	switch {
 	case goAffected:
@@ -78,6 +83,8 @@ func ciDecisions(p plan, affected []string, force string) []decision {
 		testWhy = p.reasons["docs"] + " changed"
 	case p.repoTestData:
 		testWhy = p.reasons["test"] + " changed, and it is read directly by tests rather than imported"
+	case p.unowned != "":
+		testWhy = "a file in " + p.unowned + " changed, which no Go package owns, so any test may read it"
 	}
 
 	// test-plugins: `make test-plugins` and `make plugin-examples`, off the
@@ -228,14 +235,14 @@ var testLanes = []testLane{
 // import can still fail them; see treeReaderPattern). Everything else — a
 // forced plan, the data dependencies the import graph cannot see (examples/,
 // the repository-level files tests read, and proto/, which the MCP schema
-// tests read off disk), and a change in unowned, a directory no root package
+// tests read off disk), and a change in p.unowned, a directory no root package
 // owns — runs every package, as it did before the lanes were narrowed. What
 // is left unguarded is a test reading another package's files off disk.
 //
 // Every lane is always present in the result, as a list that may be empty, so
 // the Test step can tell a lane the diff does not reach from a plan output it
 // failed to read.
-func ciTestLanes(p plan, all, affected, treeReaders []string, unowned, force string) (map[string][]string, string) {
+func ciTestLanes(p plan, all, affected, treeReaders []string, force string) (map[string][]string, string) {
 	full := ""
 	switch {
 	case force != "":
@@ -246,8 +253,8 @@ func ciTestLanes(p plan, all, affected, treeReaders []string, unowned, force str
 		full = p.reasons["test"] + " changed, and it is read directly by tests rather than imported"
 	case p.proto:
 		full = p.reasons["proto"] + " changed, and tests read the schema off disk"
-	case unowned != "":
-		full = "a file in " + unowned + " changed, which no Go package owns, so no import says which tests read it"
+	case p.unowned != "":
+		full = "a file in " + p.unowned + " changed, which no Go package owns, so no import says which tests read it"
 	}
 
 	selected := all
