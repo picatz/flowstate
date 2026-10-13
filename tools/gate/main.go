@@ -591,7 +591,7 @@ func run(suppliedBase string) error {
 // slow and correct, rather than nothing, which is fast and worthless. A
 // narrower answer than the truth is the only dangerous direction here — it
 // skips checks the diff could reach — and running wide cannot be narrow. It is
-// the same reasoning [ciForceReason] already applies to the merge queue, where
+// the same reasoning [ciForceReason] already applies to a push to main, where
 // being wrong about the plan is unrecoverable and so the plan is not consulted.
 //
 // Every tier prints the reason, so a wide run is never mistaken for a diff that
@@ -941,7 +941,7 @@ func buf(args ...string) cmdSpec {
 // answers about one question (#882 for staticcheck, #887 for vet).
 //
 // It is ciForceReason with an empty event on purpose. The event-driven arms of
-// that function — a push to main, a merge group — describe runs that are not
+// that function — a push to main — describes runs that are not
 // this one: the local tier is always a pull request being prepared, so an
 // empty event is the honest input, and what is left is exactly the harness
 // forcing (ciWide), the build-graph forcing (moduleWide), and the

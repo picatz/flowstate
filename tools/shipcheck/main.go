@@ -29,8 +29,15 @@ type requiredCheck struct {
 	name     string
 }
 
+// advisoryWorkflow names the workflow whose check runs report but never gate a
+// merge. CodeQL runs on every pull request in parallel with CI and is the
+// slowest job once the rest are fast, so a merge waiting on it is paid for in
+// minutes with nothing in return: its findings land as code-scanning alerts,
+// and the weekly and push runs on main keep scanning. It is neither required
+// below nor read by the generic scan for incomplete or failed checks.
+const advisoryWorkflow = "CodeQL"
+
 var requiredChecks = []requiredCheck{
-	{"CodeQL", "Analyze Go"},
 	{"CI", "plan"},
 	{"CI", "verdict"},
 	{"Commit conventions", "commitcheck"},
@@ -566,6 +573,9 @@ func checkProblems(checks []statusCheck, requiredChecks []requiredCheck) []strin
 	reported := make(map[string][]statusCheck, len(checks))
 	var order []string
 	for _, check := range checks {
+		if check.Type == "CheckRun" && check.Workflow == advisoryWorkflow {
+			continue
+		}
 		name := check.Name
 		if name == "" {
 			name = check.Context

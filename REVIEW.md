@@ -41,8 +41,8 @@ is a nit, lead the summary with "no factual issues".
   `cmd/flow/internal/reference/mirror/` are derived, and an edit hook already
   refuses them; review the schema, the generator, or the source it reads.
 - Anything CI already enforces: `gofmt`, `go vet`, staticcheck, CodeQL,
-  `vulncheck`, dependency review, commit-message shape, and the `path.go:NNN`
-  citation checker.
+  `vulncheck`, dependency review, commit-message shape, and `path.go:NNN`
+  citations in Markdown (checked by `go test`).
 - An established local idiom, unless the choice creates real correctness or
   maintenance risk. Report that as optional and say so.
 

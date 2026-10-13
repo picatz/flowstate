@@ -1,15 +1,16 @@
 // Package fuzztargets reads targets.txt, the one written source of this
 // module's fuzz target list.
 //
-// Four things used to hold their own copy of that list — the Makefile, the PR
-// lane's fuzz-smoke job, the weekly deep tier's fuzz-deep job, and the package
-// set tools/gate uses to decide whether a diff can reach a fuzz target — and
-// they had already drifted apart: the deep tier ran four of the ten targets the
-// smoke tier ran (#857). They all read this package or the file behind it now.
-// The shell side reads it through list.sh; Go callers read it here, and the
+// Three things used to hold their own copy of that list — the Makefile, CI's
+// fuzz-smoke job and the weekly deep tier's fuzz-deep job — and they had
+// already drifted apart: the deep tier ran four of the ten targets the smoke
+// tier ran (#857). They all read this package or the file behind it now. The
+// shell side reads it through list.sh; Go callers read it here, and the
 // package's test holds the two readers to the same answer and the file itself
-// to the tree. tools/gate reads the smoke tier here to decide which targets a
-// diff reaches, and hands that list to list.sh through the Makefile (#1726).
+// to the tree. A pull request does not run the smoke tier unless the plan is
+// forced wide (a change to CI, the Makefile, the gate, the module graph or the
+// target list itself): its seed corpora run as ordinary tests, and the
+// mutation runs on a push to main and weekly.
 package fuzztargets
 
 import (
@@ -22,7 +23,8 @@ import (
 // Tiers. A target names the tiers that run it in targets.txt's third column.
 const (
 	// TierSmoke is the bounded per-push tier: 30s per target, run by
-	// `make fuzz-smoke` locally and by CI's required fuzz-smoke job.
+	// `make fuzz-smoke` locally and by CI's fuzz-smoke job on a push to main
+	// (and on a pull request only when the plan is forced wide).
 	TierSmoke = "smoke"
 
 	// TierDeep is the weekly scheduled tier: 10m per target, run by
