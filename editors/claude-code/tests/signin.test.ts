@@ -1,4 +1,4 @@
-import { SIGN_IN_LINE, signInCommand } from '../hooks/signin'
+import { SIGN_IN_LINE, SIGN_IN_READY, SIGN_IN_UNREADY, signInCommand } from '../hooks/signin'
 import { expect, test } from 'claude-code/testing'
 
 test('the sign-in command targets the address the pane read, or the CLI default when none is set', () => {
@@ -15,7 +15,9 @@ test('an address or binary that is not safe to paste into a shell gets no comman
   for (const flow of ['fl ow', 'flow;id', '$(flow)', '', '../'.repeat(100)]) expect(signInCommand(flow, 'h:1')).toBeUndefined()
 })
 
-test('the card tells the person what to do without carrying a credential', () => {
-  expect(SIGN_IN_LINE).toMatch(/flow login/)
-  expect(SIGN_IN_LINE).not.toMatch(/token=|bearer [A-Za-z0-9]/i)
+test('the card text names the right command for each kind of server and carries no credential', () => {
+  expect(SIGN_IN_READY).toMatch(/terminal/)
+  expect(SIGN_IN_UNREADY).toMatch(/flow login.*--issuer.*--client-id/)
+  expect(SIGN_IN_UNREADY).toMatch(/flow jwt sign.*--token-file/)
+  for (const t of [SIGN_IN_LINE, SIGN_IN_READY, SIGN_IN_UNREADY]) expect(t).not.toMatch(/token=|bearer [A-Za-z0-9]/i)
 })

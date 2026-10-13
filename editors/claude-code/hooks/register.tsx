@@ -7,7 +7,7 @@ import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFo
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
 import { MAX_PAGES, MAX_RUNS, clean, isGone, needsSignIn, parsePage, reason, stderrNote, toListing } from './runs'
-import { SIGN_IN_LINE, signInCommand } from './signin'
+import { SIGN_IN_LINE, SIGN_IN_READY, SIGN_IN_UNREADY, signInCommand } from './signin'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { CHIPS, LastGood, chipFor, chipText } from './chips'
@@ -167,6 +167,9 @@ const readStory = async ($: Engine, flow: string, address: string, id: string): 
     return []
   }
 }
+
+/** Whether an environment read found a non-empty value. */
+const set = (v: unknown): boolean => typeof v === 'string' && v !== ''
 
 /** `FLOWSTATE_ADDRESS` as the session sees it: undefined when unset, null when the lookup fails (the target is then unknown, not the default). */
 const envAddress = async ($: Engine): Promise<string | undefined | null> => {
@@ -677,21 +680,30 @@ export const register: Register = (on, options) => {
     }
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
+    /** Whether `flow login` would find the issuer and client it needs in this session's environment. */
+    const loginReady = (await Promise.all([
+      Promise.resolve($.env.get('FLOWSTATE_ISSUER')).then(set, () => false),
+      Promise.resolve($.env.get('FLOWSTATE_CLIENT_ID')).then(set, () => false),
+    ])).every(Boolean)
     /** The refusal to sign in, as a card: what to run, copied on a press and never run by the pane. */
     const signInCard = (what: string) => {
-      const command = 'address' in target ? signInCommand(flow, target.address) : undefined
+      const command = loginReady && 'address' in target ? signInCommand(flow, target.address) : undefined
       return (
         <Box flexDirection="column">
           <Text dimColor>  {SIGN_IN_LINE}</Text>
+          {command === undefined && <Text dimColor>  {SIGN_IN_UNREADY}</Text>}
           {command !== undefined && (
-            <Box>
-              <Text dimColor>  {command}  </Text>
-              <Button key={`sign-in:${what}`} label="Copy sign-in command" plain onPress={async () => {
-                const copied = await $.ui.copy({ text: command, surface: e.surface }).then(() => true, () => false)
-                if (copied) paneNotes.signInAsked(command)
-              }}>
-                Copy sign-in command
-              </Button>
+            <Box flexDirection="column">
+              <Text dimColor>  {SIGN_IN_READY}</Text>
+              <Box>
+                <Text dimColor>  {command}  </Text>
+                <Button key={`sign-in:${what}`} label="Copy sign-in command" plain onPress={async () => {
+                  const copied = await $.ui.copy({ text: command, surface: e.surface }).then(() => true, () => false)
+                  if (copied) paneNotes.signInAsked(command)
+                }}>
+                  Copy sign-in command
+                </Button>
+              </Box>
             </Box>
           )}
         </Box>

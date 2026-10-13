@@ -170,7 +170,7 @@ test('a credential that expires after a good list keeps the list and still offer
       : { exitCode: 0, stdout: page([run('w-1', 'STATUS_RUNNING', 'Deploy')]), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
   on('ui.status', () => ({ value: undefined }))
-  on('env.get', () => ({ value: 'dev.example.com:9233' }))
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'FLOWSTATE_ADDRESS' ? 'dev.example.com:9233' : 'set' }))
   const ui = await $.ui.mount({ plugin: 'flowstate', surface: 'terminal', ...PANE })
   expect(await ui.find({ type: 'Button', text: /running Deploy/ })).toBeDefined()
 

@@ -17,6 +17,16 @@ export const signInCommand = (flow: string, address: string): string | undefined
   return COPYABLE_ADDRESS.test(target) && COPYABLE_BINARY.test(flow) ? `${flow} login --address=${target}` : undefined
 }
 
-/** What the card says, one line, for a server that refused the pane's credentials. */
-export const SIGN_IN_LINE =
-  'The server did not accept your credentials. Run flow login in a terminal (a flow server dev --auth stack printed its own sign command at startup), then the pane reads again.'
+/** What the card says first, for a server that refused the pane's credentials. */
+export const SIGN_IN_LINE = 'The server did not accept your credentials.'
+
+/** Under {@link SIGN_IN_LINE} when the session names an OIDC issuer and client: the command below signs in, then the pane reads again. */
+export const SIGN_IN_READY = 'Run this in a terminal to sign in; the pane reads again afterwards:'
+
+/**
+ * Under {@link SIGN_IN_LINE} when the session does not name them. `flow login` is the device grant against an OIDC
+ * issuer and cannot sign in to a `flow server dev --auth` stack, whose callers present a token signed by its local key, so
+ * neither is offered as a button: the card says which command fits which server.
+ */
+export const SIGN_IN_UNREADY =
+  'Against an OIDC server run flow login with --issuer and --client-id (or set FLOWSTATE_ISSUER and FLOWSTATE_CLIENT_ID); against flow server dev --auth use the flow jwt sign command it printed and pass --token-file.'
