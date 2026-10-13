@@ -275,6 +275,42 @@ jobs:
       - name: Report toolchain
         run: go version
 
+      # The lanes that own a Temporal dev server (engine, cli, heavy) run the
+      # Temporal CLI, which the SDK downloads from temporal.download on first
+      # use: two runs failed with "context deadline exceeded" inside a test
+      # step's 120s budget. The CLI is restored from the cache here, fetched
+      # by `make temporal-cli` (bounded retries, backoff) when the cache
+      # misses, and saved for the next run, so the Test step never downloads.
+      # The key names the SDK version (the cached file's name carries it too),
+      # the OS and the architecture. A fork PR restores but does not save, as
+      # the setup-go caches above do (#577): the SDK publishes no checksum for
+      # the CLI, so a write path into the cache is not given to untrusted code.
+      - name: Locate the Temporal CLI cache
+        id: temporal-cli
+        if: contains(fromJSON('["engine","cli","heavy"]'), matrix.lane)
+        run: go run ./tools/temporalcli -describe >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Temporal CLI
+        id: temporal-cli-restore
+        if: steps.temporal-cli.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.temporal-cli.outputs.path }}
+          key: ${{ steps.temporal-cli.outputs.key }}
+
+      # Runs on a hit too: it is a stat and a `--version` on a restored file,
+      # and it replaces one that does not run.
+      - name: Fetch the Temporal CLI
+        if: steps.temporal-cli.outcome == 'success'
+        run: make temporal-cli
+
+      - name: Save the Temporal CLI
+        if: steps.temporal-cli.outcome == 'success' && steps.temporal-cli-restore.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.temporal-cli.outputs.path }}
+          key: ${{ steps.temporal-cli.outputs.key }}
+
       - name: Build
         if: matrix.lane == 'rest'
         run: go build ./...

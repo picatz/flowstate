@@ -16,14 +16,11 @@ software rather than prose for checks that can be deterministic.
 | `.claude/settings.json` | Claude-specific hooks, the allow list that stops the repository's own verification commands from prompting, and the two official security plugins the repository enables for every clone and cloud session, pinned to the Anthropic-owned marketplace they resolve from | Enforced by Claude Code |
 | `.claude/agents/*.md` | Fresh-context subagents carrying the review, verification, and review-hygiene rubrics (`flowstate-reviewer`, `flowstate-verifier`, `flowstate-pr-tidy`, `flowstate-scout`), each pinned to a model and effort by the `flowstate-delegate` skill | Claude Code delegates on the description; the body and preloaded skills load in the subagent's own context |
 | `.claude/rules/*.md` | Path-scoped procedures, currently only the agent-configuration maintenance rule | Loaded when Claude Code reads or edits a file matching the rule's `paths` |
-| `REVIEW.md` | The `comms-review` rubric in the one form Anthropic's hosted Code Review can read: what Important means here, the nit cap, the generated surfaces to skip, and the disposition rule that keeps a re-review from relitigating | Read by Code Review on a pull request |
 | `.claude/claude-security-guidance.md` | Flowstate's trust boundaries and the four invariants a security reviewer most often gets wrong here, for the `security-guidance` plugin's model-backed reviews | Loaded by the plugin's model-backed reviews |
 | `.amp/settings.json` | Amp workspace skill selection; no repository-specific permission prompts | Applied by Amp in this repository |
-| `.agents/ship.md` | Versioned Amp Custom Ship procedure | Copied into the Amp project setting; it is not read automatically after edits |
+| `.agents/ship.md` | The shipping procedure every host follows; the `flowstate-ship` skill adds only the mechanics | Read through `AGENTS.md` and the skill; Amp's Custom Ship setting holds a copy that is not refreshed automatically |
 | `.agents/setup` / `.agents/resume` | Amp Orb provisioning and wake behavior | Run by the Orb lifecycle |
 | `tools/agentconfig` | Structural tests for this configuration | Run by the full Go test suite and selected by the diff-scoped gate for repository-owned agent configuration |
-| `tools/citations` | Checks every `path.go:NNN` citation in the hand-written documentation against the tree: the file exists, the line is inside it, and the cited lines hold the symbol the sentence names | Run by the full Go test suite and selected by the diff-scoped gate for a change under `docs/`, `README.md` or `AGENTS.md` |
-| `tools/doclinks` | Checks every doc link (`[Name]`, `[pkg.Name]`, `[import/path.Name]`) in Go package and exported-declaration comments resolves the way pkg.go.dev and gopls render it, rather than showing literal brackets | Run by the full Go test suite |
 
 ## Why skills are mirrored
 
@@ -86,9 +83,6 @@ and whether a deterministic mechanism can prevent it more reliably.
   wildcard, push, merge, commit, or destructive entry. It assumes a checkout the
   operator trusts: on a head you do not trust, review by reading and leave
   running its code to CI.
-- `.claude/agents/` holds the fresh-context subagents (`flowstate-reviewer`,
-  `flowstate-verifier`, `flowstate-pr-tidy`, `flowstate-scout`); the
-  `flowstate-delegate` skill holds the routing and `tools/agentconfig` pins it.
 - Auto memory lives outside the repository; session learnings go there, not in
   `CLAUDE.md`.
 

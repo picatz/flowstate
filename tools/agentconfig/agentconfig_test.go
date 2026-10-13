@@ -69,25 +69,6 @@ func TestPortableSkillsMirrorClaude(t *testing.T) {
 	}
 }
 
-func TestCompatibilityCommandsStayAliases(t *testing.T) {
-	root := repoRoot(t)
-	// The two verification aliases keep their old names; a command and a skill
-	// with one name shadow each other.
-	for _, name := range []string{"ci-check", "test-fast"} {
-		t.Run("alias/"+name, func(t *testing.T) {
-			alias := read(t, filepath.Join(root, ".claude", "commands", name+".md"))
-			if len(alias) > 1024 {
-				t.Fatalf("compatibility command is %d bytes; keep procedure in a skill", len(alias))
-			}
-		})
-	}
-	for _, name := range skillNames(t, filepath.Join(root, ".claude", "skills")) {
-		if _, err := os.Stat(filepath.Join(root, ".claude", "commands", name+".md")); err == nil {
-			t.Errorf("command %s.md duplicates the skill of the same name; one of them is shadowed", name)
-		}
-	}
-}
-
 func TestAmpSettingsUsePortableSkillsWithoutRepositoryPermissionPrompts(t *testing.T) {
 	data := read(t, filepath.Join(repoRoot(t), ".amp", "settings.json"))
 	var settings struct {

@@ -293,7 +293,7 @@ Since #1726:
   `test` is therefore one matrix: those three packages each own a
   runner and `rest` receives the exact `go list ./...` complement. Every lane
   still calls the one `make test` recipe with its package set, retains
-  `-race`, and reports through `tools/testsum`; build, vet, formatting,
+  `-race` (except `REPO_LINT_PACKAGES`, below), and reports through `tools/testsum`; build, vet, formatting,
   examples, breaking, and compose checks run once in `rest`. `fail-fast:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
   matrix result, so a missing or failed lane remains red. One cache-scope
@@ -330,10 +330,25 @@ Since #1726:
     that no Go package owns (`editors/vscode`, whose `package.json` flowdap's
     tests read) run every package, as before; that last case also selects the
     `test` job on its own. Top-level files are left to the plan's existing
-    rules: the ones tests read are already classified, and the rest is prose.
+    rules: every root Markdown file is test data (cmd/flow walks all Markdown
+    for documented `flow server` commands; `tools/citations` reads the root
+    documents), and the other root files tests read (the Makefile, the buf
+    config, `go.mod`) are classified as CI, schema or module graph. The
+    rest (`LICENSE`, `.gitignore`, `.gitattributes`) is read by no test (#2730).
   - `make test` runs every selected package except `TEMPORAL_TEST_PACKAGES`
     at `go test`'s default `-p`, then those (cmd/flow, internal/temporaltest,
-    engine, server, temporalclient) with `-p=1`, both into one `tools/testsum`.
+    engine, server, temporalclient) with `-p=1`, all into one `tools/testsum`.
+    `REPO_LINT_PACKAGES` (`tools/agentconfig`, `citations`, `doclinks`,
+    `dupbodies`, `gate`, `vacuity`, `wallclock`) run first without `-race`:
+    they test repository text and source and run no goroutine worth racing,
+    and the detector cost them about 137s of the rest lane for the same
+    assertions that take about 41s without it (`go test -count=1 -p=1` on a
+    4 vCPU machine; `agentconfig`, which forks `go build`, 30s to 27s,
+    `dupbodies` 32s to 3s, `gate` 25s to 6s, `vacuity` 12s to 2s, `doclinks`
+    9s to 1s, `wallclock` 5s to 1s). They stay in the `rest` lane and the
+    tree-reader set, so a pull request still selects them exactly as before;
+    `TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem` pins
+    the list, and the recipe fails if it overlaps the Temporal owners.
     `TestTheSerialTestPackagesAreTheTemporalOwners` keeps that list equal to
     the packages whose tests start a server, so #1922's isolation holds where
     it was measured to matter and nowhere else.

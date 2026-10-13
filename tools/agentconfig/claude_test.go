@@ -252,19 +252,14 @@ func TestClaudePermissionsOnlyRemovePromptsFromVerification(t *testing.T) {
 	}
 }
 
-// Anthropic's hosted review surfaces sit beside the CLI's own layers. The
-// managed Code Review reads CLAUDE.md and a root REVIEW.md on a pull request
-// and loads no skill, so REVIEW.md is where the comms-review rubric reaches it;
-// the security-guidance plugin reads its own guidance file on every model-backed
-// review. Both are prose a reviewer acts on, so both are bounded for the reason
-// the layers above are: a long file's real cost is paid by the rules in it that
-// matter most. The plugin's own 8 KiB cap is combined across the user, project,
-// and project-local guidance files it concatenates, so this bounds only the copy
-// the repository controls; a contributor's user-scope file spends the rest.
-const (
-	maxReviewBytes           = 4 << 10
-	maxSecurityGuidanceBytes = 8 << 10
-)
+// The security-guidance plugin reads its own guidance file on every
+// model-backed review. It is prose a reviewer acts on, so it is bounded for the
+// reason the layers above are: a long file's real cost is paid by the rules in
+// it that matter most. The plugin's own 8 KiB cap is combined across the user,
+// project, and project-local guidance files it concatenates, so this bounds
+// only the copy the repository controls; a contributor's user-scope file spends
+// the rest.
+const maxSecurityGuidanceBytes = 8 << 10
 
 // officialMarketplace is the only plugin source this repository enables for
 // everyone, and officialMarketplaceRepo is the GitHub repository it must resolve
@@ -369,74 +364,46 @@ func TestClaudeEnabledPluginsAreTheReviewedOfficialOnes(t *testing.T) {
 
 // driftingCitation matches a `path.go:123` citation. tools/citations checks
 // those against the tree for docs/ and a fixed list of root documents that
-// includes neither file checked below, so a line number in one of them goes
-// stale silently. Instructions to a reviewer have no reason to cite a line
-// anyway, so this refuses them rather than widening that checker.
+// does not include the file checked below, so a line number in it goes stale
+// silently. Instructions to a reviewer have no reason to cite a line anyway,
+// so this refuses them rather than widening that checker.
 var driftingCitation = regexp.MustCompile(`\.go:\d+`)
 
-// TestHostedReviewGuidanceStaysBoundedAndSelfContained checks the two files a
-// hosted reviewer reads as instructions. Both are bounded, neither may use the
-// `@import` syntax — Code Review reads REVIEW.md as-is and does not expand an
-// import, and the plugin concatenates its guidance files without expanding one
-// either, so an import is a silently missing rule rather than an error — and
-// neither may carry a line-numbered citation that nothing checks. The required
-// substrings pin the rules each file exists to deliver, so a rewrite that drops
-// one fails here rather than quietly changing what reviewers are told.
-func TestHostedReviewGuidanceStaysBoundedAndSelfContained(t *testing.T) {
-	root := repoRoot(t)
-	for _, tc := range []struct {
-		path     string
-		max      int
-		required []string
-	}{
-		{
-			path: "REVIEW.md",
-			max:  maxReviewBytes,
-			required: []string{
-				"no findings is a valid",
-				"at most five nits",
-				"cmd/flow/internal/reference/mirror/",
-				"is not a new finding",
-				"fails closed",
-				"shared conformance",
-				"one-line tally",
-			},
-		},
-		{
-			path: filepath.Join(".claude", "claude-security-guidance.md"),
-			max:  maxSecurityGuidanceBytes,
-			required: []string{
-				"on missing state and on evaluation error",
-				"belongs to nobody and is refused",
-				"only as a reference",
-				"deterministic",
-				"does not bound the walk that produced",
-				"textContent",
-			},
-		},
+// TestSecurityGuidanceStaysBoundedAndSelfContained checks the file the
+// security-guidance plugin reads as instructions. It is bounded, may not use
+// the `@import` syntax — the plugin concatenates its guidance files without
+// expanding one, so an import is a silently missing rule rather than an error
+// — and may not carry a line-numbered citation that nothing checks. The
+// required substrings pin the rules the file exists to deliver, so a rewrite
+// that drops one fails here rather than quietly changing what reviewers are
+// told.
+func TestSecurityGuidanceStaysBoundedAndSelfContained(t *testing.T) {
+	data := string(read(t, filepath.Join(repoRoot(t), ".claude", "claude-security-guidance.md")))
+	if len(data) == 0 {
+		t.Fatal("file is empty; the plugin would read no instructions")
+	}
+	if len(data) > maxSecurityGuidanceBytes {
+		t.Fatalf("file is %d bytes; keep it under %d, because length dilutes the rules that matter", len(data), maxSecurityGuidanceBytes)
+	}
+	for line := range strings.SplitSeq(data, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "@") {
+			t.Errorf("line %q uses the @import syntax, which the plugin does not expand; inline the rule", line)
+		}
+	}
+	if match := driftingCitation.FindString(data); match != "" {
+		t.Errorf("carries the line-numbered citation %q, which nothing checks against the tree", match)
+	}
+	for _, required := range []string{
+		"on missing state and on evaluation error",
+		"belongs to nobody and is refused",
+		"only as a reference",
+		"deterministic",
+		"does not bound the walk that produced",
+		"textContent",
 	} {
-		t.Run(tc.path, func(t *testing.T) {
-			data := read(t, filepath.Join(root, tc.path))
-			if len(data) == 0 {
-				t.Fatal("file is empty; a hosted reviewer would read no instructions")
-			}
-			if len(data) > tc.max {
-				t.Fatalf("file is %d bytes; keep it under %d, because length dilutes the rules that matter", len(data), tc.max)
-			}
-			for line := range strings.SplitSeq(string(data), "\n") {
-				if strings.HasPrefix(strings.TrimSpace(line), "@") {
-					t.Errorf("line %q uses the @import syntax, which a hosted review does not expand; inline the rule", line)
-				}
-			}
-			if match := driftingCitation.FindString(string(data)); match != "" {
-				t.Errorf("carries the line-numbered citation %q, which nothing checks against the tree", match)
-			}
-			for _, required := range tc.required {
-				if !strings.Contains(string(data), required) {
-					t.Errorf("does not contain required guidance %q", required)
-				}
-			}
-		})
+		if !strings.Contains(data, required) {
+			t.Errorf("does not contain required guidance %q", required)
+		}
 	}
 }
 

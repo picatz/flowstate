@@ -91,9 +91,9 @@ The complete rationale lives in
 Lead with the result, decision, blocker, or material discovery. State a fact
 once, distinguish observation from inference and uncertainty, and finish with
 the outcome, the verification evidence, and any remaining risk or unverified
-leg. Routine reads, searches, edits, and test runs are not updates. The
-`comms-*` skills hold the shapes for commits, issues, pull requests, reviews,
-and session updates.
+leg. Routine reads, searches, edits, and test runs are not updates; a blocker
+names the one decision needed and each option's consequence. The `comms-*`
+skills hold the shapes for commits, issues, pull requests, and reviews.
 
 ## Verification
 
@@ -135,8 +135,7 @@ searched, scoped issue before the next autonomous merge.
 Task procedures are skills under `.agents/skills/` (Amp, Codex) with
 byte-identical mirrors under `.claude/skills/` (Claude Code). Each host
 advertises their descriptions, so use them when one matches; a repository test
-keeps the copies equal. Claude Code also has fresh-context subagents under
-`.claude/agents/` for independent review and for running verification.
+keeps the copies equal.
 
 - System design and invariants: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - DSL reference: [docs/DSL.md](docs/DSL.md)
