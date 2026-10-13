@@ -2455,7 +2455,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		return runValidateSpec(cmd, args, mapPath, format, catalog, claims)
 	}
 
-	if format.Machine() {
+	if format.Machine() || format == FormatSARIF {
 		return validateMachine(cmd, args, format, catalog, claims)
 	}
 
@@ -2564,11 +2564,20 @@ func runValidate(cmd *cobra.Command, args []string) error {
 // A file that *parses* badly is the opposite: that is a fact about the workflow, so it
 // becomes a diagnostic like any other.
 func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, catalog *v1.PluginCatalog, claims *claimCheck) error {
-	surface := newSurface(cmd)
-
-	targets, err := collectValidateTargets(args, cmd.InOrStdin())
+	reports, err := validateReports(cmd, args, catalog, claims)
 	if err != nil {
 		return err
+	}
+
+	return writeValidateReports(newSurface(cmd), format, reports)
+}
+
+// validateReports checks every target and returns one report per file, the callee
+// files after them: the answer `-o json`, `jsonl` and `sarif` each render.
+func validateReports(cmd *cobra.Command, args []string, catalog *v1.PluginCatalog, claims *claimCheck) ([]*v1.DiagnosticReport, error) {
+	targets, err := collectValidateTargets(args, cmd.InOrStdin())
+	if err != nil {
+		return nil, err
 	}
 
 	modules := flowfile.NewModuleCache(0, 0)
@@ -2597,7 +2606,7 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 				// or unreadable file.
 				if target.data == nil {
 					if _, statErr := os.Stat(path); statErr != nil {
-						return fmt.Errorf("%s: %w", path, statErr)
+						return nil, fmt.Errorf("%s: %w", path, statErr)
 					}
 				}
 				// Not a shape this can position — a document that is not YAML at
@@ -2627,32 +2636,7 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 	// otherwise be printed under both names.
 	reports = flowfile.MergeReports(reports, derived, realReportPath)
 
-	var failed bool
-	for _, report := range reports {
-		if len(report.GetDiagnostics()) > 0 {
-			failed = true
-		}
-	}
-
-	if format == FormatJSONL {
-		// One line per file, which is what makes the shape worth having: a reader
-		// consumes them as they arrive and each line names its own file.
-		for _, report := range reports {
-			if err := writeJSON(surface, format, report); err != nil {
-				return err
-			}
-		}
-	} else if err := writeJSON(surface, format, &v1.ValidationReport{Files: reports}); err != nil {
-		// One document per invocation, which is what `json` means everywhere else in
-		// this CLI. Checking three files is still one answer.
-		return err
-	}
-
-	if failed {
-		return errValidationFailed
-	}
-
-	return nil
+	return reports, nil
 }
 
 // errValidationFailed reports that validation found problems. It carries no
@@ -3341,6 +3325,8 @@ flow server --insecure-no-auth`,
 			"Without `--plugin-dir` a step naming a plugin task is reported as not " +
 			"registered here, which is what it is: whether a plugin is installed is the " +
 			"deployment's decision and this process has not been told about one.\n\n" +
+			"With `-o sarif` the same report is written as a SARIF 2.1.0 log, for a " +
+			"code-scanning service or an editor.\n\n" +
 			"`--spec` checks a compiled specification (`flow compile -o json`) instead of a " +
 			"Flowfile: the checks that need no source, with a problem named by its step's " +
 			"address. Given the specification's map (`--source-map`, from `flow compile " +
@@ -3391,7 +3377,7 @@ flow validate --spec hello.json --source-map hello.map.json --check-sources`,
 
 	// Diagnostics are a schema message, so `-o json` means here what it means on
 	// `get` and `list`: the fields are the schema's and addressable by name.
-	addOutputFlag(validateCmd)
+	addOutputFlagWith(validateCmd, FormatSARIF)
 
 	// The same flags every other surface that reads a task name takes, doing the
 	// same thing through the same [startPlugins] (#724, #710).

@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/flowfile"
 )
@@ -81,19 +82,25 @@ func runValidateSpec(cmd *cobra.Command, args []string, mapPath string, format O
 		}
 	}
 
-	var failed bool
 	surface := newSurface(cmd)
-	var reports []*v1.DiagnosticReport
+	if format.Machine() || format == FormatSARIF {
+		var reports []*v1.DiagnosticReport
+		for _, path := range args {
+			diagnostics, err := validateSpecFile(path, sourceMap, check, catalog)
+			if err != nil {
+				return err
+			}
+			reports = append(reports, diagnostics.Reports(path)...)
+		}
+
+		return writeValidateReports(surface, format, reports)
+	}
+
+	var failed bool
 	for _, path := range args {
 		diagnostics, err := validateSpecFile(path, sourceMap, check, catalog)
 		if err != nil {
 			return err
-		}
-
-		if format.Machine() {
-			reports = append(reports, diagnostics.Reports(path)...)
-			failed = failed || len(diagnostics) > 0
-			continue
 		}
 		if len(diagnostics) == 0 {
 			fmt.Fprintf(surface.Out, "%s: %s\n", surface.Theme.Muted.Render(path), surface.Theme.Success.Render("ok"))
@@ -101,19 +108,6 @@ func runValidateSpec(cmd *cobra.Command, args []string, mapPath string, format O
 		}
 		failed = true
 		writeDiagnostics(surface.Out, surface.Theme.Muted.Render(path), dedupeCalleeDiagnostics(diagnostics))
-	}
-
-	if format.Machine() {
-		var err error
-		if format == FormatJSONL {
-			for _, report := range reports {
-				if err = writeJSON(surface, format, report); err != nil {
-					return err
-				}
-			}
-		} else if err = writeJSON(surface, format, &v1.ValidationReport{Files: reports}); err != nil {
-			return err
-		}
 	}
 	if failed {
 		return errValidationFailed
@@ -183,4 +177,42 @@ func documentChanged(document *v1.DebugSourceDocument) bool {
 	}
 
 	return v1.ContentDigest(data) != document.GetDigest()
+}
+
+// writeValidateReports renders reports as json, jsonl or sarif, and reports a
+// failure when any holds a diagnostic.
+func writeValidateReports(surface *ui.UI, format OutputFormat, reports []*v1.DiagnosticReport) error {
+	var failed bool
+	for _, report := range reports {
+		if len(report.GetDiagnostics()) > 0 {
+			failed = true
+		}
+	}
+
+	switch {
+	case format == FormatSARIF:
+		if err := writeSARIF(surface, reports); err != nil {
+			return err
+		}
+	case format == FormatJSONL:
+		// One line per file, which is what makes the shape worth having: a reader
+		// consumes them as they arrive and each line names its own file.
+		for _, report := range reports {
+			if err := writeJSON(surface, format, report); err != nil {
+				return err
+			}
+		}
+	default:
+		// One document per invocation, which is what `json` means everywhere else in
+		// this CLI. Checking three files is still one answer.
+		if err := writeJSON(surface, format, &v1.ValidationReport{Files: reports}); err != nil {
+			return err
+		}
+	}
+
+	if failed {
+		return errValidationFailed
+	}
+
+	return nil
 }
