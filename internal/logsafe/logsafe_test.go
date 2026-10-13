@@ -90,3 +90,42 @@ func TestValueNilError(t *testing.T) {
 		t.Fatalf("Value(nil error) = %v, want nil", got)
 	}
 }
+
+type nilErr struct{ msg string }
+
+func (e *nilErr) Error() string { return e.msg }
+
+func TestValueTypedNilError(t *testing.T) {
+	t.Parallel()
+
+	var err *nilErr
+
+	if got := logsafe.Value(err); got != "<nil>" {
+		t.Fatalf("Value(typed nil error) = %v, want <nil>", got)
+	}
+}
+
+func TestArgsWalksLikeSlog(t *testing.T) {
+	t.Parallel()
+
+	got := logsafe.Args(slog.Int("n", 1), "path", "evil\x1b[2J", slog.String("s", "a\nb"), "k")
+
+	want := []any{slog.Int("n", 1), "path", `evil\x1b[2J`, slog.String("s", `a\nb`), "k"}
+	if len(got) != len(want) {
+		t.Fatalf("Args = %v, want %v", got, want)
+	}
+
+	for i := range want {
+		if a, ok := want[i].(slog.Attr); ok {
+			if !a.Equal(got[i].(slog.Attr)) {
+				t.Fatalf("Args[%d] = %v, want %v", i, got[i], a)
+			}
+
+			continue
+		}
+
+		if got[i] != want[i] {
+			t.Fatalf("Args[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}

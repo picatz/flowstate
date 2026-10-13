@@ -15,6 +15,7 @@
 package logsafe
 
 import (
+	"log/slog"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -74,15 +75,19 @@ func String(s string) string {
 // Value returns v made safe to log: a string through [String], an error as
 // [String] of its message, and everything else unchanged. It exists for the
 // variadic key/value arguments of a [log/slog.Logger], where a value's type is
-// not known at the call site.
-func Value(v any) any {
+// not known at the call site. An error whose Error method panics, as a nil
+// pointer implementing error does, is written as "<nil>" the way
+// [log/slog] writes it, rather than taking the caller down.
+func Value(v any) (safe any) {
 	switch v := v.(type) {
 	case string:
 		return String(v)
 	case error:
-		if v == nil {
-			return v
-		}
+		defer func() {
+			if recover() != nil {
+				safe = "<nil>"
+			}
+		}()
 
 		return String(v.Error())
 	default:
@@ -91,22 +96,53 @@ func Value(v any) any {
 }
 
 // Args returns args with the value of each key/value pair passed through
-// [Value]. Keys are the call site's own constants and are kept as written, as
-// are a [log/slog.Attr] and any odd trailing element.
+// [Value]. It walks the arguments as [log/slog.Logger.Log] does: a string key
+// takes the next argument as its value, and a [log/slog.Attr], or anything else
+// where a key belongs, stands alone and is kept as written (an Attr's own
+// string value is rewritten, as a pair's is).
 func Args(args ...any) []any {
-	out := make([]any, len(args))
+	out := make([]any, 0, len(args))
 
-	for i, arg := range args {
-		if i%2 == 1 {
-			out[i] = Value(arg)
+	for i := 0; i < len(args); i++ {
+		switch key := args[i].(type) {
+		case string:
+			out = append(out, key)
 
-			continue
+			if i+1 < len(args) {
+				i++
+
+				out = append(out, Value(args[i]))
+			}
+		case slog.Attr:
+			out = append(out, safeAttr(key))
+		default:
+			out = append(out, key)
 		}
-
-		out[i] = arg
 	}
 
 	return out
+}
+
+func safeAttr(a slog.Attr) slog.Attr {
+	v := a.Value.Resolve()
+
+	switch v.Kind() {
+	case slog.KindString:
+		return slog.String(a.Key, String(v.String()))
+	case slog.KindAny:
+		return slog.Any(a.Key, Value(v.Any()))
+	case slog.KindGroup:
+		group := v.Group()
+		safe := make([]any, len(group))
+
+		for i, member := range group {
+			safe[i] = safeAttr(member)
+		}
+
+		return slog.Group(a.Key, safe...)
+	default:
+		return a
+	}
 }
 
 func hex2(b byte) string {
