@@ -1,4 +1,4 @@
-.PHONY: check regen regen-proto regen-check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal temporal-cli docsdocs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check regen regen-proto regen-check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal temporal-cli docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
