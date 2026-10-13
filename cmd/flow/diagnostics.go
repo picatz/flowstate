@@ -171,6 +171,11 @@ func errDiagnosticsProto(err error) []*v1.Diagnostic {
 	diagnostics := errDiagnosticsOf(err)
 	out := make([]*v1.Diagnostic, 0, len(diagnostics))
 	for _, d := range diagnostics {
+		// A callee's diagnostic is at a line of the callee's file, which a report
+		// of the caller's file cannot say; the callee-failed entry names that file.
+		if d.File != "" {
+			continue
+		}
 		out = append(out, d.Proto())
 	}
 	return out
@@ -182,15 +187,17 @@ func errDiagnosticsProto(err error) []*v1.Diagnostic {
 // reports, so the text form must not print twice what they print once. The
 // caller's own diagnostics are never dropped.
 func dedupeCalleeDiagnostics(ds flowfile.Diagnostics) flowfile.Diagnostics {
+	// The fields flowfile's own report key compares, so the text form drops
+	// exactly the findings the machine reports merge.
 	type finding struct {
-		file, message, step, field string
-		line, column               int
+		file, code, message, step, field, kind, value string
+		line, column                                  int
 	}
 	seen := map[finding]bool{}
 	out := make(flowfile.Diagnostics, 0, len(ds))
 	for _, d := range ds {
 		if d.File != "" {
-			key := finding{d.File, d.Message, d.Step, d.Field, d.Line, d.Column}
+			key := finding{d.File, string(d.Code), d.Message, d.Step, d.Field, d.Kind, d.Value, d.Line, d.Column}
 			if seen[key] {
 				continue
 			}

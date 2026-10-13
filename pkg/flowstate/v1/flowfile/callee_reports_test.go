@@ -1,6 +1,8 @@
 package flowfile_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,4 +193,45 @@ func TestCalleeDiagnosticsReportUnderCalleeFile(t *testing.T) {
 			require.Equal(t, []string{"left", "right"}, []string{callerReport.GetDiagnostics()[0].GetStep(), callerReport.GetDiagnostics()[1].GetStep()})
 		})
 	}
+}
+
+// TestSymlinkedCalleeReportsItsOwnCallsWhereTheyWereRead holds that a callee's
+// own `call:` is named by the file the compiler read. lib/callee.yaml is a
+// symlink to shared/real.yaml, so the `./helper.yaml` it calls is
+// shared/helper.yaml, and a problem there must not be filed under lib/helper.yaml.
+func TestSymlinkedCalleeReportsItsOwnCallsWhereTheyWereRead(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "workflow.yaml", issueCaller)
+	writeFile(t, dir, "shared/real.yaml", calleeHead[:strings.Index(calleeHead, "inputs:")]+"steps:\n"+"  - id: help\n    call: ./helper.yaml\n")
+	writeFile(t, dir, "shared/helper.yaml", plainCallee)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "lib"), 0o755))
+	require.NoError(t, os.Symlink("../shared/real.yaml", filepath.Join(dir, "lib", "callee.yaml")))
+
+	reports := reportsOf(t, dir, "workflow.yaml")
+
+	names := reportNames(reports)
+	require.Contains(t, names, "shared/helper.yaml", "reported where the compiler read it")
+	require.NotContains(t, names, "lib/helper.yaml", "a file that does not exist")
+	require.Len(t, reportFor(t, reports, "shared/helper.yaml").GetDiagnostics(), 1)
+}
+
+// TestMergeReportsDoesNotMutateDerivedReports holds the documented promise that
+// neither input changes: a derived diagnostic merged into a given report must be
+// copied, or a later derived report's call site would be added to it.
+func TestMergeReportsDoesNotMutateDerivedReports(t *testing.T) {
+	site := func(line uint32) *v1.RelatedLocation {
+		return &v1.RelatedLocation{File: "w.yaml", Line: line, Message: "m"}
+	}
+	finding := func(related ...*v1.RelatedLocation) *v1.Diagnostic {
+		return &v1.Diagnostic{Message: "bad", Line: 1, Column: 1, Related: related}
+	}
+	given := []*v1.DiagnosticReport{{File: "w.yaml"}}
+	first := &v1.DiagnosticReport{File: "w.yaml", Diagnostics: []*v1.Diagnostic{finding(site(1))}}
+	second := &v1.DiagnosticReport{File: "w.yaml", Diagnostics: []*v1.Diagnostic{finding(site(2))}}
+
+	merged := flowfile.MergeReports(given, []*v1.DiagnosticReport{first, second})
+
+	require.Len(t, merged[0].GetDiagnostics(), 1)
+	require.Len(t, merged[0].GetDiagnostics()[0].GetRelated(), 2, "both sites are kept in the result")
+	require.Len(t, first.GetDiagnostics()[0].GetRelated(), 1, "the derived input is left as it was")
 }

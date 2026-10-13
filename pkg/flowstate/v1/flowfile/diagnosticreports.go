@@ -84,11 +84,19 @@ func calledFrom(file string, at Position, step string) []*v1.RelatedLocation {
 }
 
 // calleeDisplayName is the name a callee's diagnostics are reported under: the
-// target joined lexically onto the caller's own directory, in the frame the
-// caller was given in. It is never the symlink-resolved path, which is only
-// ever the callee's identity, so no new absolute path appears in a report.
-func calleeDisplayName(caller, target string) string {
-	return filepath.Clean(filepath.Join(filepath.Dir(caller), target))
+// file actually read, as a path from the caller's real directory joined onto the
+// directory of the name the caller is reported under. A callee reached through a
+// symlink is therefore named by the file behind it, so the `call:` targets it
+// makes in turn, which resolve against that file's real directory, are reported
+// where the compiler read them. When the read path cannot be expressed relative
+// to the caller's real directory it is the read path itself.
+func calleeDisplayName(caller, callerRealDir, read string) string {
+	rel, err := filepath.Rel(callerRealDir, read)
+	if err != nil || callerRealDir == "" {
+		return read
+	}
+
+	return filepath.Clean(filepath.Join(filepath.Dir(caller), rel))
 }
 
 // Reports renders the diagnostics as one report per file they are in: file's own
@@ -188,7 +196,9 @@ func MergeReports(given, derived []*v1.DiagnosticReport) []*v1.DiagnosticReport 
 				continue
 			}
 			at[protoKey("", d)] = len(own.Diagnostics)
-			own.Diagnostics = append(own.Diagnostics, d)
+			// Cloned so a later merge's union into its Related cannot reach the
+			// derived report the caller holds.
+			own.Diagnostics = append(own.Diagnostics, proto.Clone(d).(*v1.Diagnostic))
 		}
 	}
 

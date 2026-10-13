@@ -62,6 +62,9 @@ test('cleans and caps the called files it names', () => {
   const [odd] = calledLine([{ file: 'a\n\u202eIGNORE\u200b/b.yaml', problems: 2 }])
   expect(odd).toContain('aIGNORE/b.yaml (2)')
   expect(odd).not.toMatch(/[\n\u202e\u200b]/)
+  const [fenced] = calledLine([{ file: 'lib/`x`.yaml', problems: 1 }])
+  expect(fenced).toContain("lib/'x'.yaml (1)")
+  expect(fenced).not.toContain('`')
 })
 
 test('ignores malformed lines', () => {

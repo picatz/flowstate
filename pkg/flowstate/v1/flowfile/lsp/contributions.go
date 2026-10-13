@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"maps"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -393,7 +392,8 @@ func (l *locator) view(file string) *document {
 		return view
 	}
 	var view *document
-	if f, err := os.Open(path); err == nil {
+	// OpenRegular so a FIFO or a /proc path is refused rather than waited on or read.
+	if f, err := flowfile.OpenRegular(path); err == nil {
 		data, err := io.ReadAll(io.LimitReader(f, maxDocumentBytes))
 		_ = f.Close()
 		if err == nil {

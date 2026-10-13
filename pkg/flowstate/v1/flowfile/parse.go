@@ -590,7 +590,7 @@ func parse(env Env, data []byte, path string, callStack []string, callBudget *in
 
 // parseDisplayed is [parse] for a file whose diagnostics are reported under a
 // name other than the path it is read from: a callee, reached by its resolved
-// real path and reported by the spelling its caller wrote ([calleeDisplayName]).
+// real path and reported by the path it was read from, shown in its caller's frame ([calleeDisplayName]).
 func parseDisplayed(env Env, data []byte, path, display string, callStack []string, callBudget *int, session *moduleSession) (*v1.Workflow, *Positions, error) {
 	if len(data) > maxBytes {
 		return nil, nil, Diagnostics{{
@@ -743,7 +743,7 @@ type compiler struct {
 
 	// display is the name this file's diagnostics are reported under: filePath
 	// for the file being checked, and for a callee the spelling its caller
-	// reached it by, which is what a reader opens. See [calleeDisplayName].
+	// reached it by, the file a reader opens. See [calleeDisplayName].
 	display string
 
 	// adopted holds the callee diagnostics already in diags by finding, so that

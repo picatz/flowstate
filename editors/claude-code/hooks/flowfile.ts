@@ -81,7 +81,7 @@ export const toFileReport = (r: DiagnosticReport, called: readonly DiagnosticRep
  */
 export const calledLine = (called: readonly { file: string; problems: number }[] | undefined): string[] => {
   if (!called || called.length === 0) return []
-  const shown = called.slice(0, 10).map(c => `${clean(c.file, 200)} (${c.problems})`)
+  const shown = called.slice(0, 10).map(c => `${clean(c.file, 200).replaceAll('`', "'")} (${c.problems})`)
   const more = called.length - shown.length
   return [`  called files with problems of their own: ${shown.join(', ')}${more > 0 ? `, and ${more} more` : ''}; run flow validate on them`]
 }

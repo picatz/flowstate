@@ -309,7 +309,7 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 
 	// The callee is compiled under the name its own diagnostics are reported by,
 	// which is how its caller reached it and not the real path it was read from.
-	display := calleeDisplayName(cmp.Or(c.display, c.filePath), target)
+	display := calleeDisplayName(cmp.Or(c.display, c.filePath), located.CallerDir, resolved)
 	callee, calleePos, err := parseDisplayed(c.env, data, resolved, display, ancestors, c.callBudget, nil)
 	if err != nil {
 		// A callee that did not compile has problems of its own, each already at
