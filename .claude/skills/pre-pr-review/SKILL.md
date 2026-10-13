@@ -10,6 +10,9 @@ valid; manufacturing findings creates churn and trains reviewers to ignore the
 next real one. Prefer a fresh context for the pass: on Claude Code, commit
 first, then delegate to the `flowstate-reviewer` subagent, which reviews the
 committed revision in its own worktree and sees only the diff and these lenses.
+Run it on the local base..head diff before the first push: findings fixed in
+head 1 cost no extra CI cycle or review round, whereas the same findings from
+Copilot's exact-head review each cost both.
 
 ## Lenses
 
@@ -42,8 +45,3 @@ the `flowstate-ship` skill.
 Return only material findings with location, consequence, evidence, and a
 concrete fix. If none remain, return `PASS` followed by the checks that support
 that conclusion and any explicitly unverified leg.
-
-## History
-
-[Archived pre-pr-review guidance](../../../.agent-history/skills/pre-pr-review/SKILL.md)
-is evidence and history, not a second current procedure.

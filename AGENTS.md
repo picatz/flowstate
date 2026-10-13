@@ -22,9 +22,6 @@ regardless of judgment in tools, hooks, and CI.
 - Search for the repository's existing spelling before adding a type, policy
   key, command, helper, or abstraction. Derive from one source of truth, not a
   second representation.
-- [AGENT_FIELD_NOTES.md](AGENT_FIELD_NOTES.md) indexes historical incidents.
-  Search it for one topic when the tree and current documentation do not
-  answer; do not preload it.
 
 ## Architectural invariants
 
@@ -85,8 +82,9 @@ The complete rationale lives in
   the user asks to land a change, merge it once the shipping gates below are
   satisfied without asking again. Ask only when an action is materially
   destructive, irreversible, externally consequential, or out of scope.
-- Preserve provenance without inventing it: no hard-coded model name, and no
-  hand-written attribution footer or session link in a body or commit.
+- Preserve provenance without inventing it: no hard-coded model name. A
+  trailer or session link the host adds to a commit or body is permitted, never
+  required.
 
 ## Communication
 

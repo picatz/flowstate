@@ -5,6 +5,9 @@ evidence because the change looks small.
 
 1. Fetch `origin/main`, inspect the actual base/head diff, run the narrowest
    falsifying tests and the diff-scoped gate, and report any unavailable leg.
+   Commit locally and run the fresh-context review below on the local
+   base..head diff before the first push, so most findings are fixed in head 1
+   and the common case is one CI cycle.
 2. Run `go run ./tools/mergecheck` before every push to the branch; a push
    without its `clean against origin/main` line is unverified. Push a focused
    branch and open a pull request **without auto-merge**. Never use
@@ -18,7 +21,12 @@ evidence because the change looks small.
    Do not request a vendor review bot. One that reviews on its own is input,
    not a gate: read what it says, disposition it once for the head it reviewed,
    and never wait, retry, or treat its silence, quota, or absence as either a
-   defect or a PASS.
+   defect or a PASS. When the repository's Copilot review has posted an
+   exact-head review of the head, that review is the code review of record: the
+   fresh-context reviewer then does the security pass on the head and a delta
+   review of the fix commits since the local pre-push review, rather than
+   re-reviewing the whole diff per head. Every merge still carries an
+   exact-head independent review with every finding dispositioned.
 4. Before merging, read every response that has arrived, including suppressed
    suggestions, checks, and review threads. Give every substantive suggestion
    one visible classification: fixed with evidence, false positive with

@@ -1115,8 +1115,8 @@ func TestConventionNoteReadsOnlyAMessageTheCallCarries(t *testing.T) {
 		"commit_title": "Fix bug", "commit_message": "",
 	}}
 	note := conventionNote(mcp, "o", "r", 7)
-	if !strings.Contains(note, "subject:") || !strings.Contains(note, "issue:") || !strings.Contains(note, "verification:") {
-		t.Errorf("a bare title and an empty body named fewer than three rules: %q", note)
+	if !strings.Contains(note, "subject:") || strings.Contains(note, "issue:") || strings.Contains(note, "verification:") {
+		t.Errorf("a bare title and an empty body should name the subject rule alone: %q", note)
 	}
 
 	mcp.ToolInput["commit_title"] = "tools: hold the merge message to the conventions"

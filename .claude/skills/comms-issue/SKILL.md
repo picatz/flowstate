@@ -40,8 +40,3 @@ the current source or documentation that makes a constraint real.
 - Labels: `kind/bug` needs a reproducer, `kind/design-record` records a decision
   before code, `kind/decision` is the maintainer's call, `kind/umbrella` groups
   slices; area labels say where.
-
-## History
-
-[Archived comms-issue guidance](../../../.agent-history/skills/comms-issue/SKILL.md)
-is evidence and history, not a second current procedure.

@@ -79,8 +79,3 @@ behavior observable through both `flow run local` and Temporal.
 
 Report which two call sites exercised the shared case and which observable result
 the test forces to agree.
-
-## History
-
-[The archived both-drivers command](../../../.agent-history/commands/both-drivers.md)
-is evidence and history, not a second current procedure.
