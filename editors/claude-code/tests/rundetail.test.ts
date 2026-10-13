@@ -420,3 +420,48 @@ test('parseTimeline alone never closes a wait on a signal row', () => {
   const d = parsed(T('approve', 0), S('release-approved', 1))
   expect(d.steps.find(x => x.name === 'approve · wait timeout')!.status.kind).toBe('waiting')
 })
+
+const AUTH_LIST = 'ERROR\nrefused while listing runs: unauthenticated: missing bearer token\n'
+const AUTH_TIMELINE = 'ERROR\nrefused while reading the timeline of "wf-1": unauthenticated: missing\nbearer token\n'
+
+test('a server that wants a sign-in says so on the runs list and offers the command to run, never running it', async ($, on) => {
+  const seen: string[][] = []
+  stub(on, { list: fail(AUTH_LIST) }, seen)
+  on('env.get', () => ({ value: 'dev.example.com:9233' }))
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Text', text: /did not accept your credentials/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /flow login --address=dev\.example\.com:9233/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Runs unavailable/ })).toBeUndefined()
+  expect(seen.some(a => a[1] === 'login')).toBe(false)
+  await ui.unmount()
+})
+
+test('an open run whose timeline was refused for a credential offers the same sign-in', async ($, on) => {
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']), timeline: fail(AUTH_TIMELINE) })
+  on('env.get', () => ({ value: undefined }))
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  expect(await ui.find({ type: 'Text', text: /did not accept your credentials/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /flow login --address=localhost:9233/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a signed-in caller refused for lack of permission is not told to sign in', async ($, on) => {
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']), timeline: fail('ERROR\nrefused while reading the timeline of "wf-1": permission_denied: workload.read\n') })
+  on('env.get', () => ({ value: undefined }))
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an address unsafe to paste still gets the card but no command', async ($, on) => {
+  stub(on, { list: fail(AUTH_LIST) })
+  on('env.get', () => ({ value: 'x;y z' }))
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeUndefined()
+  await ui.unmount()
+})

@@ -1,4 +1,4 @@
-import { clean, isGone, reason } from '../hooks/runs'
+import { clean, isGone, needsSignIn, reason } from '../hooks/runs'
 import { expect, test } from 'claude-code/testing'
 
 const PANE = { component: 'Pane', props: {}, requestId: 'flowstate', viewport: { columns: 100, rows: 60 } } as const
@@ -139,4 +139,24 @@ test('only the CLI refusal for an unaddressable run reads as gone', () => {
     '',
   ])
     expect(isGone(other)).toBe(false)
+})
+
+// Real stderr from `flow list` and `flow timeline` against `flow server dev --auth` with no token (cmd/flow/client.go, list.go).
+test('a refusal for a missing or bad credential is a sign-in, however the CLI wrapped it', () => {
+  expect(needsSignIn('ERROR\nrefused while listing runs: unauthenticated: missing bearer token\n')).toBe(true)
+  expect(needsSignIn('ERROR\nrefused while reading the timeline of "some-run": unauthenticated: missing\nbearer token\n')).toBe(true)
+  expect(needsSignIn('ERROR\nrefused while reading the timeline of\n"flowstate-request-0123456789abcdef":\nunauthenticated: token expired\n')).toBe(true)
+  expect(needsSignIn('ERROR\nrefused while reading the timeline of "wf: \\"x\\"": unauthenticated: token expired\n')).toBe(true)
+})
+
+test('only the unauthenticated code reads as a sign-in: a signed-in caller who may not act cannot fix it by signing in', () => {
+  expect(needsSignIn('ERROR\nrefused while listing runs: permission_denied: workload.read\n')).toBe(false)
+  expect(needsSignIn('ERROR\nno run "wf-1" is addressable: check the id\n')).toBe(false)
+  expect(needsSignIn('ERROR\nlisting runs: unavailable: connection refused\n')).toBe(false)
+  expect(needsSignIn('')).toBe(false)
+})
+
+test('an id that spells the code does not pass for the refusal', () => {
+  expect(needsSignIn('ERROR\nrefused while reading the timeline of "x: unauthenticated: y": permission_denied: no\n')).toBe(false)
+  expect(needsSignIn('ERROR\nreading the timeline of "x": connection reset (refused while a: unauthenticated: b)\n')).toBe(false)
 })

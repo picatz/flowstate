@@ -37,3 +37,13 @@ test('the debug command is the id as is, and an id that is not a run id gets non
   expect(n.take()).toContain('copied /flowstate:debug for run run-1 (failed in build)')
   expect(n.take()).toBeUndefined()
 })
+
+test('copying the sign-in command is told to the next prompt once, and the command is cleaned', () => {
+  const n = new PaneNotes()
+  n.signInAsked('flow login --address=h:1\u001b[31m`x`')
+  const block = n.take()!
+  expect(block).toContain('server refused the pane\'s credentials; user copied "flow login --address=h:1')
+  expect(block).not.toContain('\u001b')
+  expect(block.match(/`/g)).toHaveLength(6)
+  expect(n.take()).toBeUndefined()
+})
