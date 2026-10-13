@@ -138,7 +138,18 @@ type Positions struct {
 	// reads is the display name of every callee this file's `call:` steps
 	// resolved to, recorded before the callee is read, so it holds those that
 	// never made a [calleeFrame]. See [Positions.CalleeFiles].
-	reads []string
+	reads map[string]struct{}
+}
+
+// noteRead records files as read for `call:` steps. A set, so a file many calls
+// reach is held once however often it is named.
+func (p *Positions) noteRead(files ...string) {
+	if p.reads == nil {
+		p.reads = map[string]struct{}{}
+	}
+	for _, file := range files {
+		p.reads[file] = struct{}{}
+	}
 }
 
 // calleeFrame returns the callee compiled for call, or nil when this compile did
@@ -167,7 +178,7 @@ func (p *Positions) CalleeFiles() []string {
 		if at == nil {
 			return
 		}
-		for _, read := range at.reads {
+		for read := range at.reads {
 			files[read] = true
 		}
 		for _, frame := range at.callees {

@@ -543,3 +543,36 @@ func TestSavingAnyCalleeRepublishesAWorkflowWhoseReadsOverflowed(t *testing.T) {
 		f.settled(t, callerURI, "callee-failed", hasDiagnostics)
 	})
 }
+
+// A callee that does not exist yet, under a directory reached through a symlink,
+// is keyed by the path it will have once created, so saving it by its real path
+// reaches the workflow.
+func TestSavingACalleeCreatedUnderASymlinkedDirectoryRepublishesItsCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		realDir := filepath.Join(root, "real")
+		// Not a sibling of the real directory, so a name built from one relative
+		// to the other would climb out of the link's own spelling.
+		linkDir := filepath.Join(root, "ws", "deep", "link")
+		require.NoError(t, os.Mkdir(realDir, 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Dir(linkDir), 0o755))
+		require.NoError(t, os.Symlink(realDir, linkDir))
+		c := newClient(t)
+		c.initialize()
+		f := &calleeFixture{c: c}
+
+		callerURI := fileURI(filepath.Join(linkDir, "workflow.yaml"))
+		c.openNoWait(string(callerURI), calleeCaller)
+		f.settled(t, callerURI, "call-unreadable", hasDiagnostics)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(realDir, "lib"), 0o755))
+		calleePath := filepath.Join(realDir, "lib", "callee.yaml")
+		require.NoError(t, os.WriteFile(calleePath, []byte(fixedCallee), 0o644))
+		calleeURI := fileURI(calleePath)
+		c.openNoWait(string(calleeURI), fixedCallee)
+		f.notifySaved(t, calleeURI)
+
+		f.settled(t, callerURI, "a clean caller", isEmpty)
+	})
+}

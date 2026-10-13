@@ -307,14 +307,12 @@ func (s *FlowfileServer) canonicalReads(source lsp.DocumentURI, loc *locator, re
 	limit := cmp.Or(s.calleeReadLimit, maxCalleeReads)
 	var out calleeReads
 	if len(reads) > limit {
-		s.logger().Warn("workflow reads more callee files than are remembered for saves; any callee save republishes it",
-			"uri", source, "limit", limit)
 		reads = reads[:limit]
 		out.overflowed = true
 	}
 	out.files = make(map[string]bool, len(reads))
 	for _, read := range reads {
-		out.files[canonicalPath(loc.path(read))] = true
+		out.files[canonicalPathAllowingMissing(loc.path(read))] = true
 	}
 
 	return out
@@ -330,6 +328,10 @@ func (s *FlowfileServer) replaceCalleeReadsLocked(source lsp.DocumentURI, reads 
 	}
 	if s.calleeReadsBySource == nil {
 		s.calleeReadsBySource = make(map[lsp.DocumentURI]calleeReads)
+	}
+	if reads.overflowed && !s.calleeReadsBySource[source].overflowed {
+		s.logger().Warn("workflow reads more callee files than are remembered for saves; any callee save republishes it",
+			"uri", source, "limit", cmp.Or(s.calleeReadLimit, maxCalleeReads))
 	}
 	s.calleeReadsBySource[source] = reads
 }

@@ -474,6 +474,25 @@ func (w workspace) openBuffer(path string) (*document, bool) {
 	return nil, false
 }
 
+// canonicalPathAllowingMissing is [canonicalPath] for a file that may not exist
+// yet: the longest existing ancestor is resolved and the missing suffix put back,
+// so a file created later under a symlinked directory is keyed as its real path
+// will be.
+func canonicalPathAllowingMissing(path string) string {
+	path = filepath.Clean(path)
+	var missing []string
+	for dir := path; ; dir = filepath.Dir(dir) {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(append([]string{real}, missing...)...)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path
+		}
+		missing = append([]string{filepath.Base(dir)}, missing...)
+	}
+}
+
 // canonicalPath is path with symlinks followed, or path itself when they cannot
 // be: the one spelling a file is keyed by, so a workspace reached through a
 // symlinked directory yields each file once and finds its open buffer.

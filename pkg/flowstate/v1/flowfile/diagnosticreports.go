@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 
 	"google.golang.org/protobuf/proto"
 
@@ -90,7 +91,15 @@ func calledFrom(file string, at Position, step string) []*v1.RelatedLocation {
 // makes in turn, which resolve against that file's real directory, are reported
 // where the compiler read them. When the read path cannot be expressed relative
 // to the caller's real directory it is the read path itself.
-func calleeDisplayName(caller, callerRealDir, read string) string {
+//
+// A callee that does not exist has no real path, so it is read at the caller's
+// directory as the caller spells it (callerFile's); when it lies under that
+// directory it is named from there, rather than by a path from the real directory
+// that would climb out of the caller's own spelling of it.
+func calleeDisplayName(caller, callerFile, callerRealDir, read string) string {
+	if rel, err := filepath.Rel(filepath.Dir(callerFile), read); err == nil && rel != ".." && !strings.HasPrefix(filepath.ToSlash(rel), "../") {
+		return filepath.Clean(filepath.Join(filepath.Dir(caller), rel))
+	}
 	rel, err := filepath.Rel(callerRealDir, read)
 	if err != nil || callerRealDir == "" {
 		return read
