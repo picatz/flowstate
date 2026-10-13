@@ -292,8 +292,8 @@ Since #1726:
   7m39s–7m59s, the root v1 package 5m53s–5m59s, and cmd/flow 3m08s–3m49s.
   `test` is therefore one matrix: those three packages each own a
   runner and `rest` receives the exact `go list ./...` complement. Every lane
-  still calls the one `make test` recipe with its package set, retains `-race
-  -p=1`, and reports through `tools/testsum`; build, vet, formatting,
+  still calls the one `make test` recipe with its package set, retains
+  `-race`, and reports through `tools/testsum`; build, vet, formatting,
   examples, breaking, and compose checks run once in `rest`. `fail-fast:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
   matrix result, so a missing or failed lane remains red. One cache-scope
@@ -303,6 +303,44 @@ Since #1726:
   time (flowfile 165s, server 82s, strictyaml 66s, plugin 51s). Those four
   packages are now the `heavy` lane, so `rest` and `heavy` each carry about six
   minutes of tests and the slowest lane is no longer twice the next.
+- The lanes run what the plan says the diff reaches, and only the Temporal
+  owners run serially. The plan for pull request #2715 (13 files) counted 25
+  affected packages of 98, and the lanes still ran all 98, one at a time,
+  because five packages own a Temporal dev server. Now:
+  - `tools/gate` owns the partition (`testLanes` in `tools/gate/ci.go`; `rest`
+    takes every package no named lane owns, so none is dropped) and publishes
+    each lane's import paths as the plan's `test_lanes` output. The Test step
+    reads its lane from that object and fails when the output or the lane is
+    missing; a lane the diff does not reach logs a notice and runs nothing.
+    `TestTestLanesPartitionTheModule` pins the partition against `go list
+    ./...`, and `TestTheLaneStepFailsClosed` runs the Test step's own script.
+  - On a pull request a lane runs the affected set plus the *tree readers*:
+    packages whose tests walk the source tree from an ancestor directory or
+    from their own working directory, find the root through
+    `testkit.RepoRoot` or `git rev-parse --show-toplevel`, or run the go
+    command (the one-caller,
+    scope, YAML-containment and environment-variable guards, the `tools/`
+    ratchets, the tests that build a plugin by import path). A change can
+    break one of those without being imported by it, so they run on every
+    narrowed plan (`treeReaderPattern`, pinned by
+    `TestTreeReadersAreFoundInTheTree`). A forced plan (a push to `main`, a
+    change to CI, the gate, the Makefile or the module graph), the data
+    dependencies the import graph cannot see (`examples/`, the repository
+    files tests read, `proto/`), and a change in any directory below the root
+    that no Go package owns (`editors/vscode`, whose `package.json` flowdap's
+    tests read) run every package, as before; that last case also selects the
+    `test` job on its own. Top-level files are left to the plan's existing
+    rules: the ones tests read are already classified, and the rest is prose.
+  - `make test` runs every selected package except `TEMPORAL_TEST_PACKAGES`
+    at `go test`'s default `-p`, then those (cmd/flow, internal/temporaltest,
+    engine, server, temporalclient) with `-p=1`, both into one `tools/testsum`.
+    `TestTheSerialTestPackagesAreTheTemporalOwners` keeps that list equal to
+    the packages whose tests start a server, so #1922's isolation holds where
+    it was measured to matter and nowhere else.
+  - What a pull request gives up: a test that reads another package's files
+    off disk by a path no rule above recognises (a sibling's `testdata/`,
+    say) is skipped when only that other package changed, and fails on
+    `main`'s forced run instead.
 - `fuzz-smoke` no longer runs on a pull request that only touches code. It runs
   on a push to `main`, and on a pull request only when the plan is forced wide
   (a change to the workflow, the Makefile, the gate, `targets.txt` or the module
@@ -780,10 +818,6 @@ listed.
   recipe, partitions packages exhaustively, and spends roughly three extra
   checkout/setup minutes to remove about sixteen minutes from the critical
   path. A finer shard is still excluded until timings justify its maintenance.
-- **Diff-scoping the `test` job's own package list.** The same objection, one
-  level worse: `make test` is what the Makefile, `make check` and CI all run,
-  and splitting it would put the "one value written down twice" defect inside
-  the test command itself. The local gate already runs diff-scoped tests.
 - **Folding `Editors` into the plan.** Its whole design is that it shares
   nothing with the Go jobs — not a cache, not a toolchain, not a workflow file
   — and a `plan` job there would be a third place computing the same thing. Its

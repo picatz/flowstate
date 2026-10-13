@@ -42,6 +42,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -104,6 +105,7 @@ func main() {
 // it to.
 type analysis struct {
 	plan            plan
+	packages        []pkgMeta
 	affected        []string
 	exampleDataDeps []string
 	repoDataDeps    []string
@@ -171,6 +173,12 @@ func analyse(seedRepoTestData bool, suppliedBase string) (analysis, error) {
 	// so the widest job it could possibly reach still runs.
 	unresolvedGoDir := hasUnresolvedGoDir(p.goFiles, byDir)
 
+	// A changed directory no root package owns (editors/vscode, say) can be
+	// read off disk by any test, and no import says which one. CI selects the
+	// test job for it and runs every lane in full; see ciDecisions and
+	// ciTestLanes.
+	p.unowned = unownedDir(p.fileDirs, byDir)
+
 	var affected []string
 	var exampleDataDeps, repoDataDeps []string
 	if p.moduleWide || unresolvedGoDir {
@@ -225,6 +233,7 @@ func analyse(seedRepoTestData bool, suppliedBase string) (analysis, error) {
 
 	return analysis{
 		plan:            p,
+		packages:        pkgs,
 		affected:        affected,
 		exampleDataDeps: exampleDataDeps,
 		repoDataDeps:    repoDataDeps,
@@ -263,12 +272,19 @@ func runCI(event, suppliedBase string) error {
 	}
 	if a.base == "" {
 		fmt.Printf("plan: %d tracked file(s), every job selected\n", len(a.changed))
-
-		return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.base, a.plan)))
+	} else {
+		fmt.Printf("plan: %d changed file(s) vs merge-base %s, %d affected package(s)\n",
+			len(a.changed), a.base[:12], len(a.affected))
 	}
-	fmt.Printf("plan: %d changed file(s) vs merge-base %s, %d affected package(s)\n",
-		len(a.changed), a.base[:12], len(a.affected))
-	return writeCIDecisions(ciDecisions(a.plan, a.affected, ciForceReason(event, a.base, a.plan)))
+
+	force := ciForceReason(event, a.base, a.plan)
+	all := make([]string, 0, len(a.packages))
+	for _, m := range a.packages {
+		all = append(all, m.ImportPath)
+	}
+	slices.Sort(all)
+	lanes, lanesWhy := ciTestLanes(a.plan, all, a.affected, treeReaderPackages(readTestSources(a.packages)), force)
+	return writeCIDecisions(ciDecisions(a.plan, a.affected, force), lanes, lanesWhy)
 }
 
 func run(suppliedBase string) error {
