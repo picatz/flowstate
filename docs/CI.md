@@ -330,7 +330,11 @@ Since #1726:
     that no Go package owns (`editors/vscode`, whose `package.json` flowdap's
     tests read) run every package, as before; that last case also selects the
     `test` job on its own. Top-level files are left to the plan's existing
-    rules: the ones tests read are already classified, and the rest is prose.
+    rules: every root Markdown file is test data (cmd/flow walks all Markdown
+    for documented `flow server` commands; `tools/citations` reads the root
+    documents), and the other root files tests read (the Makefile, the buf
+    config, `go.mod`) are classified as CI, schema or module graph. Only
+    `LICENSE` is read by nothing (#2730).
   - `make test` runs every selected package except `TEMPORAL_TEST_PACKAGES`
     at `go test`'s default `-p`, then those (cmd/flow, internal/temporaltest,
     engine, server, temporalclient) with `-p=1`, both into one `tools/testsum`.

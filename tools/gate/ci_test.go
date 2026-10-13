@@ -59,12 +59,12 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 	}
 }
 
-// TestAnUnvalidatedMarkdownOnlyDiffReachesNothing is the case this whole
+// TestAnUnreadRootFileDiffReachesNothing is the case this whole
 // mechanism exists for: a prose file no test reads cannot affect any job.
 // CLAUDE.md no longer belongs in this case because tools/agentconfig validates
 // that adapter and its relationship to the shared contract.
-func TestAnUnvalidatedMarkdownOnlyDiffReachesNothing(t *testing.T) {
-	ds := decide(t, []string{"SECURITY.md"}, nil, "pull_request")
+func TestAnUnreadRootFileDiffReachesNothing(t *testing.T) {
+	ds := decide(t, []string{"LICENSE"}, nil, "pull_request")
 	mustSkip(t, ds, "test", "test-plugins", "test-ordering", "proto", "regen", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
@@ -1330,5 +1330,5 @@ func TestRegenRunsWhereverTheRootSuiteDoes(t *testing.T) {
 	for _, f := range []string{"docs/DSL.md", "proto/flowstate/v1/run.proto", "examples/hello/workflow.yaml"} {
 		mustRun(t, decide(t, []string{f}, nil, "pull_request"), "test", "regen")
 	}
-	mustSkip(t, decide(t, []string{"SECURITY.md"}, nil, "pull_request"), "test", "regen")
+	mustSkip(t, decide(t, []string{"LICENSE"}, nil, "pull_request"), "test", "regen")
 }

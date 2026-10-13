@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"strings"
 	"testing"
@@ -968,5 +969,55 @@ func TestProtoChangeReachesTheDocsBinary(t *testing.T) {
 	affected := affectedPackages(pkgs, map[string]bool{m + "/pkg/flowstate/v1": true})
 	if !needsDocs(affected) {
 		t.Errorf("a schema change must reach the docs binary; affected = %v", affected)
+	}
+}
+
+// TestEveryRootMarkdownFileIsRepositoryTestData pins #2730: a diff touching
+// only THREAT_MODEL.md skipped the test job although cmd/flow's
+// TestDocumentedServerInvocationsStart walks every Markdown file in the tree
+// and tools/citations reads the root documents. The root Markdown files are
+// listed from the checkout, so a document added tomorrow is covered without
+// editing this test, and dropping THREAT_MODEL.md from repoDataRoot fails it.
+func TestEveryRootMarkdownFileIsRepositoryTestData(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		found[e.Name()] = true
+		p := buildPlan([]string{e.Name()})
+		if !p.repoTestData || len(p.repoDataRoots) != 1 {
+			t.Errorf("%s: repoTestData = %v, roots = %v; a root Markdown file is read by tests", e.Name(), p.repoTestData, p.repoDataRoots)
+		}
+		mustRun(t, decide(t, []string{e.Name()}, nil, "pull_request"), "test")
+	}
+	for _, must := range []string{"THREAT_MODEL.md", "SECURITY.md", "CONTRIBUTING.md", "README.md", "AGENTS.md"} {
+		if !found[must] {
+			t.Errorf("%s is not at the repository root; update this test with the file that moved", must)
+		}
+	}
+}
+
+// TestARootMarkdownDiffSeedsTheTreeWalkers covers the local tier: the reader
+// that matters walks the tree, so no literal names THREAT_MODEL.md, and the
+// seed has to come from the tree-reader class.
+func TestARootMarkdownDiffSeedsTheTreeWalkers(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/cmd/flow":  []byte(`root := filepath.Join("..", "..")`),
+		m + "/pkg/other": []byte(`os.ReadFile("fixture.txt")`),
+	}
+	p := buildPlan([]string{"THREAT_MODEL.md"})
+	got := repoDataDepPackages(testSrc, p.repoDataRoots)
+	if !reflect.DeepEqual(got, []string{m + "/cmd/flow"}) {
+		t.Errorf("repoDataDepPackages = %v, want exactly cmd/flow", got)
 	}
 }
