@@ -945,6 +945,11 @@ func callBoundaryCodes(t *testing.T, path string) []v1.DiagnosticCode {
 
 	codes := make([]v1.DiagnosticCode, 0, len(ds))
 	for _, d := range ds {
+		// The diagnostics of the file being compiled; a callee's are its own
+		// file's and are pinned by TestCalleeDiagnosticsReportUnderCalleeFile.
+		if d.File != "" {
+			continue
+		}
 		codes = append(codes, d.Code)
 	}
 	return codes

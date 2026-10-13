@@ -21,7 +21,7 @@ import (
 // is unique. A `call:` step is a site of its own; diagnostics about the callee's
 // steps are reported against the call step's id and take its path.
 func attachPaths(ds Diagnostics, wf *v1.Workflow) {
-	if !slices.ContainsFunc(ds, func(d Diagnostic) bool { return d.Step != "" && d.Path == nil }) {
+	if !slices.ContainsFunc(ds, needsPath) {
 		return
 	}
 
@@ -45,9 +45,17 @@ func attachPaths(ds Diagnostics, wf *v1.Workflow) {
 	}
 
 	for i := range ds {
-		if ds[i].Step == "" || ds[i].Path != nil {
+		if !needsPath(ds[i]) {
 			continue
 		}
 		ds[i].Path = slices.Clone(paths[ds[i].Step])
 	}
+}
+
+// needsPath reports whether attachPaths should name d's step: it is on one, no
+// path was set, and the step is in the workflow being attached against. A
+// diagnostic raised inside a callee (it has a call chain, or a File of its own)
+// names a step of that callee, which this workflow does not declare.
+func needsPath(d Diagnostic) bool {
+	return d.Step != "" && d.Path == nil && d.File == "" && len(d.via) == 0
 }

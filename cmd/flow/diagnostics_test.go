@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -535,4 +536,48 @@ func TestDiagnosticLineFallsBackToIRAddress(t *testing.T) {
 	assert.Equal(t, `f.yaml:7:3: step "b": bad`, diagnosticLine("f.yaml", d))
 
 	assert.Equal(t, "f.yaml: bad", diagnosticLine("f.yaml", flowfile.Diagnostic{Message: "bad"}))
+}
+
+// TestErrDiagnosticsProtoOmitsCalleeDiagnostics holds that a machine report of
+// the caller's file never carries a position that is in another file: a callee's
+// line and column would be read as the caller's. The callee-failed entry names
+// the callee's file, and is all the caller's report says.
+func TestErrDiagnosticsProtoOmitsCalleeDiagnostics(t *testing.T) {
+	err := flowfile.Diagnostics{
+		{Line: 5, Column: 11, Message: "calls it", Code: v1.DiagnosticCodeCalleeFailed},
+		{File: "lib/callee.yaml", Line: 3, Column: 1, Message: "unknown key"},
+	}
+
+	got := errDiagnosticsProto(err)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, uint32(5), got[0].GetLine())
+}
+
+// TestFmtMachineReportDoesNotFileCalleeProblemsUnderCaller runs the real command
+// over a workflow whose callee has an unknown key at line 3.
+func TestFmtMachineReportDoesNotFileCalleeProblemsUnderCaller(t *testing.T) {
+	bin := buildFlowBinary(t)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "w.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("edition: v2026.4\nname: c\nsteps:\n  - id: a\n    call: ./lib/callee.yaml\n"), 0o600))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "lib"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lib", "callee.yaml"),
+		[]byte("edition: v2026.4\nname: callee\nbogus: 1\nsteps:\n  - id: x\n    log:\n      message: hi\n"), 0o600))
+
+	res := runFlowBinary(t, bin, "fmt", "-o", "json", path)
+
+	var out struct {
+		Files []struct {
+			Refusals []struct {
+				Line int    `json:"line"`
+				Code string `json:"code"`
+			} `json:"refusals"`
+		} `json:"files"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(res.Stdout), &out), res.Stdout)
+	require.Len(t, out.Files, 1)
+	require.Len(t, out.Files[0].Refusals, 1, "only the caller's own callee-failed entry: %s", res.Stdout)
+	assert.Equal(t, "callee-failed", out.Files[0].Refusals[0].Code)
+	assert.Equal(t, 5, out.Files[0].Refusals[0].Line)
 }

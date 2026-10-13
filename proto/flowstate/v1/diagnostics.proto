@@ -107,6 +107,45 @@ message Diagnostic {
       string: {max_len: 256}
     }
   }];
+
+  // Related lists other places to look to understand why this diagnostic is
+  // where it is. A problem found in a file a `call:` compiled carries the
+  // `call:` that reached it, so a reader sitting in the callee can find the
+  // caller that made it matter. LSP models the same idea as
+  // `relatedInformation` and SARIF as `relatedLocations`.
+  //
+  // Empty is the common answer. Bounded because it is built from the call
+  // sites of one file, which another party's files choose the number of: a
+  // file called from more places than the bound keeps the first ones in source
+  // order, and every call site still reports the callee on its own.
+  repeated RelatedLocation related = 11 [(buf.validate.field).repeated = {max_items: 16}];
+}
+
+// RelatedLocation is another place in some file that explains a [Diagnostic],
+// in the units the diagnostic positions itself in.
+message RelatedLocation {
+  // File is the file the location is in, spelled as a [DiagnosticReport.file]
+  // is, so a consumer can match it to a report it already holds. It is named
+  // here rather than inferred, because the point of a related location is that
+  // it is usually not in the file the diagnostic is.
+  string file = 1 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 512
+  }];
+
+  // Line is the 1-based source line, or zero when unknown.
+  uint32 line = 2;
+
+  // Column is the 1-based column within Line, counting characters rather than
+  // bytes, or zero when only the line is known.
+  uint32 column = 3;
+
+  // Message says what is at the location and how it relates to the diagnostic:
+  // `compiled because step "place" calls it`.
+  string message = 4 [(buf.validate.field).string = {
+    min_len: 1
+    max_len: 1024
+  }];
 }
 
 // SourceRange is a region of a file's source text, in the units [Diagnostic]

@@ -84,13 +84,13 @@ func diagnose(doc *document) []lsp.Diagnostic {
 	return out
 }
 
-// diagnoseCarried returns every problem found in a document, each beside the
-// validator diagnostic it came from.
+// diagnoseAll returns every problem found in a document, each beside the
+// validator diagnostic it came from, and apart from them one report per file the
+// document calls that has problems of its own.
 //
-// The one that does the work; [diagnose] is the projection of it that the
-// publishing path wants. Code actions take this one, because an action is
-// derived from what the validator said rather than from what was published.
-func diagnoseCarried(doc *document) []carriedDiagnostic {
+// The reports are in the called file's positions, not this buffer's; the caller
+// has to place them in that file.
+func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 	set := &diagnosticSet{}
 
 	if doc.tooLarge {
@@ -103,7 +103,7 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 				"file is %d bytes, larger than the %d byte limit this server analyzes; it is not being checked",
 				len(doc.text), maxDocumentBytes),
 		})
-		return set.sorted()
+		return set.sorted(), nil
 	}
 
 	if doc.kind != docWorkflow {
@@ -111,7 +111,7 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		// the checks below would report a correct suite as a broken workflow —
 		// `tests:` an unknown key, no `steps:` — which is exactly the false
 		// diagnosis this package's doc rules out (#1110).
-		return diagnoseTestDocument(doc)
+		return diagnoseTestDocument(doc), nil
 	}
 
 	if doc.parseErr != nil {
@@ -119,7 +119,7 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		// the model is absent, and every other check would guess. One precise
 		// syntax error is the whole report.
 		set.addFrom(yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax))
-		return set.sorted()
+		return set.sorted(), nil
 	}
 
 	// Expressions are checked here rather than left to the validator for one
@@ -160,11 +160,16 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		var compiled flowfile.Diagnostics
 		if !errors.As(err, &compiled) {
 			addCompileFailure(doc, set, err)
-			return set.sorted()
+			return set.sorted(), nil
 		}
 		ds = append(ds, compiled...)
 	}
 	for _, d := range ds {
+		if d.File != "" {
+			// A problem in a file this one calls: its line and column are that
+			// file's, so nothing here may measure them against this buffer.
+			continue
+		}
 		rng := rangeOfFlowfileDiagnostic(doc, d)
 		if slices.ContainsFunc(flagged, func(f lsp.Range) bool { return overlaps(f, rng) }) {
 			// The same expression, already reported with a tighter range. An
@@ -184,7 +189,25 @@ func diagnoseCarried(doc *document) []carriedDiagnostic {
 		}, d)
 	}
 
-	return set.sorted()
+	var callees []*v1.DiagnosticReport
+	if path, ok := doc.filesystemPath(); ok && slices.ContainsFunc(ds, func(d flowfile.Diagnostic) bool { return d.File != "" }) {
+		callees = ds.Reports(path)[1:]
+	}
+
+	return set.sorted(), callees
+}
+
+// diagnoseCarried returns every problem found in a document, each beside the
+// validator diagnostic it came from.
+//
+// Only this document's own: a problem in a file it calls ([flowfile.Diagnostic].File)
+// is positioned in that file, so [diagnoseAll] returns it apart. Code actions
+// take this one, because an action is derived from what the validator said about
+// this buffer, and an edit must never be computed against the position of a
+// problem in another file.
+func diagnoseCarried(doc *document) []carriedDiagnostic {
+	own, _ := diagnoseAll(doc)
+	return own
 }
 
 // A diagnosticSet collects diagnostics, dropping exact duplicates.

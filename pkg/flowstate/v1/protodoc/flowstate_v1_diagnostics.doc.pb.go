@@ -119,6 +119,45 @@ func init() {
 				" spelling of that integrity check.\n",
 		},
 		{
+			Name: "flowstate.v1.Diagnostic.related",
+			Leading: " Related lists other places to look to understand why this diagnostic is\n" +
+				" where it is. A problem found in a file a `call:` compiled carries the\n" +
+				" `call:` that reached it, so a reader sitting in the callee can find the\n" +
+				" caller that made it matter. LSP models the same idea as\n" +
+				" `relatedInformation` and SARIF as `relatedLocations`.\n" +
+				"\n" +
+				" Empty is the common answer. Bounded because it is built from the call\n" +
+				" sites of one file, which another party's files choose the number of: a\n" +
+				" file called from more places than the bound keeps the first ones in source\n" +
+				" order, and every call site still reports the callee on its own.\n",
+		},
+		{
+			Name: "flowstate.v1.RelatedLocation",
+			Leading: " RelatedLocation is another place in some file that explains a [Diagnostic],\n" +
+				" in the units the diagnostic positions itself in.\n",
+		},
+		{
+			Name: "flowstate.v1.RelatedLocation.file",
+			Leading: " File is the file the location is in, spelled as a [DiagnosticReport.file]\n" +
+				" is, so a consumer can match it to a report it already holds. It is named\n" +
+				" here rather than inferred, because the point of a related location is that\n" +
+				" it is usually not in the file the diagnostic is.\n",
+		},
+		{
+			Name:    "flowstate.v1.RelatedLocation.line",
+			Leading: " Line is the 1-based source line, or zero when unknown.\n",
+		},
+		{
+			Name: "flowstate.v1.RelatedLocation.column",
+			Leading: " Column is the 1-based column within Line, counting characters rather than\n" +
+				" bytes, or zero when only the line is known.\n",
+		},
+		{
+			Name: "flowstate.v1.RelatedLocation.message",
+			Leading: " Message says what is at the location and how it relates to the diagnostic:\n" +
+				" `compiled because step \"place\" calls it`.\n",
+		},
+		{
 			Name: "flowstate.v1.SourceRange",
 			Leading: " SourceRange is a region of a file's source text, in the units [Diagnostic]\n" +
 				" already positions itself in.\n" +

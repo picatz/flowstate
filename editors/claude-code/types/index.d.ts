@@ -10,6 +10,8 @@ export type FileReport = {
   file: string
   /** Empty when the file is clean. */
   diagnostics: { line: number; column: number; message: string }[]
+  /** Files this one calls that `flow validate` reported problems in, from the same run. */
+  called?: { file: string; problems: number }[]
   /** Set when `flow validate` itself could not run. */
   failure?: string
 }

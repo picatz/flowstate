@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -48,6 +47,9 @@ type client struct {
 	mu sync.Mutex
 	// published records every publishDiagnostics notification, in order.
 	published []lsp.PublishDiagnosticsParams
+	// withRelated is the same stream decoded with relatedInformation kept, which
+	// go-lsp's type has no field for.
+	withRelated []publishDiagnosticsParams
 	// notified counts the notifications the client received, by method.
 	notified map[string]int
 
@@ -115,6 +117,11 @@ func (c *client) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			require.NoError(c.t, json.Unmarshal(*req.Params, &params))
 		}
 		c.published = append(c.published, params)
+		var related publishDiagnosticsParams
+		if req.Params != nil {
+			require.NoError(c.t, json.Unmarshal(*req.Params, &related))
+		}
+		c.withRelated = append(c.withRelated, related)
 		for _, w := range c.waiters {
 			close(w)
 		}
@@ -403,8 +410,8 @@ func (c *client) lastPublishedFor(uri lsp.DocumentURI) (lsp.PublishDiagnosticsPa
 // bookkeeping is updated on a handler goroutine, so before the bubble is idle
 // the answer is a moment in the middle of one.
 func (c *client) defaultsFor(suite lsp.DocumentURI) lsp.DocumentURI {
-	c.server.testDiagnosticsMu.Lock()
-	defer c.server.testDiagnosticsMu.Unlock()
+	c.server.diagnosticsMu.Lock()
+	defer c.server.diagnosticsMu.Unlock()
 
 	return c.server.testDefaultsBySuite[suite]
 }
@@ -418,8 +425,8 @@ func (c *client) defaultsFor(suite lsp.DocumentURI) lsp.DocumentURI {
 // zero value and not the same state, and "was it taken off the list" is exactly
 // what a close is asserted to have done.
 func (c *client) overflowFor(suite lsp.DocumentURI) (lsp.DocumentURI, bool) {
-	c.server.testDiagnosticsMu.Lock()
-	defer c.server.testDiagnosticsMu.Unlock()
+	c.server.diagnosticsMu.Lock()
+	defer c.server.diagnosticsMu.Unlock()
 
 	on, ok := c.server.testOverflowBySuite[suite]
 
@@ -436,27 +443,32 @@ func (c *client) overflowFor(suite lsp.DocumentURI) (lsp.DocumentURI, bool) {
 // bubble is idle — which is exactly the kind of thing that stops being true
 // quietly.
 func (c *client) sourcedDiagnostics(source, target lsp.DocumentURI) []lsp.Diagnostic {
-	c.server.testDiagnosticsMu.Lock()
-	defer c.server.testDiagnosticsMu.Unlock()
+	c.server.diagnosticsMu.Lock()
+	defer c.server.diagnosticsMu.Unlock()
 
-	return slices.Clone(c.server.testDiagnosticsBySource[source][target])
+	var out []lsp.Diagnostic
+	for _, d := range c.server.diagnosticsBySource[source][target] {
+		out = append(out, d.Diagnostic)
+	}
+
+	return out
 }
 
 // sourceCountFor returns how many documents currently contribute diagnostics to
 // target, which is the number the dependency bound holds down.
 func (c *client) sourceCountFor(target lsp.DocumentURI) int {
-	c.server.testDiagnosticsMu.Lock()
-	defer c.server.testDiagnosticsMu.Unlock()
+	c.server.diagnosticsMu.Lock()
+	defer c.server.diagnosticsMu.Unlock()
 
-	return len(c.server.testSourcesByTarget[target])
+	return len(c.server.sourcesByTarget[target])
 }
 
 // hasSource reports whether source is one of target's current contributors.
 func (c *client) hasSource(target, source lsp.DocumentURI) bool {
-	c.server.testDiagnosticsMu.Lock()
-	defer c.server.testDiagnosticsMu.Unlock()
+	c.server.diagnosticsMu.Lock()
+	defer c.server.diagnosticsMu.Unlock()
 
-	_, ok := c.server.testSourcesByTarget[target][source]
+	_, ok := c.server.sourcesByTarget[target][source]
 
 	return ok
 }

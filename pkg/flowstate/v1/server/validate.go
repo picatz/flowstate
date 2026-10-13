@@ -85,7 +85,13 @@ func (s *FlowstateServer) Validate(
 			}
 		}
 
-		reports = append(reports, diagnostics.Report(file.GetName()))
+		// Reports, not Report: a diagnostic that belongs to another file is
+		// grouped under that file's own name, never under this one's. Bytes alone
+		// reach no callee today (a `call:` is refused without a caller location),
+		// so this is the caller's report alone for now; it is the one rendering
+		// every surface shares, so a source that can resolve a callee later
+		// reports it correctly without this changing.
+		reports = append(reports, diagnostics.Reports(file.GetName())...)
 	}
 
 	return connect.NewResponse(&v1.ValidateResponse{
@@ -145,6 +151,8 @@ func (s *FlowstateServer) Compile(
 		}
 	}
 
+	// Report, not Reports: a CompileResponse carries the one file compiled, and
+	// the bytes it is given reach no callee (see [FlowstateServer.Validate]).
 	response := &v1.CompileResponse{Report: diagnostics.Report(file.GetName())}
 	if len(diagnostics) == 0 {
 		response.Workflow = workflow

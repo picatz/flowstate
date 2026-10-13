@@ -6,6 +6,8 @@ import (
 
 	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // Source positions are kept because a diagnostic without one is a diagnostic the
@@ -119,6 +121,26 @@ type Positions struct {
 	// types as the expression `|-` already gives. The tier-4 lint reads it to
 	// say which spelling the author should have used (#1466).
 	blockFenced map[string]bool
+
+	// file is the name this file's diagnostics are reported under: the path it
+	// was compiled from, or for a callee the spelling its caller reached it by.
+	file string
+
+	// callees holds each compiled `call:`'s callee as this file saw it, keyed by
+	// the [v1.Call] the compile built. Validation runs on the compiled workflow,
+	// which carries no positions, so this is how a diagnostic it raises inside a
+	// callee finds that callee's file and lines ([positionDiagnostics]). Keyed by
+	// the pointer rather than the step id because sibling bodies may reuse an id.
+	callees map[*v1.Call]*calleeFrame
+}
+
+// calleeFrame returns the callee compiled for call, or nil when this compile did
+// not build it: a workflow cloned or built by hand between compile and validate.
+func (p *Positions) calleeFrame(call *v1.Call) *calleeFrame {
+	if p == nil {
+		return nil
+	}
+	return p.callees[call]
 }
 
 func newPositions(env Env) *Positions {

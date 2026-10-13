@@ -119,6 +119,19 @@ export interface Diagnostic {
    * spelling of that integrity check.
    */
   path: string[]
+  /**
+   * Related lists other places to look to understand why this diagnostic is
+   * where it is. A problem found in a file a `call:` compiled carries the
+   * `call:` that reached it, so a reader sitting in the callee can find the
+   * caller that made it matter. LSP models the same idea as
+   * `relatedInformation` and SARIF as `relatedLocations`.
+   *
+   * Empty is the common answer. Bounded because it is built from the call
+   * sites of one file, which another party's files choose the number of: a
+   * file called from more places than the bound keeps the first ones in source
+   * order, and every call site still reports the callee on its own.
+   */
+  related: RelatedLocation[]
 }
 
 /**
@@ -142,6 +155,34 @@ export interface DiagnosticReport {
    * valid.
    */
   diagnostics: Diagnostic[]
+}
+
+/**
+ * RelatedLocation is another place in some file that explains a [Diagnostic],
+ * in the units the diagnostic positions itself in.
+ */
+export interface RelatedLocation {
+  /**
+   * File is the file the location is in, spelled as a [DiagnosticReport.file]
+   * is, so a consumer can match it to a report it already holds. It is named
+   * here rather than inferred, because the point of a related location is that
+   * it is usually not in the file the diagnostic is.
+   */
+  file: string
+  /**
+   * Line is the 1-based source line, or zero when unknown.
+   */
+  line: number
+  /**
+   * Column is the 1-based column within Line, counting characters rather than
+   * bytes, or zero when only the line is known.
+   */
+  column: number
+  /**
+   * Message says what is at the location and how it relates to the diagnostic:
+   * `compiled because step "place" calls it`.
+   */
+  message: string
 }
 
 /**

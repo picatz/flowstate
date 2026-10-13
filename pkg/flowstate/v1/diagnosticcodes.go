@@ -127,9 +127,9 @@ const (
 	DiagnosticCodeCallUnreadable DiagnosticCode = "call-unreadable"
 
 	// DiagnosticCodeCalleeFailed marks a `call:` whose target was read but did not
-	// compile; the message carries the callee's own diagnostics. Distinct from
-	// the caller's own mistakes at the same step because the defect is in
-	// another file.
+	// compile or validate; the callee's problems are reported under the callee's
+	// file, and this one points at them. Distinct from the caller's own mistakes
+	// at the same step because the defect is in another file.
 	DiagnosticCodeCalleeFailed DiagnosticCode = "callee-failed"
 
 	// DiagnosticCodeExpectationUnmet marks a claim a test file made that the run
@@ -284,9 +284,10 @@ func DiagnosticCodes() []DiagnosticCodeInfo {
 		},
 		{
 			Code: DiagnosticCodeCalleeFailed,
-			Description: "A `call:` target was read but did not compile. The message carries the " +
-				"callee's own diagnostics; fix them in the callee, which `flow validate` reports " +
-				"on its own.",
+			Description: "A `call:` target was read but did not compile or validate. Its problems " +
+				"are reported under the callee's file, at the callee's own lines and with the " +
+				"callee's own codes, and this diagnostic points at the first of them. Fix them " +
+				"in the callee, which `flow validate` reports on its own.",
 		},
 	}
 }

@@ -2519,7 +2519,7 @@ func runValidate(cmd *cobra.Command, args []string) error {
 		}
 
 		failed = true
-		writeDiagnostics(out, theme.Muted.Render(path), diagnostics)
+		writeDiagnostics(out, theme.Muted.Render(path), dedupeCalleeDiagnostics(diagnostics))
 	}
 
 	for _, file := range claims.policies() {
@@ -2564,7 +2564,13 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 	}
 
 	modules := flowfile.NewModuleCache(0, 0)
+	// reports are the files this invocation was asked about, in the order it was
+	// asked; derived are the callee files their diagnostics turned out to be in,
+	// merged in after the last of them so that a callee named on the command line
+	// keeps its own place and one that was not is appended in the order it was
+	// reached (#1555).
 	reports := make([]*v1.DiagnosticReport, 0, len(targets))
+	var derived []*v1.DiagnosticReport
 	for _, target := range targets {
 		path := target.path
 
@@ -2601,11 +2607,17 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 		diagnostics = append(diagnostics, validatePluginRequirements(target, catalog)...)
 		diagnostics = append(diagnostics, claims.workflow(target)...)
 
-		reports = append(reports, diagnostics.Report(path))
+		own := diagnostics.Reports(path)
+		reports = append(reports, own[0])
+		derived = append(derived, own[1:]...)
 	}
 	for _, file := range claims.policies() {
 		reports = append(reports, file.diagnostics.Report(file.path))
 	}
+	// Merged on the file's real path: a derived report is named by the file
+	// actually read, so a symlinked callee also given on the command line would
+	// otherwise be printed under both names.
+	reports = flowfile.MergeReports(reports, derived, realReportPath)
 
 	var failed bool
 	for _, report := range reports {
@@ -3301,7 +3313,12 @@ flow server --insecure-no-auth`,
 			"It also applies every rule the specification's schema declares — a step list " +
 			"over its bound, an id over its length — in the words the server refuses a " +
 			"submission with, so a rule the schema would refuse at submit is refused here " +
-			"first. What a deployment decides for itself at submit — the plugins it has " +
+			"first. A defect in a file a `call:` reads is reported under that file, at its " +
+			"own line, with the call as related information; the caller gets one " +
+			"`callee-failed` per call site. With `-o json` or `jsonl` the files are the " +
+			"report of each path in the order given, then the callee files after them, " +
+			"and a callee that is also named on the command line is merged into its own " +
+			"report. What a deployment decides for itself at submit — the plugins it has " +
 			"pinned, the tasks it can run, its credential and signal policies — is still " +
 			"the server's answer.\n\n" +
 			"A file naming a plugin's task is checked against that plugin given " +
@@ -4048,4 +4065,17 @@ func main() {
 	if err != nil {
 		os.Exit(exitCodeFor(err))
 	}
+}
+
+// realReportPath is the key under which validate merges reports: the path with
+// symlinks resolved, so a file given as a link and the same file derived by the
+// name actually read are one report. A name that does not resolve (stdin, a file
+// that does not exist) falls back to its cleaned spelling.
+func realReportPath(name string) string {
+	if resolved, err := filepath.EvalSymlinks(name); err == nil {
+		if abs, err := filepath.Abs(resolved); err == nil {
+			return abs
+		}
+	}
+	return filepath.Clean(name)
 }

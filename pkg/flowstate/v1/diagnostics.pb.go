@@ -109,7 +109,18 @@ type Diagnostic struct {
 	// It carries no digest: what binds a path to one version of the IR is
 	// [DebugSourceMap.ir_digest], and a second binding here would be a second
 	// spelling of that integrity check.
-	Path          []string `protobuf:"bytes,10,rep,name=path,proto3" json:"path,omitempty"`
+	Path []string `protobuf:"bytes,10,rep,name=path,proto3" json:"path,omitempty"`
+	// Related lists other places to look to understand why this diagnostic is
+	// where it is. A problem found in a file a `call:` compiled carries the
+	// `call:` that reached it, so a reader sitting in the callee can find the
+	// caller that made it matter. LSP models the same idea as
+	// `relatedInformation` and SARIF as `relatedLocations`.
+	//
+	// Empty is the common answer. Bounded because it is built from the call
+	// sites of one file, which another party's files choose the number of: a
+	// file called from more places than the bound keeps the first ones in source
+	// order, and every call site still reports the callee on its own.
+	Related       []*RelatedLocation `protobuf:"bytes,11,rep,name=related,proto3" json:"related,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -214,6 +225,92 @@ func (x *Diagnostic) GetPath() []string {
 	return nil
 }
 
+func (x *Diagnostic) GetRelated() []*RelatedLocation {
+	if x != nil {
+		return x.Related
+	}
+	return nil
+}
+
+// RelatedLocation is another place in some file that explains a [Diagnostic],
+// in the units the diagnostic positions itself in.
+type RelatedLocation struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// File is the file the location is in, spelled as a [DiagnosticReport.file]
+	// is, so a consumer can match it to a report it already holds. It is named
+	// here rather than inferred, because the point of a related location is that
+	// it is usually not in the file the diagnostic is.
+	File string `protobuf:"bytes,1,opt,name=file,proto3" json:"file,omitempty"`
+	// Line is the 1-based source line, or zero when unknown.
+	Line uint32 `protobuf:"varint,2,opt,name=line,proto3" json:"line,omitempty"`
+	// Column is the 1-based column within Line, counting characters rather than
+	// bytes, or zero when only the line is known.
+	Column uint32 `protobuf:"varint,3,opt,name=column,proto3" json:"column,omitempty"`
+	// Message says what is at the location and how it relates to the diagnostic:
+	// `compiled because step "place" calls it`.
+	Message       string `protobuf:"bytes,4,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RelatedLocation) Reset() {
+	*x = RelatedLocation{}
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RelatedLocation) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RelatedLocation) ProtoMessage() {}
+
+func (x *RelatedLocation) ProtoReflect() protoreflect.Message {
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RelatedLocation.ProtoReflect.Descriptor instead.
+func (*RelatedLocation) Descriptor() ([]byte, []int) {
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *RelatedLocation) GetFile() string {
+	if x != nil {
+		return x.File
+	}
+	return ""
+}
+
+func (x *RelatedLocation) GetLine() uint32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *RelatedLocation) GetColumn() uint32 {
+	if x != nil {
+		return x.Column
+	}
+	return 0
+}
+
+func (x *RelatedLocation) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
 // SourceRange is a region of a file's source text, in the units [Diagnostic]
 // already positions itself in.
 //
@@ -245,7 +342,7 @@ type SourceRange struct {
 
 func (x *SourceRange) Reset() {
 	*x = SourceRange{}
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[1]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -257,7 +354,7 @@ func (x *SourceRange) String() string {
 func (*SourceRange) ProtoMessage() {}
 
 func (x *SourceRange) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[1]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -270,7 +367,7 @@ func (x *SourceRange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceRange.ProtoReflect.Descriptor instead.
 func (*SourceRange) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{1}
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SourceRange) GetStartLine() uint32 {
@@ -322,7 +419,7 @@ type TextChange struct {
 
 func (x *TextChange) Reset() {
 	*x = TextChange{}
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[2]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -334,7 +431,7 @@ func (x *TextChange) String() string {
 func (*TextChange) ProtoMessage() {}
 
 func (x *TextChange) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[2]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -347,7 +444,7 @@ func (x *TextChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TextChange.ProtoReflect.Descriptor instead.
 func (*TextChange) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{2}
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *TextChange) GetRange() *SourceRange {
@@ -404,7 +501,7 @@ type SuggestedEdit struct {
 
 func (x *SuggestedEdit) Reset() {
 	*x = SuggestedEdit{}
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[3]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -416,7 +513,7 @@ func (x *SuggestedEdit) String() string {
 func (*SuggestedEdit) ProtoMessage() {}
 
 func (x *SuggestedEdit) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[3]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -429,7 +526,7 @@ func (x *SuggestedEdit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SuggestedEdit.ProtoReflect.Descriptor instead.
 func (*SuggestedEdit) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{3}
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SuggestedEdit) GetTitle() string {
@@ -468,7 +565,7 @@ type DiagnosticReport struct {
 
 func (x *DiagnosticReport) Reset() {
 	*x = DiagnosticReport{}
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[4]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -480,7 +577,7 @@ func (x *DiagnosticReport) String() string {
 func (*DiagnosticReport) ProtoMessage() {}
 
 func (x *DiagnosticReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[4]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -493,7 +590,7 @@ func (x *DiagnosticReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticReport.ProtoReflect.Descriptor instead.
 func (*DiagnosticReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{4}
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DiagnosticReport) GetFile() string {
@@ -529,7 +626,7 @@ type ValidationReport struct {
 
 func (x *ValidationReport) Reset() {
 	*x = ValidationReport{}
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[5]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -541,7 +638,7 @@ func (x *ValidationReport) String() string {
 func (*ValidationReport) ProtoMessage() {}
 
 func (x *ValidationReport) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[5]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -554,7 +651,7 @@ func (x *ValidationReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidationReport.ProtoReflect.Descriptor instead.
 func (*ValidationReport) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{5}
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ValidationReport) GetFiles() []*DiagnosticReport {
@@ -588,7 +685,7 @@ type SourceFile struct {
 
 func (x *SourceFile) Reset() {
 	*x = SourceFile{}
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[6]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -600,7 +697,7 @@ func (x *SourceFile) String() string {
 func (*SourceFile) ProtoMessage() {}
 
 func (x *SourceFile) ProtoReflect() protoreflect.Message {
-	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[6]
+	mi := &file_flowstate_v1_diagnostics_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -613,7 +710,7 @@ func (x *SourceFile) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SourceFile.ProtoReflect.Descriptor instead.
 func (*SourceFile) Descriptor() ([]byte, []int) {
-	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{6}
+	return file_flowstate_v1_diagnostics_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *SourceFile) GetName() string {
@@ -634,7 +731,7 @@ var File_flowstate_v1_diagnostics_proto protoreflect.FileDescriptor
 
 const file_flowstate_v1_diagnostics_proto_rawDesc = "" +
 	"\n" +
-	"\x1eflowstate/v1/diagnostics.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\x9b\x02\n" +
+	"\x1eflowstate/v1/diagnostics.proto\x12\fflowstate.v1\x1a\x1bbuf/validate/validate.proto\"\xde\x02\n" +
 	"\n" +
 	"Diagnostic\x12\x12\n" +
 	"\x04line\x18\x01 \x01(\rR\x04line\x12\x16\n" +
@@ -648,7 +745,15 @@ const file_flowstate_v1_diagnostics_proto_rawDesc = "" +
 	"\x05edits\x18\t \x03(\v2\x1b.flowstate.v1.SuggestedEditR\x05edits\x12$\n" +
 	"\x04path\x18\n" +
 	" \x03(\tB\x10\xbaH\r\x92\x01\n" +
-	"\x10\x81\x01\"\x05r\x03\x18\x80\x02R\x04path\"\x89\x01\n" +
+	"\x10\x81\x01\"\x05r\x03\x18\x80\x02R\x04path\x12A\n" +
+	"\arelated\x18\v \x03(\v2\x1d.flowstate.v1.RelatedLocationB\b\xbaH\x05\x92\x01\x02\x10\x10R\arelated\"\x83\x01\n" +
+	"\x0fRelatedLocation\x12\x1e\n" +
+	"\x04file\x18\x01 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\x80\x04R\x04file\x12\x12\n" +
+	"\x04line\x18\x02 \x01(\rR\x04line\x12\x16\n" +
+	"\x06column\x18\x03 \x01(\rR\x06column\x12$\n" +
+	"\amessage\x18\x04 \x01(\tB\n" +
+	"\xbaH\ar\x05\x10\x01\x18\x80\bR\amessage\"\x89\x01\n" +
 	"\vSourceRange\x12\x1d\n" +
 	"\n" +
 	"start_line\x18\x01 \x01(\rR\tstartLine\x12!\n" +
@@ -687,27 +792,29 @@ func file_flowstate_v1_diagnostics_proto_rawDescGZIP() []byte {
 	return file_flowstate_v1_diagnostics_proto_rawDescData
 }
 
-var file_flowstate_v1_diagnostics_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_flowstate_v1_diagnostics_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_flowstate_v1_diagnostics_proto_goTypes = []any{
 	(*Diagnostic)(nil),       // 0: flowstate.v1.Diagnostic
-	(*SourceRange)(nil),      // 1: flowstate.v1.SourceRange
-	(*TextChange)(nil),       // 2: flowstate.v1.TextChange
-	(*SuggestedEdit)(nil),    // 3: flowstate.v1.SuggestedEdit
-	(*DiagnosticReport)(nil), // 4: flowstate.v1.DiagnosticReport
-	(*ValidationReport)(nil), // 5: flowstate.v1.ValidationReport
-	(*SourceFile)(nil),       // 6: flowstate.v1.SourceFile
+	(*RelatedLocation)(nil),  // 1: flowstate.v1.RelatedLocation
+	(*SourceRange)(nil),      // 2: flowstate.v1.SourceRange
+	(*TextChange)(nil),       // 3: flowstate.v1.TextChange
+	(*SuggestedEdit)(nil),    // 4: flowstate.v1.SuggestedEdit
+	(*DiagnosticReport)(nil), // 5: flowstate.v1.DiagnosticReport
+	(*ValidationReport)(nil), // 6: flowstate.v1.ValidationReport
+	(*SourceFile)(nil),       // 7: flowstate.v1.SourceFile
 }
 var file_flowstate_v1_diagnostics_proto_depIdxs = []int32{
-	3, // 0: flowstate.v1.Diagnostic.edits:type_name -> flowstate.v1.SuggestedEdit
-	1, // 1: flowstate.v1.TextChange.range:type_name -> flowstate.v1.SourceRange
-	2, // 2: flowstate.v1.SuggestedEdit.changes:type_name -> flowstate.v1.TextChange
-	0, // 3: flowstate.v1.DiagnosticReport.diagnostics:type_name -> flowstate.v1.Diagnostic
-	4, // 4: flowstate.v1.ValidationReport.files:type_name -> flowstate.v1.DiagnosticReport
-	5, // [5:5] is the sub-list for method output_type
-	5, // [5:5] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 0: flowstate.v1.Diagnostic.edits:type_name -> flowstate.v1.SuggestedEdit
+	1, // 1: flowstate.v1.Diagnostic.related:type_name -> flowstate.v1.RelatedLocation
+	2, // 2: flowstate.v1.TextChange.range:type_name -> flowstate.v1.SourceRange
+	3, // 3: flowstate.v1.SuggestedEdit.changes:type_name -> flowstate.v1.TextChange
+	0, // 4: flowstate.v1.DiagnosticReport.diagnostics:type_name -> flowstate.v1.Diagnostic
+	5, // 5: flowstate.v1.ValidationReport.files:type_name -> flowstate.v1.DiagnosticReport
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_flowstate_v1_diagnostics_proto_init() }
@@ -721,7 +828,7 @@ func file_flowstate_v1_diagnostics_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_flowstate_v1_diagnostics_proto_rawDesc), len(file_flowstate_v1_diagnostics_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

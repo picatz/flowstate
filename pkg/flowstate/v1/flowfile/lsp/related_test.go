@@ -14,7 +14,7 @@ func relatedIn(t *testing.T, src string) map[string][]relatedInformation {
 	t.Helper()
 	doc := refsDoc(t, src)
 	out := map[string][]relatedInformation{}
-	for _, p := range publishable(doc, diagnoseCarried(doc)) {
+	for _, p := range publishable(newLocator(doc), diagnoseCarried(doc)) {
 		out[p.Message] = p.RelatedInformation
 	}
 

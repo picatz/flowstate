@@ -96,6 +96,14 @@ test('an unanswered leg never reads as a failure of the other, and nothing says 
   expect(text).not.toMatch(/did not answer|unavailable/)
 })
 
+test('a callee reported under its own file is mentioned, not shown as the caller valid', () => {
+  const callee = { file: 'lib/callee.yaml', diagnostics: [{ line: 6, column: 14, message: 'bad default' }] as never }
+  const caller = { file: 'a.flow.yaml', diagnostics: [] }
+  const text = formatContext({ file: 'a.flow.yaml', report: caller, all: [caller, callee] }) ?? ''
+  expect(text).not.toContain('a.flow.yaml: valid')
+  expect(text).toContain('called files with problems of their own: lib/callee.yaml (1)')
+})
+
 test('a leg that failed is said once, and both failing adds nothing', () => {
   expect(formatContext({ file: 'a.flow.yaml', tasks: ['http'] })).toContain('flow validate a.flow.yaml: no result')
   expect(formatContext({ file: 'a.flow.yaml', report: { file: 'a.flow.yaml', diagnostics: [] } })).toContain(

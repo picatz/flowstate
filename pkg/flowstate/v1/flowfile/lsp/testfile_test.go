@@ -570,16 +570,16 @@ func TestAStaleDefaultsAnalysisCannotReplaceCurrentDiagnostics(t *testing.T) {
 	stale := s.docs.open(uri, 1, "defaults:\n  stubs: [\n", nil)
 	current := s.docs.change(uri, 2, []lsp.TextDocumentContentChangeEvent{{Text: "defaults: {}\n"}}, nil)
 	require.NotNil(t, current)
-	s.testDiagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic{
-		uri: {uri: []lsp.Diagnostic{{Code: codeYAMLSyntax, Message: "current"}}},
+	s.diagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]publishedDiagnostic{
+		uri: {uri: []publishedDiagnostic{{Diagnostic: lsp.Diagnostic{Code: codeYAMLSyntax, Message: "current"}}}},
 	}
 
 	s.publishTestDiagnostics(t.Context(), nil, uri, []diagnosticPublication{{
 		uri: uri, diagnostics: []lsp.Diagnostic{{Code: codeTestFile, Message: "stale"}},
 	}}, stale)
 
-	require.Len(t, s.testDiagnosticsBySource[uri][uri], 1)
-	assert.Equal(t, "current", s.testDiagnosticsBySource[uri][uri][0].Message)
+	require.Len(t, s.diagnosticsBySource[uri][uri], 1)
+	assert.Equal(t, "current", s.diagnosticsBySource[uri][uri][0].Message)
 }
 
 func TestSavedDefaultsAnalysisCannotReplaceASuiteAfterDefaultsOpen(t *testing.T) {
@@ -590,16 +590,16 @@ func TestSavedDefaultsAnalysisCannotReplaceASuiteAfterDefaultsOpen(t *testing.T)
 	suite := s.docs.open(suiteURI, 1, validSuite, nil)
 	s.docs.open(defaultsURI, 1, "defaults: {}\n", nil)
 	s.testDefaultsBySuite = map[lsp.DocumentURI]lsp.DocumentURI{suiteURI: defaultsURI}
-	s.testDiagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic{
-		suiteURI: {suiteURI: []lsp.Diagnostic{{Code: codeTestFile, Message: "current live result"}}},
+	s.diagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]publishedDiagnostic{
+		suiteURI: {suiteURI: []publishedDiagnostic{{Diagnostic: lsp.Diagnostic{Code: codeTestFile, Message: "current live result"}}}},
 	}
 
 	s.publishTestDiagnostics(t.Context(), nil, suiteURI, []diagnosticPublication{{
 		uri: suiteURI, diagnostics: []lsp.Diagnostic{{Code: codeTestFile, Message: "stale saved result"}},
 	}}, suite)
 
-	require.Len(t, s.testDiagnosticsBySource[suiteURI][suiteURI], 1)
-	assert.Equal(t, "current live result", s.testDiagnosticsBySource[suiteURI][suiteURI][0].Message)
+	require.Len(t, s.diagnosticsBySource[suiteURI][suiteURI], 1)
+	assert.Equal(t, "current live result", s.diagnosticsBySource[suiteURI][suiteURI][0].Message)
 }
 
 func TestCloseCleanupDoesNotDeleteAReopenedTestDocument(t *testing.T) {
@@ -607,8 +607,8 @@ func TestCloseCleanupDoesNotDeleteAReopenedTestDocument(t *testing.T) {
 	s := &FlowfileServer{Logger: discardLogger()}
 	uri := lsp.DocumentURI("file:///reopened/suite.test.yaml")
 	reopened := s.docs.open(uri, 2, validSuite, nil)
-	s.testDiagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]lsp.Diagnostic{
-		uri: {uri: []lsp.Diagnostic{{Code: codeTestFile, Message: "reopened"}}},
+	s.diagnosticsBySource = map[lsp.DocumentURI]map[lsp.DocumentURI][]publishedDiagnostic{
+		uri: {uri: []publishedDiagnostic{{Diagnostic: lsp.Diagnostic{Code: codeTestFile, Message: "reopened"}}}},
 	}
 
 	promoted := s.clearTestDiagnostics(t.Context(), nil, uri)
@@ -617,8 +617,8 @@ func TestCloseCleanupDoesNotDeleteAReopenedTestDocument(t *testing.T) {
 	current, ok := s.docs.get(uri)
 	assert.True(t, ok)
 	assert.Same(t, reopened, current)
-	require.Len(t, s.testDiagnosticsBySource[uri][uri], 1)
-	assert.Equal(t, "reopened", s.testDiagnosticsBySource[uri][uri][0].Message)
+	require.Len(t, s.diagnosticsBySource[uri][uri], 1)
+	assert.Equal(t, "reopened", s.diagnosticsBySource[uri][uri][0].Message)
 }
 
 func TestAClosedSuiteCannotConsumeADefaultsDependencySlot(t *testing.T) {
@@ -646,8 +646,8 @@ func TestDefaultsOverflowMembershipIsBounded(t *testing.T) {
 		require.True(t, current)
 	}
 
-	s.testDiagnosticsMu.Lock()
-	defer s.testDiagnosticsMu.Unlock()
+	s.diagnosticsMu.Lock()
+	defer s.diagnosticsMu.Unlock()
 	assert.Len(t, s.testSuitesByDefaults[defaultsURI], maxTestDefaultsDependents)
 	assert.Len(t, s.testOverflowsByDefaults[defaultsURI], maxTestDefaultsOverflowMembers)
 	assert.Len(t, s.testOverflowBySuite, maxTestDefaultsOverflowMembers)
