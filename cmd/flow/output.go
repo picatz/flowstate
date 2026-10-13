@@ -15,6 +15,7 @@ import (
 	expr "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/picatz/flowstate/cmd/flow/internal/sarif"
 	"github.com/picatz/flowstate/cmd/flow/internal/ui"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
@@ -55,6 +56,13 @@ const (
 	// consumed as it arrives, and for `| jq -c` in a loop — a reader gets the
 	// first run without waiting for the last.
 	FormatJSONL OutputFormat = "jsonl"
+
+	// FormatSARIF is a SARIF 2.1.0 log, for the verbs whose answer is diagnostics
+	// and whose reader is a code-scanning service or an editor. It is a projection
+	// of the same report `json` writes, offered only where the command declares it
+	// ([addOutputFlagWith]); it is not for a program to index into, so it is not
+	// [OutputFormat.Machine].
+	FormatSARIF OutputFormat = "sarif"
 )
 
 // outputFormats are the accepted values, in the order help lists them.
@@ -86,12 +94,13 @@ func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
 	}
 
 	format := OutputFormat(strings.ToLower(strings.TrimSpace(requested)))
-	if slices.Contains(outputFormats, format) {
+	accepts := acceptedOutputFormats(cmd)
+	if slices.Contains(accepts, format) {
 		return format, nil
 	}
 
-	names := make([]string, 0, len(outputFormats))
-	for _, accepted := range outputFormats {
+	names := make([]string, 0, len(accepts))
+	for _, accepted := range accepts {
 		names = append(names, string(accepted))
 	}
 
@@ -101,6 +110,19 @@ func resolveOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
 	// cobra itself would refuse is, per [usageError].
 	return "", newUsageError(fmt.Errorf("--output %q is not a format this understands; use one of %s",
 		requested, strings.Join(names, ", ")))
+}
+
+// acceptedOutputFormats is every format cmd takes: the common ones, then the ones
+// it declared through [addOutputFlagWith].
+func acceptedOutputFormats(cmd *cobra.Command) []OutputFormat {
+	accepts := slices.Clone(outputFormats)
+	for name := range strings.SplitSeq(cmd.Annotations[outputFormatsAnnotation], ",") {
+		if name != "" {
+			accepts = append(accepts, OutputFormat(name))
+		}
+	}
+
+	return accepts
 }
 
 // Machine reports whether the format is for a program rather than a person.
@@ -117,9 +139,28 @@ func (f OutputFormat) Machine() bool { return f == FormatJSON || f == FormatJSON
 // Still excluded are the verbs whose whole output is the account: `flow server` and
 // `flow worker` narrate a process that is running, and there is no moment at which
 // they have a document to write.
-func addOutputFlag(cmd *cobra.Command) {
-	names := make([]string, 0, len(outputFormats))
-	for _, accepted := range outputFormats {
+func addOutputFlag(cmd *cobra.Command) { addOutputFlagWith(cmd) }
+
+// outputFormatsAnnotation records, on a command, the formats it accepts beyond
+// [outputFormats]: the flag's declaration and [resolveOutputFormat] read one list.
+const outputFormatsAnnotation = "flow.output-formats"
+
+// addOutputFlagWith is [addOutputFlag] for a verb that also writes extra formats.
+func addOutputFlagWith(cmd *cobra.Command, extra ...OutputFormat) {
+	if len(extra) > 0 {
+		if cmd.Annotations == nil {
+			cmd.Annotations = map[string]string{}
+		}
+		names := make([]string, len(extra))
+		for i, format := range extra {
+			names[i] = string(format)
+		}
+		cmd.Annotations[outputFormatsAnnotation] = strings.Join(names, ",")
+	}
+
+	accepts := acceptedOutputFormats(cmd)
+	names := make([]string, 0, len(accepts))
+	for _, accepted := range accepts {
 		names = append(names, string(accepted))
 	}
 
@@ -161,6 +202,21 @@ func resolveRawOutput(cmd *cobra.Command) bool {
 	raw, _ := cmd.Flags().GetBool("raw")
 
 	return raw
+}
+
+// writeSARIF writes reports as one SARIF 2.1.0 log, through the same terminal
+// escaping every JSON answer gets.
+func writeSARIF(surface *ui.UI, reports []*v1.DiagnosticReport) error {
+	encoded, err := sarif.Marshal(reports, sarif.Tool{
+		Name: "flow", Version: version, InformationURI: "https://github.com/picatz/flowstate",
+	})
+	if err != nil {
+		return err
+	}
+
+	_, err = surface.Out.Write(termsafe.EscapeJSON(encoded))
+
+	return err
 }
 
 // writeSchema writes a JSON Schema document the way [writeJSON] writes a message:

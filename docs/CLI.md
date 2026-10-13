@@ -270,6 +270,13 @@ Everything above serves a person. For a program, the contract is:
   message as protojson. `lint` and `server dev` write their own documented
   shapes. `--output jsonl` is the same document on one line, or one line per
   change for `watch`.
+- **`validate -o sarif` is a projection, not a second contract.** It writes the
+  same reports `-o json` does as a SARIF 2.1.0 log (one run): each diagnostic's
+  `code` is the rule, its line and column the region (omitted when unknown, never
+  zero), its step address a logical location, its related locations and suggested
+  edits the SARIF `relatedLocations` and `fixes`. A run holds at most 25,000
+  results and says when it left some out. Only `validate` accepts it, and a file
+  with problems still exits non-zero.
 - **Mutations answer with one envelope.** `cancel`, `terminate`, `signal`, and
   the schedule mutations have empty RPC responses, so each writes a
   `flowstate.v1.MutationResult`: `verb`, `workflowId`, `runId`, `scheduleName`,
