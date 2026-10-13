@@ -64,9 +64,10 @@ GOMEMLIMIT=512MiB go test -timeout 120s -parallel 1 \
 
 Use `make fmt`, not a bare `gofmt`: a `gofmt` from `PATH` may be a different
 binary from the pinned toolchain's and can disagree on formatting. Run
-generation and drift checks (`buf generate`, `make docs`, `go generate`) when
-schemas or generated surfaces may have changed; never edit generated files
-directly.
+`make regen` when schemas or generated surfaces may have changed, and commit
+what it writes: it is every generator in order, and `make regen-check` (what
+`make check` and CI run) fails with "run make regen and commit the result".
+Never edit generated files directly.
 
 ## 4. Before a PR handoff
 

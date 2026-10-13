@@ -309,7 +309,8 @@ Since #1726:
   runner and `rest` receives the exact `go list ./...` complement. Every lane
   still calls the one `make test` recipe with its package set, retains `-race
   -p=1`, and reports through `tools/testsum`; build, vet, formatting, generated
-  docs, examples, breaking, and compose checks run once in `rest`. `fail-fast:
+  files (`make regen-check`: `make regen` followed by one `git diff --exit-code`),
+  examples, breaking, and compose checks run once in `rest`. `fail-fast:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
   matrix result, so a missing or failed lane remains red. Four cache-scope
   files prevent the lanes racing to save one incomplete build cache.
@@ -509,7 +510,7 @@ the `timeout-minutes: 10` that bounds it.
 ### A failing test is an annotation, not a line in a log
 
 Until #1727, `ci.yml` emitted `::error` annotations for gofmt drift, generated
-docs, generated code and plan disagreements, and none for a failing Go test:
+files and plan disagreements, and none for a failing Go test:
 the `Test` step was `make test` as plain text, five to six minutes of it, and
 a reviewer read the log for `--- FAIL`. Now `make test`, `make test-ordering`
 and `make test-plugins` run `go test -json` through `tools/testsum`, and the

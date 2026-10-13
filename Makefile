@@ -1,4 +1,4 @@
-.PHONY: check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check regen regen-proto regen-check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -104,19 +104,40 @@ check:
 	$(MAKE) fuzz-smoke
 	$(MAKE) appearance
 	docker compose -f examples/observability/docker-compose.yaml config -q
-	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
-	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
-	$(BUF) generate
-	$(BUF) generate --config '{"version":"v2","modules":[{"path":"proto"},{"path":"$(EXAMPLE_PLUGIN)/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' --template $(EXAMPLE_PLUGIN)/buf.gen.yaml --clean --path $(EXAMPLE_PLUGIN)/proto/example -o $(EXAMPLE_PLUGIN)
-	$(MAKE) plugin-proto
-	git diff --exit-code
-	$(MAKE) check-untracked-generated
+	$(MAKE) regen-check
 	$(GOVULNCHECK) ./...
 	$(STATICCHECK) ./...
 	$(MAKE) vulncheck-plugins
 	$(MAKE) staticcheck-plugins
+
+# Every derived file, in dependency order, and the one command that rewrites
+# all of them: Go and descriptor code from the schema first (the binary the
+# later steps run is built from it), then the reference documents and the
+# reference table the binary derives, the examples brought to the current
+# edition, the plugin example catalog (which builds the plugins and so needs
+# their regenerated schema), and formatting last. `appearance-update` stays
+# separate because it needs vhs. CI and `check` run `regen-check`, so there is
+# one mechanism and one remedy.
+regen: regen-proto
+	go generate ./cmd/flow/internal/reference
+	go run ./cmd/flow docs generate
+	go run ./cmd/flow fix examples/
+	$(MAKE) plugin-example-catalog-update
+	$(MAKE) fmt
+
+regen-proto:
+	$(BUF) generate
+	$(BUF) generate --config '{"version":"v2","modules":[{"path":"proto"},{"path":"$(EXAMPLE_PLUGIN)/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' --template $(EXAMPLE_PLUGIN)/buf.gen.yaml --clean --path $(EXAMPLE_PLUGIN)/proto/example -o $(EXAMPLE_PLUGIN)
+	$(MAKE) plugin-proto
+
+# Run `regen`, then fail with one message when it changed or created anything.
+# Tracked drift shows in `git diff`; a generated file nobody committed shows in
+# check-untracked-generated (which does not touch the index).
+regen-check: regen
+	@git diff --exit-code || { echo "generated files are stale: run 'make regen' and commit the result" >&2; exit 1; }
+	@$(MAKE) --no-print-directory check-untracked-generated
 
 # Regenerates every first-party plugin's schema, field comments included, from
 # plugins/buf.gen.yaml. A plugin's proto imports the engine's own schema beside
@@ -143,7 +164,7 @@ plugin-proto:
 check-untracked-generated:
 	@untracked="$$(git ls-files --others --exclude-standard -- '*.pb.go' '*.connect.go')" || exit 1; \
 	if [ -n "$$untracked" ]; then \
-		echo "regenerating created files that are not in the commit (run git add on them):"; \
+		echo "generated files are stale: run 'make regen' and git add the new files:"; \
 		echo "$$untracked"; \
 		exit 1; \
 	fi
