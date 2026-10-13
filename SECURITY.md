@@ -15,7 +15,8 @@ worse in practice than the model assumed is still very much wanted.
 ## Reporting a vulnerability
 
 Report privately through GitHub's private vulnerability reporting on this
-repository (Security tab, "Report a vulnerability"). That path keeps the
+repository: <https://github.com/picatz/flowstate/security/advisories/new>
+(Security tab, "Report a vulnerability"). That path keeps the
 report, the discussion, and any fix coordinated in one place, visible to the
 maintainer and to you, and to nobody else until an advisory is published.
 

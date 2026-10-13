@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/logsafe"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -637,7 +638,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// the size of; a refused one is retried, which is what at-least-once
 		// delivery already means everywhere else in this design.
 		r.log.WarnContext(req.Context(), "refused a delivery: too many in flight",
-			"path", req.URL.Path, "limit", cap(r.inFlight))
+			"path", logsafe.String(req.URL.Path), "limit", cap(r.inFlight))
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many deliveries in flight", http.StatusServiceUnavailable)
 
@@ -648,7 +649,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			r.log.WarnContext(req.Context(), "refused a delivery: body past the bound",
-				"path", req.URL.Path, "limit", v1.MaxWebhookPayloadBytes)
+				"path", logsafe.String(req.URL.Path), "limit", v1.MaxWebhookPayloadBytes)
 			// Recorded against the route the path names when it names one,
 			// which is a map lookup the sender cannot observe: the answer is
 			// this same 413 either way.
@@ -671,7 +672,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		r.log.WarnContext(req.Context(), "refused a delivery: body could not be read",
-			"path", req.URL.Path, "error", err)
+			"path", logsafe.String(req.URL.Path), "error", logsafe.Error(err))
 		http.Error(w, "the delivery body could not be read", http.StatusBadRequest)
 
 		return
@@ -686,7 +687,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// regardless of how many schemes that route would have declared (#973).
 		// Then the same refusal, so neither is the answer that stands out.
 		v1.SpendWebhookVerificationWork(webhookHeaders(req.Header), body, r.now())
-		r.refuse(req, "no such webhook", "path", req.URL.Path)
+		r.refuse(req, "no such webhook", "path", logsafe.String(req.URL.Path))
 		writeWebhookRefusal(w)
 		unroutedCtx, cancelUnrouted := recordContext(req)
 		r.refusedAtRoute(unroutedCtx, nil, nil,
@@ -701,7 +702,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		headers, body, r.now())
 	if err != nil {
 		r.refuse(req, "the delivery did not verify",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Error(err))
 		writeWebhookRefusal(w)
 		unverifiedCtx, cancelUnverified := recordContext(req)
 		r.refusedAtRoute(unverifiedCtx, route, nil, webhookDenyCode(err))
@@ -724,7 +725,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	decoded, err := decodeDeliveryBody(route.trigger, headers, body)
 	if err != nil {
 		r.log.WarnContext(req.Context(), "a verified delivery did not decode",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Error(err))
 		r.refusedAtRoute(req.Context(), route, r.principalIdentity(req.Context(), route),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -814,7 +815,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// broken rule it is; the evaluator's own error stays here, in the
 			// operator's log, because it can quote the delivery.
 			r.log.WarnContext(ctx, "a webhook `when:` could not be answered; the delivery is refused",
-				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", whenErr.Cause())
+				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", logsafe.Error(whenErr.Cause()))
 			r.refusedAtRoute(ctx, route, r.principalIdentity(ctx, route), v1.AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR)
 			http.Error(w, whenErr.Error(), http.StatusUnprocessableEntity)
 
@@ -826,7 +827,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// reads them off the context, and a failure an operator is reading is
 		// exactly when the trace it belongs to is worth one click away.
 		r.log.ErrorContext(ctx, "a verified delivery did not start a run",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Error(err))
 
 		if errors.Is(err, errDeliveryRefused) {
 			// The run exists and its `signals:` policy will not take an answer
