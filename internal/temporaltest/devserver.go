@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -180,6 +181,36 @@ func ensureCLICached(ctx context.Context, logger log.Logger) (string, error) {
 		downloadErr = fmt.Errorf("%s still missing and downloadCLI reported no error", path)
 	}
 	return "", fmt.Errorf("downloading the Temporal CLI before starting the supervised dev server: %w", downloadErr)
+}
+
+// CLICachePath is where the Temporal CLI lives once cached: the file CI
+// restores from, and saves to, with actions/cache. Its name carries the SDK
+// version, so a cache entry for another SDK is a different file and a
+// restored file can never be the wrong version.
+func CLICachePath() string { return cliCachePath() }
+
+// PrefetchCLI makes sure the CLI is cached and runnable, and returns its path.
+// It is the one download a caller outside the test binaries (tools/temporalcli,
+// which CI and `make temporal-cli` run) retries and bounds, so that a test step
+// finds the file in place and [StartWith] never reaches the network.
+//
+// A cached file that cannot report its version (a truncated or corrupt cache
+// entry) is removed and fetched again rather than trusted.
+func PrefetchCLI(ctx context.Context, logger log.Logger) (string, error) {
+	path := cliCachePath()
+	if _, err := os.Stat(path); err == nil {
+		vctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		out, verr := exec.CommandContext(vctx, path, "--version").CombinedOutput()
+		cancel()
+		if verr == nil {
+			return path, nil
+		}
+		logger.Warn("cached Temporal CLI does not run; fetching it again", "path", path, "error", verr, "output", string(out))
+		if err := os.Remove(path); err != nil {
+			return "", fmt.Errorf("removing the unusable cached Temporal CLI: %w", err)
+		}
+	}
+	return ensureCLICached(ctx, logger)
 }
 
 // RunLauncher runs the supervisor mode selected by Start. It returns handled=false
