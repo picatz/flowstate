@@ -239,6 +239,7 @@ func TestClaudePermissionsOnlyRemovePromptsFromVerification(t *testing.T) {
 		"Bash(*)", "Bash(git:*)", "Bash(go:*)", "Bash(make:*)", "Bash(git push:*)",
 		"Bash(git commit:*)", "Bash(git reset --hard)", "Bash(bash -c:*)",
 		"Bash(go test ./... && git push)", "Bash(gh pr merge:*)", "Bash(rm -rf:*)",
+		"Bash(go run ./tools/shipmerge:*)",
 		"Bash(git fetch origin:*)", "Bash(git fetch origin +main:work --update-head-ok)",
 		"Bash(git diff:*)", "Bash(git diff --output=AGENTS.md HEAD)",
 		"Bash(git log:*)", "Bash(git show:*)", "Bash(git blame:*)",

@@ -38,9 +38,10 @@ Labels: `kind/bug` is a defect with a reproducer; `kind/design-record` is a deci
 Every PR runs the same gate you ran locally. A merge needs every applicable CI
 and review channel green on the current head, not only required checks, and no
 unresolved review thread. Maintainers can verify the remote evidence with
-`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. Auto-merge is not
-used: a final push invalidates earlier review, and the PR is merged manually only
-after exact-head review completes.
+`go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, and
+`go run ./tools/shipmerge` merges only after that check passes, pinned to the
+head it read. Auto-merge is not used: a final push invalidates earlier review,
+and the PR is merged manually only after exact-head review completes.
 
 ## Bringing an agent
 

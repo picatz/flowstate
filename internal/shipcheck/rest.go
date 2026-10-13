@@ -1,4 +1,4 @@
-package main
+package shipcheck
 
 import (
 	"encoding/json"
@@ -98,9 +98,9 @@ func unresolvedReviewThreads(repo string, number int) (int, error) {
 
 // restGet runs `gh api --method GET endpoint` and decodes the document.
 func restGet(endpoint string, out any) error {
-	raw, err := runGH("api", "--method", "GET", endpoint)
+	raw, err := GH("api", "--method", "GET", endpoint)
 	if err != nil {
-		return fmt.Errorf("GET %s: %w: %s", endpoint, err, errorSnippet(raw))
+		return fmt.Errorf("GET %s: %w: %s", endpoint, err, ErrorSnippet(raw))
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("decode %s: %w", endpoint, err)

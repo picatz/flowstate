@@ -1,4 +1,4 @@
-package main
+package shipcheck
 
 import (
 	"encoding/json"
@@ -327,22 +327,86 @@ func TestEvaluateRejectsConflictingChecksAtSameTimestamp(t *testing.T) {
 	}
 }
 
+// TestIndependentReviewRejectsStaleOrIncompleteEvidence refuses each way an
+// attestation goes wrong in practice and names that way in the problem, so
+// the operator's next comment fixes it rather than guessing.
 func TestIndependentReviewRejectsStaleOrIncompleteEvidence(t *testing.T) {
 	pr := passingPullRequest()
-	for name, mutate := range map[string]func(*comment){
-		"stale head":  func(c *comment) { c.Body = strings.ReplaceAll(c.Body, testHead, strings.Repeat("f", 40)) },
-		"no reviewer": func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "amp-oracle", "") },
-		"wrong scope": func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "code-security", "code") },
-		"no verdict":  func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "no actionable", "reviewed") },
+	for name, tc := range map[string]struct {
+		mutate func(*comment)
+		want   string
+	}{
+		"stale head": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, testHead, strings.Repeat("f", 40)) },
+			`attests head "ffff`},
+		"no reviewer": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "amp-oracle", "") }, "names no reviewer"},
+		"wrong scope": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "code-security", "code") }, `has scope "code"`},
+		"wrong status": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, `"status":"pass"`, `"status":"PASS"`) },
+			`has status "PASS"`},
+		"no verdict": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "no actionable", "reviewed") }, `lacks the words "no actionable"`},
+		"bad json":   {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, `"headSha":`, `headSha:`) }, "not valid JSON"},
+		"edited":     {func(c *comment) { c.CreatedAt, c.UpdatedAt = "2026-09-09T16:00:00Z", "2026-09-09T16:05:00Z" }, "post a new comment rather than editing"},
+		"not owner":  {func(c *comment) { c.AuthorAssociation = "NONE"; c.Author.Login = "app/claude" }, `posted by "app/claude" with association "NONE"`},
+		"no marker":  {func(c *comment) { c.Body = "PASS: no actionable findings." }, "--attest REVIEWER"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := pr
 			candidate.Comments = append([]comment(nil), pr.Comments...)
-			mutate(&candidate.Comments[0])
-			if hasIndependentReview(candidate) {
+			tc.mutate(&candidate.Comments[0])
+			problem := attestationProblem(candidate)
+			if problem == "" {
 				t.Fatal("invalid independent-review evidence was accepted")
 			}
+			if !strings.Contains(problem, tc.want) {
+				t.Fatalf("problem = %q, want it to say %q", problem, tc.want)
+			}
 		})
+	}
+}
+
+// TestAttestationIsWhatTheCheckAccepts: the body --attest prints passes
+// evaluate when the owner posts it last on that head, fails on any other
+// head, and is refused for a reviewer or head it cannot spell.
+func TestAttestationIsWhatTheCheckAccepts(t *testing.T) {
+	body, err := Attestation("flowstate-reviewer subagent", testHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := passingPullRequest()
+	pr.Comments[0].Body = body
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("the printed attestation was rejected: %v\n%s", problems, body)
+	}
+	pr.HeadRefOID = strings.Repeat("a", 40)
+	if problem := attestationProblem(pr); !strings.Contains(problem, "review and attest the current head") {
+		t.Fatalf("an attestation of another head was not named as such: %q", problem)
+	}
+	for _, bad := range []struct{ reviewer, head string }{
+		{"", testHead},
+		{"two\nlines", testHead},
+		{"reviewer", testHead[:12]},
+		{"reviewer", strings.ToUpper(testHead)},
+	} {
+		if got, err := Attestation(bad.reviewer, bad.head); err == nil {
+			t.Errorf("Attestation(%q, %q) = %q, want an error", bad.reviewer, bad.head, got)
+		}
+	}
+}
+
+// TestTheLatestAttestationIsTheOneExplained: with an old attestation and a
+// newer one that is stale, the problem names the newer one, which is the one
+// the operator just posted.
+func TestTheLatestAttestationIsTheOneExplained(t *testing.T) {
+	pr := passingPullRequest()
+	first := pr.Comments[0]
+	first.URL, first.CreatedAt = "https://example.test/old", "2026-09-09T15:00:00Z"
+	first.Body = strings.ReplaceAll(first.Body, testHead, strings.Repeat("e", 40))
+	second := pr.Comments[0]
+	second.URL, second.CreatedAt = "https://example.test/new", "2026-09-09T16:00:00Z"
+	pr.Comments = []comment{first, second}
+	pr.Reviews = []review{{SubmittedAt: "2026-09-09T16:01:00Z"}}
+	problem := attestationProblem(pr)
+	if !strings.Contains(problem, "https://example.test/new") || !strings.Contains(problem, "a review changed at 2026-09-09T16:01:00Z") {
+		t.Fatalf("problem = %q, want it to explain the newer attestation and the review after it", problem)
 	}
 }
 
@@ -350,19 +414,19 @@ func TestIndependentReviewMustFollowExactHeadReviewArtifacts(t *testing.T) {
 	pr := passingPullRequest()
 	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
 	pr.Reviews = []review{{SubmittedAt: "2026-09-09T16:01:00Z"}}
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("attestation older than an exact-head review artifact was accepted")
 	}
 	pr.Reviews[0].SubmittedAt = "2026-09-09T15:59:00Z"
-	if !hasIndependentReview(pr) {
+	if attestationProblem(pr) != "" {
 		t.Fatal("attestation newer than every exact-head review artifact was rejected")
 	}
 	pr.Reviews = []review{{SubmittedAt: pr.Comments[0].CreatedAt}}
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("equal-timestamp stale-head review artifact did not invalidate attestation")
 	}
 	pr.Reviews = []review{{SubmittedAt: "2026-09-09T15:00:00Z", UpdatedAt: "2026-09-09T16:01:00Z"}}
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("edited formal review did not invalidate attestation")
 	}
 }
@@ -372,17 +436,17 @@ func TestIndependentReviewMustFollowOtherComments(t *testing.T) {
 	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
 	pr.Comments[0].URL = "https://example.test/attestation"
 	pr.Comments = append(pr.Comments, comment{URL: "https://example.test/finding", CreatedAt: "2026-09-09T16:01:00Z"})
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("attestation older than another PR comment was accepted")
 	}
 	pr.Comments[1].CreatedAt = "2026-09-09T15:00:00Z"
 	pr.Comments[1].UpdatedAt = "2026-09-09T16:01:00Z"
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("attestation older than an edited PR comment was accepted")
 	}
 	pr.Comments = pr.Comments[:1]
 	pr.Comments[0].UpdatedAt = "2026-09-09T16:01:00Z"
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("edited attestation was accepted")
 	}
 }
@@ -391,11 +455,11 @@ func TestIndependentReviewMustFollowInlineReviewCommentEdits(t *testing.T) {
 	pr := passingPullRequest()
 	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
 	pr.LatestReviewCommentUpdatedAt = "2026-09-09T16:00:00Z"
-	if hasIndependentReview(pr) {
+	if attestationProblem(pr) == "" {
 		t.Fatal("equal-timestamp inline review comment was accepted")
 	}
 	pr.LatestReviewCommentUpdatedAt = "2026-09-09T15:59:00Z"
-	if !hasIndependentReview(pr) {
+	if attestationProblem(pr) != "" {
 		t.Fatal("older inline review comment invalidated attestation")
 	}
 }
@@ -456,7 +520,7 @@ func TestEditorChangesRequireBothEditorChecks(t *testing.T) {
 	}
 }
 
-func TestRunGHIsBounded(t *testing.T) {
+func TestGHIsBounded(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper is a POSIX shell script")
 	}
@@ -476,15 +540,15 @@ func TestRunGHIsBounded(t *testing.T) {
 	})
 
 	started := time.Now()
-	if _, err := runGH("pr", "view"); err == nil {
-		t.Fatal("runGH did not time out")
+	if _, err := GH("pr", "view"); err == nil {
+		t.Fatal("GH did not time out")
 	}
 	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("runGH returned after %s, want a bounded timeout", elapsed)
+		t.Fatalf("GH returned after %s, want a bounded timeout", elapsed)
 	}
 }
 
-func TestRunGHIgnoresStderrOnSuccess(t *testing.T) {
+func TestGHIgnoresStderrOnSuccess(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper is a POSIX shell script")
 	}
@@ -494,12 +558,12 @@ func TestRunGHIgnoresStderrOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	out, err := runGH("pr", "view")
+	out, err := GH("pr", "view")
 	if err != nil {
-		t.Fatalf("runGH: %v", err)
+		t.Fatalf("GH: %v", err)
 	}
 	if got, want := string(out), `{"state":"OPEN"}`; got != want {
-		t.Fatalf("runGH output = %q, want %q", got, want)
+		t.Fatalf("GH output = %q, want %q", got, want)
 	}
 }
 
@@ -518,7 +582,7 @@ func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
 	}
 }
 
-func TestRunGHCapsSubprocessOutput(t *testing.T) {
+func TestGHCapsSubprocessOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("test helper is a POSIX shell script")
 	}
@@ -531,18 +595,18 @@ func TestRunGHCapsSubprocessOutput(t *testing.T) {
 	originalLimit := ghOutputLimit
 	ghOutputLimit = ghErrorOutputLimit + 4
 	t.Cleanup(func() { ghOutputLimit = originalLimit })
-	out, err := runGH("pr", "view")
+	out, err := GH("pr", "view")
 	if err != errGHOutputLimit {
-		t.Fatalf("runGH error = %v, want %v", err, errGHOutputLimit)
+		t.Fatalf("GH error = %v, want %v", err, errGHOutputLimit)
 	}
 	if len(out) > ghErrorOutputLimit+4 {
-		t.Fatalf("runGH collected %d bytes beyond configured limit", len(out))
+		t.Fatalf("GH collected %d bytes beyond configured limit", len(out))
 	}
 }
 
 func TestErrorSnippetIsSmallAndValidUTF8(t *testing.T) {
 	out := append([]byte(strings.Repeat("x", errorSnippetLimit-1)), 0xe2, 0x82)
-	got := errorSnippet(out)
+	got := ErrorSnippet(out)
 	if len(got) > errorSnippetLimit+len("...") {
 		t.Fatalf("snippet has %d bytes", len(got))
 	}

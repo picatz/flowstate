@@ -54,6 +54,10 @@ evidence because the change looks small.
 
    `<!-- flowstate-independent-review:v1 {"headSha":"FULL_SHA","reviewer":"REVIEWER_IDENTITY","scope":"code-security","status":"pass"} -->`
 
+   `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER --attest
+   REVIEWER --head SHA` prints that comment for the current head, refusing a
+   reviewed SHA that is not the head; post it unchanged as a new comment.
+
    Wait for every applicable check, including non-required checks—not merely
    GitHub's required checks. Run expensive CI only once per intended final
    head. A stale review, unresolved or undispositioned finding, semantic
@@ -61,7 +65,10 @@ evidence because the change looks small.
    unavailability is never represented as PASS.
 6. Run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. It must
    pass on the unchanged final head.
-7. Merge manually with exact-head protection, for example
+7. Merge with `go run ./tools/shipmerge --repo picatz/flowstate --pr NUMBER
+   -F MESSAGE_FILE`: it reruns the shipcheck verdict in process and squash-merges
+   over REST pinned to the head that verdict read. Where it cannot run, merge
+   manually with exact-head protection,
    `gh pr merge NUMBER -R picatz/flowstate --squash --match-head-commit SHA`.
    Fetch `origin/main`, prove the merged commit is reachable, and wait for all
    applicable post-merge checks on `main`. Report the PR, final head, merge

@@ -1,4 +1,4 @@
-package main
+package shipcheck
 
 import (
 	"os"
