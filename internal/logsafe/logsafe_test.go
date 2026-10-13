@@ -154,3 +154,17 @@ func TestArgsRewritesGroupsAnyAndBadKeys(t *testing.T) {
 		t.Fatalf("bad key = %v, want rewritten", got[2])
 	}
 }
+
+func TestArgsRewritesErrorsBeforeAnyHandler(t *testing.T) {
+	t.Parallel()
+
+	got := logsafe.Args("error", errors.New("bad\r\nbody"), "n", 7)
+
+	if got[1] != `bad\r\nbody` {
+		t.Fatalf("error value = %#v, want the escaped text, not the error", got[1])
+	}
+
+	if got[3] != 7 {
+		t.Fatalf("non-text value = %#v, want it unchanged", got[3])
+	}
+}

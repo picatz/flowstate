@@ -725,7 +725,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	decoded, err := decodeDeliveryBody(route.trigger, headers, body)
 	if err != nil {
 		r.log.WarnContext(req.Context(), "a verified delivery did not decode",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Value(err))
 		r.refusedAtRoute(req.Context(), route, r.principalIdentity(req.Context(), route),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -815,7 +815,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// broken rule it is; the evaluator's own error stays here, in the
 			// operator's log, because it can quote the delivery.
 			r.log.WarnContext(ctx, "a webhook `when:` could not be answered; the delivery is refused",
-				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", whenErr.Cause())
+				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", logsafe.Value(whenErr.Cause()))
 			r.refusedAtRoute(ctx, route, r.principalIdentity(ctx, route), v1.AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR)
 			http.Error(w, whenErr.Error(), http.StatusUnprocessableEntity)
 
@@ -827,7 +827,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// reads them off the context, and a failure an operator is reading is
 		// exactly when the trace it belongs to is worth one click away.
 		r.log.ErrorContext(ctx, "a verified delivery did not start a run",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Value(err))
 
 		if errors.Is(err, errDeliveryRefused) {
 			// The run exists and its `signals:` policy will not take an answer
