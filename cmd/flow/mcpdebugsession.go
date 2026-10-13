@@ -746,7 +746,8 @@ func (r *debugSessions) tools() []flowmcp.ToolRegistration {
 // Every tool on this surface reads its arguments here, so a syntax error is
 // redacted in one place: `encoding/json` names the offending character, and in
 // `{"pin": hunter2}` that is the first rune of a value the caller may have
-// meant to keep secret (#2665). An unknown field keeps its name, which is
+// meant to keep secret (#2665), and a type error can quote the whole token. An
+// unknown field keeps its name, and a type error keeps its field's, which are
 // vocabulary the caller can correct rather than a value.
 func decode(req *mcp.CallToolRequest, into any) error {
 	raw := req.Params.Arguments
@@ -759,7 +760,20 @@ func decode(req *mcp.CallToolRequest, into any) error {
 	err := decoder.Decode(into)
 
 	var syntaxErr *json.SyntaxError
-	if errors.As(err, &syntaxErr) || errors.Is(err, io.ErrUnexpectedEOF) {
+	var typeErr *json.UnmarshalTypeError
+
+	switch {
+	case errors.As(err, &typeErr):
+		// Valid JSON of the wrong kind reaches here from a served client, and
+		// `encoding/json` quotes a number token that overflows its field. The
+		// field is the schema's own name for the argument; the value never is.
+		redacted := redactedJSONError(string(raw), err)
+		if typeErr.Field != "" {
+			return fmt.Errorf("%w: field %s has the wrong type", redacted, typeErr.Field)
+		}
+
+		return redacted
+	case errors.As(err, &syntaxErr), errors.Is(err, io.ErrUnexpectedEOF):
 		return redactedJSONError(string(raw), err)
 	}
 

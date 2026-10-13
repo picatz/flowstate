@@ -73,3 +73,51 @@ func TestToolArgumentUnknownFieldsStillNameTheField(t *testing.T) {
 	require.True(t, result.IsError)
 	assert.Contains(t, result.Content[0].(*mcp.TextContent).Text, "sourse")
 }
+
+// TestAServedTypeErrorNamesTheFieldNotTheValue: valid JSON of the wrong kind
+// does reach the decoder, and `encoding/json` quotes a number that overflows its
+// field. The refusal keeps the field and the position, never the token.
+func TestAServedTypeErrorNamesTheFieldNotTheValue(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+		Name:      "flowstate_debug_session_observe",
+		Arguments: json.RawMessage(`{"session_id":"s","after_revision":18446744073709551616123}`),
+	})
+	require.NoError(t, err)
+	require.True(t, result.IsError)
+
+	text := result.Content[0].(*mcp.TextContent).Text
+	assert.NotContains(t, text, "18446744073709551616123")
+	assert.Contains(t, text, "after_revision")
+	assert.Contains(t, text, "line 1, column")
+}
+
+// TestAServedRPCArgumentErrorNamesThePositionNotTheToken: protojson quotes the
+// token it stopped at, and a bare string where a message belongs is well-formed
+// JSON a client can send.
+func TestAServedRPCArgumentErrorNamesThePositionNotTheToken(t *testing.T) {
+	t.Parallel()
+
+	session := connectMCP(t, defaultLocalRunPosture())
+
+	call := func(arguments string) string {
+		result, err := session.CallTool(t.Context(), &mcp.CallToolParams{
+			Name: flowmcp.ToolName("Run"), Arguments: json.RawMessage(arguments),
+		})
+		require.NoError(t, err)
+		require.True(t, result.IsError)
+
+		return result.Content[0].(*mcp.TextContent).Text
+	}
+
+	text := call(`{"inputs":{"pin":"hunter2-secret"}}`)
+	assert.NotContains(t, text, "hunter2")
+	assert.Contains(t, text, "flowstate.v1.RunRequest")
+	assert.Contains(t, text, "invalid JSON at line 1, column")
+
+	// What stays useful: the misspelt field is named.
+	assert.Contains(t, call(`{"sourse":"x"}`), `unknown field "sourse"`)
+}
