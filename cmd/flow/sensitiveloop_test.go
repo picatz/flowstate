@@ -54,6 +54,8 @@ steps:
           http:
             method: GET
             url: http://127.0.0.1:1/${customer}
+          retry:
+            attempts: 1
 `
 
 // sensitiveLoopItem is the element of the sensitive list the loop binds, and
@@ -153,6 +155,8 @@ steps:
           http:
             method: GET
             url: http://127.0.0.1:1/${customer}
+          retry:
+            attempts: 1
 `
 
 	_, stderr, err := runLocal(t, ordinary, "--input", `customers=["`+sensitiveLoopItem+`"]`)

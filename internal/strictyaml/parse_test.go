@@ -214,6 +214,17 @@ func (v depthVisitor) Visit(ast.Node) ast.Visitor {
 // the parser's own tree (the flow, block and value-below counters each take up
 // to the bound, so the sum is the ceiling that matters, and it is a constant). The templates are a fixed seed's worth of one to three line
 // combinations of the tokens that open a level.
+//
+// The scale is the cost, not the claim. Every document is 3*MaxFlowDepth tiles
+// (three times the bound, so a check that miscounts by up to a factor of three
+// still sees a document it must refuse) and a tile is up to three lines, so one
+// template parses on the order of 2,300 lines; the parser's cost under -race
+// made 400 draws a minute of the lane. The property is not "after N draws": it
+// is that no template the check accepts nests past 4*MaxFlowDepth, and the
+// shapes that have broken it so far are the named templates below, which always
+// run. The draws are the tripwire for a shape nobody has named yet, so a few
+// dozen of a fixed seed keep it armed; widening the search belongs to a fuzz
+// target, not to every run of the unit tests.
 func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
 	t.Parallel()
 
@@ -230,7 +241,7 @@ func TestParseBytesAcceptsNothingTheParserNestsFarPastTheBound(t *testing.T) {
 		{"&a k:", "- # c"}, {"- &a # c", "k:"}, {"- # c", "&a k:"}}
 
 	rng := rand.New(rand.NewPCG(2338, 1))
-	for range 400 {
+	for range 40 {
 		lines := make([]string, 1+rng.IntN(3))
 		for i := range lines {
 			lines[i] = pieces[rng.IntN(len(pieces))]
