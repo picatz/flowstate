@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/picatz/flowstate/internal/logsafe"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/engine"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/secrets"
@@ -637,7 +638,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// the size of; a refused one is retried, which is what at-least-once
 		// delivery already means everywhere else in this design.
 		r.log.WarnContext(req.Context(), "refused a delivery: too many in flight",
-			"path", req.URL.Path, "limit", cap(r.inFlight))
+			"path", logsafe.String(req.URL.Path), "limit", cap(r.inFlight))
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "too many deliveries in flight", http.StatusServiceUnavailable)
 
@@ -648,7 +649,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		if _, ok := errors.AsType[*http.MaxBytesError](err); ok {
 			r.log.WarnContext(req.Context(), "refused a delivery: body past the bound",
-				"path", req.URL.Path, "limit", v1.MaxWebhookPayloadBytes)
+				"path", logsafe.String(req.URL.Path), "limit", v1.MaxWebhookPayloadBytes)
 			// Recorded against the route the path names when it names one,
 			// which is a map lookup the sender cannot observe: the answer is
 			// this same 413 either way.
@@ -671,7 +672,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		r.log.WarnContext(req.Context(), "refused a delivery: body could not be read",
-			"path", req.URL.Path, "error", err)
+			"path", logsafe.String(req.URL.Path), "error", logsafe.Value(err))
 		http.Error(w, "the delivery body could not be read", http.StatusBadRequest)
 
 		return
@@ -1314,7 +1315,7 @@ func webhookHeaders(header http.Header) map[string]string {
 // refuse logs why a delivery was refused, which is the only place the reason is
 // said out loud.
 func (r *WebhookReceiver) refuse(req *http.Request, reason string, args ...any) {
-	r.log.WarnContext(req.Context(), "refused a delivery: "+reason, args...)
+	r.log.WarnContext(req.Context(), "refused a delivery: "+reason, logsafe.Args(args...)...)
 }
 
 // writeWebhookRefusal is the one answer every pre-verification refusal gets.
