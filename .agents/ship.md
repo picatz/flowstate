@@ -5,6 +5,9 @@ evidence because the change looks small.
 
 1. Fetch `origin/main`, inspect the actual base/head diff, run the narrowest
    falsifying tests and the diff-scoped gate, and report any unavailable leg.
+   Commit locally and run the fresh-context review below on the local
+   base..head diff before the first push, so most findings are fixed in head 1
+   and the common case is one CI cycle.
 2. Run `go run ./tools/mergecheck` before every push to the branch; a push
    without its `clean against origin/main` line is unverified. Push a focused
    branch and open a pull request **without auto-merge**. Never use
@@ -18,7 +21,12 @@ evidence because the change looks small.
    Do not request a vendor review bot. One that reviews on its own is input,
    not a gate: read what it says, disposition it once for the head it reviewed,
    and never wait, retry, or treat its silence, quota, or absence as either a
-   defect or a PASS.
+   defect or a PASS. When the repository's Copilot review has posted an
+   exact-head review of the head, that review is the code review of record: the
+   fresh-context reviewer then does the security pass on the head and a delta
+   review of the fix commits since the local pre-push review, rather than
+   re-reviewing the whole diff per head. Every merge still carries an
+   exact-head independent review with every finding dispositioned.
 4. Before merging, read every response that has arrived, including suppressed
    suggestions, checks, and review threads. Give every substantive suggestion
    one visible classification: fixed with evidence, false positive with
@@ -46,6 +54,10 @@ evidence because the change looks small.
 
    `<!-- flowstate-independent-review:v1 {"headSha":"FULL_SHA","reviewer":"REVIEWER_IDENTITY","scope":"code-security","status":"pass"} -->`
 
+   `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER --attest
+   REVIEWER --head SHA` prints that comment for the current head, refusing a
+   reviewed SHA that is not the head; post it unchanged as a new comment.
+
    Wait for every applicable check, including non-required checks—not merely
    GitHub's required checks. Run expensive CI only once per intended final
    head. A stale review, unresolved or undispositioned finding, semantic
@@ -53,7 +65,15 @@ evidence because the change looks small.
    unavailability is never represented as PASS.
 6. Run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`. It must
    pass on the unchanged final head.
-7. Merge manually with exact-head protection, for example
+7. Merge with `go run ./tools/shipmerge --repo picatz/flowstate --pr NUMBER
+   -F MESSAGE_FILE`: it reruns the shipcheck verdict in process and squash-merges
+   over REST pinned to the head that verdict read. Immediately before the merge
+   it reads the PR's comments, reviews (state and body), and latest
+   inline-comment edit again and refuses if any arrived or changed since the
+   verdict. The accepted residual is the seconds between that re-read and the
+   merge call, and a review edit that changes neither body nor state, which
+   REST cannot timestamp. Where it cannot run, merge
+   manually with exact-head protection,
    `gh pr merge NUMBER -R picatz/flowstate --squash --match-head-commit SHA`.
    Fetch `origin/main`, prove the merged commit is reachable, and wait for all
    applicable post-merge checks on `main`. Report the PR, final head, merge

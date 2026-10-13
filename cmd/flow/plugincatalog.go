@@ -285,7 +285,7 @@ func registerDeploymentCatalog(cmd *cobra.Command, client flowstatev1connect.Wor
 }
 
 // pluginLockName is the file [discoverPluginLock] looks for: what
-// `flow plugins --output json` writes and `make plugin-example-catalog-update`
+// `flow plugins --output json` writes and `make regen`
 // keeps for the shipped examples.
 const pluginLockName = "plugins.lock.json"
 

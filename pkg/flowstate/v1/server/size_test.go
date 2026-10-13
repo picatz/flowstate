@@ -129,6 +129,15 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 	// reaches this backstop now, which is exactly the run-state check this test is
 	// about. (This fixture used to grow a `for_each`'s `results`; that path is now
 	// bounded before it can wedge, which is a different guarantee proven elsewhere.)
+	//
+	// The state roughly doubles each iteration (`acc + acc + chunk`), so it crosses the bound
+	// in a handful of Continue-As-New cycles from a specification that stays small.
+	// The claim is that a run which can no longer be carried fails instead of
+	// wedging, not that it does so after any particular number of cycles; each cycle
+	// re-handles a state near the bound under -race, and adding a fixed chunk per
+	// iteration took forty-odd cycles and a minute to reach the same condition. The
+	// expression's cost stays far under [v1.DefaultCostLimit], which counts about
+	// ten million characters, so the evaluation is not what refuses.
 	const chunkBytes = 40 << 10
 	big := strings.Repeat("x", chunkBytes)
 
@@ -140,11 +149,11 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 			Kind: &v1.Node_Loop{Loop: &v1.Loop{
 				State:   "acc",
 				Initial: v1.NewLiteral(""),
-				// Each iteration appends a spec-embedded chunk to the carried state,
-				// so the state — and thus the run — grows ~40 KiB per iteration while
+				// Each iteration doubles the carried state and appends a spec-embedded chunk,
+				// so the state — and thus the run — grows geometrically while
 				// `results` stays empty (the body has no outputs). `until: false`
 				// never stops it; the run-state bound does, which is the point.
-				Update:        v1.NewExpr(fmt.Sprintf("acc + %q", big)),
+				Update:        v1.NewExpr(fmt.Sprintf("acc + acc + %q", big)),
 				Until:         v1.NewExpr("false"),
 				MaxIterations: 1000,
 				Body: []*v1.Node{{

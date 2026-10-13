@@ -331,7 +331,7 @@ a Flowfile author, a prompt, or the model's own output — controls (see
 | `max_events` (default 200, ceiling 2000) | How many `EventSummary` entries `codex.exec` returns - enforced at collection time, not only when the response is built |
 | `maxFinalMessageBytes`, `maxEventSummaryBytes` | Individual text fields, so one enormous field cannot consume the whole output budget |
 | `maxPatchBytes`, `maxDiffFiles` | The rendered diff and its file list, independently - a rename-heavy run can have many files and a small patch, or the reverse |
-| `maxSubprocessBytes` (32 MiB) | The codex CLI's combined stdout, applied *below* the library's own JSON decoding via a wrapping `io.Reader` - the same "the bound belongs on the transport, not inside a library call whose error paths you don't control" lesson `AGENT_FIELD_NOTES_LEGACY.md` ("Bound anything that consumes untrusted input") draws from connect-go's non-200 unmarshaler gap |
+| `maxSubprocessBytes` (32 MiB) | The codex CLI's combined stdout, applied *below* the library's own JSON decoding via a wrapping `io.Reader` - the same "the bound belongs on the transport, not inside a library call whose error paths you don't control" lesson from connect-go's non-200 unmarshaler gap |
 | `runTimeout` (10 minutes) | Backstops a hung subprocess, independent of and in addition to the step's own `timeout:` |
 
 A request over any ceiling is refused rather than silently clamped - the

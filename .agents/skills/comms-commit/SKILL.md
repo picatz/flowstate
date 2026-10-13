@@ -21,28 +21,16 @@ completed; do not write from the conversation's memory when the tree can answer.
 - Name a limitation or an unverified leg when it changes how the commit should
   be reviewed or used. Do not claim a test, review, or generated check ran unless
   its result is in hand.
-- A squash message is held to the pull-request conventions as well: an issue
-  reference or `No-Issue: <reason>`, and `Verification:` or
-  `Unverified: <reason>`. `internal/commitcheck` reports what is missing.
+- A squash message is held to the subject shape, the absolute-claim rule
+  ("safe", "fully tested" need evidence on their line), and a length bound; the
+  pull request body carries the issue reference and the verification, so the
+  message needs neither. `tools/commitcheck` reports a subject that is not
+  `scope: lowercase imperative`.
 
 ## Attribution
 
-What a commit carries as provenance is its author and its trailers; provenance
-written into its prose is a claim the commit makes about itself. Do not paste a
-pull request body's attribution footer into a squash message, and never carry a
-session link into `git log`, where it resolves for no later reader.
-`internal/commitcheck` reports both, and is stricter here than on a pull request
-for a reason: nothing appends a footer to a commit message, so every one it
-carries was typed by somebody.
-
-A `Co-Authored-By` trailer credits a second contributor: a person who paired on
-the change, or another agent that wrote part of it. A commit already authored by
-the agent takes none — naming yourself there is an echo, and the repository's
-front page renders it as two contributors for one. Credit the contributor rather
-than the model that happened to serve the turn, which can change between one
-commit and the next.
-
-## History
-
-[Archived comms-commit guidance](../../../.agent-history/skills/comms-commit/SKILL.md)
-is evidence and history, not a second current procedure.
+A trailer the host adds (`Co-Authored-By`, a session link) is permitted and
+never required; `tools/commitcheck` does not read it. A `Co-Authored-By` trailer
+is for crediting a second contributor, a person who paired on the change or
+another agent that wrote part of it, rather than the model that happened to
+serve the turn.

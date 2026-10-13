@@ -269,7 +269,7 @@ $ flow validate --plugin-catalog plugins.lock.json examples/plugins/greet/workfl
 
 [greet](plugins/greet) walks through both. CI checks the whole tree against the
 reviewed catalog in `plugins.lock.json` (`make plugin-examples`, which
-`make plugin-example-catalog-update` regenerates), and each plugin's `reachable`
+`make regen` regenerates), and each plugin's `reachable`
 test builds the real binary and proves its example files are refused before the
 plugin is registered and accepted after. None of those tests run a task that
 reaches the network.

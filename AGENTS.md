@@ -22,9 +22,6 @@ regardless of judgment in tools, hooks, and CI.
 - Search for the repository's existing spelling before adding a type, policy
   key, command, helper, or abstraction. Derive from one source of truth, not a
   second representation.
-- [AGENT_FIELD_NOTES.md](AGENT_FIELD_NOTES.md) indexes historical incidents.
-  Search it for one topic when the tree and current documentation do not
-  answer; do not preload it.
 
 ## Architectural invariants
 
@@ -85,27 +82,28 @@ The complete rationale lives in
   the user asks to land a change, merge it once the shipping gates below are
   satisfied without asking again. Ask only when an action is materially
   destructive, irreversible, externally consequential, or out of scope.
-- Preserve provenance without inventing it: no hard-coded model name, and no
-  hand-written attribution footer or session link in a body or commit.
+- Preserve provenance without inventing it: no hard-coded model name. A
+  trailer or session link the host adds to a commit or body is permitted, never
+  required.
 
 ## Communication
 
 Lead with the result, decision, blocker, or material discovery. State a fact
 once, distinguish observation from inference and uncertainty, and finish with
 the outcome, the verification evidence, and any remaining risk or unverified
-leg. Routine reads, searches, edits, and test runs are not updates. The
-`comms-*` skills hold the shapes for commits, issues, pull requests, reviews,
-and session updates.
+leg. Routine reads, searches, edits, and test runs are not updates; a blocker
+names the one decision needed and each option's consequence. The `comms-*`
+skills hold the shapes for commits, issues, pull requests, and reviews.
 
 ## Verification
 
 Use the narrowest deterministic check that can falsify the change, then broaden
-with the diff's reach. The `flowstate-verify` skill owns the selection and the
-reporting contract.
+with the diff's reach. `flowstate-verify` owns the selection and the reporting contract.
 
 ```sh
 GOMEMLIMIT=1GiB go test -short -timeout 150s ./pkg/flowstate/v1/...  # bounded targeted run
 go run ./tools/gate                                                  # diff-scoped gate; the default before a PR
+make regen   # every derived file; commit it
 make check                                                           # full CI-parity rehearsal
 go run ./tools/fleet                                                 # lanes allowed now; run before a wide suite
 ```
@@ -115,7 +113,7 @@ Gotchas the tree does not announce:
 - `make fmt`, never a bare `gofmt`: one from `PATH` can differ from the pinned
   toolchain's and disagree with CI on a clean tree.
 - Kill the PID you started, never a pattern: `pkill -f` matches every sibling
-  agent's processes, and once ended its own shell.
+  agent's processes.
 - In a shared checkout another agent may be editing: re-read a file before
   changing it, and verify the pushed revision, not a dirty tree.
 - A skipped, unavailable, timed-out, or omitted leg is **not verified**.
@@ -137,8 +135,7 @@ searched, scoped issue before the next autonomous merge.
 Task procedures are skills under `.agents/skills/` (Amp, Codex) with
 byte-identical mirrors under `.claude/skills/` (Claude Code). Each host
 advertises their descriptions, so use them when one matches; a repository test
-keeps the copies equal. Claude Code also has fresh-context subagents under
-`.claude/agents/` for independent review and for running verification.
+keeps the copies equal.
 
 - System design and invariants: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - DSL reference: [docs/DSL.md](docs/DSL.md)

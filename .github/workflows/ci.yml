@@ -4,25 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-  # The merge queue. #489's lesson — four pull requests merged inside ninety
-  # seconds broke main, because each one's CI proved only "this branch merged
-  # with the main that existed when the run started" — was, until now,
-  # implemented as a human waiting between merges. That is a mechanism made of
-  # attention, and it costs a full six-minute main cycle per merge: twenty-five
-  # merges in one evening is two and a half hours of somebody watching.
-  #
-  # A merge queue is the mechanism that lesson deserved. GitHub builds the
-  # *prospective* merge — this pull request on top of everything ahead of it in
-  # the queue — and runs the required checks against that, which is precisely
-  # the artifact #489 says nothing was testing. It also batches, so N pull
-  # requests cost roughly N/batch-size runs rather than N serialized cycles, and
-  # a failure ejects the offending pull request instead of breaking main.
-  #
-  # Every merge_group run is a full run: see ciForceReason in tools/gate/ci.go.
-  # The diff-scoping below is a pull-request-lane optimisation, and the queue is
-  # the last gate before main, so main's protection never rests on the plan
-  # being right.
-  merge_group:
 
 # Read-only by default, and every job inherits it. A workflow that needs to write
 # something should say so on the job that needs it rather than here, so a token
@@ -66,13 +47,10 @@ env:
 #
 # main is deliberately excluded from cancellation: its runs are the record of
 # whether a commit was good when it landed, and cancelling one leaves a gap in
-# that record rather than saving anything worth having. A merge group is
-# excluded for a sharper reason: cancelling one does not save work, it strands
-# the queue — the required checks for that group never report, and everything
-# behind it waits on an answer that is never coming.
+# that record rather than saving anything worth having.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.event_name != 'merge_group' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # ── Which of the jobs below can this diff actually reach? ─────────────────
@@ -103,22 +81,19 @@ jobs:
       test_plugins: ${{ steps.plan.outputs.test_plugins }}
       test_ordering: ${{ steps.plan.outputs.test_ordering }}
       proto: ${{ steps.plan.outputs.proto }}
+      regen: ${{ steps.plan.outputs.regen }}
       vulncheck: ${{ steps.plan.outputs.vulncheck }}
       staticcheck: ${{ steps.plan.outputs.staticcheck }}
       fuzz_smoke: ${{ steps.plan.outputs.fuzz_smoke }}
-      # Not a boolean: the smoke targets whose package this diff reaches,
-      # space-separated, which the fuzz-smoke job hands to `make fuzz-smoke`
-      # so it runs those rather than the tier (#1726). Every smoke target on
-      # a forced run. tools/gate/ci_test.go pins that this block forwards it,
-      # because an output the job does not forward reads as the empty string
-      # below — and for this one the empty string means "the whole tier".
-      fuzz_targets: ${{ steps.plan.outputs.fuzz_targets }}
       appearance: ${{ steps.plan.outputs.appearance }}
       # The same answers again as one JSON object, which is what the verdict
       # job reads. Deliberately the *same* object the `if:` expressions on the
       # jobs below are driven from: a verdict computed from a second source
       # could agree with a plan nobody ran.
       decisions: ${{ steps.plan.outputs.decisions }}
+      # The test matrix's package list per lane, as one JSON object. See the
+      # test job's Test step.
+      test_lanes: ${{ steps.plan.outputs.test_lanes }}
       # The commit the breaking checks (test/rest's `flow breaking` and
       # proto's `buf breaking`) diff against — see the step below. Computed
       # once, here, so both jobs read the same answer instead of each
@@ -189,9 +164,8 @@ jobs:
       # this checkout is not the two-parent merge ref the rule assumes, and
       # the step fails closed rather than naming the wrong parent as the base.
       #
-      # `merge_group` and `push` keep their event-recorded fields (`base_sha`,
-      # `before`): both are ordinary fields, always current, with no
-      # `synchronize`-shaped staleness. Computed once, here, rather than
+      # `push` keeps its event-recorded field (`before`): an ordinary field,
+      # always current, with no `synchronize`-shaped staleness. Computed once, here, rather than
       # re-derived in each consuming job, so a fix to the rule is one edit and
       # the two breaking checks cannot answer this differently.
       - name: Which commit the breaking checks compare against
@@ -199,7 +173,6 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
           PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           case "$EVENT_NAME" in
@@ -217,7 +190,6 @@ jobs:
                 exit 1
               }
               ;;
-            merge_group) sha=$MERGE_GROUP_BASE_SHA ;;
             push) sha=$PUSH_BEFORE_SHA ;;
             *)
               echo "::error::no breaking-check base rule for event $EVENT_NAME" >&2
@@ -242,7 +214,8 @@ jobs:
   # puts every other package in the rest lane, while every
   # lane still invokes the same `make test` recipe contributors run. The
   # matrix is one logical job to `needs.test.result`, so verdict remains the
-  # single fail-closed authority.
+  # single fail-closed authority. On a pull request each lane runs only the
+  # packages the plan says the diff can reach; a push to main runs them all.
   test:
     needs: plan
     if: needs.plan.outputs.test == 'true'
@@ -302,6 +275,42 @@ jobs:
       - name: Report toolchain
         run: go version
 
+      # The lanes that own a Temporal dev server (engine, cli, heavy) run the
+      # Temporal CLI, which the SDK downloads from temporal.download on first
+      # use: two runs failed with "context deadline exceeded" inside a test
+      # step's 120s budget. The CLI is restored from the cache here, fetched
+      # by `make temporal-cli` (bounded retries, backoff) when the cache
+      # misses, and saved for the next run, so the Test step never downloads.
+      # The key names the SDK version (the cached file's name carries it too),
+      # the OS and the architecture. A fork PR restores but does not save, as
+      # the setup-go caches above do (#577): the SDK publishes no checksum for
+      # the CLI, so a write path into the cache is not given to untrusted code.
+      - name: Locate the Temporal CLI cache
+        id: temporal-cli
+        if: contains(fromJSON('["engine","cli","heavy"]'), matrix.lane)
+        run: go run ./tools/temporalcli -describe >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Temporal CLI
+        id: temporal-cli-restore
+        if: steps.temporal-cli.outcome == 'success'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.temporal-cli.outputs.path }}
+          key: ${{ steps.temporal-cli.outputs.key }}
+
+      # Runs on a hit too: it is a stat and a `--version` on a restored file,
+      # and it replaces one that does not run.
+      - name: Fetch the Temporal CLI
+        if: steps.temporal-cli.outcome == 'success'
+        run: make temporal-cli
+
+      - name: Save the Temporal CLI
+        if: steps.temporal-cli.outcome == 'success' && steps.temporal-cli-restore.outputs.cache-hit != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.temporal-cli.outputs.path }}
+          key: ${{ steps.temporal-cli.outputs.key }}
+
       - name: Build
         if: matrix.lane == 'rest'
         run: go build ./...
@@ -334,28 +343,28 @@ jobs:
       # minutes of plain text and a failure was a `--- FAIL` line somewhere in
       # it. TEST_JSON keeps the raw stream for the artifact step below, so
       # the summary is the short answer and the record is still there.
+      #
+      # The lane's packages come from the plan's test_lanes output, which
+      # tools/gate (testLanes, ciTestLanes) computes from `go list ./...`: on
+      # a pull request the affected set plus the tree readers, otherwise every
+      # package. A lane the plan does not name, or a plan output that never
+      # arrived, fails here; a lane the diff does not reach says so and runs
+      # nothing.
       - name: Test
         shell: bash
+        env:
+          LANE: ${{ matrix.lane }}
+          TEST_LANES: ${{ needs.plan.outputs.test_lanes }}
         run: |
-          # The four packages whose own package time is longest after the
-          # three lanes above (about 165s, 82s, 66s and 51s of 737s in run
-          # 38334741081). The flowfile import path covers its lsp subpackage.
-          heavy='./pkg/flowstate/v1/flowfile/... ./pkg/flowstate/v1/server ./pkg/flowstate/v1/plugin ./internal/strictyaml'
-          case "${{ matrix.lane }}" in
-            engine) packages='./pkg/flowstate/v1/engine' ;;
-            v1) packages='./pkg/flowstate/v1' ;;
-            cli) packages='./cmd/flow' ;;
-            heavy) packages="$heavy" ;;
-            rest)
-              packages=$(go list ./... | grep -vxF \
-                -e github.com/picatz/flowstate/pkg/flowstate/v1/engine \
-                -e github.com/picatz/flowstate/pkg/flowstate/v1 \
-                -e github.com/picatz/flowstate/cmd/flow \
-                $(go list $heavy | sed 's/^/-e /') | tr '\n' ' ')
-              ;;
-            *) echo "::error::unknown test lane ${{ matrix.lane }}"; exit 1 ;;
-          esac
-          make test TEST_PACKAGES="$packages" TEST_JSON="go-test-${{ matrix.lane }}.json"
+          : "${TEST_LANES:?no test_lanes output from plan}"
+          packages=$(jq -er --arg lane "$LANE" \
+            '.[$lane] | if type == "array" then join(" ") else error("the plan names no test lane \($lane)") end' \
+            <<<"$TEST_LANES")
+          if [ -z "$packages" ]; then
+            echo "::notice::no package in the $LANE lane is affected by this diff; the plan job's log says why"
+            exit 0
+          fi
+          make test TEST_PACKAGES="$packages" TEST_JSON="go-test-$LANE.json"
 
       # The raw stream, whatever the outcome (`if: always()`): a reader who
       # needs more than the summary — the log of a test that passed, the
@@ -369,26 +378,6 @@ jobs:
           path: go-test-${{ matrix.lane }}.json
           if-no-files-found: ignore
           retention-days: 14
-
-      # The same mechanism as the proto job's generated-code check, on the four
-      # reference documents that are derived rather than written: the task
-      # reference from the registry, the CLI reference from the cobra tree, the
-      # MCP tool list, and the env-var table. Those four are exactly the tables
-      # the doc audit found had drifted, and they drift silently — a task gains a
-      # field, a flag gains an env default, and the prose stays confidently wrong
-      # until somebody follows it and fails.
-      #
-      # Here rather than in the proto job because what it pins is Go values, not
-      # the schema: `flow docs generate` runs the binary, so a failure here is a
-      # tree whose documentation disagrees with its own code.
-      - name: Verify generated reference docs are current
-        if: matrix.lane == 'rest'
-        run: |
-          go run ./cmd/flow docs generate
-          git diff --exit-code -- docs/reference/ || {
-            echo "::error::generated reference docs do not match the code; run 'make docs' and commit the result"
-            exit 1
-          }
 
       # `flow fix --check` is the command this exists to protect: examples are
       # already in the current edition, and a PR that leaves one behind should fail
@@ -604,8 +593,11 @@ jobs:
       - name: Report toolchain
         run: go version
 
+      # Ten repetitions on a pull request, the Makefile's twenty on a push to
+      # main: the PR lane buys 97% detection of a defect that reproduces three
+      # runs in ten for half the wall clock, and main's record keeps 99.9%.
       - name: Ordering claims hold under a different schedule
-        run: make test-ordering TEST_JSON=go-test-ordering.json
+        run: make test-ordering ORDERING_COUNT=${{ github.event_name == 'pull_request' && 10 || 20 }} TEST_JSON=go-test-ordering.json
 
       - name: Upload the raw ordering go test -json stream
         if: always()
@@ -615,6 +607,43 @@ jobs:
           path: go-test-ordering.json
           if-no-files-found: ignore
           retention-days: 14
+
+  # Every derived file, by one mechanism: `make regen` rewrites them all (the
+  # generated schema code and its comments, the reference documents, the
+  # reference table, the examples' edition, the plugin example catalog) and
+  # this fails when that changed or created anything. They drift silently: the
+  # build stays green on stale generated code, and a flag gains a default while
+  # the prose stays confidently wrong.
+  #
+  # A job of its own rather than a step in test/rest: regen is minutes of buf,
+  # docs and a plugin build, and a step there would sit on the critical path the
+  # lane split exists to shorten. The plan selects it on the root suite's own
+  # trigger, which includes proto/, so a flag, docs or schema change is always
+  # drift-checked; verdict fails a selected run that did not pass.
+  regen:
+    needs: plan
+    if: needs.plan.outputs.regen == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # persist-credentials / cache: see the test job above. #577.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # `buf breaking` is not run here, so no base fetch; buf and the plugin
+      # builds need the module cache, keyed on go.sum files of their own.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: |
+            go.sum
+            tools/external/go.sum
+            .github/cache-scope/regen
+          cache: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+
+      - name: Generated files are current
+        run: make regen-check
 
   # The schema is a public contract, not an internal detail: plugins are separate
   # processes that compile against these descriptors, so breaking it breaks every
@@ -685,37 +714,6 @@ jobs:
       # rules from the start and nothing ran them.
       - name: Check for breaking changes
         run: go tool -modfile=tools/external/go.mod buf breaking --against '.git#branch=origin/main'
-
-      # Generated code is committed, so it can disagree with the schema it came
-      # from. That disagreement is invisible locally — the build stays green using
-      # the stale generated code — and shows up as a mystery when someone else
-      # regenerates. Several people editing one schema at once makes this likely
-      # rather than theoretical.
-      #
-      # The schema's comments are generated too (#2147): protoc strips
-      # SourceCodeInfo from what a .pb.go embeds, so protoc-gen-flowstate-doc,
-      # run by the same `buf generate`, writes them as Go source into
-      # pkg/flowstate/v1/protodoc, under the same pin as the types.
-      #
-      # The example plugin is a separate buf module, so it has its own
-      # generate: its .pb.go and the comments that carry a plugin author's
-      # field prose to an editor (#723, #2148), under the same pin, because a
-      # plugin's prose can go stale exactly the way the engine's can. --clean
-      # empties its gen/ first, so output whose .proto is gone cannot survive.
-      #
-      # The first-party plugins under plugins/ share one template and are
-      # generated by `make plugin-proto`, for the same reason.
-      - name: Verify generated code is current
-        run: |
-          go tool -modfile=tools/external/go.mod buf generate
-          E=pkg/flowstate/v1/plugin/examples/flowstate-plugin-example
-          go tool -modfile=tools/external/go.mod buf generate --config "{\"version\":\"v2\",\"modules\":[{\"path\":\"proto\"},{\"path\":\"$E/proto\"}],\"deps\":[\"buf.build/bufbuild/protovalidate\",\"buf.build/googleapis/googleapis\"]}" --template "$E/buf.gen.yaml" --clean --path "$E/proto/example" -o "$E"
-          make plugin-proto
-          git add --intent-to-add -- .
-          git diff --exit-code -- . || {
-            echo "::error::generated code does not match the schema; run 'make check' (or the 'buf generate' lines above and 'make plugin-proto') and commit the result"
-            exit 1
-          }
 
   vulncheck:
     needs: plan
@@ -909,19 +907,13 @@ jobs:
       # will have started, and finished, after it. Its output is bounded per
       # target, and says so when it dropped anything.
       #
-      # Which targets is the plan's answer, not the tier's (#1726). Thirteen
-      # targets at 30s each plus a test-binary build per package was nine
-      # minutes of every run this job ran on, and a diff reaching flowfile
-      # cannot move what FuzzWebhookEventBinding explores. The plan publishes
-      # the smoke targets whose package the diff reaches — seven for a
-      # flowfile change, every one on a forced run — and the Makefile hands
-      # that list to tools/fuzztargets/list.sh, which refuses a name the tier
-      # does not hold rather than fuzzing what is left. tools/gate/ci_test.go
-      # pins this env line, because the Makefile's default is the whole tier
-      # and a step that dropped the variable would stay green at the old cost.
-      - name: Fuzz smoke (the targets in the smoke tier this diff reaches)
-        env:
-          FUZZ_SMOKE_TARGETS: ${{ needs.plan.outputs.fuzz_targets }}
+      # The whole smoke tier, every time the job runs. It runs on a push to main
+      # and on a pull request only when the plan is forced wide (a change to
+      # this workflow, the gate, the Makefile or the module graph): a pull
+      # request that merely touches code does not pay for 30s of mutation per
+      # target, because every seed corpus already runs as an ordinary test in
+      # the test lanes and main and deep.yml do the mutating.
+      - name: Fuzz smoke
         run: make fuzz-smoke
 
   # The appearance pins: charmbracelet/vhs records the CLI's styled surfaces in a
@@ -1036,7 +1028,7 @@ jobs:
   # even when it failed, and that came off on 2026-08-31 (#1319). Every result
   # this job reads is now the job's own.
   verdict:
-    needs: [plan, test, test-plugins, test-ordering, proto, vulncheck, staticcheck, fuzz-smoke, appearance]
+    needs: [plan, test, test-plugins, test-ordering, proto, regen, vulncheck, staticcheck, fuzz-smoke, appearance]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1075,7 +1067,7 @@ jobs:
           # asserting a specific cause, or a specific absence of fault, that
           # it cannot verify is a second, narrower way to read a check wrong
           # instead of a first.
-          cancelled_note="most often because a newer push superseded this run on this ref (disabled on main and a merge group); it can also be a hand cancellation, a runner fault, or a job hitting its own timeout-minutes — a cancellation alone says nothing either way about the diff: check whether a job timed out before re-running, or look at the superseding push's own run if there is one"
+          cancelled_note="most often because a newer push superseded this run on this ref (disabled on main); it can also be a hand cancellation, a runner fault, or a job hitting its own timeout-minutes — a cancellation alone says nothing either way about the diff: check whether a job timed out before re-running, or look at the superseding push's own run if there is one"
 
           if [ "${PLAN_RESULT}" = "cancelled" ]; then
             echo "::error::the plan job was cancelled, not failed — ${cancelled_note}"

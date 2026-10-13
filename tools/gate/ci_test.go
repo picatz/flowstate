@@ -13,8 +13,6 @@ import (
 	"testing"
 
 	yaml "github.com/goccy/go-yaml"
-
-	"github.com/picatz/flowstate/tools/fuzztargets"
 )
 
 // decide is a small reader for the slice ciDecisions returns.
@@ -61,13 +59,13 @@ func mustSkip(t *testing.T, ds map[string]decision, jobs ...string) {
 	}
 }
 
-// TestAnUnvalidatedMarkdownOnlyDiffReachesNothing is the case this whole
+// TestAnUnreadRootFileDiffReachesNothing is the case this whole
 // mechanism exists for: a prose file no test reads cannot affect any job.
 // CLAUDE.md no longer belongs in this case because tools/agentconfig validates
 // that adapter and its relationship to the shared contract.
-func TestAnUnvalidatedMarkdownOnlyDiffReachesNothing(t *testing.T) {
-	ds := decide(t, []string{"SECURITY.md"}, nil, "pull_request")
-	mustSkip(t, ds, "test", "test-plugins", "test-ordering", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
+func TestAnUnreadRootFileDiffReachesNothing(t *testing.T) {
+	ds := decide(t, []string{"LICENSE"}, nil, "pull_request")
+	mustSkip(t, ds, "test", "test-plugins", "test-ordering", "proto", "regen", "vulncheck", "staticcheck", "fuzz-smoke", "appearance")
 }
 
 func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
@@ -76,7 +74,6 @@ func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
 		".claude/skills/comms-review/SKILL.md",
 		".amp/settings.json",
 		"CLAUDE.md",
-		"AGENT_FIELD_NOTES_LEGACY.md",
 	} {
 		t.Run(f, func(t *testing.T) {
 			// CI does not seed test-data readers into affected: the full
@@ -126,7 +123,7 @@ func TestDocsOnlySourcesStillReachTheTestJob(t *testing.T) {
 // examples/ off disk.
 func TestAnExampleOnlyChangeReachesTheTestJobs(t *testing.T) {
 	ds := decide(t, []string{"examples/observability/docker-compose.yaml"}, nil, "pull_request")
-	mustRun(t, ds, "test", "test-plugins", "test-ordering")
+	mustRun(t, ds, "test", "regen", "test-plugins", "test-ordering")
 	mustSkip(t, ds, "staticcheck", "vulncheck", "fuzz-smoke")
 }
 
@@ -147,7 +144,7 @@ func TestAnExampleOnlyChangeReachesTheTestJobs(t *testing.T) {
 func TestAPluginOnlyChangeReachesTestPluginsAndNotTheRootSuite(t *testing.T) {
 	ds := decide(t, []string{"plugins/openai/main.go"}, nil, "pull_request")
 	mustRun(t, ds, "test-plugins", "vulncheck", "staticcheck")
-	mustSkip(t, ds, "test", "test-ordering", "proto", "fuzz-smoke", "appearance")
+	mustSkip(t, ds, "test", "test-ordering", "regen", "proto", "fuzz-smoke", "appearance")
 }
 
 // TestAGoChangeReachesTestPlugins: every plugin module replaces
@@ -212,137 +209,60 @@ func TestReadmeOrArchitectureOnlyStillReachesTheTestJob(t *testing.T) {
 	}
 }
 
-// TestTheNarrowJobsFollowTheAffectedSet pins the two jobs whose trigger is a
-// package rather than a path: fuzz-smoke's targets live in the packages
-// tools/fuzztargets/targets.txt names, and the appearance goldens record what
-// the cmd/flow binary prints.
-//
-// The diff is the secrets cache's rather than the engine's or netpolicy's, and
-// the swaps are the whole point of the case: this asserts what happens where
-// *no* target lives, so it has to name a package that holds none. It used to
-// name the engine, which held none until #403's item 4 put
-// FuzzSignalDeliveryDecode there, and then netpolicy, which held none until
-// #1721 put FuzzParseConfig there — at each point the assertion was still true
-// of the gate and false of the tree, which is the stale-expectation shape
-// rather than a defect. A package's arrival in targets.txt is supposed to move
-// this decision, and the next arrival moves this case to another package.
-func TestTheNarrowJobsFollowTheAffectedSet(t *testing.T) {
+// TestTheAppearanceJobFollowsTheAffectedSet pins the job whose trigger is a
+// package rather than a path: the appearance goldens record what the cmd/flow
+// binary prints.
+func TestTheAppearanceJobFollowsTheAffectedSet(t *testing.T) {
 	changed := []string{"pkg/flowstate/v1/secrets/cache.go"}
 
-	// A diff that reaches the secrets package and nothing else. It holds no
-	// fuzz target and prints nothing the appearance goldens record, so both
-	// narrow jobs skip.
+	// A diff that reaches the secrets package and nothing else prints nothing
+	// the appearance goldens record, so the job skips.
 	ds := decide(t, changed, []string{modulePath + "/pkg/flowstate/v1/secrets"}, "pull_request")
 	mustRun(t, ds, "test", "test-plugins", "vulncheck", "staticcheck")
-	mustSkip(t, ds, "fuzz-smoke", "appearance", "proto", "test-ordering")
-	if got := ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]; got != "" {
-		t.Errorf("fuzz-smoke is skipped but publishes targets %q; the job would fuzz them on a forced rerun of nothing", got)
-	}
+	mustSkip(t, ds, "appearance", "proto", "test-ordering")
 
 	// The same diff, in a tree where the secrets package is on cmd/flow's
-	// import path — which is what affectedPackages actually computes. cmd/flow
-	// holds one smoke target, and that one is what the job is handed: not the
-	// seven under flowfile, and not cmd/flow/internal/mcp's, which is a
-	// package of its own that this affected set does not name.
+	// import path — which is what affectedPackages actually computes.
 	ds = decide(t, changed, []string{
 		modulePath + "/pkg/flowstate/v1/secrets",
 		cmdFlowPkg,
 	}, "pull_request")
-	mustRun(t, ds, "fuzz-smoke", "appearance")
-	mustFuzz(t, ds, "FuzzMCPToolArguments")
+	mustRun(t, ds, "appearance")
 }
 
-// mustFuzz asserts the exact target list fuzz-smoke publishes, in order.
-func mustFuzz(t *testing.T, ds map[string]decision, targets ...string) {
-	t.Helper()
-	want := strings.Join(targets, " ")
-	if got := ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]; got != want {
-		t.Errorf("fuzz-smoke publishes %s=%q, want %q", fuzzTargetsOutput, got, want)
+// TestFuzzSmokeDoesNotRunOnAPullRequestThatOnlyTouchesCode. The job is 30s of
+// random mutation per target, thirteen targets, and the better part of seven
+// minutes of a flowfile PR's wait. What a pull request needs from the fuzz
+// targets is already in the test lanes: `go test` runs every f.Add seed and
+// committed corpus entry without -fuzz. The mutation runs on a push to main and
+// weekly in deep.yml, so a crasher it finds fails main's run minutes after the
+// merge and is fixed by the next pull request.
+func TestFuzzSmokeDoesNotRunOnAPullRequestThatOnlyTouchesCode(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		changed  []string
+		affected []string
+	}{
+		{"a flowfile change",
+			[]string{"pkg/flowstate/v1/flowfile/parse.go"},
+			[]string{modulePath + "/pkg/flowstate/v1/flowfile", modulePath + "/pkg/flowstate/v1/flowfile/lsp"}},
+		{"a webhook change", []string{"pkg/flowstate/v1/webhook.go"}, []string{v1Pkg}},
+		{"a cmd/flow change", []string{"cmd/flow/main.go"}, []string{cmdFlowPkg}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ds := decide(t, tc.changed, tc.affected, "pull_request")
+			mustRun(t, ds, "test")
+			mustSkip(t, ds, "fuzz-smoke")
+		})
 	}
 }
 
-// TestFuzzSmokeRunsOnlyTheTargetsTheDiffReaches is #1726's second half. The
-// job used to run the whole tier on any diff that reached a package holding a
-// target — thirteen targets at 30s each, nine minutes of the run — because the
-// plan decided whether it ran and not what it ran. Now the plan publishes the
-// targets whose package is affected, and the job runs those.
-//
-// A flowfile change reaches lsp through the import graph, so it fuzzes the
-// five flowfile targets and the two lsp ones: seven, in targets.txt order, and
-// none of the six that live elsewhere.
-func TestFuzzSmokeRunsOnlyTheTargetsTheDiffReaches(t *testing.T) {
-	ds := decide(t,
-		[]string{"pkg/flowstate/v1/flowfile/parse.go"},
-		[]string{
-			modulePath + "/pkg/flowstate/v1/flowfile",
-			modulePath + "/pkg/flowstate/v1/flowfile/lsp",
-		},
-		"pull_request")
-	mustRun(t, ds, "fuzz-smoke")
-	mustFuzz(t, ds,
-		"FuzzRoundTrip", "FuzzCELCompile", "FuzzMarshalRoundTrip",
-		"FuzzFixIdempotent", "FuzzFormatIdempotent",
-		"FuzzLSPDocumentEdits", "FuzzLSPFrames")
-
-	// The published list is the smoke tier's and nothing outside it. A
-	// target listed only as deep would otherwise be fuzzed for 30s on the
-	// PR lane the moment its package was touched, which is the budget
-	// decision targets.txt records in the other direction.
-	for name := range strings.FieldsSeq(ds["fuzz-smoke"].Outputs[fuzzTargetsOutput]) {
-		var found bool
-		for _, target := range fuzztargets.InTier(fuzztargets.TierSmoke) {
-			found = found || target.Name == name
-		}
-		if !found {
-			t.Errorf("fuzz-smoke was handed %s, which is not in the smoke tier", name)
-		}
-	}
-}
-
-// TestADeepOnlyTargetsPackageDoesNotReachFuzzSmoke inverts the case this
-// test used to pin, and says why.
-//
-// pkg/flowstate/v1/engine holds FuzzSignalDeliveryDecode, which is deep-only.
-// While the plan decided only whether the job ran, the engine's package
-// reached it, so that promoting the target to smoke did not silently alter
-// which diffs reach the job. With the plan deciding *which targets* run, that
-// same diff would select a job with nothing in it — a check that passes by
-// running nothing, which this repository's gate design exists to make
-// impossible. The promotion itself is safe on the other side: it is an edit
-// to targets.txt, and buildPlan forces every job wide for that file (see
-// TestTheFullSetRunsWhereBeingWrongIsUnrecoverable), so the newly promoted
-// target's first smoke run is on the PR that promotes it.
-func TestADeepOnlyTargetsPackageDoesNotReachFuzzSmoke(t *testing.T) {
-	ds := decide(t,
-		[]string{"pkg/flowstate/v1/engine/signal_compat.go"},
-		[]string{modulePath + "/pkg/flowstate/v1/engine"},
-		"pull_request")
-	mustRun(t, ds, "test")
-	mustSkip(t, ds, "fuzz-smoke")
-	mustFuzz(t, ds)
-}
-
-// TestAWebhookOnlyChangeReachesFuzzSmoke is the regression for #799:
-// FuzzWebhookEventBinding lives in the root pkg/flowstate/v1 package
-// (webhook.go's own directory), not in one of the three packages fuzz-smoke's
-// affectedness check already knew about — so a diff touching only webhook.go
-// used to compute an affected set with none of flowfilePkg, cmdFlowPkg or
-// pluginPkg in it, and the plan would have skipped fuzz-smoke on the one kind
-// of change most likely to move what that target exercises. It shares its
-// package with FuzzCELEvaluate, so both run and nothing else does.
-func TestAWebhookOnlyChangeReachesFuzzSmoke(t *testing.T) {
-	ds := decide(t, []string{"pkg/flowstate/v1/webhook.go"}, []string{v1Pkg}, "pull_request")
-	mustRun(t, ds, "fuzz-smoke")
-	mustFuzz(t, ds, "FuzzWebhookEventBinding", "FuzzCELEvaluate")
-}
-
-// TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Three forcing conditions,
+// TestTheFullSetRunsWhereBeingWrongIsUnrecoverable. Two forcing conditions,
 // each for its own reason: a push to main is the record and a record with holes
-// is not one; a merge group is the last gate before main; and a change to the
-// harness is a change to the thing computing the plan, which the plan cannot
+// is not one; and a change to the harness is a change to the thing computing the plan, which the plan cannot
 // reason about.
 func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
-	all := []string{"test", "test-plugins", "test-ordering", "proto", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
+	all := []string{"test", "test-plugins", "test-ordering", "proto", "regen", "vulncheck", "staticcheck", "fuzz-smoke", "appearance"}
 
 	for _, tc := range []struct {
 		name    string
@@ -350,17 +270,16 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 		event   string
 	}{
 		{"a push to main", []string{"CLAUDE.md"}, "push"},
-		{"a merge group", []string{"CLAUDE.md"}, "merge_group"},
 		{"a workflow change", []string{".github/workflows/ci.yml"}, "pull_request"},
 		{"a Makefile change", []string{"Makefile"}, "pull_request"},
 		{"a change to the gate itself", []string{"tools/gate/ci.go"}, "pull_request"},
 		{"a module graph change", []string{"go.sum"}, "pull_request"},
 		// The fuzz target list is CI configuration: it decides which
-		// targets each tier runs and which packages reach the fuzz job.
-		// Promoting a deep-only target to smoke moves no Go package at
-		// all, so a diff of this file alone would otherwise skip the very
-		// job it reconfigures — including fuzz-smoke, whose new target
-		// would then first run somewhere nobody is watching.
+		// targets each tier runs. Promoting a deep-only target to smoke
+		// moves no Go package at all, so the target files are CI
+		// configuration whose own change forces the full job set, including
+		// fuzz-smoke, whose new target would otherwise first run somewhere
+		// nobody is watching.
 		{"a fuzz target list change", []string{"tools/fuzztargets/targets.txt"}, "pull_request"},
 		{"a change to how the list is read", []string{"tools/fuzztargets/list.sh"}, "pull_request"},
 		// The tier's loop, for the same reason one file up: it decides how
@@ -372,13 +291,6 @@ func TestTheFullSetRunsWhereBeingWrongIsUnrecoverable(t *testing.T) {
 			ds := decide(t, tc.changed, nil, tc.event)
 			mustRun(t, ds, all...)
 
-			// And the whole smoke tier, not the targets an empty
-			// affected set reaches: a forced run that fuzzed nothing
-			// would be the fuzz job passing by not running.
-			mustFuzz(t, ds, allSmokeTargets()...)
-			if len(allSmokeTargets()) == 0 {
-				t.Fatal("the smoke tier is empty, so the assertion above held vacuously")
-			}
 		})
 	}
 }
@@ -463,42 +375,346 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	if got := job.TimeoutMinutes; got != 20 {
 		t.Fatalf("each root-suite lane needs headroom beyond go test's 15-minute package bound; timeout-minutes = %d, want 20", got)
 	}
-	docs, err := os.ReadFile("../../docs/CI.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(docs), `"check_response_timeout_minutes": 45`) {
-		t.Fatal("the documented merge-queue response bound must remain above every test lane's outer timeout")
-	}
 	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 		t.Fatal("test matrix must explicitly set fail-fast: false to retain every lane's result when another lane fails")
 	}
-	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), "[engine v1 cli heavy rest]"; got != want {
-		t.Fatalf("test matrix lanes = %s, want %s", got, want)
+	// The matrix and the gate's lanes are one list: a lane the gate assigns
+	// packages to and the matrix does not run is every one of those packages
+	// dropped, and a matrix lane the gate does not name fails its Test step.
+	var names []string
+	for _, l := range testLanes {
+		names = append(names, l.Name)
+	}
+	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), fmt.Sprint(names); got != want {
+		t.Fatalf("test matrix lanes = %s, tools/gate's testLanes = %s", got, want)
 	}
 
-	var testStep string
-	for _, step := range job.Steps {
-		if step.Name == "Test" {
-			testStep = step.Run
+	var step struct {
+		Run string
+		Env map[string]string
+	}
+	for _, s := range job.Steps {
+		if s.Name == "Test" {
+			step.Run, step.Env = s.Run, s.Env
 			break
 		}
 	}
-	for _, want := range []string{
-		"make test TEST_PACKAGES=", "./pkg/flowstate/v1/engine", "./pkg/flowstate/v1", "./cmd/flow",
-		"go list ./...", "grep -vxF", "github.com/picatz/flowstate/pkg/flowstate/v1/engine",
-		"github.com/picatz/flowstate/pkg/flowstate/v1", "github.com/picatz/flowstate/cmd/flow",
-		"heavy) packages=\"$heavy\"", "go list $heavy",
-	} {
-		if !strings.Contains(testStep, want) {
-			t.Errorf("test matrix does not preserve partition token %q:\n%s", want, testStep)
-		}
-	}
-	if testStep == "" {
+	if step.Run == "" {
 		t.Fatal("test matrix has no Test step")
 	}
-	if got := strings.Count(testStep, "-e github.com/picatz/flowstate/"); got != 3 {
-		t.Fatalf("rest lane excludes %d package(s), want exactly the three dedicated lanes (the heavy lane is excluded through go list)", got)
+	if got, want := step.Env["TEST_LANES"], "${{ needs.plan.outputs.test_lanes }}"; got != want {
+		t.Errorf("Test step reads TEST_LANES from %q, want %q", got, want)
+	}
+	if got, want := step.Env["LANE"], "${{ matrix.lane }}"; got != want {
+		t.Errorf("Test step reads LANE from %q, want %q", got, want)
+	}
+	if got, want := wf.Jobs["plan"].Outputs["test_lanes"], "${{ steps.plan.outputs.test_lanes }}"; got != want {
+		t.Errorf("the plan job forwards test_lanes as %q, want %q; unforwarded, every lane reads an empty string", got, want)
+	}
+	for _, want := range []string{
+		`: "${TEST_LANES:?`, "jq -er", `--arg lane "$LANE"`, `error("the plan names no test lane`,
+		`make test TEST_PACKAGES="$packages"`,
+	} {
+		if !strings.Contains(step.Run, want) {
+			t.Errorf("Test step lost %q, which is what makes a missing plan output or lane fail rather than run nothing:\n%s", want, step.Run)
+		}
+	}
+}
+
+// TestTheLaneStepFailsClosed runs the Test step's own script, read from
+// ci.yml, against a stub make: a lane the plan names runs exactly its
+// packages, an empty lane runs nothing and says so, and a missing output or
+// a lane the plan does not name is a failure rather than a green lane that
+// tested nothing.
+func TestTheLaneStepFailsClosed(t *testing.T) {
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed; ubuntu-latest has it")
+	}
+	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
+	var script string
+	for _, s := range wf.Jobs["test"].Steps {
+		if s.Name == "Test" {
+			script = s.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("test matrix has no Test step")
+	}
+
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "make.log")
+	stub := "#!/bin/sh\nprintf '%s\\n' \"$@\" >> " + strconv.Quote(log) + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "make"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(lane, lanes string) (string, string, error) {
+		os.Remove(log)
+		cmd := exec.Command("bash", "-eo", "pipefail", "-c", script)
+		cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "LANE="+lane, "TEST_LANES="+lanes)
+		out, err := cmd.CombinedOutput()
+		made, _ := os.ReadFile(log)
+		return string(out), string(made), err
+	}
+
+	lanes := `{"engine":["a/engine"],"rest":["a/x","a/y"],"v1":[]}`
+	if _, made, err := run("rest", lanes); err != nil || made != "test\nTEST_PACKAGES=a/x a/y\nTEST_JSON=go-test-rest.json\n" {
+		t.Errorf("rest lane: err %v, make got %q", err, made)
+	}
+	if out, made, err := run("v1", lanes); err != nil || made != "" || !strings.Contains(out, "no package in the v1 lane") {
+		t.Errorf("an empty lane should run nothing and say so: err %v, make got %q, output %q", err, made, out)
+	}
+	if _, made, err := run("heavy", lanes); err == nil || made != "" {
+		t.Errorf("a lane the plan does not name must fail: err %v, make got %q", err, made)
+	}
+	if _, made, err := run("rest", ""); err == nil || made != "" {
+		t.Errorf("a missing test_lanes output must fail: err %v, make got %q", err, made)
+	}
+	if _, made, err := run("rest", `{"rest":"a/x"}`); err == nil || made != "" {
+		t.Errorf("a lane that is not a list must fail: err %v, make got %q", err, made)
+	}
+}
+
+// moduleImportPaths lists the root module's packages the way the plan job
+// does, from the repository root.
+func moduleImportPaths(t *testing.T) []string {
+	t.Helper()
+	cmd := exec.Command("go", "list", "-e", "./...")
+	cmd.Dir = "../.."
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list ./...: %v", err)
+	}
+	return strings.Fields(string(out))
+}
+
+// TestTestLanesPartitionTheModule is the partition invariant over the real
+// tree: a forced plan puts every package in exactly one lane, no package is
+// dropped, and every named lane still owns something — a lane whose anchor
+// package moved would otherwise run nothing on every run while its packages
+// quietly joined rest.
+func TestTestLanesPartitionTheModule(t *testing.T) {
+	all := moduleImportPaths(t)
+	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "event is push, not a pull request: the full set runs")
+
+	seen := map[string]string{}
+	for _, l := range testLanes {
+		if len(lanes[l.Name]) == 0 {
+			t.Errorf("lane %s owns no package of the module; its anchor moved", l.Name)
+		}
+		for _, ip := range lanes[l.Name] {
+			if prev, ok := seen[ip]; ok {
+				t.Errorf("%s is in lanes %s and %s", ip, prev, l.Name)
+			}
+			seen[ip] = l.Name
+		}
+	}
+	if len(lanes) != len(testLanes) {
+		t.Errorf("ciTestLanes returned %d lanes, testLanes names %d", len(lanes), len(testLanes))
+	}
+	for _, ip := range all {
+		if _, ok := seen[ip]; !ok {
+			t.Errorf("%s is in no lane: the forced run would drop it", ip)
+		}
+	}
+	if len(seen) != len(all) {
+		t.Errorf("lanes hold %d package(s), the module has %d", len(seen), len(all))
+	}
+}
+
+// TestAPullRequestRunsTheAffectedLanesOnly is the narrowing itself: a leaf
+// change runs its affected packages and the tree readers, and nothing else; a
+// lane it does not reach is present and empty.
+func TestAPullRequestRunsTheAffectedLanesOnly(t *testing.T) {
+	all := []string{
+		cmdFlowPkg, v1Pkg, v1Pkg + "/engine", v1Pkg + "/flowfile", v1Pkg + "/flowfile/lsp", v1Pkg + "/server",
+		modulePath + "/internal/strictyaml", modulePath + "/tools/wallclock", modulePath + "/tools/doclinks",
+	}
+	p := buildPlan([]string{"pkg/flowstate/v1/flowfile/lsp/hover.go"})
+	lanes, why := ciTestLanes(p, all, []string{v1Pkg + "/flowfile/lsp"}, []string{modulePath + "/tools/wallclock"},
+		ciForceReason("pull_request", resolvedBase, p))
+
+	want := map[string][]string{
+		"engine": {}, "v1": {}, "cli": {},
+		"heavy": {v1Pkg + "/flowfile/lsp"},
+		"rest":  {modulePath + "/tools/wallclock"},
+	}
+	if fmt.Sprint(lanes) != fmt.Sprint(want) {
+		t.Errorf("lanes = %v, want %v", lanes, want)
+	}
+	if !strings.Contains(why, "1 affected package(s) and 1 tree reader(s)") {
+		t.Errorf("why = %q, want it to count the affected set and the tree readers", why)
+	}
+}
+
+// TestDataDependenciesAndForcingRunEveryLane: the import graph cannot see a
+// test reading examples/, a repository Markdown file, the schema or a
+// directory no package owns off disk, so those diffs, and every forced plan,
+// run each lane's whole share.
+func TestDataDependenciesAndForcingRunEveryLane(t *testing.T) {
+	all := []string{cmdFlowPkg, v1Pkg, v1Pkg + "/engine", v1Pkg + "/server", modulePath + "/tools/wallclock"}
+	for _, tc := range []struct {
+		name    string
+		changed []string
+		event   string
+		unowned string
+	}{
+		{"an example", []string{"examples/hello/workflow.yaml"}, "pull_request", ""},
+		{"README.md", []string{"README.md"}, "pull_request", ""},
+		{"a document", []string{"docs/DEPLOYMENT.md"}, "pull_request", ""},
+		{"the agent configuration", []string{"AGENTS.md"}, "pull_request", ""},
+		{"the schema", []string{"proto/flowstate/v1/run.proto"}, "pull_request", ""},
+		{"an editor's manifest", []string{"editors/vscode/package.json"}, "pull_request", "editors/vscode"},
+		{"an editor's manifest beside a Go change", []string{"editors/vscode/package.json", "cmd/flow/main.go"}, "pull_request", "editors/vscode"},
+		{"a push to main", []string{"tools/wallclock/main.go"}, "push", ""},
+		{"the Makefile", []string{"Makefile"}, "pull_request", ""},
+		{"the module graph", []string{"go.mod"}, "pull_request", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := buildPlan(tc.changed)
+			p.unowned = tc.unowned
+			force := ciForceReason(tc.event, resolvedBase, p)
+			for _, d := range ciDecisions(p, nil, force) {
+				if d.Job == "test" && !d.Run {
+					t.Errorf("the test job is skipped (%s), so its full lanes never run", d.Why)
+				}
+			}
+			lanes, why := ciTestLanes(p, all, nil, nil, force)
+			n := 0
+			for _, pkgs := range lanes {
+				n += len(pkgs)
+			}
+			if n != len(all) {
+				t.Errorf("%d of %d package(s) run (%s); a data or forced change must run every one", n, len(all), why)
+			}
+		})
+	}
+}
+
+// TestADirectoryNoPackageOwnsIsNamed: testdata under a package is that
+// package's, editors/ is nobody's, and the repository root is left to
+// buildPlan's own rules.
+func TestADirectoryNoPackageOwnsIsNamed(t *testing.T) {
+	byDir := map[string]string{"pkg/flowstate/v1/engine": v1Pkg + "/engine", "cmd/flow": cmdFlowPkg}
+	if got := unownedDir([]string{"cmd/flow", "pkg/flowstate/v1/engine/testdata/x"}, byDir); got != "" {
+		t.Errorf("unownedDir = %q, want every directory owned", got)
+	}
+	if got := unownedDir([]string{"cmd/flow", "editors/vscode"}, byDir); got != "editors/vscode" {
+		t.Errorf("unownedDir = %q, want editors/vscode", got)
+	}
+	// The root's files are classified by buildPlan or read by no test.
+	if got := unownedDir([]string{"."}, byDir); got != "" {
+		t.Errorf("unownedDir = %q, want the repository root left to buildPlan", got)
+	}
+}
+
+// TestTreeReadersAreFoundInTheTree pins treeReaderPattern against the guards
+// it exists for: each of these walks the source tree from an ancestor
+// directory or builds another package, so a diff that does not import it can
+// still fail it, and a pattern that stopped matching would skip it on every
+// leaf pull request. The negative half keeps the pattern from swallowing the
+// packages that only feed ".." to a validator.
+func TestTreeReadersAreFoundInTheTree(t *testing.T) {
+	var pkgs []pkgMeta
+	for _, ip := range moduleImportPaths(t) {
+		rel, ok := strings.CutPrefix(ip, modulePath+"/")
+		if !ok {
+			continue
+		}
+		pkgs = append(pkgs, pkgMeta{ImportPath: ip, Dir: filepath.Join("..", "..", rel)})
+	}
+	sources := readTestSources(pkgs)
+	readers := treeReaderPackages(sources)
+	for _, want := range []string{
+		v1Pkg,                                     // no decision on an error's text, through testkit.RepoRoot
+		v1Pkg + "/metricschema",                   // every instrument registered, through testkit.RepoRoot
+		v1Pkg + "/payloadcodec",                   // one key-id writer, walking from os.Getwd
+		v1Pkg + "/engine",                         // the scope guard; builds the SDK plugin
+		v1Pkg + "/principal",                      // one caller type
+		v1Pkg + "/authz",                          // no action check outside authz
+		v1Pkg + "/flowdebug",                      // two capability constructors
+		v1Pkg + "/plugin",                         // builds the example plugin by import path
+		modulePath + "/internal/strictyaml",       // every YAML decode contained
+		modulePath + "/cmd/flow/internal/docsgen", // every environment read documented
+		modulePath + "/tools/wallclock",
+		modulePath + "/tools/dupbodies",
+		modulePath + "/tools/vacuity",
+		modulePath + "/tools/doclinks",
+		modulePath + "/tools/artifacts",
+		modulePath + "/tools/gate",
+	} {
+		if !contains(readers, want) {
+			t.Errorf("%s is not found as a tree reader; a leaf pull request would skip its guard", want)
+		}
+	}
+	// Completeness over the helpers: any test that finds the repository root
+	// through a function named for it (testkit.RepoRoot, or a package's own
+	// repoRoot) is a tree reader, whatever that function is called with.
+	rootHelper := regexp.MustCompile(`(?i)\breporoot\w*\(`)
+	for ip, src := range sources {
+		if rootHelper.Match(src) && !contains(readers, ip) {
+			t.Errorf("%s calls a repository-root helper but is not found as a tree reader", ip)
+		}
+	}
+	for _, not := range []string{v1Pkg + "/secrets", v1Pkg + "/auth", v1Pkg + "/execpolicy"} {
+		if contains(readers, not) {
+			t.Errorf("%s is found as a tree reader; its \"..\" literals are validator input, not a walk", not)
+		}
+	}
+}
+
+// TestTheSerialTestPackagesAreTheTemporalOwners keeps the Makefile's
+// TEMPORAL_TEST_PACKAGES equal to the packages whose tests start a Temporal
+// dev server. One missing from the list runs beside other packages and
+// competes for the deadlines #1922 serialized them to protect; one left on it
+// after it stopped owning a server is only slower.
+func TestTheSerialTestPackagesAreTheTemporalOwners(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^TEMPORAL_TEST_PACKAGES := (.+)$`).FindSubmatch(makefile)
+	if m == nil {
+		t.Fatal("the Makefile has no TEMPORAL_TEST_PACKAGES")
+	}
+	var listed []string
+	for _, f := range strings.Fields(string(m[1])) {
+		listed = append(listed, strings.TrimPrefix(f, "./"))
+	}
+	sort.Strings(listed)
+
+	starts := regexp.MustCompile(`temporaltest\.(RunPackage|Start|StartWith)\(|testsuite\.StartDevServer\(`)
+	var owners []string
+	for _, root := range []string{"cmd", "internal", "pkg", "tools"} {
+		err := filepath.WalkDir(filepath.Join("..", "..", root), func(path string, d os.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() && d.Name() == "testdata" {
+				return filepath.SkipDir
+			}
+			if d.IsDir() || !strings.HasSuffix(path, "_test.go") {
+				return nil
+			}
+			src, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if starts.Match(src) {
+				rel, _ := filepath.Rel(filepath.Join("..", ".."), filepath.Dir(path))
+				if !contains(owners, filepath.ToSlash(rel)) {
+					owners = append(owners, filepath.ToSlash(rel))
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sort.Strings(owners)
+	if fmt.Sprint(listed) != fmt.Sprint(owners) {
+		t.Errorf("TEMPORAL_TEST_PACKAGES = %v, but the packages whose tests start a Temporal server are %v", listed, owners)
 	}
 }
 
@@ -614,7 +830,7 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	const zeroSHA = "0000000000000000000000000000000000000000"
 
 	// run executes the script exactly as ci.yml stores it, in dir (empty for
-	// the merge_group/push cases, which never touch git), and reports the
+	// the push case, which never touch git), and reports the
 	// $GITHUB_OUTPUT sha= line, or ok=false if the script exited nonzero.
 	run := func(t *testing.T, dir string, env map[string]string) (sha string, ok bool) {
 		t.Helper()
@@ -650,10 +866,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	t.Run("pull_request uses HEAD^1 of the checked-out merge ref", func(t *testing.T) {
 		dir, baseSHA, headSHA := newMergeRefFixture(t)
 		sha, ok := run(t, dir, map[string]string{
-			"EVENT_NAME":           "pull_request",
-			"PR_HEAD_SHA":          headSHA,
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "pull_request",
+			"PR_HEAD_SHA":     headSHA,
+			"PUSH_BEFORE_SHA": "",
 		})
 		if !ok || sha != baseSHA {
 			t.Fatalf("got sha=%q ok=%v, want HEAD^1 = %q", sha, ok, baseSHA)
@@ -663,10 +878,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	t.Run("pull_request fails closed when HEAD^2 does not match the PR's head sha", func(t *testing.T) {
 		dir, _, _ := newMergeRefFixture(t)
 		_, ok := run(t, dir, map[string]string{
-			"EVENT_NAME":           "pull_request",
-			"PR_HEAD_SHA":          validSHA, // not this checkout's actual HEAD^2
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "pull_request",
+			"PR_HEAD_SHA":     validSHA, // not this checkout's actual HEAD^2
+			"PUSH_BEFORE_SHA": "",
 		})
 		if ok {
 			t.Fatal("a HEAD^2 mismatch must fail rather than name the wrong parent as the base")
@@ -676,34 +890,20 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 	t.Run("pull_request fails closed on a checkout that is not a two-parent merge ref", func(t *testing.T) {
 		dir, headSHA := newSingleParentFixture(t)
 		_, ok := run(t, dir, map[string]string{
-			"EVENT_NAME":           "pull_request",
-			"PR_HEAD_SHA":          headSHA,
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "pull_request",
+			"PR_HEAD_SHA":     headSHA,
+			"PUSH_BEFORE_SHA": "",
 		})
 		if ok {
 			t.Fatal("a checkout with no HEAD^2 must fail rather than guess a base")
 		}
 	})
 
-	t.Run("merge_group uses the queue's base sha", func(t *testing.T) {
-		sha, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "merge_group",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": validSHA,
-			"PUSH_BEFORE_SHA":      "",
-		})
-		if !ok || sha != validSHA {
-			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
-		}
-	})
-
 	t.Run("push to main uses the sha before the push", func(t *testing.T) {
 		sha, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "push",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      validSHA,
+			"EVENT_NAME":      "push",
+			"PR_HEAD_SHA":     "",
+			"PUSH_BEFORE_SHA": validSHA,
 		})
 		if !ok || sha != validSHA {
 			t.Fatalf("got sha=%q ok=%v, want %q", sha, ok, validSHA)
@@ -712,10 +912,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 
 	t.Run("a push whose before is all zeroes fails closed", func(t *testing.T) {
 		_, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "push",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      zeroSHA,
+			"EVENT_NAME":      "push",
+			"PR_HEAD_SHA":     "",
+			"PUSH_BEFORE_SHA": zeroSHA,
 		})
 		if ok {
 			t.Fatal("a push with no real prior commit must fail rather than compare against nothing")
@@ -724,10 +923,9 @@ func TestPlanComputesTheBreakingCheckBaseFromTheTriggeringEvent(t *testing.T) {
 
 	t.Run("an event this workflow does not otherwise trigger on fails closed", func(t *testing.T) {
 		_, ok := run(t, "", map[string]string{
-			"EVENT_NAME":           "workflow_dispatch",
-			"PR_HEAD_SHA":          "",
-			"MERGE_GROUP_BASE_SHA": "",
-			"PUSH_BEFORE_SHA":      "",
+			"EVENT_NAME":      "workflow_dispatch",
+			"PR_HEAD_SHA":     "",
+			"PUSH_BEFORE_SHA": "",
 		})
 		if ok {
 			t.Fatal("an unhandled event must fail rather than silently pick an empty base")
@@ -1031,39 +1229,15 @@ func TestTheWorkflowAndThePlanDecideTheSameJobs(t *testing.T) {
 	// A step output the job's `outputs:` block does not name is invisible to
 	// `needs.plan.outputs`, which then reads as the empty string: for a
 	// boolean that is a job skipped on every run and a verdict that fails
-	// on every run, and for the fuzz target list it is `make fuzz-smoke`
-	// silently running the whole tier — the exact cost #1726 removes.
+	// on every run.
 	forwarded := wf.Jobs["plan"].Outputs
 	for _, name := range inPlan {
 		d := decided[name]
-		names := append([]string{d.Output}, sortedKeys(d.Outputs)...)
-		for _, output := range names {
-			want := fmt.Sprintf("${{ steps.plan.outputs.%s }}", output)
-			if got := forwarded[output]; got != want {
-				t.Errorf("the plan job forwards output %q as %q, want %q", output, got, want)
-			}
+		want := fmt.Sprintf("${{ steps.plan.outputs.%s }}", d.Output)
+		if got := forwarded[d.Output]; got != want {
+			t.Errorf("the plan job forwards output %q as %q, want %q", d.Output, got, want)
 		}
 	}
-}
-
-// TestFuzzSmokeIsHandedThePlansTargets pins the wiring between the target list
-// the plan publishes and the Makefile variable that narrows the run. The
-// Makefile's default is the whole tier, so a step that forgot the variable
-// would still be green — nine minutes of green — and nothing at run time would
-// say the plan's answer went unread.
-func TestFuzzSmokeIsHandedThePlansTargets(t *testing.T) {
-	wf := readCIWorkflow(t, "../../.github/workflows/ci.yml")
-	for _, step := range wf.Jobs["fuzz-smoke"].Steps {
-		if !strings.Contains(step.Run, "make fuzz-smoke") {
-			continue
-		}
-		want := fmt.Sprintf("${{ needs.plan.outputs.%s }}", fuzzTargetsOutput)
-		if got := step.Env["FUZZ_SMOKE_TARGETS"]; got != want {
-			t.Fatalf("the fuzz-smoke step sets FUZZ_SMOKE_TARGETS to %q, want %q", got, want)
-		}
-		return
-	}
-	t.Fatal("the fuzz-smoke job has no step running make fuzz-smoke")
 }
 
 // TestPlanOutputNamesAreLegalInWorkflowExpressions. A job name may contain a
@@ -1084,11 +1258,6 @@ func TestPlanOutputNamesAreLegalInWorkflowExpressions(t *testing.T) {
 		if !legal(d.Output) {
 			t.Errorf("job %q publishes output %q, which is not a legal identifier in a workflow expression", d.Job, d.Output)
 		}
-		for name := range d.Outputs {
-			if !legal(name) {
-				t.Errorf("job %q publishes output %q, which is not a legal identifier in a workflow expression", d.Job, name)
-			}
-		}
 	}
 }
 
@@ -1102,12 +1271,16 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipe := regexp.MustCompile(`(?m)^\tGOMEMLIMIT=1GiB go test [^\n]*-count=20[^\n]*-timeout (\d+)s [^\n]*flowtest/`).FindSubmatch(makefile)
+	recipe := regexp.MustCompile(`(?m)^\tGOMEMLIMIT=1GiB go test [^\n]*-count=\$\(ORDERING_COUNT\)[^\n]*-timeout (\d+)s [^\n]*flowtest/`).FindSubmatch(makefile)
 	if recipe == nil {
 		t.Fatal("the Makefile's test-ordering recipe is not the one this test reads; update the test with the recipe")
 	}
 	if got, want := string(recipe[1])+"s", orderingTimeout; got != want {
 		t.Errorf("the Makefile's test-ordering timeout is %s and the gate's orderingTimeout is %s", got, want)
+	}
+
+	if !regexp.MustCompile(`(?m)^ORDERING_COUNT \?= 20$`).Match(makefile) {
+		t.Error("the Makefile's ORDERING_COUNT default is not 20: main, the weekly tier and the local gate run the full sweep")
 	}
 
 	workflow, err := os.ReadFile("../../.github/workflows/ci.yml")
@@ -1124,6 +1297,19 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	if !ok {
 		t.Fatal("ci.yml has no test-ordering job")
 	}
+	var ordered bool
+	for _, step := range job.Steps {
+		if strings.Contains(step.Run, "make test-ordering") {
+			ordered = true
+			want := "ORDERING_COUNT=${{ github.event_name == 'pull_request' && 10 || 20 }}"
+			if !strings.Contains(step.Run, want) {
+				t.Errorf("the test-ordering step is %q, want it to pass %s: 10 repetitions on a pull request, the Makefile's 20 on main", step.Run, want)
+			}
+		}
+	}
+	if !ordered {
+		t.Error("the test-ordering job has no step running make test-ordering")
+	}
 	if job.TimeoutMinutes == 0 {
 		t.Fatal("the test-ordering job sets no timeout-minutes, so a hang would run to GitHub's six-hour default")
 	}
@@ -1133,5 +1319,84 @@ func TestTheOrderingLegKeepsTheMakefilesTimeout(t *testing.T) {
 	}
 	if job.TimeoutMinutes*60 < seconds+120 {
 		t.Errorf("the job limit is %d minutes, which leaves under two minutes above the %ds test timeout for the build and the upload", job.TimeoutMinutes, seconds)
+	}
+}
+
+// TestRegenRunsWhereverTheRootSuiteDoes pins the drift check's trigger: a
+// change to a flag, a doc source, an example or the schema moves a derived
+// file, so every diff that reaches the root suite (proto/ included) reaches
+// the regen job, and one that reaches neither reaches neither.
+func TestRegenRunsWhereverTheRootSuiteDoes(t *testing.T) {
+	for _, f := range []string{"docs/DSL.md", "proto/flowstate/v1/run.proto", "examples/hello/workflow.yaml"} {
+		mustRun(t, decide(t, []string{f}, nil, "pull_request"), "test", "regen")
+	}
+	mustSkip(t, decide(t, []string{"LICENSE"}, nil, "pull_request"), "test", "regen")
+}
+
+// TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem pins the
+// Makefile's REPO_LINT_PACKAGES: each is a real tools/ package of the root
+// module (a renamed one would fail `go list` in the recipe, but this names it
+// sooner), none is a Temporal owner (those need the detector and -p=1), each
+// stays in exactly one test lane because the list changes the flags and not
+// the lane, and the recipe hands the list to the non-race runner.
+func TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pick := func(name string) []string {
+		m := regexp.MustCompile(`(?m)^` + name + ` := (.+)$`).FindSubmatch(makefile)
+		if m == nil {
+			t.Fatalf("the Makefile has no %s", name)
+		}
+		var out []string
+		for _, f := range strings.Fields(string(m[1])) {
+			out = append(out, modulePath+"/"+strings.TrimPrefix(f, "./"))
+		}
+		return out
+	}
+	lint, temporal := pick("REPO_LINT_PACKAGES"), pick("TEMPORAL_TEST_PACKAGES")
+
+	// The intended set, written out so deleting a package from the Makefile
+	// list fails here rather than silently putting it back under -race.
+	var intended []string
+	for _, n := range []string{"agentconfig", "dupbodies", "gate", "vacuity", "doclinks", "wallclock", "citations"} {
+		intended = append(intended, modulePath+"/tools/"+n)
+	}
+	for _, ip := range intended {
+		if !contains(lint, ip) {
+			t.Errorf("REPO_LINT_PACKAGES lacks %s, which would run under -race again", ip)
+		}
+	}
+
+	all := moduleImportPaths(t)
+	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "event is push, not a pull request: the full set runs")
+	for _, ip := range lint {
+		if !contains(all, ip) {
+			t.Errorf("REPO_LINT_PACKAGES names %s, which is not a package of the module", ip)
+		}
+		if contains(temporal, ip) {
+			t.Errorf("%s is in REPO_LINT_PACKAGES and TEMPORAL_TEST_PACKAGES: a Temporal owner keeps -race", ip)
+		}
+		if !strings.HasPrefix(ip, modulePath+"/tools/") {
+			t.Errorf("%s is not under tools/: only repository-lint packages run without -race", ip)
+		}
+		n := 0
+		for _, l := range testLanes {
+			if contains(lanes[l.Name], ip) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s is in %d test lanes, want exactly 1", ip, n)
+		}
+	}
+	for _, want := range []string{"$(GO_TEST_NORACE) $$plain", "$(REPO_LINT_PACKAGES)"} {
+		if !strings.Contains(string(makefile), want) {
+			t.Errorf("make test lacks %q: the repository-lint packages would run under -race again or not at all", want)
+		}
+	}
+	if !strings.Contains(string(makefile), "GO_TEST_NORACE = $(subst -race ,,$(GO_TEST_RACE))") {
+		t.Error("GO_TEST_NORACE is not GO_TEST_RACE minus -race, so the two runners can drift apart in -shuffle or -timeout")
 	}
 }

@@ -185,6 +185,14 @@ names a withheld tool anyway, from a client holding a stale list, is refused
 with a tool error naming the flag and, on `flow mcp serve`, recorded as one
 `POLICY_DENIED` authorization record.
 
+There is no second, effect-derived scope vocabulary (#1543): a token's scope is
+already an authorization action, bound to each tool exactly once, so matching a
+scope against a tool's effect would be a second mechanism for one question. The
+effect annotations stay hints, and the property a "read scope" needs is checked
+instead: an action does not bind both read-only and mutating tools, except for
+three recorded by name (a gate's read and answer, and the two debugging
+grants), where one grant is the intended grain.
+
 The flag narrows what is served and grants nothing: the action check above still
 applies to every tool that remains. It is not a scope match. Authorization here
 is action-based (a trust policy entry's actions intersected with the token's

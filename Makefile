@@ -1,4 +1,4 @@
-.PHONY: check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check regen regen-proto regen-check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal temporal-cli docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -104,19 +104,44 @@ check:
 	$(MAKE) fuzz-smoke
 	$(MAKE) appearance
 	docker compose -f examples/observability/docker-compose.yaml config -q
-	go run ./cmd/flow docs generate && git diff --exit-code -- docs/reference/
-	go generate ./cmd/flow/internal/reference && git diff --exit-code -- cmd/flow/internal/reference/
 	$(BUF) lint
 	$(BUF) breaking --against '.git#branch=origin/main'
-	$(BUF) generate
-	$(BUF) generate --config '{"version":"v2","modules":[{"path":"proto"},{"path":"$(EXAMPLE_PLUGIN)/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' --template $(EXAMPLE_PLUGIN)/buf.gen.yaml --clean --path $(EXAMPLE_PLUGIN)/proto/example -o $(EXAMPLE_PLUGIN)
-	$(MAKE) plugin-proto
-	git diff --exit-code
-	$(MAKE) check-untracked-generated
+	$(MAKE) regen-check
 	$(GOVULNCHECK) ./...
 	$(STATICCHECK) ./...
 	$(MAKE) vulncheck-plugins
 	$(MAKE) staticcheck-plugins
+
+# Every derived file, in dependency order, and the one command that rewrites
+# all of them: Go and descriptor code from the schema first (the binary the
+# later steps run is built from it), then the reference documents and the
+# reference table the binary derives, the examples brought to the current
+# edition, the plugin example catalog (which builds the plugins and so needs
+# their regenerated schema), and formatting last. `appearance-update` stays
+# separate because it needs vhs. CI and `check` run `regen-check`, so there is
+# one mechanism and one remedy.
+regen: regen-proto
+	# fix before generate: the reference mirror compiles in copies of examples/.
+	go run ./cmd/flow fix examples/
+	go generate ./cmd/flow/internal/reference ./internal/schemaifacepilot
+	go run ./cmd/flow docs generate
+	$(MAKE) plugin-example-catalog-update
+	$(MAKE) fmt
+
+regen-proto:
+	$(BUF) generate
+	$(BUF) generate --config '{"version":"v2","modules":[{"path":"proto"},{"path":"$(EXAMPLE_PLUGIN)/proto"}],"deps":["buf.build/bufbuild/protovalidate","buf.build/googleapis/googleapis"]}' --template $(EXAMPLE_PLUGIN)/buf.gen.yaml --clean --path $(EXAMPLE_PLUGIN)/proto/example -o $(EXAMPLE_PLUGIN)
+	$(MAKE) plugin-proto
+
+# Run `regen`, then fail with one message when it changed or created anything.
+# Tracked drift shows in `git diff`; a generated file nobody committed shows in
+# check-untracked-generated (which does not touch the index).
+# Every place `regen` can create a file, for the untracked check below.
+REGEN_OUTPUTS := '*.pb.go' '*.connect.go' editors/claude-code/types/flowstate.d.ts docs/reference/ cmd/flow/internal/reference/ internal/schemaifacepilot/
+
+regen-check: regen
+	@git diff --exit-code || { echo "generated files are stale: run 'make regen' and commit the result" >&2; exit 1; }
+	@$(MAKE) --no-print-directory check-untracked-generated
 
 # Regenerates every first-party plugin's schema, field comments included, from
 # plugins/buf.gen.yaml. A plugin's proto imports the engine's own schema beside
@@ -141,9 +166,9 @@ plugin-proto:
 # generated output, so unrelated new files you have not staged yet do not fail
 # the rehearsal, and files .gitignore covers never do (#2169).
 check-untracked-generated:
-	@untracked="$$(git ls-files --others --exclude-standard -- '*.pb.go' '*.connect.go')" || exit 1; \
+	@untracked="$$(git ls-files --others --exclude-standard -- $(REGEN_OUTPUTS))" || exit 1; \
 	if [ -n "$$untracked" ]; then \
-		echo "regenerating created files that are not in the commit (run git add on them):"; \
+		echo "generated files are stale: run 'make regen' and git add the new files:"; \
 		echo "$$untracked"; \
 		exit 1; \
 	fi
@@ -193,13 +218,10 @@ check-untracked-generated:
 #
 #     make fuzz-smoke FUZZ_SMOKE_TARGETS="FuzzRoundTrip FuzzCELCompile"
 #
-# Unset, every smoke target runs, which is what `make check` and a local
-# rehearsal want. CI's fuzz-smoke job sets it from the plan job's fuzz_targets
-# output — the smoke targets whose package the diff reaches, computed by
-# `tools/gate -ci` from the same targets.txt — so a flowfile change fuzzes the
-# seven targets it can move rather than all thirteen. The narrowing is list.sh's
-# and not a second filter here: a name that is not in the smoke tier is a
-# refusal from the one reader, not a silently shorter run.
+# Unset, every smoke target runs, which is what `make check`, CI's fuzz-smoke
+# job (push to main and forced-wide runs) and a local rehearsal want. The
+# narrowing is list.sh's and not a second filter here: a name that is not in the
+# smoke tier is a refusal from the one reader, not a silently shorter run.
 # 0 is the runner's own default — one job per two CPUs — spelled here so that an
 # unset variable expands to something the flag can parse rather than to nothing.
 FUZZ_SMOKE_JOBS ?= 0
@@ -249,18 +271,49 @@ fuzz-smoke:
 # which rejects `set -o pipefail`, and that is why this is a per-target shell
 # rather than a line in the recipe.
 #
-# Packages run one at a time because several own real Temporal test processes.
-# Letting those processes compete made the admitted-bound workflow-slice
-# rehearsal spend its entire five-minute bound before its first task ran; the
-# same complete engine package passes under the production-derived deadlines
-# when it owns the runner. Tests within each package retain their own parallelism.
+# TEMPORAL_TEST_PACKAGES own a real Temporal dev server in their tests
+# (temporaltest.RunPackage, or the dev server itself), and they run one at a
+# time, after the rest: letting those processes compete made the admitted-bound
+# workflow-slice rehearsal spend its entire five-minute bound before its first
+# task ran, and the same complete engine package passes under the
+# production-derived deadlines when it owns the runner (#1922). Every other
+# selected package runs first at go test's default -p, one package binary per
+# core. tools/gate's TestTheSerialTestPackagesAreTheTemporalOwners keeps this
+# list equal to the packages whose tests start a server. Tests within each
+# package retain their own parallelism.
 TEST_SHUFFLE ?= on
 TEST_PACKAGES ?= ./...
+TEMPORAL_TEST_PACKAGES := ./cmd/flow ./internal/temporaltest ./pkg/flowstate/v1/engine ./pkg/flowstate/v1/server ./pkg/flowstate/v1/temporalclient
+GO_TEST_RACE = GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 900s
+# REPO_LINT_PACKAGES test the repository's text and source, not concurrency:
+# they walk files, parse Go and Markdown, and fork `go build`, and none runs a
+# goroutine worth racing. Measured with `go test -count=1 -p=1` on one 4 vCPU
+# machine, the seven took about 137s under -race and about 41s without it,
+# because the race runtime slows the parsing they do. They stay in `make test`,
+# so in whichever lane owns them and in the tree-reader set, with every
+# assertion intact; only the instrumentation differs. A Temporal owner never
+# belongs here: the recipe fails if the two lists overlap. tools/gate's
+# TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem pins the list.
+REPO_LINT_PACKAGES := ./tools/agentconfig ./tools/citations ./tools/doclinks ./tools/dupbodies ./tools/gate ./tools/vacuity ./tools/wallclock
+GO_TEST_NORACE = $(subst -race ,,$(GO_TEST_RACE))
 
 test: SHELL := /bin/bash
 test: .SHELLFLAGS := -o pipefail -c
 test:
-	GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -p=1 -timeout 900s $(TEST_PACKAGES) | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	@selected="$$(go list -e $(TEST_PACKAGES))" || exit 1; \
+	temporal="$$(go list $(TEMPORAL_TEST_PACKAGES))" || exit 1; \
+	[ -n "$$selected" ] || { echo "make test: TEST_PACKAGES='$(TEST_PACKAGES)' names no package" >&2; exit 1; }; \
+	lint="$$(go list $(REPO_LINT_PACKAGES))" || exit 1; \
+	serial="$$(grep -xF -f <(printf '%s\n' "$$temporal") <<<"$$selected")"; \
+	plain="$$(grep -xF -f <(printf '%s\n' "$$lint") <<<"$$selected")"; \
+	parallel="$$(grep -vxF -f <(printf '%s\n' "$$temporal" "$$lint") <<<"$$selected")"; \
+	[ "$$(printf '%s\n' $$serial $$plain $$parallel | sort)" = "$$(sort <<<"$$selected")" ] || \
+		{ echo "make test: splitting TEST_PACKAGES into Temporal, repository-lint and other packages lost one" >&2; exit 1; }; \
+	{ status=0; \
+	  if [ -n "$$plain" ]; then $(GO_TEST_NORACE) $$plain || status=1; fi; \
+	  if [ -n "$$parallel" ]; then $(GO_TEST_RACE) $$parallel || status=1; fi; \
+	  if [ -n "$$serial" ]; then $(GO_TEST_RACE) -p=1 $$serial || status=1; fi; \
+	  exit $$status; } | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # The plugins are separate modules, which is the point of them: `./...` above
 # does not reach them, and a plugin that does not compile would leave every
@@ -329,7 +382,7 @@ plugin-examples:
 	trap 'rm -f "$$generated" "$$validation"' EXIT HUP INT TERM; \
 	tools/pluginexamples/catalog.sh "$$generated" "$$validation"; \
 	diff -u examples/plugins/plugins.lock.json "$$generated" || { \
-		echo "plugin example catalog drifted; run 'make plugin-example-catalog-update' and review the result" >&2; \
+		echo "plugin example catalog drifted; run 'make regen' and commit the result" >&2; \
 		exit 1; \
 	}; \
 	go run ./cmd/flow validate --plugin-catalog "$$validation" examples/plugins/
@@ -393,11 +446,18 @@ check-tidy-plugins:
 # Piped through tools/testsum like `test`, with the same TEST_JSON hook, so a
 # failure under this schedule is reported in the same shape as one under the
 # default. No TEST_SHUFFLE here: this target's whole point is the schedule,
-# and -count=20 already varies what the interleaving reaches.
+# and the repetitions already vary what the interleaving reaches.
+#
+# ORDERING_COUNT is the repetitions: 20 by default, which is what a push to main
+# and the local gate run (1-0.7^20 is 99.9% to catch a defect that reproduces
+# three runs in ten), and CI's pull_request lane passes 10 (97%) to halve the
+# post-split critical path. Main and the weekly deep tier keep the full sweep, so
+# a defect only the second ten reach lands on main's record, not nowhere.
+ORDERING_COUNT ?= 20
 test-ordering: SHELL := /bin/bash
 test-ordering: .SHELLFLAGS := -o pipefail -c
 test-ordering:
-	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=20 -timeout 480s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
+	GOMEMLIMIT=1GiB go test -json -race -cpu=1 -count=$(ORDERING_COUNT) -timeout 480s ./pkg/flowstate/v1/flowtest/ | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
 
 # One Temporal dev server that stays up for the inner loop (#1738). The
 # packages sharing a dev server — engine, server, temporalclient, cmd/flow —
@@ -411,6 +471,14 @@ test-ordering:
 #     make dev-temporal          # prints: export FLOWSTATE_TEST_TEMPORAL_ADDRESS=...
 dev-temporal:
 	@go run ./tools/devtemporal
+
+# Put the Temporal CLI the Temporal-server packages run in the cache they read,
+# downloading it with bounded retries and backoff when it is missing. CI runs
+# this in its own step, behind an actions/cache restore keyed on the SDK
+# version, so the Test step finds the file in place and never downloads; a
+# contributor can run it once to take the same download off their first test.
+temporal-cli:
+	@go run ./tools/temporalcli
 
 # Bounded fast tier for the inner loop.
 test-fast:

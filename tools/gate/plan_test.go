@@ -1,7 +1,10 @@
 package main
 
 import (
+	"os"
 	"reflect"
+	"slices"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -403,7 +406,7 @@ func TestBuildPlan(t *testing.T) {
 				docs:          true,
 				examples:      true,
 				repoTestData:  true,
-				repoDataRoots: []string{agentConfigDataRoot, "docs"},
+				repoDataRoots: []string{"CLAUDE.md", agentConfigDataRoot, "docs"},
 				reasons: map[string]string{
 					"proto": "proto/flowstate/v1/workflow.proto",
 					// The schema is a docs source too, and it
@@ -430,8 +433,8 @@ func TestBuildPlan(t *testing.T) {
 
 // TestAgentConfigurationPathsReachStructuralTests covers the repository-owned
 // surfaces whose contract is about directory parity and complete sets rather
-// than one file read. A one-sided skill edit, Amp setting, Claude adapter, or
-// archived guidance change must all seed tools/agentconfig locally.
+// than one file read. A one-sided skill edit, Amp setting, or Claude adapter
+// change must all seed tools/agentconfig locally.
 func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
 	t.Parallel()
 
@@ -439,16 +442,20 @@ func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
 		".agents/skills/comms-review/SKILL.md",
 		".amp/settings.json",
 		"CLAUDE.md",
-		".agent-history/skills/comms-review/SKILL.md",
-		"REVIEW.md",
 	} {
 		t.Run(changed, func(t *testing.T) {
 			p := buildPlan([]string{changed})
 			if !p.repoTestData {
 				t.Fatal("agent configuration must be repository test data")
 			}
-			if !reflect.DeepEqual(p.repoDataRoots, []string{agentConfigDataRoot}) {
-				t.Fatalf("repoDataRoots = %v, want [%q]", p.repoDataRoots, agentConfigDataRoot)
+			want := []string{agentConfigDataRoot}
+			if isRootMarkdown(changed) {
+				// Also a root Markdown file, so cmd/flow's tree walk reads it.
+				want = append(want, changed)
+				sort.Strings(want)
+			}
+			if !reflect.DeepEqual(p.repoDataRoots, want) {
+				t.Fatalf("repoDataRoots = %v, want %v", p.repoDataRoots, want)
 			}
 			if got := repoDataDepPackages(nil, p.repoDataRoots); !reflect.DeepEqual(got, []string{agentConfigPkg}) {
 				t.Fatalf("repoDataDepPackages = %v, want [%q]", got, agentConfigPkg)
@@ -969,5 +976,59 @@ func TestProtoChangeReachesTheDocsBinary(t *testing.T) {
 	affected := affectedPackages(pkgs, map[string]bool{m + "/pkg/flowstate/v1": true})
 	if !needsDocs(affected) {
 		t.Errorf("a schema change must reach the docs binary; affected = %v", affected)
+	}
+}
+
+// TestEveryRootMarkdownFileIsRepositoryTestData pins #2730: a diff touching
+// only THREAT_MODEL.md skipped the test job although cmd/flow's
+// TestDocumentedServerInvocationsStart walks every Markdown file in the tree
+// and tools/citations reads the root documents. The root Markdown files are
+// listed from the checkout, so a document added tomorrow is covered without
+// editing this test, and dropping THREAT_MODEL.md from repoDataRoot fails it.
+func TestEveryRootMarkdownFileIsRepositoryTestData(t *testing.T) {
+	t.Parallel()
+
+	entries, err := os.ReadDir("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := map[string]bool{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		found[e.Name()] = true
+		p := buildPlan([]string{e.Name()})
+		if !p.repoTestData || !slices.Contains(p.repoDataRoots, e.Name()) {
+			t.Errorf("%s: repoTestData = %v, roots = %v; a root Markdown file is read by tests", e.Name(), p.repoTestData, p.repoDataRoots)
+		}
+		mustRun(t, decide(t, []string{e.Name()}, nil, "pull_request"), "test")
+	}
+	for _, must := range []string{"THREAT_MODEL.md", "SECURITY.md", "CONTRIBUTING.md", "README.md", "AGENTS.md"} {
+		if !found[must] {
+			t.Errorf("%s is not at the repository root; update this test with the file that moved", must)
+		}
+	}
+}
+
+// TestARootMarkdownDiffSeedsTheTreeWalkers covers the local tier: the reader
+// that matters walks the tree, so no literal names THREAT_MODEL.md, and the
+// seed has to come from the tree-reader class.
+func TestARootMarkdownDiffSeedsTheTreeWalkers(t *testing.T) {
+	t.Parallel()
+
+	const m = modulePath
+	testSrc := map[string][]byte{
+		m + "/cmd/flow":  []byte(`root := filepath.Join("..", "..")`),
+		m + "/pkg/other": []byte(`os.ReadFile("fixture.txt")`),
+	}
+	// CLAUDE.md and REVIEW.md are agent configuration too; the overlap must
+	// still reach the tree walker as well as tools/agentconfig.
+	for _, f := range []string{"THREAT_MODEL.md", "CLAUDE.md", "REVIEW.md"} {
+		p := buildPlan([]string{f})
+		got := repoDataDepPackages(testSrc, p.repoDataRoots)
+		if !slices.Contains(got, m+"/cmd/flow") || slices.Contains(got, m+"/pkg/other") {
+			t.Errorf("%s: repoDataDepPackages = %v, want cmd/flow and not pkg/other", f, got)
+		}
 	}
 }

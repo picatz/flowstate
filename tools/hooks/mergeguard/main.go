@@ -88,7 +88,7 @@ func main() {
 		return
 	}
 	if autoMergeRequested(in) {
-		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, then merge manually")
+		hook.Deny("mergeguard: auto-merge is disabled for Flowstate; wait for exact-final-head reviews and every applicable check, run `go run ./tools/shipcheck --repo picatz/flowstate --pr NUMBER`, then merge with `go run ./tools/shipmerge --pr NUMBER -F MESSAGE_FILE`")
 		return
 	}
 	if adminMergeRequested(in) {
@@ -106,7 +106,7 @@ func main() {
 		return
 	}
 	if isMergeInvocation(in) && !mergeHeadPinned(in) {
-		hook.Deny("mergeguard: a manual merge must be pinned to the reviewed final head. Use one explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes; merge tools without an exact-head precondition are blocked.")
+		hook.Deny("mergeguard: a manual merge must be pinned to the reviewed final head. Merge with `go run ./tools/shipmerge --pr NUMBER -F MESSAGE_FILE`, which reruns shipcheck and pins the head it read, or one explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes; merge tools without an exact-head precondition are blocked.")
 		return
 	}
 
@@ -173,7 +173,7 @@ func conventionNote(in *hook.Input, owner, repo string, number int) string {
 	if !ok {
 		return ""
 	}
-	// A squash message is a commit message: nothing appends a footer to one.
+	// A squash message is a commit message: it owes the subject shape and the absolute-claim and bounded checks.
 	findings := commitcheck.Check(title, stringOf(in.ToolInput["commit_message"]), commitcheck.SurfaceCommit)
 	if len(findings) == 0 {
 		return ""
@@ -551,7 +551,7 @@ var (
 // merge from prose about merging once expansion is in play, so this hook fails
 // closed and says so, rather than guessing from what the words look like.
 func shellExpansionDenial(cmd string) string {
-	const explicit = "If it is a merge, use one fully explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes."
+	const explicit = "If it is a merge, use `go run ./tools/shipmerge --pr NUMBER -F MESSAGE_FILE`, or one fully explicit `gh pr merge ... --match-head-commit FULL_SHA` invocation after shipcheck passes."
 
 	// Recognized means recognized by text, not proven to be a merge. The words have
 	// to be separate tokens, so a single-quoted `-m "… gh pr merge …"` is one word

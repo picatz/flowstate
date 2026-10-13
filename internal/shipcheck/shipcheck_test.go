@@ -1,0 +1,646 @@
+package shipcheck
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+	"unicode/utf8"
+)
+
+const testHead = "0123456789abcdef0123456789abcdef01234567"
+
+func passingPullRequest() pullRequest {
+	return pullRequest{
+		State:            "OPEN",
+		BaseRefName:      "main",
+		HeadRefOID:       testHead,
+		AutoMergeRequest: presentJSON{Present: true, Value: json.RawMessage("null")},
+		ChangedFiles:     0,
+		StatusChecks: append(passingRequiredChecks(),
+			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS"},
+			statusCheck{Type: "CheckRun", Name: "not selected", Status: "COMPLETED", Conclusion: "SKIPPED"},
+			statusCheck{Type: "StatusContext", Context: "external", State: "SUCCESS"},
+		),
+		Comments: []comment{{
+			Author: actor{Login: "picatz"}, AuthorAssociation: "OWNER",
+			Body: "Independent AI code/security review by amp-oracle for `" + testHead + "`: PASS with no actionable findings.\n\n" +
+				`<!-- flowstate-independent-review:v1 {"headSha":"` + testHead + `","reviewer":"amp-oracle","scope":"code-security","status":"pass"} -->`,
+		}},
+	}
+}
+
+func passingRequiredChecks() []statusCheck {
+	checks := make([]statusCheck, 0, len(requiredChecks))
+	for _, required := range requiredChecks {
+		checks = append(checks, statusCheck{
+			Type: "CheckRun", Workflow: required.workflow, Name: required.name,
+			Status: "COMPLETED", Conclusion: "SUCCESS",
+		})
+	}
+	return checks
+}
+
+func TestEvaluateAcceptsCompleteFinalHeadEvidence(t *testing.T) {
+	if problems := evaluate(passingPullRequest(), 0); len(problems) != 0 {
+		t.Fatalf("evaluate returned problems: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsPrematureMergeState(t *testing.T) {
+	pr := passingPullRequest()
+	pr.State = "CLOSED"
+	pr.BaseRefName = "release"
+	pr.IsDraft = true
+	pr.AutoMergeRequest = presentJSON{Present: true, Value: json.RawMessage(`{"enabledAt":"now"}`)}
+	pr.StatusChecks[0].Status = "IN_PROGRESS"
+	pr.StatusChecks[0].Conclusion = ""
+	pr.Comments[0].Body = strings.ReplaceAll(pr.Comments[0].Body, "0123456789", "abcdef0123")
+
+	problems := strings.Join(evaluate(pr, 2), "\n")
+	for _, want := range []string{
+		`pull request state is "CLOSED"`,
+		`pull request base is "release"`,
+		"pull request is still a draft",
+		"auto-merge is enabled",
+		`check "plan" latest result is IN_PROGRESS/`,
+		"independent code/security review has not passed on the exact final head",
+		"2 review thread(s) remain unresolved",
+	} {
+		if !strings.Contains(problems, want) {
+			t.Errorf("problems do not contain %q:\n%s", want, problems)
+		}
+	}
+}
+
+func TestEvaluateRejectsMissingAutoMergeEvidenceAndBlockingReview(t *testing.T) {
+	pr := passingPullRequest()
+	pr.AutoMergeRequest = presentJSON{}
+	pr.ReviewDecision = "CHANGES_REQUESTED"
+	problems := strings.Join(evaluate(pr, 0), "\n")
+	for _, want := range []string{"auto-merge state is missing", `review decision is "CHANGES_REQUESTED"`} {
+		if !strings.Contains(problems, want) {
+			t.Errorf("problems do not contain %q:\n%s", want, problems)
+		}
+	}
+}
+
+func TestEvaluateRejectsRepeatedCodexRequestsWithoutDependingOnSHAAnnotations(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments = append(pr.Comments,
+		comment{AuthorAssociation: "OWNER", Body: "@codex review"},
+		comment{AuthorAssociation: "OWNER", Body: "@codex security review"},
+	)
+	// With no head commit time the window is empty, so every request counts:
+	// a head this check cannot date is a reason to be stricter, not laxer.
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("repeated requests without SHA annotations were accepted: %s", problems)
+	}
+}
+
+// The control is against re-rolling a vendor review on one head until it goes
+// quiet, so it counts requests that could have shopped for the verdict being
+// attested. These two tests are the same pull request either side of the head
+// it is merging: requests made before that commit existed were aimed at a
+// revision this attestation does not cover, and requests made after it were
+// not.
+func TestEvaluateIgnoresCodexRequestsAimedAtAnEarlierHead(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("requests predating the head under review blocked shipping: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsRepeatedCodexRequestsOnTheHeadUnderReview(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T13:00:00Z", "2026-09-10T14:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("repeated requests on the head under review were accepted: %s", problems)
+	}
+}
+
+// The head's date is written by whoever made the commit, not stamped by
+// GitHub, so it arrives in the committer's own offset and can name any
+// instant. These are the shapes that a text comparison gets wrong: an offset
+// spelling of the same moment, and a date the committer put in the future.
+// Both must count every request rather than silently opening the window.
+func TestEvaluateComparesTheHeadDateAsAnInstantNotAsText(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
+	// 22:00+09:00 is 13:00Z, so both requests land after the head and count.
+	// Read as wall-clock digits it is 22:00, which postdates both and would
+	// clear the gate. The checks are stamped later than that naive reading,
+	// so the clamp cannot rescue the comparison and the offset is what the
+	// assertion rests on.
+	pr.HeadCommittedAt = "2026-09-10T22:00:00+09:00"
+	stampChecks(&pr, "2026-09-10T23:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("an offset head date hid requests made on this head: %s", problems)
+	}
+}
+
+// A committer who dates the head forward and then waits is the case a plain
+// "is it still in the future" test misses: by the time the gate runs, the
+// written instant has passed, and it sits after requests it would hide. The
+// clamp is what answers it, because GitHub stamped the head's checks when the
+// head really appeared.
+func TestEvaluateDistrustsAHeadDatedAfterItsOwnChecks(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T14:00:00Z", "2026-09-10T20:00:00Z")
+	pr.HeadCommittedAt = "2026-09-10T21:00:00Z"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a head dated after its own checks hid the requests it postdates: %s", problems)
+	}
+}
+
+func TestEvaluateCountsEveryRequestWhenNoCheckDatesTheHead(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	stampChecks(&pr, "")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a head with no stamped check was dated by its committer alone: %s", problems)
+	}
+}
+
+func TestEvaluateCountsARequestMadeAtTheHeadsOwnInstant(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T12:00:00Z", "2026-09-10T13:00:00Z")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a request made at the head's own instant was excused: %s", problems)
+	}
+}
+
+func TestEvaluateCountsARequestItCannotDate(t *testing.T) {
+	// One request lands after the head and one carries a timestamp that will
+	// not parse. Dropping the second would leave a single request and clear
+	// the gate, so what is asserted is that both count.
+	pr := requestedCodexTwice("2026-09-10T13:00:00Z", "not a timestamp")
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("a request with an unreadable timestamp was dropped: %s", problems)
+	}
+}
+
+func TestEvaluateCountsEveryRequestWhenTheHeadDateWillNotParse(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-09T09:00:00Z", "2026-09-09T10:00:00Z")
+	pr.HeadCommittedAt = "last Tuesday"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("an unparseable head date opened the window: %s", problems)
+	}
+}
+
+// The floor is the earliest instant GitHub stamped for the head, across both
+// spellings: a check run carries a start where a status context carries a
+// creation time. Taking the latest instead, or reading only one spelling,
+// raises the floor and hides requests made before it, which is the direction
+// this window exists to close. The fixture therefore spreads its stamps, so
+// that only the earliest-across-both rule counts the request between them.
+func TestEvaluateClampsToTheEarliestStampAcrossBothSpellings(t *testing.T) {
+	pr := requestedCodexTwice("2026-09-10T12:20:00Z", "2026-09-10T12:45:00Z")
+	pr.HeadCommittedAt = "2026-09-10T12:50:00Z"
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "late", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-10T12:40:00Z"},
+		{Type: "StatusContext", Context: "early", State: "SUCCESS", CreatedAt: "2026-09-10T12:05:00Z"},
+	}
+	pr.StatusChecks = append(pr.StatusChecks, passingRequiredChecks()...)
+	stampChecks(&pr, "2026-09-10T12:40:00Z")
+	pr.StatusChecks[1].StartedAt = ""
+	pr.StatusChecks[1].CreatedAt = "2026-09-10T12:05:00Z"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "Codex was requested 2 times") {
+		t.Fatalf("the floor was taken from something later than the earliest stamp: %s", problems)
+	}
+}
+
+// stampChecks gives every check on the fixture a GitHub-stamped start, which
+// is what the window clamps the committer-written head date against.
+func stampChecks(pr *pullRequest, at string) {
+	for i := range pr.StatusChecks {
+		pr.StatusChecks[i].StartedAt = at
+	}
+}
+
+// requestedCodexTwice builds an otherwise shippable pull request whose head
+// was committed at 2026-09-10T12:00:00Z, carrying two owner requests at the
+// given times and an attestation after both.
+func requestedCodexTwice(first, second string) pullRequest {
+	pr := passingPullRequest()
+	pr.HeadCommittedAt = "2026-09-10T12:00:00Z"
+	stampChecks(&pr, "2026-09-10T12:05:00Z")
+	pr.Comments[0].CreatedAt = "2026-09-10T23:00:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments,
+		comment{AuthorAssociation: "OWNER", Body: "@codex review", CreatedAt: first, URL: "https://example.test/first"},
+		comment{AuthorAssociation: "OWNER", Body: "@codex security review", CreatedAt: second, URL: "https://example.test/second"},
+	)
+	return pr
+}
+
+func TestEvaluateDoesNotRequireCodexAvailability(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments[0].CreatedAt = "2026-09-10T16:01:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments, comment{
+		Author:    actor{Login: "chatgpt-codex-connector"},
+		Body:      "You have reached your Codex usage limits for security reviews.",
+		CreatedAt: "2026-09-10T16:00:00Z",
+		URL:       "https://example.test/provider-response",
+	})
+	// The provider response arrived before the final owner attestation, so
+	// availability contributes neither a pass nor a failure.
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("optional provider unavailability blocked shipping: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsCancelledAndMissingChecks(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{{Type: "CheckRun", Name: "appearance", Status: "COMPLETED", Conclusion: "CANCELLED"}}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "CANCELLED") {
+		t.Fatalf("cancelled check was accepted: %s", problems)
+	}
+	pr.StatusChecks = nil
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "no check runs") {
+		t.Fatalf("missing checks were accepted: %s", problems)
+	}
+}
+
+func TestEvaluateRejectsTruncatedChangedFiles(t *testing.T) {
+	pr := passingPullRequest()
+	pr.ChangedFiles = 101
+	pr.Files = make([]changedFile, 100)
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "changed-file evidence is incomplete") {
+		t.Fatalf("truncated changed files were accepted: %s", problems)
+	}
+}
+
+func TestEvaluateAcceptsSuccessfulReplacementForCancelledDuplicate(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = append(passingRequiredChecks(),
+		statusCheck{Type: "CheckRun", Name: "replacement", Status: "COMPLETED", Conclusion: "CANCELLED", StartedAt: "2026-09-08T10:00:00Z"},
+		statusCheck{Type: "CheckRun", Name: "replacement", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:01:00Z"},
+	)
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("successful replacement was rejected: %v", problems)
+	}
+}
+
+func TestEvaluateRejectsFailedReplacementForSuccessfulDuplicate(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "FAILURE", StartedAt: "2026-09-08T10:01:00Z"},
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:00:00Z"},
+	}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "latest result is COMPLETED/FAILURE") {
+		t.Fatalf("failed replacement was accepted: %s", problems)
+	}
+}
+
+func TestEvaluateRejectsQueuedReplacementWithoutTimestamps(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:00:00Z"},
+		{Type: "CheckRun", Name: "test", Status: "QUEUED"},
+	}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `check "test" is QUEUED/`) {
+		t.Fatalf("queued replacement was accepted: %s", problems)
+	}
+}
+
+func TestEvaluateRejectsUnorderedCompletedDuplicates(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = []statusCheck{
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "SUCCESS", StartedAt: "2026-09-08T10:00:00Z"},
+		{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: "FAILURE"},
+	}
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "without enough timestamp evidence") {
+		t.Fatalf("unordered failed duplicate was accepted: %s", problems)
+	}
+}
+
+func TestEvaluateRejectsConflictingChecksAtSameTimestamp(t *testing.T) {
+	for _, conclusions := range [][]string{{"FAILURE", "SUCCESS"}, {"SUCCESS", "FAILURE"}} {
+		pr := passingPullRequest()
+		pr.StatusChecks = append(pr.StatusChecks,
+			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: conclusions[0], StartedAt: "2026-09-09T16:00:00Z"},
+			statusCheck{Type: "CheckRun", Name: "test", Status: "COMPLETED", Conclusion: conclusions[1], StartedAt: "2026-09-09T16:00:00Z"},
+		)
+		if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, "conflicting results at the latest timestamp") {
+			t.Fatalf("equal-timestamp conflict %v was accepted: %s", conclusions, problems)
+		}
+	}
+}
+
+// TestIndependentReviewRejectsStaleOrIncompleteEvidence refuses each way an
+// attestation goes wrong in practice and names that way in the problem, so
+// the operator's next comment fixes it rather than guessing.
+func TestIndependentReviewRejectsStaleOrIncompleteEvidence(t *testing.T) {
+	pr := passingPullRequest()
+	for name, tc := range map[string]struct {
+		mutate func(*comment)
+		want   string
+	}{
+		"stale head": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, testHead, strings.Repeat("f", 40)) },
+			`attests head "ffff`},
+		"no reviewer": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "amp-oracle", "") }, "names no reviewer"},
+		"wrong scope": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "code-security", "code") }, `has scope "code"`},
+		"wrong status": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, `"status":"pass"`, `"status":"PASS"`) },
+			`has status "PASS"`},
+		"no verdict": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "no actionable", "reviewed") }, `lacks the words "no actionable"`},
+		"bad json":   {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, `"headSha":`, `headSha:`) }, "not valid JSON"},
+		"edited":     {func(c *comment) { c.CreatedAt, c.UpdatedAt = "2026-09-09T16:00:00Z", "2026-09-09T16:05:00Z" }, "post a new comment rather than editing"},
+		"escaped status": {func(c *comment) {
+			escaped := `"status":"` + `\` + `u0070ass"` // "pass" with its p as a JSON escape
+			c.Body = strings.ReplaceAll(strings.ReplaceAll(c.Body, `"status":"pass"`, escaped), "PASS", "OK")
+		}, "not in canonical form"},
+		"extra key": {func(c *comment) {
+			c.Body = strings.ReplaceAll(c.Body, `"status":"pass"}`, `"status":"pass","note":"x"}`)
+		},
+			"not in canonical form"},
+		"not owner": {func(c *comment) { c.AuthorAssociation = "NONE"; c.Author.Login = "app/claude" }, `posted by "app/claude" with association "NONE"`},
+		"no marker": {func(c *comment) { c.Body = "PASS: no actionable findings." }, "--attest REVIEWER"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			candidate := pr
+			candidate.Comments = append([]comment(nil), pr.Comments...)
+			tc.mutate(&candidate.Comments[0])
+			problem := attestationProblem(candidate)
+			if problem == "" {
+				t.Fatal("invalid independent-review evidence was accepted")
+			}
+			if !strings.Contains(problem, tc.want) {
+				t.Fatalf("problem = %q, want it to say %q", problem, tc.want)
+			}
+		})
+	}
+}
+
+// TestAttestationIsWhatTheCheckAccepts: the body --attest prints passes
+// evaluate when the owner posts it last on that head, fails on any other
+// head, and is refused for a reviewer or head it cannot spell.
+func TestAttestationIsWhatTheCheckAccepts(t *testing.T) {
+	body, err := Attestation("flowstate-reviewer subagent", testHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := passingPullRequest()
+	pr.Comments[0].Body = body
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("the printed attestation was rejected: %v\n%s", problems, body)
+	}
+	pr.HeadRefOID = strings.Repeat("a", 40)
+	if problem := attestationProblem(pr); !strings.Contains(problem, "review and attest the current head") {
+		t.Fatalf("an attestation of another head was not named as such: %q", problem)
+	}
+	for _, bad := range []struct{ reviewer, head string }{
+		{"", testHead},
+		{"two\nlines", testHead},
+		{"reviewer", testHead[:12]},
+		{"reviewer", strings.ToUpper(testHead)},
+	} {
+		if got, err := Attestation(bad.reviewer, bad.head); err == nil {
+			t.Errorf("Attestation(%q, %q) = %q, want an error", bad.reviewer, bad.head, got)
+		}
+	}
+}
+
+// TestANewerNonOwnerAttemptIsTheOneExplained: an owner attestation of an
+// earlier head followed by a marker a bot posted for the current head is a
+// wrong-identity problem, not a stale-head one; the newer attempt is the one
+// the operator just made.
+func TestANewerNonOwnerAttemptIsTheOneExplained(t *testing.T) {
+	pr := passingPullRequest()
+	owner := pr.Comments[0]
+	owner.URL, owner.CreatedAt = "https://example.test/owner", "2026-09-09T15:00:00Z"
+	owner.Body = strings.ReplaceAll(owner.Body, testHead, strings.Repeat("e", 40))
+	bot := pr.Comments[0]
+	bot.URL, bot.CreatedAt = "https://example.test/bot", "2026-09-09T16:00:00Z"
+	bot.AuthorAssociation, bot.Author.Login = "NONE", "app/claude"
+	pr.Comments = []comment{owner, bot}
+	if problem := attestationProblem(pr); !strings.Contains(problem, `posted by "app/claude"`) {
+		t.Fatalf("problem = %q, want the newer bot-posted marker's identity named", problem)
+	}
+	pr.Comments[1].CreatedAt = "2026-09-09T14:00:00Z"
+	if problem := attestationProblem(pr); !strings.Contains(problem, "review and attest the current head") {
+		t.Fatalf("problem = %q, want the newer owner attestation's stale head named", problem)
+	}
+}
+
+// TestTheLatestAttestationIsTheOneExplained: with an old attestation and a
+// newer one that is stale, the problem names the newer one, which is the one
+// the operator just posted.
+func TestTheLatestAttestationIsTheOneExplained(t *testing.T) {
+	pr := passingPullRequest()
+	first := pr.Comments[0]
+	first.URL, first.CreatedAt = "https://example.test/old", "2026-09-09T15:00:00Z"
+	first.Body = strings.ReplaceAll(first.Body, testHead, strings.Repeat("e", 40))
+	second := pr.Comments[0]
+	second.URL, second.CreatedAt = "https://example.test/new", "2026-09-09T16:00:00Z"
+	pr.Comments = []comment{first, second}
+	pr.Reviews = []review{{SubmittedAt: "2026-09-09T16:01:00Z"}}
+	problem := attestationProblem(pr)
+	if !strings.Contains(problem, "https://example.test/new") || !strings.Contains(problem, "a review changed at 2026-09-09T16:01:00Z") {
+		t.Fatalf("problem = %q, want it to explain the newer attestation and the review after it", problem)
+	}
+}
+
+func TestIndependentReviewMustFollowExactHeadReviewArtifacts(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
+	pr.Reviews = []review{{SubmittedAt: "2026-09-09T16:01:00Z"}}
+	if attestationProblem(pr) == "" {
+		t.Fatal("attestation older than an exact-head review artifact was accepted")
+	}
+	pr.Reviews[0].SubmittedAt = "2026-09-09T15:59:00Z"
+	if attestationProblem(pr) != "" {
+		t.Fatal("attestation newer than every exact-head review artifact was rejected")
+	}
+	pr.Reviews = []review{{SubmittedAt: pr.Comments[0].CreatedAt}}
+	if attestationProblem(pr) == "" {
+		t.Fatal("equal-timestamp stale-head review artifact did not invalidate attestation")
+	}
+	pr.Reviews = []review{{SubmittedAt: "2026-09-09T15:00:00Z", UpdatedAt: "2026-09-09T16:01:00Z"}}
+	if attestationProblem(pr) == "" {
+		t.Fatal("edited formal review did not invalidate attestation")
+	}
+}
+
+func TestIndependentReviewMustFollowOtherComments(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
+	pr.Comments[0].URL = "https://example.test/attestation"
+	pr.Comments = append(pr.Comments, comment{URL: "https://example.test/finding", CreatedAt: "2026-09-09T16:01:00Z"})
+	if attestationProblem(pr) == "" {
+		t.Fatal("attestation older than another PR comment was accepted")
+	}
+	pr.Comments[1].CreatedAt = "2026-09-09T15:00:00Z"
+	pr.Comments[1].UpdatedAt = "2026-09-09T16:01:00Z"
+	if attestationProblem(pr) == "" {
+		t.Fatal("attestation older than an edited PR comment was accepted")
+	}
+	pr.Comments = pr.Comments[:1]
+	pr.Comments[0].UpdatedAt = "2026-09-09T16:01:00Z"
+	if attestationProblem(pr) == "" {
+		t.Fatal("edited attestation was accepted")
+	}
+}
+
+func TestIndependentReviewMustFollowInlineReviewCommentEdits(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Comments[0].CreatedAt = "2026-09-09T16:00:00Z"
+	pr.LatestReviewCommentUpdatedAt = "2026-09-09T16:00:00Z"
+	if attestationProblem(pr) == "" {
+		t.Fatal("equal-timestamp inline review comment was accepted")
+	}
+	pr.LatestReviewCommentUpdatedAt = "2026-09-09T15:59:00Z"
+	if attestationProblem(pr) != "" {
+		t.Fatal("older inline review comment invalidated attestation")
+	}
+}
+
+func TestRequiredCheckCannotDisappear(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks = pr.StatusChecks[1:]
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "plan"`) {
+		t.Fatalf("missing plan check was accepted: %s", problems)
+	}
+}
+
+func TestRequiredCheckCannotBeSkipped(t *testing.T) {
+	pr := passingPullRequest()
+	pr.StatusChecks[0].Conclusion = "SKIPPED"
+	if problems := strings.Join(evaluate(pr, 0), "\n"); !strings.Contains(problems, `required check "plan"`) {
+		t.Fatalf("skipped plan check was accepted: %s", problems)
+	}
+}
+
+// TestCodeQLNeverGatesAMerge: the Analyze Go job is advisory. Absent, still
+// running, or failed, it adds no problem; its alerts are triaged on the
+// repository, not by holding a green, reviewed head.
+func TestCodeQLNeverGatesAMerge(t *testing.T) {
+	for name, check := range map[string]statusCheck{
+		"absent":      {},
+		"in progress": {Type: "CheckRun", Workflow: "CodeQL", Name: "Analyze Go", Status: "IN_PROGRESS"},
+		"failed":      {Type: "CheckRun", Workflow: "CodeQL", Name: "Analyze Go", Status: "COMPLETED", Conclusion: "FAILURE"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pr := passingPullRequest()
+			if check.Name != "" {
+				pr.StatusChecks = append(pr.StatusChecks, check)
+			}
+			if problems := evaluate(pr, 0); len(problems) != 0 {
+				t.Fatalf("an advisory CodeQL check blocked the merge: %v", problems)
+			}
+		})
+	}
+}
+
+func TestEditorChangesRequireBothEditorChecks(t *testing.T) {
+	pr := passingPullRequest()
+	pr.Files = []changedFile{{Path: "cmd/flow/dap.go"}}
+	pr.ChangedFiles = len(pr.Files)
+	problems := strings.Join(evaluate(pr, 0), "\n")
+	for _, name := range []string{"Neovim LSP smoke", "VS Code extension"} {
+		if !strings.Contains(problems, name) {
+			t.Errorf("missing Editors check %q was accepted: %s", name, problems)
+		}
+	}
+	pr.StatusChecks = append(pr.StatusChecks,
+		statusCheck{Type: "CheckRun", Workflow: "Editors", Name: "Neovim LSP smoke", Status: "COMPLETED", Conclusion: "SUCCESS"},
+		statusCheck{Type: "CheckRun", Workflow: "Editors", Name: "VS Code extension", Status: "COMPLETED", Conclusion: "SUCCESS"},
+	)
+	if problems := evaluate(pr, 0); len(problems) != 0 {
+		t.Fatalf("complete Editors evidence was rejected: %v", problems)
+	}
+}
+
+func TestGHIsBounded(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\n/bin/sleep 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	original := ghCommandTimeout
+	originalWaitDelay := ghWaitDelay
+	ghCommandTimeout = 10 * time.Millisecond
+	ghWaitDelay = 10 * time.Millisecond
+	t.Cleanup(func() {
+		ghCommandTimeout = original
+		ghWaitDelay = originalWaitDelay
+	})
+
+	started := time.Now()
+	if _, err := GH("pr", "view"); err == nil {
+		t.Fatal("GH did not time out")
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("GH returned after %s, want a bounded timeout", elapsed)
+	}
+}
+
+func TestGHIgnoresStderrOnSuccess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\necho warning >&2\nprintf '{\"state\":\"OPEN\"}'\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	out, err := GH("pr", "view")
+	if err != nil {
+		t.Fatalf("GH: %v", err)
+	}
+	if got, want := string(out), `{"state":"OPEN"}`; got != want {
+		t.Fatalf("GH output = %q, want %q", got, want)
+	}
+}
+
+func TestBoundedBufferCapsCollectedOutput(t *testing.T) {
+	buffer := &boundedBuffer{limit: 4}
+	input := []byte("abcdefgh")
+	n, err := buffer.Write(input)
+	if err != nil || n != len(input) {
+		t.Fatalf("Write = %d, %v", n, err)
+	}
+	if got := buffer.String(); got != "abcd" {
+		t.Fatalf("buffer = %q, want abcd", got)
+	}
+	if !buffer.exceeded {
+		t.Fatal("buffer did not record overflow")
+	}
+}
+
+func TestGHCapsSubprocessOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("test helper is a POSIX shell script")
+	}
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf '1234567890'\nprintf 'abcdefghij' >&2\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	originalLimit := ghOutputLimit
+	ghOutputLimit = ghErrorOutputLimit + 4
+	t.Cleanup(func() { ghOutputLimit = originalLimit })
+	out, err := GH("pr", "view")
+	if err != errGHOutputLimit {
+		t.Fatalf("GH error = %v, want %v", err, errGHOutputLimit)
+	}
+	if len(out) > ghErrorOutputLimit+4 {
+		t.Fatalf("GH collected %d bytes beyond configured limit", len(out))
+	}
+}
+
+func TestErrorSnippetIsSmallAndValidUTF8(t *testing.T) {
+	out := append([]byte(strings.Repeat("x", errorSnippetLimit-1)), 0xe2, 0x82)
+	got := ErrorSnippet(out)
+	if len(got) > errorSnippetLimit+len("...") {
+		t.Fatalf("snippet has %d bytes", len(got))
+	}
+	if !strings.HasSuffix(got, "...") || !utf8.ValidString(got) {
+		t.Fatalf("snippet did not clean and mark truncation: %q", got[len(got)-32:])
+	}
+}

@@ -10,6 +10,9 @@ valid; manufacturing findings creates churn and trains reviewers to ignore the
 next real one. Prefer a fresh context for the pass: on Claude Code, commit
 first, then delegate to the `flowstate-reviewer` subagent, which reviews the
 committed revision in its own worktree and sees only the diff and these lenses.
+Run it on the local base..head diff before the first push: findings fixed in
+head 1 cost no extra CI cycle or review round, whereas the same findings from
+Copilot's exact-head review each cost both.
 
 ## Lenses
 
@@ -26,8 +29,9 @@ committed revision in its own worktree and sees only the diff and these lenses.
 6. **Regression evidence** — tests fail for the defect they claim to catch. Use a
    mutation proof when the test's connection to the mechanism is not otherwise
    obvious or the risk justifies it; do not turn mutation into ceremony.
-7. **Generated and public surfaces** — generation, examples, CLI reference, and
-   user-facing docs agree with the implementation.
+7. **Generated and public surfaces** — `make regen` leaves `git status` clean,
+   and examples, CLI reference, and user-facing docs agree with the
+   implementation.
 8. **Verification honesty** — the final report and PR body name exactly what ran,
    what passed, and what did not run.
 9. **Receiver effort** — remove repetition, file tours, unsupported absolutes,
@@ -42,8 +46,3 @@ the `flowstate-ship` skill.
 Return only material findings with location, consequence, evidence, and a
 concrete fix. If none remain, return `PASS` followed by the checks that support
 that conclusion and any explicitly unverified leg.
-
-## History
-
-[Archived pre-pr-review guidance](../../../.agent-history/skills/pre-pr-review/SKILL.md)
-is evidence and history, not a second current procedure.

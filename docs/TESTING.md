@@ -255,6 +255,12 @@ hold a case that stubs the boundary beside one that runs the callee. A
 stubbed boundary runs none of the callee's steps, so test the callee's own
 workflow to cover them.
 
+Coverage keeps the two choices apart. A call that every case reaching it
+answered at its boundary is still reached (it is not a gap, so
+`--coverage-required` is unchanged) and is also listed as `stubbed-calls:` on
+the coverage line and under `stubbed` in `-o json`; a call some case ran inline
+is not listed.
+
 **Warnings.** `flow test` warns about a stub that never answered, and about an
 invocation with no stub or no matching stub (which also fails the step).
 Inherited default stubs are exempt from the idle warning. `--fail-on-warning`

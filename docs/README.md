@@ -93,8 +93,7 @@ trust boundary, what enforces it, and the known gaps; and the
   carries a banner naming its source. Change the source, then regenerate:
 
   ```console
-  $ go run ./cmd/flow docs generate          # docs/reference/
-  $ go generate ./cmd/flow/internal/reference # the copies of LANGUAGE.md, DSL.md, and the examples compiled into flow
+  $ make regen   # every derived file: docs/reference/, the copies of LANGUAGE.md, DSL.md, and the examples compiled into flow, and the rest
   ```
 
   Editing [LANGUAGE.md](LANGUAGE.md), [DSL.md](DSL.md), or an example's

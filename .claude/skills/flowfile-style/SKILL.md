@@ -67,8 +67,3 @@ that reference rather than a new parallel argument.
 `docs/STYLE.md` owns the rule text. Keep the rule index above synchronized with its
 `### R<n>.` headings in the same change; the repository test checks that coupling.
 Do not duplicate the full rules here.
-
-## History
-
-[Archived flowfile-style guidance](../../../.agent-history/skills/flowfile-style/SKILL.md)
-is evidence and history, not a second current charter.

@@ -387,9 +387,8 @@ same lesson a mutable release tag teaches in a forge API.
 
 **`git.log` and `git.read_file` are bounded on every resource an
 attacker-chosen repository controls.** A repository this task reads is
-untrusted input the same way `git.commit_push`'s `base_ref` tree is - see
-`AGENT_FIELD_NOTES_LEGACY.md`'s "Bound anything that consumes untrusted
-input." `git.log` bounds
+untrusted input the same way `git.commit_push`'s `base_ref` tree is.
+`git.log` bounds
 commit *count* (`max_commits`, ceiling `maxMaxCommits`, refused rather than
 silently clamped over it), per-commit *message size*
 (`maxLogMessageBytes`), and, independently of both, the *sum* of every
@@ -487,9 +486,8 @@ alone.
 ## What was proven to bite
 
 The rule this section follows: a bound or a refusal is worth exactly as much
-as the evidence that it was tested to actually refuse, not merely declared
-(the surviving statement of it is `AGENT_FIELD_NOTES_LEGACY.md`'s "Assert
-where the answers differ"). Every item below was broken, run red, and
+as the evidence that it was tested to actually refuse, not merely declared.
+Every item below was broken, run red, and
 restored, rather than left as an assertion:
 
 1. **The no-timestamp idempotency probe.** `commit_push.go`'s
@@ -802,8 +800,7 @@ bite") once that source can be a multi-root frontier. `pathFilteringCommitIter`
 (`cursor.go`) diffs a commit against its own actual parents instead, looked
 up directly, with no lookahead into anything.
 `TestGitLogCursorPagesReachEveryCommitExactlyOnce` is the acceptance test
-this claim rests on (`AGENT_FIELD_NOTES_LEGACY.md`, "Test the traversal, not
-just the step"): a
+this claim rests on: a
 23-commit fixture, half touching a filtered path and half not, walked to
 exhaustion at `max_commits: 4` (5+ pages), asserting the union of every page
 equals the full filtered set with every commit reached exactly once and the

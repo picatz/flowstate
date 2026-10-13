@@ -98,7 +98,7 @@ type plan struct {
 	examples bool // flow fix --check, flow test, flow breaking
 
 	// repoTestData means repository-level data validated by tests rather
-	// than imports changed: README.md, AGENTS.md, any Markdown under docs/,
+	// than imports changed: any Markdown file at the repository root, any Markdown under docs/,
 	// or the agent configuration grouped by agentConfigDataRoot. None is a
 	// Go source file and none is under examples/, so nothing above puts any
 	// of them in front of the import graph or the #589 data-dependency
@@ -129,13 +129,20 @@ type plan struct {
 	repoTestData bool
 
 	// repoDataRoots names which of those roots this diff actually touched
-	// ("docs", "README.md", "AGENTS.md", or agentConfigDataRoot), so the
+	// ("docs", a root Markdown file such as "README.md", or agentConfigDataRoot), so the
 	// local tier can seed the packages that read *those* rather than every
 	// package that reads any of them. Without it a docs/DEPLOYMENT.md edit
 	// would pull in tools/agentconfig because that package reads AGENTS.md —
 	// true, unrelated, and avoidable. Sorted and deduplicated; empty exactly
 	// when repoTestData is false.
 	repoDataRoots []string
+
+	// unowned is a changed directory, below the repository root, that no
+	// root package owns (editors/vscode, say): any test may read it off disk
+	// and no import says which, so it selects the CI test job and runs every
+	// lane in full. Set by analyse after `go list`, since buildPlan alone
+	// cannot know which directories are packages; empty when none.
+	unowned string
 
 	// appearance means the diff could move a recorded golden: styled
 	// output and help text live in cmd/flow, and the goldens embed a
@@ -191,10 +198,10 @@ func buildPlan(changed []string) plan {
 		//
 		// tools/fuzztargets is in this set because it *is* CI
 		// configuration: targets.txt decides which targets the smoke tier
-		// runs, which the deep tier runs, and which packages reach the
-		// fuzz job at all. Promoting a deep-only target to smoke changes
-		// nothing about any Go package, so without this the diff that
-		// reconfigures the fuzz job would skip it (#857).
+		// runs and which the deep tier runs. Promoting a deep-only target to
+		// smoke changes nothing about any Go package, so the target files
+		// are CI configuration whose own change forces the full job set,
+		// fuzz-smoke included (#857).
 		//
 		// tools/external is in it for the same reason: its go.mod pins the
 		// buf, govulncheck and staticcheck the proto, vulncheck and
@@ -332,7 +339,13 @@ func buildPlan(changed []string) plan {
 		// Repository-level files read directly by tests rather than
 		// imported, the same #589 shape examples/ has — see
 		// p.repoTestData's doc.
-		if root := repoDataRoot(f); root != "" {
+		// A root Markdown file that is also agent configuration (CLAUDE.md,
+		// REVIEW.md) belongs to both roots: tools/agentconfig validates it
+		// and cmd/flow's tree walk reads it.
+		for _, root := range []string{repoDataRoot(f), rootMarkdownRoot(f)} {
+			if root == "" {
+				continue
+			}
 			p.repoTestData = true
 			reason("test", f)
 			if !rootSeen[root] {
@@ -401,6 +414,23 @@ func resolveDirs(dirs []string, pkgByDir map[string]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// unownedDir returns the first of dirs that no package in pkgByDir owns,
+// itself or as an ancestor, or "" when every one resolves.
+//
+// The repository root is not reported. Every top-level file a test reads is
+// already classified by buildPlan (each root Markdown file as test data, the
+// Makefile and buf config as CI or schema, go.mod as the module graph); what
+// is left (LICENSE) no test opens, and a LICENSE-only diff reaching nothing is
+// TestAnUnreadRootFileDiffReachesNothing.
+func unownedDir(dirs []string, pkgByDir map[string]string) string {
+	for _, d := range dirs {
+		if d != "." && len(resolveDirs([]string{d}, pkgByDir)) == 0 {
+			return d
+		}
+	}
+	return ""
 }
 
 // hasUnresolvedGoDir reports whether any of goFiles' own directories is
@@ -585,14 +615,18 @@ func exampleDataDepPackages(testSrc map[string][]byte) []string {
 
 // repoDataRoot reports which repository-level data root a changed path belongs
 // to, or "" for a path that is not test data of this kind. docs/ is a tree;
-// README.md and AGENTS.md are single files; agentConfigDataRoot groups the
+// every Markdown file at the repository root is its own root, because
+// cmd/flow's TestDocumentedServerInvocationsStart walks all Markdown in the
+// tree and tools/citations reads the root documents (THREAT_MODEL.md,
+// SECURITY.md, CONTRIBUTING.md), so a root document no test names is still
+// opened by that walk (#2730); agentConfigDataRoot groups the
 // mirrored directories, adapters, settings and preserved guidance that
 // tools/agentconfig validates as one structural contract.
 func repoDataRoot(f string) string {
 	switch {
 	case isAgentConfigData(f):
 		return agentConfigDataRoot
-	case f == "README.md", f == "AGENTS.md":
+	case isRootMarkdown(f):
 		return f
 	case strings.HasPrefix(f, "docs/") && strings.HasSuffix(f, ".md"):
 		return "docs"
@@ -601,23 +635,30 @@ func repoDataRoot(f string) string {
 	}
 }
 
+// isRootMarkdown reports whether f is a Markdown file directly in the
+// repository root.
+func isRootMarkdown(f string) bool {
+	return !strings.Contains(f, "/") && strings.HasSuffix(f, ".md")
+}
+
+// rootMarkdownRoot is f when it is a root Markdown file, whatever else
+// repoDataRoot classifies it as.
+func rootMarkdownRoot(f string) string {
+	if isRootMarkdown(f) {
+		return f
+	}
+	return ""
+}
+
 func isAgentConfigData(f string) bool {
 	// The pull request template is part of the same contract: its headings
 	// are the comms-pr skill's sections, and tools/agentconfig holds the two
 	// together, so a diff to either has to reach that package (#1728).
-	// REVIEW.md is in for the same reason one step further out: it carries the
-	// comms-review rubric to Anthropic's hosted reviewer, which reads CLAUDE.md
-	// and that file and loads no skill, and tools/agentconfig is what bounds it
-	// and pins the rules it must keep saying.
 	return f == ".github/PULL_REQUEST_TEMPLATE.md" ||
-		f == "REVIEW.md" ||
 		strings.HasPrefix(f, ".agents/") ||
 		strings.HasPrefix(f, ".claude/") ||
 		strings.HasPrefix(f, ".amp/") ||
-		strings.HasPrefix(f, ".agent-history/") ||
-		f == "CLAUDE.md" ||
-		f == "AGENT_FIELD_NOTES.md" ||
-		f == "AGENT_FIELD_NOTES_LEGACY.md"
+		f == "CLAUDE.md"
 }
 
 // repoDataDepPattern builds the literal matcher for the roots a diff actually
@@ -667,6 +708,29 @@ func repoDataDepPattern(roots []string) *regexp.Regexp {
 	return regexp.MustCompile(`"(\.\./)*(` + strings.Join(alternatives, "|") + `)`)
 }
 
+// treeReaderPattern matches a test that can see code outside its own import
+// graph: a literal naming an ancestor directory and nothing below it ("../..",
+// filepath.Join("..", "..") or filepath.Join(wd, "..", "..")), `git rev-parse
+// --show-toplevel`, internal/testkit's RepoRoot, the working directory as a
+// walk root (os.Getwd), or an exec of the go command. Those are the repository's
+// source-walking guards (one caller type, the scope guard, every YAML decode
+// contained, the wall-clock and duplicate-body ratchets) and the tests that
+// build another package by name. A change anywhere can break one of them
+// without reaching it through an import, so a CI test lane narrowed to the
+// affected set still runs them; see ciTestLanes.
+//
+// A single ".." is not enough: it is the traversal string the namespace and
+// secret-reference tests feed their validators, and a literal that continues
+// into a named directory ("../../examples") is a data dependency the
+// examples and repository-data rules already own.
+var treeReaderPattern = regexp.MustCompile(`"\.\.(/\.\.)+"|"\.\."(, "\.\.")+\)|--show-toplevel|exec\.Command(Context)?\(([\w.]+(\(\))?, )?"go"|testkit\.RepoRoot\(|os\.Getwd\(\)`)
+
+// treeReaderPackages reports which of testSrc's packages match
+// treeReaderPattern.
+func treeReaderPackages(testSrc map[string][]byte) []string {
+	return dataDepPackages(testSrc, treeReaderPattern)
+}
+
 // repoDataDepPackages reports which of testSrc's packages read the
 // repository-level data roots this diff touched. Like exampleDataDepPackages it
 // only ever runs on a diff the plan already flagged, so it cannot widen an
@@ -682,13 +746,22 @@ func repoDataDepPackages(testSrc map[string][]byte, roots []string) []string {
 		seen[agentConfigPkg] = true
 		out = append(out, agentConfigPkg)
 	}
-	if pattern := repoDataDepPattern(roots); pattern != nil {
-		for _, pkg := range dataDepPackages(testSrc, pattern) {
+	add := func(pkgs []string) {
+		for _, pkg := range pkgs {
 			if !seen[pkg] {
 				seen[pkg] = true
 				out = append(out, pkg)
 			}
 		}
+	}
+	if pattern := repoDataDepPattern(roots); pattern != nil {
+		add(dataDepPackages(testSrc, pattern))
+	}
+	// A root Markdown file is also read by tests that walk the tree rather
+	// than name it (TestDocumentedServerInvocationsStart), which no literal
+	// above can find; the tree readers are exactly that class (#2730).
+	if slices.ContainsFunc(roots, isRootMarkdown) {
+		add(treeReaderPackages(testSrc))
 	}
 	sort.Strings(out)
 	return out

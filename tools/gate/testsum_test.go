@@ -18,25 +18,38 @@ func TestTheTestLegsPipeThroughTheSameSummarizerMakeTestUses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	recipe := regexp.MustCompile(`(?m)^test:\n\t(.*)$`).FindStringSubmatch(string(data))
+	recipe := regexp.MustCompile(`(?m)^test:\n((?:\t.*\n)+)`).FindStringSubmatch(string(data))
 	if recipe == nil {
 		t.Fatal("the Makefile has no `test:` recipe on the line after the target")
 	}
-	// The recipe holds a `$(if $(TEST_JSON),tee …|,)` between the pipe and
-	// the summarizer, so the pieces are asserted rather than one string.
-	// The shuffle is a variable, on by default now that the tests which
-	// register into cmd/flow's process-wide registry put it back (see the
-	// Makefile), and the seed it prints is what testsum's rerun lines carry.
-	for _, want := range []string{"go test -json", "-shuffle=$(TEST_SHUFFLE)", "$(TEST_PACKAGES)", "| ", "go run ./tools/testsum"} {
-		if !strings.Contains(recipe[1], want) {
-			t.Errorf("make test's recipe lacks %q: %s", want, recipe[1])
+	body := strings.TrimSpace(recipe[1])
+	goTest := regexp.MustCompile(`(?m)^GO_TEST_RACE = (.*)$`).FindStringSubmatch(string(data))
+	if goTest == nil {
+		t.Fatal("the Makefile has no GO_TEST_RACE, the go test command make test runs")
+	}
+	// The command holds a `$(if $(ARTIFACT_SWEEP),…,)` and the recipe a
+	// `$(if $(TEST_JSON),tee …|,)` between the pipe and the summarizer, so
+	// the pieces are asserted rather than one string. The shuffle is a
+	// variable, on by default now that the tests which register into
+	// cmd/flow's process-wide registry put it back (see the Makefile), and
+	// the seed it prints is what testsum's rerun lines carry.
+	for _, want := range []string{"go test -json", "-shuffle=$(TEST_SHUFFLE)", "-race", "-timeout 900s"} {
+		if !strings.Contains(goTest[1], want) {
+			t.Errorf("make test's go test command lacks %q: %s", want, goTest[1])
 		}
 	}
-	if !regexp.MustCompile(`(?:^|\s)-p=1\s+-timeout\s+900s(?:\s|$)`).MatchString(recipe[1]) {
-		t.Errorf("make test does not retain the exact package isolation and timeout tokens: %s", recipe[1])
+	if strings.Contains(goTest[1], "-p=") {
+		t.Errorf("GO_TEST_RACE fixes -p for every package; only the Temporal owners run serially: %s", goTest[1])
 	}
-	if !strings.HasSuffix(recipe[1], "go run ./tools/testsum") {
-		t.Errorf("make test's recipe does not end in the summarizer, so its status is not the summarizer's: %s", recipe[1])
+	// The split: the Temporal owners one at a time, everything else at the
+	// default -p, and both halves into one summarizer.
+	for _, want := range []string{"$(TEST_PACKAGES)", "$(TEMPORAL_TEST_PACKAGES)", "$(GO_TEST_RACE) $$parallel", "$(GO_TEST_RACE) -p=1 $$serial", "| ", "go run ./tools/testsum"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("make test's recipe lacks %q:\n%s", want, body)
+		}
+	}
+	if !strings.HasSuffix(body, "go run ./tools/testsum") {
+		t.Errorf("make test's recipe does not end in the summarizer, so its status is not the summarizer's:\n%s", body)
 	}
 	if !strings.Contains(string(data), "test: .SHELLFLAGS := -o pipefail -c") {
 		t.Error("make test runs a pipeline without pipefail, so a go test that died before printing a failure would be green")

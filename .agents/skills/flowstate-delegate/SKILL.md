@@ -78,9 +78,3 @@ docs or comment change is a short review, not a skipped one. Any push after a
 review needs a verdict on the complete base-to-head diff of the new head; a
 formatting or wording fix may be a short review concentrating on the change,
 as `.agents/ship.md` describes.
-
-## Unattended runs
-
-Read from stored state rather than a fixed window, report a failed read as
-unreadable rather than quiet, count an action done only on confirmation, and
-cap the spend at a few times a normal run.
