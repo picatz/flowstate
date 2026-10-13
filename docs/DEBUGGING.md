@@ -1090,6 +1090,18 @@ content digest of the bytes it was made from. It is not written when the file is
 refused, nor when the map would exceed the schema's bounds, and it cannot be
 combined with `--schema`.
 
+`flow validate --spec SPEC --source-map PATH` reads the pair back: the problems
+it finds in the specification are placed at the file, line and column the map
+records for their step, and shown by their step's address when it records none.
+The map must be of that specification (the same digest test), or nothing is
+checked and the command says to compile again; a source file the map names that
+is on this machine with other bytes has its lines withheld, as the pane
+withholds them, when `--check-sources` asks for the comparison (the map names
+the files; reading them is the caller's say, so by default none is opened). A
+line in a document the map gives no content digest for is never shown. A map from another producer works the same way: a document that
+is not text, such as a canvas, has no line to give, so the problem carries its
+document and its address.
+
 A run in this process is given the same: `flow run local --debug` reads the file
 once for both the program and its source map, so the map is of the program it
 runs, and the Flowfile's text is the one it compiled. A file it `call:`s is read
