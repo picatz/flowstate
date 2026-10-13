@@ -360,7 +360,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		workflow, err := l.load()
 		unlock()
 		if err == nil {
-			coverage.observe(identity, workflow, nil, l.positions())
+			coverage.observe(identity, workflow, nil, nil, l.positions())
 		}
 	}
 	// A skipped case's name and reason are the file's own words, which can
@@ -468,6 +468,8 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		// re-run under what a divergence found ([scheduleAccumulator.reshown])
 		// replaces it with a posture that holds at least as much.
 		var posture sensitiveInputs
+		// stubbedCalls is the same run's `call:` steps answered at their boundary.
+		var stubbedCalls map[string]bool
 		result, spec, transcript, account := schedules.run(caseCtx,
 			func(ctx context.Context) (*v1.TestCase, *v1.Workflow, *v1.Workflow_StepOutputs, []TranscriptLine, caseShown, error) {
 				// The account is recorded only for runs whose account is
@@ -506,6 +508,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 					fileVars{values: file.Vars, withheld: file.varsWithheld})
 				if reported {
 					posture = shown.sensitive
+					stubbedCalls = shown.stubbedCalls
 				}
 
 				return result, spec, transcript, account, shown, err
@@ -545,7 +548,7 @@ func runSuite(ctx context.Context, file *File, opts RunOptions, loaderFor func(*
 		}
 		report.Cases = append(report.Cases, result)
 		transcripts = append(transcripts, transcriptBudget.take(account))
-		coverage.observe(identity, spec, transcript, l.positions())
+		coverage.observe(identity, spec, transcript, stubbedCalls, l.positions())
 		mutation.observe(identity, &test, spec, l.positions, l.deliveryPath, result)
 		if opts.FailFast && (!result.GetPassed() || schedules.divergence != nil) {
 			// The verdict's own name, redacted under the case's posture, so the
@@ -951,7 +954,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// prints under at least this: an exit before the run's own set is built
 	// still hands back the posture it rendered its error by, or the case's
 	// name and its coverage would print what its error withholds.
-	defer func() { shown.sensitive = widenedBy(posture, shown.sensitive) }()
+	// The `call:` steps this case answered at their boundary, by structural path,
+	// for coverage ([Coverage.Stubbed]).
+	var stubbedCalls map[string]bool
+	defer func() {
+		shown.sensitive = widenedBy(posture, shown.sensitive)
+		shown.stubbedCalls = stubbedCalls
+	}()
 
 	// caseError is the one rendering seam for [v1.TestCase.Error] — the sixth
 	// surface in vars.go's containment table, and the one its own row predicted
@@ -1024,11 +1033,13 @@ func runCase(base context.Context, test *Test, deliveryPath string, load func() 
 	// A `step:` stub may name a `call:` step to answer at the callee's
 	// boundary (#1599); the workflow the rest of the case runs and judges is
 	// the one with those calls replaced. See [stubCallBoundaries].
+	original := workflow
 	workflow, boundaries, err := stubCallBoundaries(workflow, compiled)
 	if err != nil {
 		caseError("%s", err)
 		return
 	}
+	stubbedCalls = stubbedCallPaths(original, workflow)
 	defer swapRegistry(slices.Sorted(maps.Keys(boundaries)))()
 	if len(boundaries) > 0 && len(test.Expect.Compensated) > 0 {
 		// A callee's compensations run under its own step ids, which a
@@ -2756,6 +2767,10 @@ type caseShown struct {
 	pinned   string
 	pins     []Fault
 	authored []bool
+
+	// stubbedCalls is the structural path of each `call:` step a `step:` stub
+	// answered at the callee's boundary in this case ([stubbedCallPaths]).
+	stubbedCalls map[string]bool
 }
 
 // runErrorUnder is the run's failure as a schedule divergence shows it under

@@ -489,7 +489,7 @@ func newCoverageAccumulator(allowUnreached map[string]string) *coverageAccumulat
 // bytes has no source, and a nil *Positions answers every question with "not
 // known" rather than needing a guard here. It is what gives a switch arm the
 // only identity it has (issue #801).
-func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, positions *flowfile.Positions) {
+func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, stubbed map[string]bool, positions *flowfile.Positions) {
 	wc := a.workflows[identity]
 	if wc == nil {
 		wc = &workflowCoverage{
@@ -510,8 +510,6 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 	}
 	got := map[string]bool{}
 	markReached(spec.GetSteps(), "", outputs.GetStepValues(), got)
-	stubbed := map[string]bool{}
-	collectStubbedCalls(spec.GetSteps(), "", stubbed)
 	for path := range got {
 		wc.reached[path] = true
 		if !stubbed[path] {
@@ -789,31 +787,54 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 	}
 }
 
-// collectStubbedCalls marks, by the same structural path [collectStepUniverse]
-// files a step under, every node of the observed workflow that is a `call:`
-// answered at its boundary: [stubCallBoundaries] has replaced it with a task
-// step over a synthetic task, which is the only task named under
-// [callStubTaskPrefix] a case's workflow can hold. A call no stub names is left
-// a call and is not marked.
-func collectStubbedCalls(nodes []*v1.Node, path string, stubbed map[string]bool) {
-	for i, node := range nodes {
+// stubbedCallPaths is the structural path ([childPath]) of each `call:` step of
+// original that rewritten answers at the callee's boundary: the node is a call
+// in the one and a task in the other ([stubCallBoundaries] replaces a call in
+// place and changes nothing else, so the two trees have one shape).
+//
+// Read off the rewrite itself rather than inferred from the synthetic task's
+// name: a plugin task may legitimately be named `call.<x>`, and only the node
+// that was a call is a stubbed call. The paths are the ones [collectStepUniverse]
+// files steps under.
+func stubbedCallPaths(original, rewritten *v1.Workflow) map[string]bool {
+	if original == rewritten {
+		return nil
+	}
+	stubbed := map[string]bool{}
+	diffCalls(original.GetSteps(), rewritten.GetSteps(), "", stubbed)
+
+	return stubbed
+}
+
+func diffCalls(before, after []*v1.Node, path string, stubbed map[string]bool) {
+	for i := range min(len(before), len(after)) {
 		here := childPath(path, i)
-		switch kind := node.GetKind().(type) {
+		switch kind := before[i].GetKind().(type) {
+		case *v1.Node_Call:
+			if after[i].GetTask() != nil {
+				stubbed[here] = true
+			}
 		case *v1.Node_Parallel:
-			for b, branch := range kind.Parallel.GetBranches() {
-				collectStubbedCalls(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), stubbed)
+			if other := after[i].GetParallel(); other != nil {
+				for b := range min(len(kind.Parallel.GetBranches()), len(other.GetBranches())) {
+					diffCalls(kind.Parallel.GetBranches()[b].GetSteps(), other.GetBranches()[b].GetSteps(),
+						here+"/"+pathBranch+strconv.Itoa(b), stubbed)
+				}
 			}
 		case *v1.Node_ForEach:
-			collectStubbedCalls(kind.ForEach.GetBody(), here+"/"+pathBody, stubbed)
-		case *v1.Node_Loop:
-			collectStubbedCalls(kind.Loop.GetBody(), here+"/"+pathBody, stubbed)
-		case *v1.Node_Switch:
-			for s, body := range v1.SwitchBodies(kind.Switch) {
-				collectStubbedCalls(body, here+"/"+pathSwitchBody+strconv.Itoa(s), stubbed)
+			if other := after[i].GetForEach(); other != nil {
+				diffCalls(kind.ForEach.GetBody(), other.GetBody(), here+"/"+pathBody, stubbed)
 			}
-		case *v1.Node_Task:
-			if strings.HasPrefix(kind.Task.GetName(), callStubTaskPrefix) {
-				stubbed[here] = true
+		case *v1.Node_Loop:
+			if other := after[i].GetLoop(); other != nil {
+				diffCalls(kind.Loop.GetBody(), other.GetBody(), here+"/"+pathBody, stubbed)
+			}
+		case *v1.Node_Switch:
+			if other := after[i].GetSwitch(); other != nil {
+				mine, theirs := v1.SwitchBodies(kind.Switch), v1.SwitchBodies(other)
+				for s := range min(len(mine), len(theirs)) {
+					diffCalls(mine[s], theirs[s], here+"/"+pathSwitchBody+strconv.Itoa(s), stubbed)
+				}
 			}
 		}
 	}
