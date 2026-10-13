@@ -49,7 +49,7 @@ func TestStringNeverEmitsUnsafe(t *testing.T) {
 
 	got := logsafe.String(in.String())
 	for _, r := range got {
-		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == '‮' || r == ' ' || r == ' ' {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r < 0xa0) || r == '\u202e' || r == '\u2028' || r == '\u2029' {
 			t.Fatalf("output still holds %U", r)
 		}
 	}
