@@ -431,7 +431,7 @@ func TestBuildPlan(t *testing.T) {
 // TestAgentConfigurationPathsReachStructuralTests covers the repository-owned
 // surfaces whose contract is about directory parity and complete sets rather
 // than one file read. A one-sided skill edit, Amp setting, Claude adapter, or
-// archived guidance change must all seed tools/agentconfig locally.
+// reviewer rubric change must all seed tools/agentconfig locally.
 func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
 	t.Parallel()
 
@@ -439,7 +439,6 @@ func TestAgentConfigurationPathsReachStructuralTests(t *testing.T) {
 		".agents/skills/comms-review/SKILL.md",
 		".amp/settings.json",
 		"CLAUDE.md",
-		".agent-history/skills/comms-review/SKILL.md",
 		"REVIEW.md",
 	} {
 		t.Run(changed, func(t *testing.T) {

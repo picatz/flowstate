@@ -21,9 +21,13 @@ the current branch when empty).
 2. **Independent review on that head.** One provider-neutral AI
    code-and-security review, and it is the evidence. On Claude Code, delegate
    to the `flowstate-reviewer` subagent with the PR number or base/head; its
-   fresh context is the independence. Do not request a vendor review bot. One
-   that reviews on its own is input: read it, disposition it once for the head
-   it reviewed, and never wait on it.
+   fresh context is the independence. Run it on the local base..head diff before
+   the first push. Do not request a vendor review bot. One that reviews on its
+   own is input: read it, disposition it once for the head it reviewed, and
+   never wait on it. When Copilot's exact-head review exists it is the code
+   review of record, and the subagent does the security pass plus a delta review
+   of the fix commits; the merge still needs an exact-head independent review
+   with every finding dispositioned.
 3. **Disposition.** Give every finding one visible disposition: fixed with
    evidence, false positive with evidence, obsolete, or deferred to a searched,
    scoped issue. Resolve a thread only after its disposition is visible on it.

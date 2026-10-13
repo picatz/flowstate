@@ -269,9 +269,10 @@ request and is not in `verdict`'s `needs:`.
 
 `commitcheck.yml` (**Commit conventions**) runs whenever a pull request is
 opened, edited, or pushed to, and runs `go run ./tools/commitcheck -strict`
-over its title and body. Among its rules: a scope-prefixed lowercase subject, an
-issue reference or `No-Issue:` trailer, and a `Verification:` line or
-`Unverified:` trailer; `internal/commitcheck` holds the full list. It checks the
+over its title and body. Among its rules: a scope-prefixed lowercase subject
+and, for the pull request body only, an issue reference or `No-Issue:` trailer
+and a `Verification:` line or `Unverified:` trailer; `internal/commitcheck`
+holds the full list. A squash message owes the subject shape alone. It checks the
 words of the change, not its code, so it is not one of the plan's outputs.
 
 ### Parallel test lanes, and a fuzz job that runs what the diff reaches

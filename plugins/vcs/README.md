@@ -129,9 +129,8 @@ the full list (URL scheme allowlist, revision-string length, commit-count
 ceiling, patch/file-count ceilings) and `clone.go` for the two that matter
 most: clone depth (bounds the *commit graph* asked for) and a response-byte
 cap installed on go-git's own HTTP transport (bounds every response, on
-every status code, which is the layer `AGENT_FIELD_NOTES_LEGACY.md`'s "Bound
-anything that consumes untrusted input" names as the only one a library's
-non-2xx error path cannot bypass). Depth does not bound the size of any
+every status code, which is the only layer a library's non-2xx error path
+cannot bypass). Depth does not bound the size of any
 single blob within it - a shallow clone of a repository whose latest commit
 adds one enormous file is still one enormous file - and the response-byte
 cap, not a true "maximum repository size," is the honest backstop for that

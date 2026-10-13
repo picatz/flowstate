@@ -93,10 +93,10 @@ func main() {
 // on stdin with the subject as its first line. actor is the pull request's
 // author login, and only the event payload carries one.
 //
-// Only the event payload is known to be a pull request body, which the forge
-// has already appended its own footer to. The flags and stdin carry whatever
-// the caller has in hand, so they are read as a commit message, which is the
-// stricter of the two.
+// Only the event payload is known to be a pull request body, which owes the
+// issue and verification records. The flags and stdin carry whatever the
+// caller has in hand, so they are read as a commit message, which owes a
+// subject shape only.
 func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, actor string, err error) {
 	switch {
 	case title != "":

@@ -76,7 +76,6 @@ func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
 		".claude/skills/comms-review/SKILL.md",
 		".amp/settings.json",
 		"CLAUDE.md",
-		"AGENT_FIELD_NOTES_LEGACY.md",
 	} {
 		t.Run(f, func(t *testing.T) {
 			// CI does not seed test-data readers into affected: the full

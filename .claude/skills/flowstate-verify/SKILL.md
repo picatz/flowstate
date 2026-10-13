@@ -94,9 +94,3 @@ the final diff before declaring completion.
 shuffle seed to rerun them when `-shuffle` is on, and a count of what passed.
 Quote that block rather than the log; for one package,
 `go test -json ./path/ | go run ./tools/testsum` prints the same shape.
-
-## History
-
-The archived [full CI](../../../.agent-history/commands/ci-check.md) and
-[fast test](../../../.agent-history/commands/test-fast.md) commands are evidence
-and history, not a second current procedure.
