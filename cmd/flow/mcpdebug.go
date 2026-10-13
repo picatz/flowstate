@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -200,16 +199,10 @@ func debugToolHandler(timeout time.Duration) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args debugToolArguments
 
-		if raw := req.Params.Arguments; len(raw) > 0 {
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-
-			// The mirror of the schema's additionalProperties:false, as every
-			// other tool here does it.
-			decoder.DisallowUnknownFields()
-
-			if err := decoder.Decode(&args); err != nil {
-				return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.DebugToolName, err)), nil
-			}
+		// The mirror of the schema's additionalProperties:false, as every
+		// other tool here does it.
+		if err := decode(req, &args); err != nil {
+			return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.DebugToolName, err)), nil
 		}
 
 		if err := checkDebugArguments(&args); err != nil {

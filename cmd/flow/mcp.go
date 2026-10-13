@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -588,18 +587,12 @@ func runLocalToolHandler(posture *cobra.Command, providers *localSecrets) mcp.To
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args runLocalArguments
 
-		if raw := req.Params.Arguments; len(raw) > 0 {
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-
-			// The mirror of the schema's additionalProperties:false, and refused
-			// for the same reason the RPC tools refuse an unknown field: an
-			// argument silently dropped is a tool that "worked" while doing
-			// something other than what was asked.
-			decoder.DisallowUnknownFields()
-
-			if err := decoder.Decode(&args); err != nil {
-				return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.RunLocalToolName, err)), nil
-			}
+		// The mirror of the schema's additionalProperties:false, and refused
+		// for the same reason the RPC tools refuse an unknown field: an
+		// argument silently dropped is a tool that "worked" while doing
+		// something other than what was asked.
+		if err := decode(req, &args); err != nil {
+			return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.RunLocalToolName, err)), nil
 		}
 
 		if strings.TrimSpace(args.Source) == "" {
@@ -798,18 +791,12 @@ func testToolHandler(timeout time.Duration) mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args testToolArguments
 
-		if raw := req.Params.Arguments; len(raw) > 0 {
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-
-			// The mirror of the schema's additionalProperties:false, for the
-			// same reason every other tool on this surface refuses an unknown
-			// field: an argument silently dropped is a tool that "worked"
-			// while doing something other than what was asked.
-			decoder.DisallowUnknownFields()
-
-			if err := decoder.Decode(&args); err != nil {
-				return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.TestToolName, err)), nil
-			}
+		// The mirror of the schema's additionalProperties:false, for the
+		// same reason every other tool on this surface refuses an unknown
+		// field: an argument silently dropped is a tool that "worked"
+		// while doing something other than what was asked.
+		if err := decode(req, &args); err != nil {
+			return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.TestToolName, err)), nil
 		}
 
 		if strings.TrimSpace(args.Workflow) == "" {
