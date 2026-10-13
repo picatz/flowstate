@@ -34,12 +34,19 @@ import (
 // validator refuses never starts, and a run that never started has no outcome to
 // report. This one compiles, starts, and is stopped by the egress policy — which
 // makes it hermetic as well, since nothing is dialled.
+//
+// One attempt, because where an earlier test in the process has left an egress
+// policy that lets loopback through, the dial to a closed port is a transport
+// error and the task's default retry waits out fifteen seconds before the run
+// fails. The failure the tests below read is the same either way.
 const deniedWorkflow = `edition: v2026.4
 name: denied
 steps:
   - id: fetch
     http:
       url: http://127.0.0.1:1/nope
+    retry:
+      attempts: 1
 `
 
 // TestTheLocalAnswerNamesAFieldNobodyPopulated is the bug, stated as a property.
