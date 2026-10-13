@@ -11,6 +11,8 @@ import (
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The two fixtures of #1555: a callee whose default breaks its own `must:`
@@ -466,5 +468,78 @@ func TestCalleeReadsAreReplacedOnRepublishAndDroppedOnClose(t *testing.T) {
 		f.c.server.diagnosticsMu.Lock()
 		defer f.c.server.diagnosticsMu.Unlock()
 		assert.Empty(t, f.c.server.calleeReadsBySource, "a closed workflow keeps no record of what it read")
+	})
+}
+
+func (f *calleeFixture) notifySaved(t *testing.T, uri lsp.DocumentURI) {
+	t.Helper()
+	require.NoError(t, f.c.conn.Notify(t.Context(), "textDocument/didSave", lsp.DidSaveTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: uri},
+	}))
+}
+
+// A callee that could not be read has no compiled frame, but creating it must
+// still reach the workflow that calls it.
+func TestSavingAMissingCalleeRepublishesItsOpenCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		require.NoError(t, os.Remove(f.calleePath))
+		f.c.openNoWait(string(f.callerURI), calleeCaller)
+		f.settled(t, f.callerURI, "call-unreadable", hasDiagnostics)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+
+		f.writeCallee(t, fixedCallee)
+		f.notifySaved(t, f.calleeURI)
+
+		f.settled(t, f.callerURI, "a clean caller", isEmpty)
+	})
+}
+
+// A pin the callee no longer matches stops its compile before a frame exists;
+// repairing the callee must still reach the workflow.
+func TestSavingACalleeThatFailedItsPinRepublishesItsOpenCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, plainCallee)
+		pinned := calleeCaller + "    digest: " + v1.ContentDigest([]byte(fixedCallee)) + "\n"
+		f.c.openNoWait(string(f.callerURI), pinned)
+		f.settled(t, f.callerURI, "a pin failure", hasDiagnostics)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+
+		f.writeCallee(t, fixedCallee)
+		f.notifySaved(t, f.calleeURI)
+
+		f.settled(t, f.callerURI, "a clean caller", isEmpty)
+	})
+}
+
+// A workflow that read more callee files than are remembered cannot be matched
+// against a save, so any callee save republishes it.
+func TestSavingAnyCalleeRepublishesAWorkflowWhoseReadsOverflowed(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		server := &FlowfileServer{Logger: discardLogger(), calleeReadLimit: 1}
+		c := newClientFor(t, server)
+		f := &calleeFixture{c: c, dir: dir}
+		c.initialize()
+
+		head := "edition: v2026.4\nname: n\nsteps:\n"
+		// Names sort a before b, so b is the callee omitted from the one kept.
+		for _, name := range []string{"a.yaml", "b.yaml"} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(head+"  - id: s\n    log:\n      message: hi\n"), 0o644))
+		}
+		callerURI := fileURI(filepath.Join(dir, "caller.yaml"))
+		bURI := fileURI(filepath.Join(dir, "b.yaml"))
+		c.openNoWait(string(callerURI), head+"  - id: p\n    call: ./a.yaml\n  - id: q\n    call: ./b.yaml\n")
+		f.settled(t, callerURI, "a clean caller", isEmpty)
+		c.openNoWait(string(bURI), head+"  - id: s\n    log:\n      message: hi\n")
+
+		broken := calleeHead + "  - id: work\n    log:\n      message: hi\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(broken), 0o644))
+		f.notifySaved(t, bURI)
+
+		f.settled(t, callerURI, "callee-failed", hasDiagnostics)
 	})
 }

@@ -92,8 +92,8 @@ func diagnose(doc *document) []lsp.Diagnostic {
 // has to place them in that file.
 //
 // The third result names the files the compile read for the document's `call:`
-// steps, as the compiler displayed them ([flowfile.Positions.CalleeFiles]), clean
-// or not; it is empty when the document was not compiled.
+// steps, as the compiler displayed them ([flowfile.Positions.CalleeFiles]),
+// compiled or not; it is empty when the document was not compiled.
 func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport, []string) {
 	set := &diagnosticSet{}
 

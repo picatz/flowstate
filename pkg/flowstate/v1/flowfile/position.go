@@ -134,6 +134,11 @@ type Positions struct {
 	// callee finds that callee's file and lines ([positionDiagnostics]). Keyed by
 	// the pointer rather than the step id because sibling bodies may reuse an id.
 	callees map[*v1.Call]*calleeFrame
+
+	// reads is the display name of every callee this file's `call:` steps
+	// resolved to, recorded before the callee is read, so it holds those that
+	// never made a [calleeFrame]. See [Positions.CalleeFiles].
+	reads []string
 }
 
 // calleeFrame returns the callee compiled for call, or nil when this compile did
@@ -147,9 +152,10 @@ func (p *Positions) calleeFrame(call *v1.Call) *calleeFrame {
 
 // CalleeFiles lists the files this compile read for `call:` steps, every callee
 // however deeply nested, each once and sorted, as the names their diagnostics are
-// reported under ([calleeDisplayName]). A callee that compiled cleanly is listed
-// as well as one that did not, so it names everything the result depends on and
-// not only what it complains about. It is empty for a nil Positions.
+// reported under ([calleeDisplayName]). A callee is listed whether or not it
+// compiled, and one that could not be read, failed its pin or overran the
+// expansion budget is listed too: it names everything the result depends on, not
+// only what it complains about. It is empty for a nil Positions.
 //
 // The walk is the compile's own tree, so it is as bounded as the compile: the
 // total expansion is capped by maxCallExpansionNodes and the depth by the
@@ -161,8 +167,10 @@ func (p *Positions) CalleeFiles() []string {
 		if at == nil {
 			return
 		}
+		for _, read := range at.reads {
+			files[read] = true
+		}
 		for _, frame := range at.callees {
-			files[frame.display] = true
 			walk(frame.positions)
 		}
 	}

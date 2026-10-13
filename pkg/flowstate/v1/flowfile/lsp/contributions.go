@@ -232,6 +232,7 @@ func (s *FlowfileServer) touchCanonicalLocked(touched map[lsp.DocumentURI]bool, 
 func (s *FlowfileServer) publishWorkflowDiagnostics(ctx context.Context, conn *jsonrpc2.Conn, doc *document) {
 	own, callees, reads := diagnoseAll(doc)
 	loc := newLocator(doc)
+	files := s.canonicalReads(doc.uri, loc, reads)
 
 	next := map[lsp.DocumentURI][]publishedDiagnostic{doc.uri: publishable(loc, own)}
 	for _, report := range callees {
@@ -257,7 +258,7 @@ func (s *FlowfileServer) publishWorkflowDiagnostics(ctx context.Context, conn *j
 		return
 	}
 	touched := s.replaceContributionsLocked(doc.uri, next)
-	s.replaceCalleeReadsLocked(doc.uri, loc, reads)
+	s.replaceCalleeReadsLocked(doc.uri, files)
 	s.touchCanonicalLocked(touched, canonicalURI(doc))
 	s.logger().Debug("published diagnostics",
 		"uri", doc.uri, "version", doc.version, "count", len(next[doc.uri]), "targets", len(next)-1)
@@ -285,52 +286,78 @@ func (s *FlowfileServer) clearWorkflowDiagnostics(ctx context.Context, conn *jso
 }
 
 // maxCalleeReads bounds the callee files remembered for one workflow. The compile
-// already bounds how many it can read; this bounds what is kept for each open
-// document.
+// bounds the tree it reads only by its expansion budget (100,000 compiled
+// steps), which is far more files than an editor needs to match a save against,
+// so this bounds what is kept for each open document. A workflow past it is
+// marked overflowed and republished by any callee save instead.
 const maxCalleeReads = 1024
 
-// replaceCalleeReadsLocked makes reads, the files source's compile read for its
-// `call:` steps as the compiler displayed them, the whole of what a save is
-// matched against for source, replacing the previous publication's. The caller
-// holds diagnosticsMu.
-func (s *FlowfileServer) replaceCalleeReadsLocked(source lsp.DocumentURI, loc *locator, reads []string) {
-	if len(reads) == 0 {
+// calleeReads is what a save of a callee is matched against for one workflow:
+// the canonical path of each file its compile read for `call:` steps, and
+// whether more were read than are kept.
+type calleeReads struct {
+	files      map[string]bool
+	overflowed bool
+}
+
+// canonicalReads is the canonical path of each of reads, the files a workflow's
+// compile read for its `call:` steps as the compiler displayed them, up to the
+// limit. It resolves symlinks, so the caller must not hold diagnosticsMu.
+func (s *FlowfileServer) canonicalReads(source lsp.DocumentURI, loc *locator, reads []string) calleeReads {
+	limit := cmp.Or(s.calleeReadLimit, maxCalleeReads)
+	var out calleeReads
+	if len(reads) > limit {
+		s.logger().Warn("workflow reads more callee files than are remembered for saves; any callee save republishes it",
+			"uri", source, "limit", limit)
+		reads = reads[:limit]
+		out.overflowed = true
+	}
+	out.files = make(map[string]bool, len(reads))
+	for _, read := range reads {
+		out.files[canonicalPath(loc.path(read))] = true
+	}
+
+	return out
+}
+
+// replaceCalleeReadsLocked makes reads the whole of what a save is matched
+// against for source, replacing the previous publication's. The caller holds
+// diagnosticsMu.
+func (s *FlowfileServer) replaceCalleeReadsLocked(source lsp.DocumentURI, reads calleeReads) {
+	if len(reads.files) == 0 && !reads.overflowed {
 		delete(s.calleeReadsBySource, source)
 		return
 	}
-	if len(reads) > maxCalleeReads {
-		s.logger().Debug("callee reads beyond the limit not remembered", "uri", source, "limit", maxCalleeReads)
-		reads = reads[:maxCalleeReads]
-	}
 	if s.calleeReadsBySource == nil {
-		s.calleeReadsBySource = make(map[lsp.DocumentURI]map[string]bool)
+		s.calleeReadsBySource = make(map[lsp.DocumentURI]calleeReads)
 	}
-	files := make(map[string]bool, len(reads))
-	for _, read := range reads {
-		files[canonicalPath(loc.path(read))] = true
-	}
-	s.calleeReadsBySource[source] = files
+	s.calleeReadsBySource[source] = reads
 }
 
 // calleeSourcesFor lists the open workflows a save of the file doc holds should
 // bring up to date: those that last reported problems in it, and those whose last
-// compile read it, which includes a callee that was clean then and one reached
-// only through another callee. The second set is recorded when a workflow is
+// compile read it, which includes a callee that was clean then, one that could not
+// be compiled, and one reached only through another callee. The second set is recorded when a workflow is
 // published and replaced by its next publication or dropped when it closes, so a
-// workflow edited to stop calling the file has no stale entry. At most
+// workflow edited to stop calling the file has no stale entry. A workflow that
+// read more files than are remembered is named by every save. At most
 // [v1.MaxModules] workflows are named.
 func (s *FlowfileServer) calleeSourcesFor(doc *document) []lsp.DocumentURI {
 	set := map[lsp.DocumentURI]bool{}
+	var saved string
+	path, hasPath := doc.filesystemPath()
+	if hasPath {
+		saved = canonicalPath(path)
+	}
 	s.diagnosticsMu.Lock()
 	for source := range s.sourcesByTarget[canonicalURI(doc)] {
 		if source != doc.uri && s.isWorkflowSource(source) {
 			set[source] = true
 		}
 	}
-	if path, ok := doc.filesystemPath(); ok {
-		saved := canonicalPath(path)
+	if hasPath {
 		for source, reads := range s.calleeReadsBySource {
-			if source != doc.uri && reads[saved] && s.isWorkflowSource(source) {
+			if source != doc.uri && (reads.overflowed || reads.files[saved]) && s.isWorkflowSource(source) {
 				set[source] = true
 			}
 		}
