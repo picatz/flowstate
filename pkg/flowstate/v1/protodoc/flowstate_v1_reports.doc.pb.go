@@ -605,6 +605,14 @@ func init() {
 				" no suite could ever fail to cover it.\n",
 		},
 		{
+			Name: "flowstate.v1.CoverageReport.stubbed",
+			Leading: " Stubbed is every step id in Reached that is a `call:` step no test case ran\n" +
+				" the callee for: each case that reached it answered it at the callee's\n" +
+				" boundary with a `step:` stub. A subset of Reached, so StepsTotal,\n" +
+				" StepsReached and `--coverage-required` are unchanged: stubbing the boundary\n" +
+				" is an explicit choice, not a gap. A call some case ran inline is not listed.\n",
+		},
+		{
 			Name: "flowstate.v1.SwitchArmCoverage",
 			Leading: " SwitchArmCoverage is one arm of one `switch:` step — one `case:` literal, or\n" +
 				" the `default:` — and whether any test case took it.\n" +

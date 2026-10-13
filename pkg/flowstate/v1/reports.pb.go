@@ -1415,7 +1415,13 @@ type CoverageReport struct {
 	// how a switch writes down deliberately ignoring a value — which is precisely
 	// what the step universe cannot see: an empty body contributes no step ids, so
 	// no suite could ever fail to cover it.
-	Arms          []*SwitchArmCoverage `protobuf:"bytes,9,rep,name=arms,proto3" json:"arms,omitempty"`
+	Arms []*SwitchArmCoverage `protobuf:"bytes,9,rep,name=arms,proto3" json:"arms,omitempty"`
+	// Stubbed is every step id in Reached that is a `call:` step no test case ran
+	// the callee for: each case that reached it answered it at the callee's
+	// boundary with a `step:` stub. A subset of Reached, so StepsTotal,
+	// StepsReached and `--coverage-required` are unchanged: stubbing the boundary
+	// is an explicit choice, not a gap. A call some case ran inline is not listed.
+	Stubbed       []string `protobuf:"bytes,10,rep,name=stubbed,proto3" json:"stubbed,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1509,6 +1515,13 @@ func (x *CoverageReport) GetStale() []string {
 func (x *CoverageReport) GetArms() []*SwitchArmCoverage {
 	if x != nil {
 		return x.Arms
+	}
+	return nil
+}
+
+func (x *CoverageReport) GetStubbed() []string {
+	if x != nil {
+		return x.Stubbed
 	}
 	return nil
 }
@@ -1783,7 +1796,7 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\achanged\x18\x06 \x01(\x05R\achanged\x12\x1f\n" +
 	"\vshrink_runs\x18\a \x01(\x05R\n" +
 	"shrinkRuns\x12\x18\n" +
-	"\aminimal\x18\b \x01(\bR\aminimal\"\x8e\x03\n" +
+	"\aminimal\x18\b \x01(\bR\aminimal\"\xa8\x03\n" +
 	"\x0eCoverageReport\x12\x1a\n" +
 	"\bworkflow\x18\x01 \x01(\tR\bworkflow\x12\x1f\n" +
 	"\vsteps_total\x18\x02 \x01(\x05R\n" +
@@ -1794,7 +1807,9 @@ const file_flowstate_v1_reports_proto_rawDesc = "" +
 	"\x04gaps\x18\x06 \x03(\tR\x04gaps\x12F\n" +
 	"\baccepted\x18\a \x03(\v2*.flowstate.v1.CoverageReport.AcceptedEntryR\baccepted\x12\x14\n" +
 	"\x05stale\x18\b \x03(\tR\x05stale\x123\n" +
-	"\x04arms\x18\t \x03(\v2\x1f.flowstate.v1.SwitchArmCoverageR\x04arms\x1a;\n" +
+	"\x04arms\x18\t \x03(\v2\x1f.flowstate.v1.SwitchArmCoverageR\x04arms\x12\x18\n" +
+	"\astubbed\x18\n" +
+	" \x03(\tR\astubbed\x1a;\n" +
 	"\rAcceptedEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xad\x01\n" +

@@ -72,6 +72,20 @@ type Coverage struct {
 	// step no case ever ran.
 	Reached []string
 
+	// Stubbed is every step id in Reached that is a `call:` step no case ran its
+	// callee for: each case that reached it answered it at the callee's boundary
+	// with a `step:` stub (#1599). It is a subset of Reached, so
+	// [Coverage.Total] and the `--coverage-required` gate are unchanged: stubbing
+	// the boundary is an explicit choice, not a gap. What it adds is the
+	// difference a reader cannot otherwise see, that the call was exercised and
+	// the callee was not.
+	//
+	// Fail-closed by declaration like Reached (issue #821): a name answering to
+	// several declarations is listed when any one of them was only ever stubbed.
+	// A call that some case ran inline is not listed, however many others stubbed
+	// it. Sorted.
+	Stubbed []string
+
 	// Unreached is the complement: every step id in the workflow that some
 	// declaration of leaves unrun, sorted. This is the line #420 exists to
 	// report.
@@ -274,6 +288,7 @@ func (c *Coverage) Report() *v1.CoverageReport {
 		StepsTotal:   int32(c.Total()),
 		StepsReached: int32(len(c.Reached)),
 		Reached:      c.Reached,
+		Stubbed:      c.Stubbed,
 		Unreached:    c.Unreached,
 		Gaps:         c.Gaps(),
 		Accepted:     c.Accepted,
@@ -335,6 +350,11 @@ type workflowCoverage struct {
 	// compiles the same specification.
 	steps   map[string]string
 	reached map[string]bool
+
+	// ran is the declarations some case ran for real, as opposed to reached
+	// through a boundary stub: reached minus the stubbed calls. A declaration
+	// in reached and not here was only ever stubbed ([Coverage.Stubbed]).
+	ran map[string]bool
 
 	// arms is every switch arm the workflow declares, in written order, and
 	// armIndex is where each *declaration* ([SwitchArm.decl]) sits in it. A slice
@@ -469,12 +489,13 @@ func newCoverageAccumulator(allowUnreached map[string]string) *coverageAccumulat
 // bytes has no source, and a nil *Positions answers every question with "not
 // known" rather than needing a guard here. It is what gives a switch arm the
 // only identity it has (issue #801).
-func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, positions *flowfile.Positions) {
+func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, outputs *v1.Workflow_StepOutputs, stubbed map[string]bool, positions *flowfile.Positions) {
 	wc := a.workflows[identity]
 	if wc == nil {
 		wc = &workflowCoverage{
 			steps:       map[string]string{},
 			reached:     map[string]bool{},
+			ran:         map[string]bool{},
 			armIndex:    map[string]int{},
 			armsReached: map[string]bool{},
 		}
@@ -487,7 +508,14 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 	if spec == nil || outputs == nil {
 		return
 	}
-	markReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.reached)
+	got := map[string]bool{}
+	markReached(spec.GetSteps(), "", outputs.GetStepValues(), got)
+	for path := range got {
+		wc.reached[path] = true
+		if !stubbed[path] {
+			wc.ran[path] = true
+		}
+	}
 	markArmsReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.armsReached)
 }
 
@@ -559,8 +587,21 @@ func (a *coverageAccumulator) result(sensitive sensitiveInputs) []*Coverage {
 		for step := range unreached {
 			cov.Unreached = append(cov.Unreached, step)
 		}
+		// A reached id with a declaration that only a boundary stub ever ran.
+		stubbedIDs := map[string]bool{}
+		for path, step := range wc.steps {
+			if wc.reached[path] && !wc.ran[path] {
+				stubbedIDs[step] = true
+			}
+		}
+		for _, step := range cov.Reached {
+			if stubbedIDs[step] {
+				cov.Stubbed = append(cov.Stubbed, step)
+			}
+		}
 		sort.Strings(cov.Reached)
 		sort.Strings(cov.Unreached)
+		sort.Strings(cov.Stubbed)
 
 		// Accept every recorded residual this workflow genuinely leaves
 		// unreached. An entry that also explains another workflow is accepted in
@@ -700,6 +741,7 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 	}
 
 	c.Reached = spell(c.Reached)
+	c.Stubbed = spell(c.Stubbed)
 	c.Unreached = spell(c.Unreached)
 	if c.Accepted != nil {
 		accepted := make(map[string]string, len(c.Accepted))
@@ -742,6 +784,59 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 			name = withheldName(entry.name, sensitive)
 		}
 		c.Stale[i] = entry.message(name)
+	}
+}
+
+// stubbedCallPaths is the structural path ([childPath]) of each `call:` step of
+// original that rewritten answers at the callee's boundary: the node is a call
+// in the one and a task in the other ([stubCallBoundaries] replaces a call in
+// place and changes nothing else, so the two trees have one shape).
+//
+// Read off the rewrite itself rather than inferred from the synthetic task's
+// name: a plugin task may legitimately be named `call.<x>`, and only the node
+// that was a call is a stubbed call. The paths are the ones [collectStepUniverse]
+// files steps under.
+func stubbedCallPaths(original, rewritten *v1.Workflow) map[string]bool {
+	if original == rewritten {
+		return nil
+	}
+	stubbed := map[string]bool{}
+	diffCalls(original.GetSteps(), rewritten.GetSteps(), "", stubbed)
+
+	return stubbed
+}
+
+func diffCalls(before, after []*v1.Node, path string, stubbed map[string]bool) {
+	for i := range min(len(before), len(after)) {
+		here := childPath(path, i)
+		switch kind := before[i].GetKind().(type) {
+		case *v1.Node_Call:
+			if after[i].GetTask() != nil {
+				stubbed[here] = true
+			}
+		case *v1.Node_Parallel:
+			if other := after[i].GetParallel(); other != nil {
+				for b := range min(len(kind.Parallel.GetBranches()), len(other.GetBranches())) {
+					diffCalls(kind.Parallel.GetBranches()[b].GetSteps(), other.GetBranches()[b].GetSteps(),
+						here+"/"+pathBranch+strconv.Itoa(b), stubbed)
+				}
+			}
+		case *v1.Node_ForEach:
+			if other := after[i].GetForEach(); other != nil {
+				diffCalls(kind.ForEach.GetBody(), other.GetBody(), here+"/"+pathBody, stubbed)
+			}
+		case *v1.Node_Loop:
+			if other := after[i].GetLoop(); other != nil {
+				diffCalls(kind.Loop.GetBody(), other.GetBody(), here+"/"+pathBody, stubbed)
+			}
+		case *v1.Node_Switch:
+			if other := after[i].GetSwitch(); other != nil {
+				mine, theirs := v1.SwitchBodies(kind.Switch), v1.SwitchBodies(other)
+				for s := range min(len(mine), len(theirs)) {
+					diffCalls(mine[s], theirs[s], here+"/"+pathSwitchBody+strconv.Itoa(s), stubbed)
+				}
+			}
+		}
 	}
 }
 
