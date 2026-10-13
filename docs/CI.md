@@ -337,7 +337,18 @@ Since #1726:
     `LICENSE` is read by nothing (#2730).
   - `make test` runs every selected package except `TEMPORAL_TEST_PACKAGES`
     at `go test`'s default `-p`, then those (cmd/flow, internal/temporaltest,
-    engine, server, temporalclient) with `-p=1`, both into one `tools/testsum`.
+    engine, server, temporalclient) with `-p=1`, all into one `tools/testsum`.
+    `REPO_LINT_PACKAGES` (`tools/agentconfig`, `citations`, `doclinks`,
+    `dupbodies`, `gate`, `vacuity`, `wallclock`) run first without `-race`:
+    they test repository text and source and run no goroutine worth racing,
+    and the detector cost them about 137s of the rest lane for the same
+    assertions that take about 41s without it (`go test -count=1 -p=1` on a
+    4 vCPU machine; `agentconfig`, which forks `go build`, 30s to 27s,
+    `dupbodies` 32s to 3s, `gate` 25s to 6s, `vacuity` 12s to 2s, `doclinks`
+    9s to 1s, `wallclock` 5s to 1s). They stay in the `rest` lane and the
+    tree-reader set, so a pull request still selects them exactly as before;
+    `TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem` pins
+    the list, and the recipe fails if it overlaps the Temporal owners.
     `TestTheSerialTestPackagesAreTheTemporalOwners` keeps that list equal to
     the packages whose tests start a server, so #1922's isolation holds where
     it was measured to matter and nowhere else.

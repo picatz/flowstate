@@ -1332,3 +1332,59 @@ func TestRegenRunsWhereverTheRootSuiteDoes(t *testing.T) {
 	}
 	mustSkip(t, decide(t, []string{"LICENSE"}, nil, "pull_request"), "test", "regen")
 }
+
+// TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem pins the
+// Makefile's REPO_LINT_PACKAGES: each is a real tools/ package of the root
+// module (a renamed one would fail `go list` in the recipe, but this names it
+// sooner), none is a Temporal owner (those need the detector and -p=1), each
+// stays in exactly one test lane because the list changes the flags and not
+// the lane, and the recipe hands the list to the non-race runner.
+func TestTheRepositoryLintPackagesRunWithoutRaceInTheLaneThatOwnsThem(t *testing.T) {
+	makefile, err := os.ReadFile("../../Makefile")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pick := func(name string) []string {
+		m := regexp.MustCompile(`(?m)^` + name + ` := (.+)$`).FindSubmatch(makefile)
+		if m == nil {
+			t.Fatalf("the Makefile has no %s", name)
+		}
+		var out []string
+		for _, f := range strings.Fields(string(m[1])) {
+			out = append(out, modulePath+"/"+strings.TrimPrefix(f, "./"))
+		}
+		return out
+	}
+	lint, temporal := pick("REPO_LINT_PACKAGES"), pick("TEMPORAL_TEST_PACKAGES")
+
+	all := moduleImportPaths(t)
+	lanes, _ := ciTestLanes(buildPlan(nil), all, nil, nil, "event is push, not a pull request: the full set runs")
+	for _, ip := range lint {
+		if !contains(all, ip) {
+			t.Errorf("REPO_LINT_PACKAGES names %s, which is not a package of the module", ip)
+		}
+		if contains(temporal, ip) {
+			t.Errorf("%s is in REPO_LINT_PACKAGES and TEMPORAL_TEST_PACKAGES: a Temporal owner keeps -race", ip)
+		}
+		if !strings.HasPrefix(ip, modulePath+"/tools/") {
+			t.Errorf("%s is not under tools/: only repository-lint packages run without -race", ip)
+		}
+		n := 0
+		for _, l := range testLanes {
+			if contains(lanes[l.Name], ip) {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s is in %d test lanes, want exactly 1", ip, n)
+		}
+	}
+	for _, want := range []string{"$(GO_TEST_NORACE) $$plain", "$(REPO_LINT_PACKAGES)"} {
+		if !strings.Contains(string(makefile), want) {
+			t.Errorf("make test lacks %q: the repository-lint packages would run under -race again or not at all", want)
+		}
+	}
+	if !strings.Contains(string(makefile), "GO_TEST_NORACE = $(subst -race ,,$(GO_TEST_RACE))") {
+		t.Error("GO_TEST_NORACE is not GO_TEST_RACE minus -race, so the two runners can drift apart in -shuffle or -timeout")
+	}
+}

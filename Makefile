@@ -285,6 +285,17 @@ TEST_SHUFFLE ?= on
 TEST_PACKAGES ?= ./...
 TEMPORAL_TEST_PACKAGES := ./cmd/flow ./internal/temporaltest ./pkg/flowstate/v1/engine ./pkg/flowstate/v1/server ./pkg/flowstate/v1/temporalclient
 GO_TEST_RACE = GOMEMLIMIT=2GiB $(if $(ARTIFACT_SWEEP),FLOWSTATE_ARTIFACT_SWEEP=1 ,)go test -json -shuffle=$(TEST_SHUFFLE) -race -timeout 900s
+# REPO_LINT_PACKAGES test the repository's text and source, not concurrency:
+# they walk files, parse Go and Markdown, and fork `go build`, and none runs a
+# goroutine worth racing. Measured with `go test -count=1 -p=1` on one 4 vCPU
+# machine, the seven took about 137s under -race and about 41s without it,
+# because the race runtime slows the parsing they do. They stay in `make test`,
+# so in whichever lane owns them and in the tree-reader set, with every
+# assertion intact; only the instrumentation differs. A Temporal owner never
+# belongs here: the recipe fails if the two lists overlap. tools/gate's
+# TestTheRepositoryLintPackagesAreToolsAndNotTemporalOwners pins the list.
+REPO_LINT_PACKAGES := ./tools/agentconfig ./tools/citations ./tools/doclinks ./tools/dupbodies ./tools/gate ./tools/vacuity ./tools/wallclock
+GO_TEST_NORACE = $(subst -race ,,$(GO_TEST_RACE))
 
 test: SHELL := /bin/bash
 test: .SHELLFLAGS := -o pipefail -c
@@ -292,11 +303,14 @@ test:
 	@selected="$$(go list -e $(TEST_PACKAGES))" || exit 1; \
 	temporal="$$(go list $(TEMPORAL_TEST_PACKAGES))" || exit 1; \
 	[ -n "$$selected" ] || { echo "make test: TEST_PACKAGES='$(TEST_PACKAGES)' names no package" >&2; exit 1; }; \
+	lint="$$(go list $(REPO_LINT_PACKAGES))" || exit 1; \
 	serial="$$(grep -xF -f <(printf '%s\n' "$$temporal") <<<"$$selected")"; \
-	parallel="$$(grep -vxF -f <(printf '%s\n' "$$temporal") <<<"$$selected")"; \
-	[ "$$(printf '%s\n' $$serial $$parallel | sort)" = "$$(sort <<<"$$selected")" ] || \
-		{ echo "make test: splitting TEST_PACKAGES into Temporal and other packages lost one" >&2; exit 1; }; \
+	plain="$$(grep -xF -f <(printf '%s\n' "$$lint") <<<"$$selected")"; \
+	parallel="$$(grep -vxF -f <(printf '%s\n' "$$temporal" "$$lint") <<<"$$selected")"; \
+	[ "$$(printf '%s\n' $$serial $$plain $$parallel | sort)" = "$$(sort <<<"$$selected")" ] || \
+		{ echo "make test: splitting TEST_PACKAGES into Temporal, repository-lint and other packages lost one" >&2; exit 1; }; \
 	{ status=0; \
+	  if [ -n "$$plain" ]; then $(GO_TEST_NORACE) $$plain || status=1; fi; \
 	  if [ -n "$$parallel" ]; then $(GO_TEST_RACE) $$parallel || status=1; fi; \
 	  if [ -n "$$serial" ]; then $(GO_TEST_RACE) -p=1 $$serial || status=1; fi; \
 	  exit $$status; } | $(if $(TEST_JSON),tee "$(TEST_JSON)" | ,)go run ./tools/testsum
