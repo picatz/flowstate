@@ -672,7 +672,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		}
 
 		r.log.WarnContext(req.Context(), "refused a delivery: body could not be read",
-			"path", logsafe.String(req.URL.Path), "error", logsafe.Value(err))
+			"path", logsafe.String(req.URL.Path), "error", logsafe.Error(err))
 		http.Error(w, "the delivery body could not be read", http.StatusBadRequest)
 
 		return
@@ -687,7 +687,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// regardless of how many schemes that route would have declared (#973).
 		// Then the same refusal, so neither is the answer that stands out.
 		v1.SpendWebhookVerificationWork(webhookHeaders(req.Header), body, r.now())
-		r.refuse(req, "no such webhook", "path", req.URL.Path)
+		r.refuse(req, "no such webhook", "path", logsafe.String(req.URL.Path))
 		writeWebhookRefusal(w)
 		unroutedCtx, cancelUnrouted := recordContext(req)
 		r.refusedAtRoute(unroutedCtx, nil, nil,
@@ -702,7 +702,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		headers, body, r.now())
 	if err != nil {
 		r.refuse(req, "the delivery did not verify",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", err)
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Error(err))
 		writeWebhookRefusal(w)
 		unverifiedCtx, cancelUnverified := recordContext(req)
 		r.refusedAtRoute(unverifiedCtx, route, nil, webhookDenyCode(err))
@@ -725,7 +725,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	decoded, err := decodeDeliveryBody(route.trigger, headers, body)
 	if err != nil {
 		r.log.WarnContext(req.Context(), "a verified delivery did not decode",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Value(err))
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Error(err))
 		r.refusedAtRoute(req.Context(), route, r.principalIdentity(req.Context(), route),
 			v1.AuditDenyCode_AUDIT_DENY_CODE_BINDING_FAILED)
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -815,7 +815,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 			// broken rule it is; the evaluator's own error stays here, in the
 			// operator's log, because it can quote the delivery.
 			r.log.WarnContext(ctx, "a webhook `when:` could not be answered; the delivery is refused",
-				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", logsafe.Value(whenErr.Cause()))
+				"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "cause", logsafe.Error(whenErr.Cause()))
 			r.refusedAtRoute(ctx, route, r.principalIdentity(ctx, route), v1.AuditDenyCode_AUDIT_DENY_CODE_RULE_ERROR)
 			http.Error(w, whenErr.Error(), http.StatusUnprocessableEntity)
 
@@ -827,7 +827,7 @@ func (r *WebhookReceiver) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		// reads them off the context, and a failure an operator is reading is
 		// exactly when the trace it belongs to is worth one click away.
 		r.log.ErrorContext(ctx, "a verified delivery did not start a run",
-			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Value(err))
+			"workflow", route.workflow.GetName(), "webhook", route.trigger.GetName(), "error", logsafe.Error(err))
 
 		if errors.Is(err, errDeliveryRefused) {
 			// The run exists and its `signals:` policy will not take an answer
@@ -1315,7 +1315,7 @@ func webhookHeaders(header http.Header) map[string]string {
 // refuse logs why a delivery was refused, which is the only place the reason is
 // said out loud.
 func (r *WebhookReceiver) refuse(req *http.Request, reason string, args ...any) {
-	r.log.WarnContext(req.Context(), "refused a delivery: "+reason, logsafe.Args(args...)...)
+	r.log.WarnContext(req.Context(), "refused a delivery: "+reason, args...)
 }
 
 // writeWebhookRefusal is the one answer every pre-verification refusal gets.

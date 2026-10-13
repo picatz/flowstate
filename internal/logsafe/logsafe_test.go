@@ -1,9 +1,8 @@
 package logsafe_test
 
 import (
-	"bytes"
 	"errors"
-	"log/slog"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -55,116 +54,31 @@ func TestStringNeverEmitsUnsafe(t *testing.T) {
 	}
 }
 
-func TestArgsKeepsOneLine(t *testing.T) {
-	t.Parallel()
-
-	var buf bytes.Buffer
-	log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{ReplaceAttr: func(_ []string, a slog.Attr) slog.Attr {
-		if a.Key == slog.TimeKey {
-			return slog.Attr{}
-		}
-
-		return a
-	}}))
-
-	log.Warn("refused", logsafe.Args(
-		"path", "/a\nlevel=ERROR forged",
-		"error", errors.New("bad\r\nbody"),
-		"limit", 7,
-	)...)
-
-	if got := strings.Count(buf.String(), "\n"); got != 1 {
-		t.Fatalf("log output has %d line breaks, want exactly the terminator: %q", got, buf.String())
-	}
-
-	if !strings.Contains(buf.String(), `limit=7`) {
-		t.Fatalf("non-string values must pass through: %q", buf.String())
-	}
-}
-
-func TestValueNilError(t *testing.T) {
-	t.Parallel()
-
-	var err error
-	if got := logsafe.Value(err); got != nil {
-		t.Fatalf("Value(nil error) = %v, want nil", got)
-	}
-}
-
 type nilErr struct{ msg string }
 
 func (e *nilErr) Error() string { return e.msg }
 
-func TestValueTypedNilError(t *testing.T) {
+func TestError(t *testing.T) {
 	t.Parallel()
 
-	var err *nilErr
+	var typedNil *nilErr
 
-	if got := logsafe.Value(err); got != "<nil>" {
-		t.Fatalf("Value(typed nil error) = %v, want <nil>", got)
-	}
-}
+	for _, tc := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"message", errors.New("bad\r\nbody"), `bad\r\nbody`},
+		{"wrapped", fmt.Errorf("outer: %w", errors.New("in\x1bner")), `outer: in\x1bner`},
+		{"nil", nil, "<nil>"},
+		{"typed nil", typedNil, "<nil>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-func TestArgsWalksLikeSlog(t *testing.T) {
-	t.Parallel()
-
-	got := logsafe.Args(slog.Int("n", 1), "path", "evil\x1b[2J", slog.String("s", "a\nb"), "k")
-
-	want := []any{slog.Int("n", 1), "path", `evil\x1b[2J`, slog.String("s", `a\nb`), "k"}
-	if len(got) != len(want) {
-		t.Fatalf("Args = %v, want %v", got, want)
-	}
-
-	for i := range want {
-		if a, ok := want[i].(slog.Attr); ok {
-			if !a.Equal(got[i].(slog.Attr)) {
-				t.Fatalf("Args[%d] = %v, want %v", i, got[i], a)
+			if got := logsafe.Error(tc.err); got != tc.want {
+				t.Fatalf("Error(%v) = %q, want %q", tc.err, got, tc.want)
 			}
-
-			continue
-		}
-
-		if got[i] != want[i] {
-			t.Fatalf("Args[%d] = %v, want %v", i, got[i], want[i])
-		}
-	}
-}
-
-func TestArgsRewritesGroupsAnyAndBadKeys(t *testing.T) {
-	t.Parallel()
-
-	var nilPtr *nilErr
-
-	got := logsafe.Args(
-		slog.Group("g", slog.String("s", "a\nb"), slog.Any("e", errors.New("x\ny"))),
-		slog.Any("n", nilPtr),
-		errors.New("bad\nkey"),
-	)
-
-	g := got[0].(slog.Attr).Value.Group()
-	if g[0].Value.String() != `a\nb` || g[1].Value.String() != `x\ny` {
-		t.Fatalf("group members not rewritten: %v", g)
-	}
-
-	if v := got[1].(slog.Attr).Value.String(); v != "<nil>" {
-		t.Fatalf("typed-nil error in an Attr = %q, want <nil>", v)
-	}
-
-	if got[2] != `bad\nkey` {
-		t.Fatalf("bad key = %v, want rewritten", got[2])
-	}
-}
-
-func TestArgsRewritesErrorsBeforeAnyHandler(t *testing.T) {
-	t.Parallel()
-
-	got := logsafe.Args("error", errors.New("bad\r\nbody"), "n", 7)
-
-	if got[1] != `bad\r\nbody` {
-		t.Fatalf("error value = %#v, want the escaped text, not the error", got[1])
-	}
-
-	if got[3] != 7 {
-		t.Fatalf("non-text value = %#v, want it unchanged", got[3])
+		})
 	}
 }

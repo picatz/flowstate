@@ -6,8 +6,8 @@
 // break in it forges a second log entry and any other control character
 // reaches whatever terminal or line reader the operator reads the log with
 // (CWE-117). [String] rewrites every rune [termsafe.Unsafe] names as a visible
-// escape, so a log line stays one line and says what it was sent; [Value] does
-// the same for the values of a logger's key/value arguments.
+// escape, so a log line stays one line and says what it was sent; [Error] does
+// the same for an error's message.
 //
 // The rewrite is applied where a value is logged rather than inside a log
 // handler, because the handler cannot know which attributes carry another
@@ -15,7 +15,6 @@
 package logsafe
 
 import (
-	"log/slog"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -72,80 +71,24 @@ func String(s string) string {
 	return out.String()
 }
 
-// Value returns v made safe to log: a string through [String], an error as
-// [String] of its message, and everything else unchanged. It exists for the
-// variadic key/value arguments of a [log/slog.Logger], where a value's type is
-// not known at the call site. An error whose Error method panics, as a nil
-// pointer implementing error does, is written as "<nil>" the way
-// [log/slog] writes it, rather than taking the caller down.
-func Value(v any) (safe any) {
-	switch v := v.(type) {
-	case string:
-		return String(v)
-	case error:
-		defer func() {
-			if recover() != nil {
-				safe = "<nil>"
-			}
-		}()
-
-		return String(v.Error())
-	default:
-		return v
+// Error returns the message of err made safe to log, [String] of err.Error().
+// A nil error is "<nil>", and so is one whose Error method panics, as a nil
+// pointer implementing error does, which is how [log/slog] writes it.
+//
+// It returns a string rather than the error so that a log call receives text
+// already rewritten, not a value some handler may format later.
+func Error(err error) (safe string) {
+	if err == nil {
+		return "<nil>"
 	}
-}
 
-// Args returns args with the value of each key/value pair passed through
-// [Value]. It walks the arguments as [log/slog.Logger.Log] does: a string key
-// takes the next argument as its value, and a [log/slog.Attr] stands alone with its
-// own text rewritten, as a pair's is. Anything else where a key belongs is
-// logged by slog as the value of "!BADKEY", so it is rewritten as a value.
-func Args(args ...any) []any {
-	out := make([]any, 0, len(args))
-
-	for i := 0; i < len(args); i++ {
-		switch key := args[i].(type) {
-		case string:
-			out = append(out, key)
-
-			if i+1 < len(args) {
-				i++
-
-				out = append(out, Value(args[i]))
-			}
-		case slog.Attr:
-			out = append(out, safeAttr(key))
-		default:
-			// slog logs this as the value of "!BADKEY", so it is a value.
-			out = append(out, Value(key))
+	defer func() {
+		if recover() != nil {
+			safe = "<nil>"
 		}
-	}
+	}()
 
-	return out
-}
-
-func safeAttr(a slog.Attr) slog.Attr {
-	v := a.Value.Resolve()
-
-	switch v.Kind() {
-	case slog.KindString:
-		return slog.String(a.Key, String(v.String()))
-	case slog.KindAny:
-		return slog.Any(a.Key, Value(v.Any()))
-	case slog.KindGroup:
-		group := v.Group()
-		safe := make([]any, len(group))
-
-		for i, member := range group {
-			safe[i] = safeAttr(member)
-		}
-
-		return slog.Group(a.Key, safe...)
-	default:
-		// The resolved value, not the original: a LogValuer must not be asked
-		// again by the handler for something other than what was checked.
-		return slog.Attr{Key: a.Key, Value: v}
-	}
+	return String(err.Error())
 }
 
 func hex2(b byte) string {
