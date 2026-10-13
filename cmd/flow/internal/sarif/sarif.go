@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 
@@ -245,7 +246,7 @@ func uriOf(name string) string {
 	}
 	path := filepath.ToSlash(name)
 	if filepath.IsAbs(name) || isWindowsAbs(path) {
-		return fileURI(path)
+		return fileURI(path, runtime.GOOS == "windows")
 	}
 
 	return (&url.URL{Path: path}).String()
@@ -264,11 +265,14 @@ func isWindowsAbs(path string) bool {
 
 // fileURI is the file URI of an absolute slash-form path (RFC 8089 §2): a drive
 // path keeps its drive in the path (`file:///C:/work/f.yaml`) and a UNC path's
-// host is the URI authority (`file://host/share/f.yaml`).
-func fileURI(path string) string {
+// host is the URI authority (`file://host/share/f.yaml`), but only when
+// local says the name is a path of this machine: a name can come from a source
+// map another party wrote, and a `//host` there must not become an authority
+// a consumer would dial. Elsewhere it stays an empty-authority path.
+func fileURI(path string, local bool) string {
 	u := url.URL{Scheme: "file", Path: path}
 	switch {
-	case strings.HasPrefix(path, "//"):
+	case local && strings.HasPrefix(path, "//"):
 		host, rest, _ := strings.Cut(strings.TrimPrefix(path, "//"), "/")
 		u.Host, u.Path = host, "/"+rest
 	case path[0] != '/':

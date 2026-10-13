@@ -2,6 +2,7 @@ package sarif_test
 
 import (
 	"encoding/json"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -137,8 +138,11 @@ func TestMarshalSpellsFileNamesAsURIReferences(t *testing.T) {
 		"/work/flow.yaml":   "file:///work/flow.yaml",
 		"./relative/f.yaml": "./relative/f.yaml",
 		"C:/work/f.yaml":    "file:///C:/work/f.yaml",
-		"//host/share/f.y":  "file://host/share/f.y",
+		"//host/share/f.y":  "file:////host/share/f.y",
 	} {
+		if runtime.GOOS == "windows" && name == "//host/share/f.y" {
+			want = "file://host/share/f.y" // a local UNC path names its host
+		}
 		doc := decode(t, []*v1.DiagnosticReport{{File: name, Diagnostics: []*v1.Diagnostic{{Message: "x", Line: 1}}}})
 		physical := results(t, firstRun(t, doc))[0]["locations"].([]any)[0].(map[string]any)["physicalLocation"].(map[string]any)
 		assert.Equal(t, want, physical["artifactLocation"].(map[string]any)["uri"], name)
