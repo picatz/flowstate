@@ -6,7 +6,8 @@ import type { DiagnosticReport, RunSummary } from '../types/flowstate'
 import { cwdFlowfile, formatContext, mentionedFlowfile, parseTaskNames, reportFor } from './context'
 import { UNCHECKED_BASH, UNCHECKED_EDIT, alreadyPresent, analyzeCommand, askReason, denyReason, namesFlow, secretsIn } from './guard'
 import { isFlowfile, isTestFile, parseReports, summarize, toFileReport } from './flowfile'
-import { MAX_PAGES, MAX_RUNS, clean, isGone, parsePage, reason, stderrNote, toListing } from './runs'
+import { MAX_PAGES, MAX_RUNS, clean, isGone, needsSignIn, parsePage, reason, stderrNote, toListing } from './runs'
+import { SIGN_IN_LINE, SIGN_IN_READY, SIGN_IN_UNREADY, signInCommand } from './signin'
 import type { Listing } from './runs'
 import { MAX_ENTRIES, closeWait, factsFor, fingerprint, hiddenNote, parseTimeline, pauseLines, settleWaits, stepElapsed, visibleSteps } from './detail'
 import { CHIPS, LastGood, chipFor, chipText } from './chips'
@@ -128,7 +129,7 @@ const readTimeline = async ($: Engine, flow: string, id: string): Promise<Timeli
   try {
     const argv = [flow, 'timeline', '-o', 'json', '--max-entries', String(MAX_ENTRIES), '--', id]
     const ran = await $.process.run(argv, { timeoutMs: 5000 })
-    if (ran.exitCode !== 0) return { error: reason(ran.stderr), gone: isGone(ran.stderr) }
+    if (ran.exitCode !== 0) return { error: reason(ran.stderr), gone: isGone(ran.stderr), signin: needsSignIn(ran.stderr) }
     const parsed = parseTimeline(ran.stdout)
     const note = stderrNote(ran.stderr)
     return 'detail' in parsed && note !== '' ? { ...parsed, note } : parsed
@@ -166,6 +167,9 @@ const readStory = async ($: Engine, flow: string, address: string, id: string): 
     return []
   }
 }
+
+/** Whether an environment read found a non-empty value. */
+const set = (v: unknown): boolean => typeof v === 'string' && v !== ''
 
 /** `FLOWSTATE_ADDRESS` as the session sees it: undefined when unset, null when the lookup fails (the target is then unknown, not the default). */
 const envAddress = async ($: Engine): Promise<string | undefined | null> => {
@@ -644,6 +648,8 @@ export const register: Register = (on, options) => {
     const kept = 'offline' in listed ? lastGood.recall(expr) : undefined
     const runs: Listing = kept !== undefined ? { runs: kept } : listed
     const staleWhy = kept !== undefined && 'offline' in listed ? listed.offline : undefined
+    /** A credential that expired after a good list: the kept list stays, and the sign-in is offered under it. */
+    const staleSignIn = staleWhy !== undefined && 'offline' in listed && listed.signin === true
     const row = 'runs' in runs ? runs.runs.find(r => r.workflowId === id) : undefined
     const rawDetail = account && 'detail' in account ? account.detail : undefined
     // The listing is a window of the newest runs; the pressed run's own summary stands in once it leaves it.
@@ -674,6 +680,35 @@ export const register: Register = (on, options) => {
     }
     // Gates are read only for a run that is, or may be, parked: a finished run has none to answer.
     const target = targetOf(await envAddress($))
+    /** Whether `flow login` would find the issuer and client it needs in this session's environment. */
+    const loginReady = (await Promise.all([
+      Promise.resolve($.env.get('FLOWSTATE_ISSUER')).then(set, () => false),
+      Promise.resolve($.env.get('FLOWSTATE_CLIENT_ID')).then(set, () => false),
+    ])).every(Boolean)
+    /** The refusal to sign in, as a card: what to run, copied on a press and never run by the pane. */
+    const signInCard = (what: string) => {
+      const command = loginReady && 'address' in target ? signInCommand(flow, target.address) : undefined
+      return (
+        <Box flexDirection="column">
+          <Text dimColor>  {SIGN_IN_LINE}</Text>
+          {command === undefined && <Text dimColor>  {SIGN_IN_UNREADY}</Text>}
+          {command !== undefined && (
+            <Box flexDirection="column">
+              <Text dimColor>  {SIGN_IN_READY}</Text>
+              <Box>
+                <Text dimColor>  {command}  </Text>
+                <Button key={`sign-in:${what}`} label="Copy sign-in command" plain onPress={async () => {
+                  const copied = await $.ui.copy({ text: command, surface: e.surface }).then(() => true, () => false)
+                  if (copied) paneNotes.signInAsked(command)
+                }}>
+                  Copy sign-in command
+                </Button>
+              </Box>
+            </Box>
+          )}
+        </Box>
+      )
+    }
     // What a server just said, for the status line; a filtered listing counts something else, and a server that did not answer is forgotten.
     const seen = 'runs' in listed && expr === '' && 'address' in target ? seenFrom(listed.runs, target.address, Date.now()) : NO_SEEN
     const changed = seen.failed !== heard.failed || seen.address !== heard.address || seen.at - heard.at > 30_000 || (seen.at === 0) !== (heard.at === 0)
@@ -783,7 +818,8 @@ export const register: Register = (on, options) => {
             </Button>
           ))}
         </Box>
-        {staleWhy !== undefined && <Text dimColor>  Showing the last list; the server did not answer ({staleWhy}).</Text>}
+        {staleWhy !== undefined && (staleSignIn ? <Text dimColor>  Showing the last list; the server no longer accepts your credentials.</Text> : <Text dimColor>  Showing the last list; the server did not answer ({staleWhy}).</Text>)}
+        {staleWhy !== undefined && staleSignIn && signInCard('runs')}
         {expr !== '' && chipFor(expr) === undefined && (
           <Box>
             <Text dimColor>  Filter: {clean(expr, 120)}  </Text>
@@ -792,7 +828,9 @@ export const register: Register = (on, options) => {
             </Button>
           </Box>
         )}
-        {'offline' in runs ? (
+        {'offline' in runs && runs.signin === true ? (
+          signInCard('runs')
+        ) : 'offline' in runs ? (
           <Text dimColor>  Runs unavailable ({runs.offline}). Set FLOWSTATE_ADDRESS to list a server's.</Text>
         ) : runs.runs.length === 0 ? (
           <Text dimColor>  {expr === '' ? COPY.runs : COPY.runsFiltered}</Text>
@@ -840,7 +878,9 @@ export const register: Register = (on, options) => {
             </Box>
             <Text>  {story(facts)}</Text>
             {account && 'note' in account && account.note && <Text dimColor>  {account.note}</Text>}
-            {account && 'error' in account ? (
+            {account && 'error' in account && account.signin === true ? (
+              signInCard('timeline')
+            ) : account && 'error' in account ? (
               <Text dimColor>
                 {account.gone ? '  The server has no run with this id: it may predate a restart (a dev server keeps runs in memory), belong to another tenant, or have aged out. Close it.' : `  Timeline unavailable (${account.error}).`}
               </Text>

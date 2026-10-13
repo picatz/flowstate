@@ -284,14 +284,19 @@ Since #1726:
   artifacts from runs `34403410255` and `34400366207` show three independent
   packages accounting for 16m40s–17m47s of package execution: engine
   7m39s–7m59s, the root v1 package 5m53s–5m59s, and cmd/flow 3m08s–3m49s.
-  `test` is therefore one four-lane matrix: those three packages each own a
+  `test` is therefore one matrix: those three packages each own a
   runner and `rest` receives the exact `go list ./...` complement. Every lane
   still calls the one `make test` recipe with its package set, retains `-race
   -p=1`, and reports through `tools/testsum`; build, vet, formatting, generated
   docs, examples, breaking, and compose checks run once in `rest`. `fail-fast:
   false` preserves every lane's diagnostics, and `verdict` sees the aggregate
-  matrix result, so a missing or failed lane remains red. Four cache-scope
-  files prevent the lanes racing to save one incomplete build cache.
+  matrix result, so a missing or failed lane remains red. One cache-scope
+  file per lane prevents the lanes racing to save one incomplete build cache.
+- Run `38334741081` on main (17m wall) made `rest` the critical path again: its
+  test step took 15m16s against 5m35s for engine, with 737s of serial package
+  time (flowfile 165s, server 82s, strictyaml 66s, plugin 51s). Those four
+  packages are now the `heavy` lane, so `rest` and `heavy` each carry about six
+  minutes of tests and the slowest lane is no longer twice the next.
 - `fuzz-smoke` no longer runs on a pull request that only touches code. It runs
   on a push to `main`, and on a pull request only when the plan is forced wide
   (a change to the workflow, the Makefile, the gate, `targets.txt` or the module

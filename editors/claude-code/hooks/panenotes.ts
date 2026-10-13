@@ -29,6 +29,11 @@ export class PaneNotes {
     this.add(`pane: user copied /flowstate:debug for run ${middleTruncate(id, 16)}${where}`)
   }
 
+  /** The user copied the sign-in command after the server refused the pane's credentials: they are about to sign in themselves. */
+  signInAsked(command: string): void {
+    this.add(`pane: server refused the pane's credentials; user copied "${clean(command, 120)}" to sign in`)
+  }
+
   private add(note: string): void {
     this.notes.push(clean(note, MAX_NOTE + 80).replaceAll('`', "'"))
     if (this.notes.length > MAX_NOTES) this.notes.splice(0, this.notes.length - MAX_NOTES)
