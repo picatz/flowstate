@@ -420,3 +420,66 @@ test('parseTimeline alone never closes a wait on a signal row', () => {
   const d = parsed(T('approve', 0), S('release-approved', 1))
   expect(d.steps.find(x => x.name === 'approve · wait timeout')!.status.kind).toBe('waiting')
 })
+
+const AUTH_LIST = 'ERROR\nrefused while listing runs: unauthenticated: missing bearer token\n'
+const AUTH_TIMELINE = 'ERROR\nrefused while reading the timeline of "wf-1": unauthenticated: missing\nbearer token\n'
+
+test('a server that wants a sign-in says so on the runs list and offers the command to run, never running it', async ($, on) => {
+  const seen: string[][] = []
+  stub(on, { list: fail(AUTH_LIST) }, seen)
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'FLOWSTATE_ADDRESS' ? 'dev.example.com:9233' : 'set' }))
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Text', text: /did not accept your credentials/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /flow login --address=dev\.example\.com:9233/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Runs unavailable/ })).toBeUndefined()
+  expect(seen.some(a => a[1] === 'login')).toBe(false)
+  await ui.unmount()
+})
+
+test('an open run whose timeline was refused for a credential offers the same sign-in', async ($, on) => {
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']), timeline: fail(AUTH_TIMELINE) })
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'FLOWSTATE_ADDRESS' ? undefined : 'set' }))
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  expect(await ui.find({ type: 'Text', text: /did not accept your credentials/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /flow login --address=localhost:9233/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a signed-in caller refused for lack of permission is not told to sign in', async ($, on) => {
+  stub(on, { list: runs(['wf-1', 'STATUS_RUNNING', 'Deploy']), timeline: fail('ERROR\nrefused while reading the timeline of "wf-1": permission_denied: workload.read\n') })
+  on('env.get', () => ({ value: undefined }))
+  const ui = await mount($)
+  await ui.press({ key: 'run:wf-1' })
+  expect(await ui.find({ type: 'Text', text: /Timeline unavailable/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an address unsafe to paste still gets the card but no command', async ($, on) => {
+  stub(on, { list: fail(AUTH_LIST) })
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'FLOWSTATE_ADDRESS' ? 'x;y z' : 'set' }))
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('without an OIDC issuer and client in the session no login command is offered, and a dev --auth stack is pointed at its token file', async ($, on) => {
+  stub(on, { list: fail(AUTH_LIST) })
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'FLOWSTATE_ADDRESS' ? '127.0.0.1:9233' : undefined }))
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Text', text: /did not accept your credentials/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /--issuer and --client-id.*flow jwt sign.*--token-file/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('one of the two login settings is not enough to offer the command', async ($, on) => {
+  stub(on, { list: fail(AUTH_LIST) })
+  on('env.get', (_$: unknown, e: { name: string }) => ({ value: e.name === 'FLOWSTATE_ISSUER' ? 'https://idp.example.com' : e.name === 'FLOWSTATE_ADDRESS' ? 'h:1' : '' }))
+  const ui = await mount($)
+  expect(await ui.find({ type: 'Button', text: /Copy sign-in command/ })).toBeUndefined()
+  await ui.unmount()
+})

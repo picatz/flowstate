@@ -76,7 +76,6 @@ func TestAgentConfigurationOnlyDiffsReachTheTestJob(t *testing.T) {
 		".claude/skills/comms-review/SKILL.md",
 		".amp/settings.json",
 		"CLAUDE.md",
-		"AGENT_FIELD_NOTES_LEGACY.md",
 	} {
 		t.Run(f, func(t *testing.T) {
 			// CI does not seed test-data readers into affected: the full
@@ -473,7 +472,7 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
 		t.Fatal("test matrix must explicitly set fail-fast: false to retain every lane's result when another lane fails")
 	}
-	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), "[engine v1 cli rest]"; got != want {
+	if got, want := fmt.Sprint(job.Strategy.Matrix.Lane), "[engine v1 cli heavy rest]"; got != want {
 		t.Fatalf("test matrix lanes = %s, want %s", got, want)
 	}
 
@@ -488,6 +487,7 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 		"make test TEST_PACKAGES=", "./pkg/flowstate/v1/engine", "./pkg/flowstate/v1", "./cmd/flow",
 		"go list ./...", "grep -vxF", "github.com/picatz/flowstate/pkg/flowstate/v1/engine",
 		"github.com/picatz/flowstate/pkg/flowstate/v1", "github.com/picatz/flowstate/cmd/flow",
+		"heavy) packages=\"$heavy\"", "go list $heavy",
 	} {
 		if !strings.Contains(testStep, want) {
 			t.Errorf("test matrix does not preserve partition token %q:\n%s", want, testStep)
@@ -497,7 +497,7 @@ func TestRootSuiteMatrixRetainsCoverageAndHeadroom(t *testing.T) {
 		t.Fatal("test matrix has no Test step")
 	}
 	if got := strings.Count(testStep, "-e github.com/picatz/flowstate/"); got != 3 {
-		t.Fatalf("rest lane excludes %d package(s), want exactly the three dedicated lanes", got)
+		t.Fatalf("rest lane excludes %d package(s), want exactly the three dedicated lanes (the heavy lane is excluded through go list)", got)
 	}
 }
 

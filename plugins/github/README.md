@@ -788,8 +788,7 @@ input" reasoning as `pkg/flowstate/v1/server`'s own `List` RPC and its
   `TestPaginateBoundedStopsAtTheBoundaryWithoutSpendingAnExtraRequest` for
   proof that each bound is actually *reached*, not merely respected -
   `scanned <= maxListScan` is also satisfied by a listing that gave up after
-  one batch, and the tests here assert the ceiling was hit, per
-  `AGENT_FIELD_NOTES_LEGACY.md`'s "Test the traversal, not just the step"
+  one batch, and the tests here assert the ceiling was hit
   (when a bound exists, assert it was *reached* as well as not exceeded).
 
 Every list output also carries `truncated`: `false` only when GitHub itself

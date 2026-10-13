@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -115,16 +114,10 @@ func checkPolicyToolHandler() mcp.ToolHandler {
 	return func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		var args checkPolicyArguments
 
-		if raw := req.Params.Arguments; len(raw) > 0 {
-			decoder := json.NewDecoder(bytes.NewReader(raw))
-
-			// The mirror of the schema's additionalProperties:false, for the
-			// reason every tool on this surface has it.
-			decoder.DisallowUnknownFields()
-
-			if err := decoder.Decode(&args); err != nil {
-				return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.CheckPolicyToolName, err)), nil
-			}
+		// The mirror of the schema's additionalProperties:false, for the
+		// reason every tool on this surface has it.
+		if err := decode(req, &args); err != nil {
+			return flowmcp.ToolError(fmt.Errorf("arguments do not match %s: %w", flowmcp.CheckPolicyToolName, err)), nil
 		}
 
 		if strings.TrimSpace(args.Source) == "" {

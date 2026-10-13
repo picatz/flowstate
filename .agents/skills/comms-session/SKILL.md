@@ -27,8 +27,3 @@ force a worse decision or a status question, remove it.
   owner can answer without scrolling back.
 - Handoff: what is done, what ran and what it proved, what was unavailable or
   not run, and whether anything needs the owner before review lands.
-
-## History
-
-[Archived comms-session guidance](../../../.agent-history/skills/comms-session/SKILL.md)
-is evidence and history, not a second current procedure.

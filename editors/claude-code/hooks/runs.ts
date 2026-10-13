@@ -4,7 +4,7 @@ import type { RunSummary } from '../types/flowstate'
 export const MAX_RUNS = 8
 
 /** What the pane knows about the server: its runs, or why it has none to show. */
-export type Listing = { runs: RunSummary[] } | { offline: string }
+export type Listing = { runs: RunSummary[] } | { offline: string; signin?: boolean }
 
 /**
  * A name, an id and a server's error text come from other parties, and the pane
@@ -102,7 +102,7 @@ export const parsePage = (stdout: string): Page => {
 export const toListing = (run: { exitCode: number; stdout: string; stderr: string }, filtered = false): Listing =>
   run.exitCode === 0
     ? { runs: parsePage(run.stdout).runs.slice(0, MAX_RUNS) }
-    : { offline: filtered ? rejection(run.stderr) : reason(run.stderr) }
+    : { offline: filtered ? rejection(run.stderr) : reason(run.stderr), ...(needsSignIn(run.stderr) ? { signin: true } : {}) }
 
 /**
  * Whether what `flow timeline` said on stderr is the CLI's refusal for a run the server has no record of: `no run "<id>" is
@@ -115,4 +115,16 @@ export const isGone = (stderr: string): boolean => {
   // leaves `no run` alone on the first line. Words are only split at spaces, so joining the lines restores the sentence.
   const text = stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR').join(' ')
   return /^no run "(?:[^"\\]|\\.)*" is addressable:/.test(text)
+}
+
+/**
+ * Whether the CLI's refusal is the server saying the caller is not signed in: Connect's `unauthenticated` code, which the CLI
+ * prints as `refused while <doing what> [<id>]: unauthenticated: <why>` (`refusedRun`, `listing runs`, cmd/flow). A
+ * `permission_denied` is a signed-in caller who may not act, which signing in again cannot fix, so it is not matched. The
+ * optional quoted id is matched as a quoted string, so an id that spells the code cannot pass for it, and the lines are joined
+ * because the CLI wraps its error at 80 columns when it is not on a terminal.
+ */
+export const needsSignIn = (stderr: string): boolean => {
+  const text = stderr.split('\n').map(l => l.trim()).filter(l => l !== '' && l !== 'ERROR').join(' ')
+  return /^refused while [^":]+(?: "(?:[^"\\]|\\.)*")?: unauthenticated: /.test(text)
 }

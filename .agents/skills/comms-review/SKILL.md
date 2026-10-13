@@ -66,8 +66,3 @@ decision once their round is dispositioned, so a human reviewer sees decisions
 rather than AI traffic; never reply to an AI reviewer with AI prose. Merging is
 governed by the `flowstate-ship` skill; Claude's merge hook is an additional
 control, not a substitute for that evidence, and other hosts do not run it.
-
-## History
-
-[Archived comms-review guidance](../../../.agent-history/skills/comms-review/SKILL.md)
-is evidence and history, not a second current procedure.

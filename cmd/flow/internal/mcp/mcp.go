@@ -33,7 +33,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
+	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -1347,7 +1349,7 @@ func dispatch(
 		// was asked.
 		if raw := req.Params.Arguments; len(raw) > 0 {
 			if err := protojson.Unmarshal(raw, in); err != nil {
-				return ToolError(fmt.Errorf("arguments do not match %s: %w", method.Input.FullName(), err)), nil
+				return ToolError(fmt.Errorf("arguments do not match %s: %w", method.Input.FullName(), redactedProtoJSONError(err))), nil
 			}
 		}
 
@@ -1842,4 +1844,40 @@ func setRevealSensitive(in proto.Message, on bool) {
 	} else {
 		m.Clear(fd)
 	}
+}
+
+// protoJSONPosition and protoJSONUnknownField pick the two parts of a
+// protojson failure that are not the caller's document: where it failed, and
+// the name of a field the schema does not have.
+var (
+	protoJSONPosition     = regexp.MustCompile(`\(line (\d+):(\d+)\)`)
+	protoJSONUnknownField = regexp.MustCompile(`unknown field "[^"]*"`)
+)
+
+// redactedProtoJSONError replaces a [protojson] failure with one that says where
+// the document went wrong and nothing of what it said there.
+//
+// protojson quotes the token it stopped at (`unexpected token "hunter2"`) and the
+// value it could not convert (`invalid value for string type: 123`), and a tool
+// argument can carry a run input the caller meant to keep out of every log. Only
+// the position and an unknown field's name, which is the schema's vocabulary to
+// correct, survive. It is the counterpart of the CLI's redactedJSONError for the
+// decoder this package uses.
+func redactedProtoJSONError(err error) error {
+	const phrase = "invalid JSON"
+
+	message := err.Error()
+
+	var detail strings.Builder
+	detail.WriteString(phrase)
+
+	if m := protoJSONPosition.FindStringSubmatch(message); m != nil {
+		fmt.Fprintf(&detail, " at line %s, column %s", m[1], m[2])
+	}
+
+	if field := protoJSONUnknownField.FindString(message); field != "" {
+		detail.WriteString(": " + field)
+	}
+
+	return errors.New(detail.String())
 }

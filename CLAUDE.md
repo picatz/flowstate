@@ -21,5 +21,3 @@
 - A learning about this codebase that is not repository policy belongs in auto
   memory, not in this file or `AGENTS.md`; a repository rule needs a recurring
   failure or a mechanism (`docs/agents/README.md` has the decision table).
-- Source comments that cite a rule in `CLAUDE.md` predate the split into
-  `AGENTS.md`; the archived text is indexed by `AGENT_FIELD_NOTES.md`.

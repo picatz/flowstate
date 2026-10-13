@@ -614,10 +614,7 @@ func isAgentConfigData(f string) bool {
 		strings.HasPrefix(f, ".agents/") ||
 		strings.HasPrefix(f, ".claude/") ||
 		strings.HasPrefix(f, ".amp/") ||
-		strings.HasPrefix(f, ".agent-history/") ||
-		f == "CLAUDE.md" ||
-		f == "AGENT_FIELD_NOTES.md" ||
-		f == "AGENT_FIELD_NOTES_LEGACY.md"
+		f == "CLAUDE.md"
 }
 
 // repoDataDepPattern builds the literal matcher for the roots a diff actually

@@ -363,6 +363,7 @@ func TestSavingACleanCalleeBrokenRepublishesItsOpenCaller(t *testing.T) {
 		f.c.openNoWait(string(f.callerURI), calleeCaller)
 		f.settled(t, f.callerURI, "a clean caller", isEmpty)
 		f.c.openNoWait(string(f.calleeURI), plainCallee)
+		synctest.Wait() // the buffer is open before it is saved
 
 		f.writeCallee(t, plainCallee)
 		require.NoError(t, f.c.conn.Notify(t.Context(), "textDocument/didSave", lsp.DidSaveTextDocumentParams{
@@ -424,6 +425,7 @@ func TestSavingACalleeRepublishesWorkflowsReachingItThroughAnotherCallee(t *test
 		f.c.openNoWait(string(outerURI), outerCaller)
 		f.c.openNoWait(string(middleURI), middleCallee)
 		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
 		f.settled(t, outerURI, "a clean outer workflow", isEmpty)
 		f.settled(t, middleURI, "a clean middle workflow", isEmpty)
 
@@ -448,6 +450,7 @@ func TestCalleeReadsAreReplacedOnRepublishAndDroppedOnClose(t *testing.T) {
 
 		f.c.openNoWait(string(outerURI), outerCaller)
 		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
 		f.settled(t, outerURI, "a clean outer workflow", isEmpty)
 		f.saveCallee(t, plainCallee)
 		f.settled(t, outerURI, "callee-failed", hasDiagnostics)
