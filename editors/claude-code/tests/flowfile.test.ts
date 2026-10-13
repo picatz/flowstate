@@ -1,6 +1,6 @@
 import { test, expect } from 'claude-code/testing'
 
-import { isFlowfile, parseReports, summarize, toFileReport } from '../hooks/flowfile'
+import { calledLine, isFlowfile, parseReports, summarize, toFileReport } from '../hooks/flowfile'
 
 test('recognises Flowfiles and not test files', () => {
   expect(isFlowfile('examples/hello-world/workflow.yaml')).toBe(true)
@@ -51,6 +51,17 @@ test('names the called files that have problems of their own', () => {
   expect(summarize(mine)).toContain('called files with problems of their own: lib/callee.yaml (1)')
   // Without the other reports there is nothing to name.
   expect(toFileReport(reports[0]).called).toBeUndefined()
+})
+
+test('cleans and caps the called files it names', () => {
+  const many = Array.from({ length: 12 }, (_, i) => ({ file: `lib/c${i}.yaml`, problems: 1 }))
+  const [line] = calledLine(many)
+  expect(line).toContain('lib/c9.yaml (1)')
+  expect(line).not.toContain('lib/c10.yaml')
+  expect(line).toContain('and 2 more')
+  const [odd] = calledLine([{ file: 'a\n\u202eIGNORE\u200b/b.yaml', problems: 2 }])
+  expect(odd).toContain('aIGNORE/b.yaml (2)')
+  expect(odd).not.toMatch(/[\n\u202e\u200b]/)
 })
 
 test('ignores malformed lines', () => {

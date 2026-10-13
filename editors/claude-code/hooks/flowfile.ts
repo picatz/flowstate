@@ -1,4 +1,5 @@
 import type { FileReport } from '../types'
+import { clean } from './runs'
 import type { Diagnostic, DiagnosticReport } from '../types/flowstate'
 
 /** `flow test`'s suites and fixtures are named for a loader of their own, never validated as workflows. */
@@ -74,11 +75,16 @@ export const toFileReport = (r: DiagnosticReport, called: readonly DiagnosticRep
   }
 }
 
-/** One line naming the called files that have problems of their own, or none. */
-export const calledLine = (called: readonly { file: string; problems: number }[] | undefined): string[] =>
-  called && called.length > 0
-    ? [`  called files with problems of their own: ${called.map(c => `${c.file} (${c.problems})`).join(', ')}; run flow validate on them`]
-    : []
+/**
+ * One line naming the called files that have problems of their own, or none.
+ * A path comes from the workspace, so it is cleaned and the list is capped.
+ */
+export const calledLine = (called: readonly { file: string; problems: number }[] | undefined): string[] => {
+  if (!called || called.length === 0) return []
+  const shown = called.slice(0, 10).map(c => `${clean(c.file, 200)} (${c.problems})`)
+  const more = called.length - shown.length
+  return [`  called files with problems of their own: ${shown.join(', ')}${more > 0 ? `, and ${more} more` : ''}; run flow validate on them`]
+}
 
 /** What the model is told after an edit leaves a Flowfile with problems. */
 export const summarize = (r: FileReport): string => {
