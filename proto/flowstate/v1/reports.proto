@@ -506,6 +506,13 @@ message CoverageReport {
   // what the step universe cannot see: an empty body contributes no step ids, so
   // no suite could ever fail to cover it.
   repeated SwitchArmCoverage arms = 9;
+
+  // Stubbed is every step id in Reached that is a `call:` step no test case ran
+  // the callee for: each case that reached it answered it at the callee's
+  // boundary with a `step:` stub. A subset of Reached, so StepsTotal,
+  // StepsReached and `--coverage-required` are unchanged: stubbing the boundary
+  // is an explicit choice, not a gap. A call some case ran inline is not listed.
+  repeated string stubbed = 10;
 }
 
 // SwitchArmCoverage is one arm of one `switch:` step — one `case:` literal, or

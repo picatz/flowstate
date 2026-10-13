@@ -1233,6 +1233,11 @@ func printCoverage(out io.Writer, theme ui.Theme, report *v1.TestReport, coverag
 			tail += "; " + theme.Muted.Render("accepted-unreached: "+strings.Join(accepted, ", "))
 		}
 
+		if len(cov.Stubbed) > 0 {
+			// Reached, not a gap: the call ran and its callee did not.
+			tail += "; " + theme.Muted.Render("stubbed-calls: "+strings.Join(cov.Stubbed, ", "))
+		}
+
 		fmt.Fprintf(out, "%s  %s%s\n", file, summary, tail)
 
 		printArmGaps(out, theme, cov, required)

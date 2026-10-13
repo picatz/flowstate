@@ -198,3 +198,37 @@ func TestFlowTestJSONLIsOneReportPerFile(t *testing.T) {
 		assert.Contains(t, report.File, "workflow.test.yaml")
 	}
 }
+
+// TestFlowTestCoverageNamesAStubbedCall is #2287 through the real command: a
+// call every case answered at its boundary is reached, not a gap, and the line
+// says its callee never ran.
+func TestFlowTestCoverageNamesAStubbedCall(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "callee.yaml"), []byte(`edition: v2026.4
+name: provision
+outputs:
+  url:
+    value: ${"https://real.example"}
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`edition: v2026.4
+name: caller
+steps:
+  - id: provision
+    call: ./callee.yaml
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "workflow.test.yaml"), []byte(`tests:
+  - name: the boundary is stubbed
+    workflow: ./workflow.yaml
+    stubs:
+      - step: provision
+        returns: {url: https://stubbed.example}
+    expect:
+      ran: [provision]
+`), 0o600))
+
+	out, err := runFlowTest(t, "--coverage-required", dir)
+
+	require.NoError(t, err, "a stubbed call is reached, so the gate passes: %s", out)
+	assert.Contains(t, out, "1/1 steps reached")
+	assert.Contains(t, out, "stubbed-calls: provision")
+}

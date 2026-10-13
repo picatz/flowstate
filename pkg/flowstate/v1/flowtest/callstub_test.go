@@ -415,3 +415,54 @@ tests:
 		require.True(t, c.GetPassed(), "%s: %s %v", c.GetName(), c.GetError(), c.GetFailures())
 	}
 }
+
+// stubbedCall and inlineCall are the two ways a case can reach the fixture's
+// call step.
+const (
+	stubbedCall = `
+  - name: the boundary is stubbed
+    workflow: ./workflow.yaml
+    stubs:
+      - step: provision
+        returns: {url: https://stubbed.example}
+    expect: {ran: [provision, announce]}
+`
+	inlineCall = `
+  - name: the callee runs
+    workflow: ./workflow.yaml
+    expect: {ran: [provision, announce]}
+`
+)
+
+// TestCoverageNamesACallOnlyEverStubbed is #2287: a call answered at its
+// boundary in every case that reached it is reported stubbed, a subset of the
+// steps reached, so the gate is unchanged and a reader can tell the callee
+// never ran.
+func TestCoverageNamesACallOnlyEverStubbed(t *testing.T) {
+	t.Parallel()
+
+	for name, tc := range map[string]struct {
+		cases   string
+		stubbed []string
+	}{
+		"stub only":          {stubbedCall, []string{"provision"}},
+		"inline only":        {inlineCall, nil},
+		"a case ran it":      {stubbedCall + inlineCall, nil},
+		"a case ran it, 2nd": {inlineCall + stubbedCall, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			writeCallFixture(t, dir)
+			report := flowtest.RunFile(writeInline(t, dir, "defaults:\n  stubs:\n    - task: log\n      returns: {}\ntests:"+tc.cases))
+			require.Empty(t, report.GetRefused())
+			require.Len(t, report.GetCoverage(), 1)
+			cov := report.GetCoverage()[0]
+			require.ElementsMatch(t, []string{"provision", "announce"}, cov.GetReached(), "a stubbed call still counts as reached")
+			require.Empty(t, cov.GetUnreached())
+			require.Empty(t, cov.GetGaps(), "stubbing the boundary is a choice, not a gap")
+			require.Equal(t, tc.stubbed, cov.GetStubbed())
+		})
+	}
+}

@@ -72,6 +72,20 @@ type Coverage struct {
 	// step no case ever ran.
 	Reached []string
 
+	// Stubbed is every step id in Reached that is a `call:` step no case ran its
+	// callee for: each case that reached it answered it at the callee's boundary
+	// with a `step:` stub (#1599). It is a subset of Reached, so
+	// [Coverage.Total] and the `--coverage-required` gate are unchanged: stubbing
+	// the boundary is an explicit choice, not a gap. What it adds is the
+	// difference a reader cannot otherwise see, that the call was exercised and
+	// the callee was not.
+	//
+	// Fail-closed by declaration like Reached (issue #821): a name answering to
+	// several declarations is listed when any one of them was only ever stubbed.
+	// A call that some case ran inline is not listed, however many others stubbed
+	// it. Sorted.
+	Stubbed []string
+
 	// Unreached is the complement: every step id in the workflow that some
 	// declaration of leaves unrun, sorted. This is the line #420 exists to
 	// report.
@@ -274,6 +288,7 @@ func (c *Coverage) Report() *v1.CoverageReport {
 		StepsTotal:   int32(c.Total()),
 		StepsReached: int32(len(c.Reached)),
 		Reached:      c.Reached,
+		Stubbed:      c.Stubbed,
 		Unreached:    c.Unreached,
 		Gaps:         c.Gaps(),
 		Accepted:     c.Accepted,
@@ -335,6 +350,11 @@ type workflowCoverage struct {
 	// compiles the same specification.
 	steps   map[string]string
 	reached map[string]bool
+
+	// ran is the declarations some case ran for real, as opposed to reached
+	// through a boundary stub: reached minus the stubbed calls. A declaration
+	// in reached and not here was only ever stubbed ([Coverage.Stubbed]).
+	ran map[string]bool
 
 	// arms is every switch arm the workflow declares, in written order, and
 	// armIndex is where each *declaration* ([SwitchArm.decl]) sits in it. A slice
@@ -475,6 +495,7 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 		wc = &workflowCoverage{
 			steps:       map[string]string{},
 			reached:     map[string]bool{},
+			ran:         map[string]bool{},
 			armIndex:    map[string]int{},
 			armsReached: map[string]bool{},
 		}
@@ -487,7 +508,16 @@ func (a *coverageAccumulator) observe(identity string, spec *v1.Workflow, output
 	if spec == nil || outputs == nil {
 		return
 	}
-	markReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.reached)
+	got := map[string]bool{}
+	markReached(spec.GetSteps(), "", outputs.GetStepValues(), got)
+	stubbed := map[string]bool{}
+	collectStubbedCalls(spec.GetSteps(), "", stubbed)
+	for path := range got {
+		wc.reached[path] = true
+		if !stubbed[path] {
+			wc.ran[path] = true
+		}
+	}
 	markArmsReached(spec.GetSteps(), "", outputs.GetStepValues(), wc.armsReached)
 }
 
@@ -559,8 +589,21 @@ func (a *coverageAccumulator) result(sensitive sensitiveInputs) []*Coverage {
 		for step := range unreached {
 			cov.Unreached = append(cov.Unreached, step)
 		}
+		// A reached id with a declaration that only a boundary stub ever ran.
+		stubbedIDs := map[string]bool{}
+		for path, step := range wc.steps {
+			if wc.reached[path] && !wc.ran[path] {
+				stubbedIDs[step] = true
+			}
+		}
+		for _, step := range cov.Reached {
+			if stubbedIDs[step] {
+				cov.Stubbed = append(cov.Stubbed, step)
+			}
+		}
 		sort.Strings(cov.Reached)
 		sort.Strings(cov.Unreached)
+		sort.Strings(cov.Stubbed)
 
 		// Accept every recorded residual this workflow genuinely leaves
 		// unreached. An entry that also explains another workflow is accepted in
@@ -700,6 +743,7 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 	}
 
 	c.Reached = spell(c.Reached)
+	c.Stubbed = spell(c.Stubbed)
 	c.Unreached = spell(c.Unreached)
 	if c.Accepted != nil {
 		accepted := make(map[string]string, len(c.Accepted))
@@ -742,6 +786,36 @@ func (c *Coverage) withheldUnder(sensitive sensitiveInputs) {
 			name = withheldName(entry.name, sensitive)
 		}
 		c.Stale[i] = entry.message(name)
+	}
+}
+
+// collectStubbedCalls marks, by the same structural path [collectStepUniverse]
+// files a step under, every node of the observed workflow that is a `call:`
+// answered at its boundary: [stubCallBoundaries] has replaced it with a task
+// step over a synthetic task, which is the only task named under
+// [callStubTaskPrefix] a case's workflow can hold. A call no stub names is left
+// a call and is not marked.
+func collectStubbedCalls(nodes []*v1.Node, path string, stubbed map[string]bool) {
+	for i, node := range nodes {
+		here := childPath(path, i)
+		switch kind := node.GetKind().(type) {
+		case *v1.Node_Parallel:
+			for b, branch := range kind.Parallel.GetBranches() {
+				collectStubbedCalls(branch.GetSteps(), here+"/"+pathBranch+strconv.Itoa(b), stubbed)
+			}
+		case *v1.Node_ForEach:
+			collectStubbedCalls(kind.ForEach.GetBody(), here+"/"+pathBody, stubbed)
+		case *v1.Node_Loop:
+			collectStubbedCalls(kind.Loop.GetBody(), here+"/"+pathBody, stubbed)
+		case *v1.Node_Switch:
+			for s, body := range v1.SwitchBodies(kind.Switch) {
+				collectStubbedCalls(body, here+"/"+pathSwitchBody+strconv.Itoa(s), stubbed)
+			}
+		case *v1.Node_Task:
+			if strings.HasPrefix(kind.Task.GetName(), callStubTaskPrefix) {
+				stubbed[here] = true
+			}
+		}
 	}
 }
 
