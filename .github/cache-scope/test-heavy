@@ -1,0 +1,2 @@
+test-heavy: the four slowest packages outside the engine, v1 and cli lanes, split off so rest finishes with them.
+See README.md beside this file for why this file exists.
