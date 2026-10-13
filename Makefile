@@ -1,4 +1,4 @@
-.PHONY: check regen regen-proto regen-check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
+.PHONY: check regen regen-proto regen-check check-untracked-generated gate test test-plugins check-tidy-plugins plugin-examples plugin-proto plugin-example-catalog-update test-ordering test-fast fuzz-smoke fmt modernize vacuity wallclock dupbodies dev-temporal temporal-cli docs docs-preview appearance appearance-update coverage coverage-plugins release-artifacts vulncheck-plugins staticcheck-plugins
 
 # The external tools the build runs — buf, govulncheck, staticcheck, pkgsite —
 # are pinned once, as `tool` directives in tools/external/go.mod, checksummed
@@ -471,6 +471,14 @@ test-ordering:
 #     make dev-temporal          # prints: export FLOWSTATE_TEST_TEMPORAL_ADDRESS=...
 dev-temporal:
 	@go run ./tools/devtemporal
+
+# Put the Temporal CLI the Temporal-server packages run in the cache they read,
+# downloading it with bounded retries and backoff when it is missing. CI runs
+# this in its own step, behind an actions/cache restore keyed on the SDK
+# version, so the Test step finds the file in place and never downloads; a
+# contributor can run it once to take the same download off their first test.
+temporal-cli:
+	@go run ./tools/temporalcli
 
 # Bounded fast tier for the inner loop.
 test-fast:
