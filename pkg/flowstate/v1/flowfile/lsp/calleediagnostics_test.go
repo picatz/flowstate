@@ -289,7 +289,7 @@ func TestNoCodeActionOffersACalleeEditOnTheCallerBuffer(t *testing.T) {
 
 		doc, ok := f.c.server.docs.get(f.callerURI)
 		require.True(t, ok)
-		own, callees := diagnoseAll(doc)
+		own, callees, _ := diagnoseAll(doc)
 		for _, c := range own {
 			assert.Empty(t, c.source.File, "a callee's diagnostic is never carried as this buffer's")
 		}
@@ -374,5 +374,97 @@ func TestSavingACleanCalleeBrokenRepublishesItsOpenCaller(t *testing.T) {
 		// With the callee's buffer gone, the caller's view of it is what shows.
 		f.c.closeNoWait(string(f.calleeURI))
 		f.settled(t, f.calleeURI, "the caller's view of the callee", hasDiagnostics)
+	})
+}
+
+const (
+	// middleCallee calls the fixture's callee, as the middle link of A -> B -> C.
+	middleCallee = "edition: v2026.4\nname: middle\nsteps:\n  - id: leaf\n    call: ./callee.yaml\n"
+	// outerCaller calls middleCallee, and so reaches the fixture's callee only through it.
+	outerCaller = "edition: v2026.4\nname: outer\nsteps:\n  - id: hop\n    call: ./lib/middle.yaml\n"
+	// loggingOuter is outerCaller after its call is removed.
+	loggingOuter = "edition: v2026.4\nname: outer\nsteps:\n  - id: hop\n    log:\n      message: hi\n"
+)
+
+func (f *calleeFixture) saveCallee(t *testing.T, text string) {
+	t.Helper()
+	f.writeCallee(t, text)
+	require.NoError(t, f.c.conn.Notify(t.Context(), "textDocument/didSave", lsp.DidSaveTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: f.calleeURI},
+	}))
+}
+
+// publicationsFor counts the notifications sent for uri so far.
+func (f *calleeFixture) publicationsFor(uri lsp.DocumentURI) int {
+	f.c.mu.Lock()
+	defer f.c.mu.Unlock()
+	n := 0
+	for _, p := range f.c.withRelated {
+		if p.URI == uri {
+			n++
+		}
+	}
+
+	return n
+}
+
+// A workflow that reaches the saved file through another callee neither calls it
+// nor holds a diagnostic against it while everything is clean, so only what its
+// compile read can bring it back (#2714).
+func TestSavingACalleeRepublishesWorkflowsReachingItThroughAnotherCallee(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		middlePath := filepath.Join(f.dir, "lib", "middle.yaml")
+		require.NoError(t, os.WriteFile(middlePath, []byte(middleCallee), 0o644))
+		outerURI, middleURI := f.callerURI, fileURI(middlePath)
+
+		f.c.openNoWait(string(outerURI), outerCaller)
+		f.c.openNoWait(string(middleURI), middleCallee)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		f.settled(t, outerURI, "a clean outer workflow", isEmpty)
+		f.settled(t, middleURI, "a clean middle workflow", isEmpty)
+
+		f.saveCallee(t, plainCallee)
+
+		f.settled(t, outerURI, "callee-failed", func(p publishDiagnosticsParams) bool {
+			return len(p.Diagnostics) == 1 && p.Diagnostics[0].Code == "callee-failed"
+		})
+	})
+}
+
+// What a workflow read is replaced when it is published again, so one edited to
+// stop reaching the saved file is not republished by its save, and it is dropped
+// when the workflow closes.
+func TestCalleeReadsAreReplacedOnRepublishAndDroppedOnClose(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		middlePath := filepath.Join(f.dir, "lib", "middle.yaml")
+		require.NoError(t, os.WriteFile(middlePath, []byte(middleCallee), 0o644))
+		outerURI := f.callerURI
+
+		f.c.openNoWait(string(outerURI), outerCaller)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		f.settled(t, outerURI, "a clean outer workflow", isEmpty)
+		f.saveCallee(t, plainCallee)
+		f.settled(t, outerURI, "callee-failed", hasDiagnostics)
+
+		// The chain is removed: the workflow no longer reads the callee at all.
+		f.c.changeNoWait(string(outerURI), loggingOuter, 2)
+		f.settled(t, outerURI, "a clean outer workflow once the call is gone", isEmpty)
+		before := f.publicationsFor(outerURI)
+
+		f.saveCallee(t, fixedCallee)
+		synctest.Wait()
+		assert.Equal(t, before, f.publicationsFor(outerURI), "a workflow that no longer reaches the file is not republished by its save")
+
+		f.c.changeNoWait(string(outerURI), outerCaller, 3)
+		f.settled(t, outerURI, "a clean outer workflow again", isEmpty)
+		f.c.closeNoWait(string(outerURI))
+		synctest.Wait()
+		f.c.server.diagnosticsMu.Lock()
+		defer f.c.server.diagnosticsMu.Unlock()
+		assert.Empty(t, f.c.server.calleeReadsBySource, "a closed workflow keeps no record of what it read")
 	})
 }

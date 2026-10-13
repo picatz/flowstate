@@ -1,6 +1,8 @@
 package flowfile
 
 import (
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -141,6 +143,32 @@ func (p *Positions) calleeFrame(call *v1.Call) *calleeFrame {
 		return nil
 	}
 	return p.callees[call]
+}
+
+// CalleeFiles lists the files this compile read for `call:` steps, every callee
+// however deeply nested, each once and sorted, as the names their diagnostics are
+// reported under ([calleeDisplayName]). A callee that compiled cleanly is listed
+// as well as one that did not, so it names everything the result depends on and
+// not only what it complains about. It is empty for a nil Positions.
+//
+// The walk is the compile's own tree, so it is as bounded as the compile: the
+// total expansion is capped by maxCallExpansionNodes and the depth by the
+// call stack.
+func (p *Positions) CalleeFiles() []string {
+	files := map[string]bool{}
+	var walk func(*Positions)
+	walk = func(at *Positions) {
+		if at == nil {
+			return
+		}
+		for _, frame := range at.callees {
+			files[frame.display] = true
+			walk(frame.positions)
+		}
+	}
+	walk(p)
+
+	return slices.Sorted(maps.Keys(files))
 }
 
 func newPositions(env Env) *Positions {

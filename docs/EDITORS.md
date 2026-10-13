@@ -116,8 +116,7 @@ related information points back at the callee's first problem. While the callee 
 open in the editor, its own buffer's diagnostics win and the workflow's view of the
 disk is withheld until it closes. Fixing the callee, or the caller's `call:`,
 retracts what was published on it, and saving the callee republishes the open
-workflows that call it directly (a workflow reaching it through another callee is
-rechecked when it is next edited or saved). One workflow publishes on at most 64 files.
+workflows that call it, directly or through other callees. One workflow publishes on at most 64 files.
 
 Each diagnostic carries a stable code you can filter on. Three of them belong to
 this server, for the problems it finds itself: `yaml-syntax`, `cel-syntax`, and

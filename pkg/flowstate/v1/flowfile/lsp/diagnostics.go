@@ -90,7 +90,11 @@ func diagnose(doc *document) []lsp.Diagnostic {
 //
 // The reports are in the called file's positions, not this buffer's; the caller
 // has to place them in that file.
-func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
+//
+// The third result names the files the compile read for the document's `call:`
+// steps, as the compiler displayed them ([flowfile.Positions.CalleeFiles]), clean
+// or not; it is empty when the document was not compiled.
+func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport, []string) {
 	set := &diagnosticSet{}
 
 	if doc.tooLarge {
@@ -103,7 +107,7 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 				"file is %d bytes, larger than the %d byte limit this server analyzes; it is not being checked",
 				len(doc.text), maxDocumentBytes),
 		})
-		return set.sorted(), nil
+		return set.sorted(), nil, nil
 	}
 
 	if doc.kind != docWorkflow {
@@ -111,7 +115,7 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 		// the checks below would report a correct suite as a broken workflow —
 		// `tests:` an unknown key, no `steps:` — which is exactly the false
 		// diagnosis this package's doc rules out (#1110).
-		return diagnoseTestDocument(doc), nil
+		return diagnoseTestDocument(doc), nil, nil
 	}
 
 	if doc.parseErr != nil {
@@ -119,7 +123,7 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 		// the model is absent, and every other check would guess. One precise
 		// syntax error is the whole report.
 		set.addFrom(yamlDiagnostic(doc, doc.parseErr, codeYAMLSyntax))
-		return set.sorted(), nil
+		return set.sorted(), nil, nil
 	}
 
 	// Expressions are checked here rather than left to the validator for one
@@ -142,14 +146,15 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 	// scheme entirely — has no directory to resolve a relative path against, and
 	// a `call:` there is refused with a diagnostic saying so.
 	var (
-		ds  flowfile.Diagnostics
-		err error
+		ds    flowfile.Diagnostics
+		err   error
+		reads []string
 	)
 	// Through the shared module cache, whose key includes the registry the module
 	// was compiled against: a module compiled with one lock's tasks is never served
 	// to a document under another.
 	if path, ok := doc.filesystemPath(); ok {
-		ds, err = doc.env.ValidateSourceAtCached(moduleCache, []byte(doc.text), path)
+		ds, reads, err = doc.env.ValidateSourceAtCachedReading(moduleCache, []byte(doc.text), path)
 	} else {
 		ds, err = doc.env.ValidateSource([]byte(doc.text))
 	}
@@ -160,7 +165,7 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 		var compiled flowfile.Diagnostics
 		if !errors.As(err, &compiled) {
 			addCompileFailure(doc, set, err)
-			return set.sorted(), nil
+			return set.sorted(), nil, reads
 		}
 		ds = append(ds, compiled...)
 	}
@@ -194,7 +199,7 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 		callees = ds.Reports(path)[1:]
 	}
 
-	return set.sorted(), callees
+	return set.sorted(), callees, reads
 }
 
 // diagnoseCarried returns every problem found in a document, each beside the
@@ -206,7 +211,7 @@ func diagnoseAll(doc *document) ([]carriedDiagnostic, []*v1.DiagnosticReport) {
 // this buffer, and an edit must never be computed against the position of a
 // problem in another file.
 func diagnoseCarried(doc *document) []carriedDiagnostic {
-	own, _ := diagnoseAll(doc)
+	own, _, _ := diagnoseAll(doc)
 	return own
 }
 
