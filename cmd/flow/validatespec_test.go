@@ -159,7 +159,7 @@ func TestValidateSpecChecksTheSpecificationSize(t *testing.T) {
 	res := runFlow(t, "validate", "--spec", path)
 
 	require.Error(t, res.Err)
-	assert.NotContains(t, res.Output(), "ok")
+	assert.Regexp(t, `bytes\s+compiled`, res.Output(), "the size diagnostic itself is reported, beside whatever else is wrong with the fixture")
 }
 
 // A source the map names that is not on this machine cannot be compared, and is
