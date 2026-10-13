@@ -229,7 +229,7 @@ func TestMergeReportsDoesNotMutateDerivedReports(t *testing.T) {
 	first := &v1.DiagnosticReport{File: "w.yaml", Diagnostics: []*v1.Diagnostic{finding(site(1))}}
 	second := &v1.DiagnosticReport{File: "w.yaml", Diagnostics: []*v1.Diagnostic{finding(site(2))}}
 
-	merged := flowfile.MergeReports(given, []*v1.DiagnosticReport{first, second})
+	merged := flowfile.MergeReports(given, []*v1.DiagnosticReport{first, second}, nil)
 
 	require.Len(t, merged[0].GetDiagnostics(), 1)
 	require.Len(t, merged[0].GetDiagnostics()[0].GetRelated(), 2, "both sites are kept in the result")

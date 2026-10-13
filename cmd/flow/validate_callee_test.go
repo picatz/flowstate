@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -95,4 +96,36 @@ func TestValidateReportsCalleeUnderItsOwnFile(t *testing.T) {
 			assert.Equal(t, []string{"lib/callee.yaml", "workflow.yaml"}, names)
 		})
 	}
+}
+
+// TestValidateMergesSymlinkedCalleeGivenByLinkName holds that a callee named on
+// the command line through a symlink and the same file derived from its caller
+// (named by the file actually read) are one report, under the name the user gave.
+func TestValidateMergesSymlinkedCalleeGivenByLinkName(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join("testdata", "validate", "callee")
+	for _, f := range []struct{ from, to string }{
+		{"workflow.yaml", "workflow.yaml"},
+		{filepath.Join("lib", "callee.yaml"), filepath.Join("shared", "real.yaml")},
+	} {
+		data, err := os.ReadFile(filepath.Join(src, f.from))
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(filepath.Join(dir, f.to)), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, f.to), data, 0o644))
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "lib"), 0o755))
+	require.NoError(t, os.Symlink(filepath.Join("..", "shared", "real.yaml"), filepath.Join(dir, "lib", "callee.yaml")))
+	t.Chdir(dir)
+
+	got := runFlow(t, "validate", "-o", "jsonl", "workflow.yaml", "lib/callee.yaml")
+	assert.Equal(t, exitCodeFailure, got.ExitCode)
+	var names []string
+	for line := range strings.SplitSeq(strings.TrimSpace(got.Stdout), "\n") {
+		var r struct {
+			File string `json:"file"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &r), line)
+		names = append(names, r.File)
+	}
+	assert.Equal(t, []string{"workflow.yaml", "lib/callee.yaml"}, names, "one report for the file, under the name given: %s", got.Stdout)
 }

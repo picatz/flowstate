@@ -151,21 +151,29 @@ func (ds Diagnostics) Reports(file string) []*v1.DiagnosticReport {
 // holds, one per file it was asked about.
 //
 // Files in given keep their order, and a derived report for one of them (the
-// same path once cleaned) is merged into it: what it adds is kept, what given
+// same key, see below) is merged into it, under the name given uses: what it adds is kept, what given
 // already says is not said twice, and the call sites it carries are added to the
 // matching diagnostic's Related. The rest of derived follows, in its own order.
 // Neither input is modified.
-func MergeReports(given, derived []*v1.DiagnosticReport) []*v1.DiagnosticReport {
+//
+// key names the file a report is about, so that two spellings of one file merge.
+// A nil key is [filepath.Clean]; a caller that can reach the filesystem passes
+// one that also resolves symlinks, because a derived report is named by the file
+// actually read while a given one is named as the user spelled it.
+func MergeReports(given, derived []*v1.DiagnosticReport, key func(name string) string) []*v1.DiagnosticReport {
+	if key == nil {
+		key = filepath.Clean
+	}
 	merged := make([]*v1.DiagnosticReport, 0, len(given)+len(derived))
 	index := map[string]int{}
 	for _, r := range given {
-		index[filepath.Clean(r.GetFile())] = len(merged)
+		index[key(r.GetFile())] = len(merged)
 		merged = append(merged, r)
 	}
 
 	cloned := map[int]bool{}
 	for _, r := range derived {
-		name := filepath.Clean(r.GetFile())
+		name := key(r.GetFile())
 		i, ok := index[name]
 		if !ok {
 			index[name] = len(merged)

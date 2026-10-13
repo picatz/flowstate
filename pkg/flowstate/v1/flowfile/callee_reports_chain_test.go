@@ -199,7 +199,7 @@ func TestMergeReports(t *testing.T) {
 		}
 
 		before := proto.Clone(given[1])
-		merged := flowfile.MergeReports(given, derived)
+		merged := flowfile.MergeReports(given, derived, nil)
 
 		require.Equal(t, []string{"a.yaml", "lib/b.yaml", "c.yaml", "lib/d.yaml"}, reportNames(merged), "given order first, then what is new")
 		b := merged[1]
@@ -222,6 +222,7 @@ func TestMergeReports(t *testing.T) {
 		merged := flowfile.MergeReports(
 			[]*v1.DiagnosticReport{{File: "b.yaml", Diagnostics: []*v1.Diagnostic{diag(1, "m", have...)}}},
 			[]*v1.DiagnosticReport{{File: "b.yaml", Diagnostics: []*v1.Diagnostic{diag(1, "m", extra...)}}},
+			nil,
 		)
 		related := merged[0].GetDiagnostics()[0].GetRelated()
 		require.Len(t, related, 15, "1..10 and 11..15, with 6..10 not repeated")
@@ -232,9 +233,22 @@ func TestMergeReports(t *testing.T) {
 
 	t.Run("nothing derived changes nothing", func(t *testing.T) {
 		given := []*v1.DiagnosticReport{{File: "a.yaml", Diagnostics: []*v1.Diagnostic{diag(1, "m")}}}
-		merged := flowfile.MergeReports(given, nil)
+		merged := flowfile.MergeReports(given, nil, nil)
 		require.Len(t, merged, 1)
 		require.True(t, proto.Equal(given[0], merged[0]))
+	})
+
+	t.Run("a key function merges two spellings the path alone cannot", func(t *testing.T) {
+		given := []*v1.DiagnosticReport{{File: "lib/link.yaml", Diagnostics: []*v1.Diagnostic{diag(3, "own")}}}
+		derived := []*v1.DiagnosticReport{{File: "shared/real.yaml", Diagnostics: []*v1.Diagnostic{diag(3, "own", rel("a.yaml", 5))}}}
+		real := func(name string) string { return strings.Replace(name, "lib/link", "shared/real", 1) }
+
+		require.Len(t, flowfile.MergeReports(given, derived, nil), 2, "cleaning alone keeps them apart")
+
+		merged := flowfile.MergeReports(given, derived, real)
+		require.Equal(t, []string{"lib/link.yaml"}, reportNames(merged), "one report, under the name given")
+		require.Len(t, merged[0].GetDiagnostics(), 1)
+		require.Len(t, merged[0].GetDiagnostics()[0].GetRelated(), 1)
 	})
 
 	t.Run("compiled reports merge into a file validated on its own", func(t *testing.T) {
@@ -254,6 +268,7 @@ func TestMergeReports(t *testing.T) {
 		merged := flowfile.MergeReports(
 			[]*v1.DiagnosticReport{callerDs.Report("workflow.yaml"), ownReport},
 			callerDs.Reports("workflow.yaml")[1:],
+			nil,
 		)
 
 		require.Equal(t, []string{"workflow.yaml", "lib/callee.yaml"}, reportNames(merged))

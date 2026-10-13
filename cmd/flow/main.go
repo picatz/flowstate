@@ -2614,7 +2614,10 @@ func validateMachine(cmd *cobra.Command, args []string, format OutputFormat, cat
 	for _, file := range claims.policies() {
 		reports = append(reports, file.diagnostics.Report(file.path))
 	}
-	reports = flowfile.MergeReports(reports, derived)
+	// Merged on the file's real path: a derived report is named by the file
+	// actually read, so a symlinked callee also given on the command line would
+	// otherwise be printed under both names.
+	reports = flowfile.MergeReports(reports, derived, realReportPath)
 
 	var failed bool
 	for _, report := range reports {
@@ -4062,4 +4065,17 @@ func main() {
 	if err != nil {
 		os.Exit(exitCodeFor(err))
 	}
+}
+
+// realReportPath is the key under which validate merges reports: the path with
+// symlinks resolved, so a file given as a link and the same file derived by the
+// name actually read are one report. A name that does not resolve (stdin, a file
+// that does not exist) falls back to its cleaned spelling.
+func realReportPath(name string) string {
+	if resolved, err := filepath.EvalSymlinks(name); err == nil {
+		if abs, err := filepath.Abs(resolved); err == nil {
+			return abs
+		}
+	}
+	return filepath.Clean(name)
 }
