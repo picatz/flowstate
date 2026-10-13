@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/semaphore"
 
 	flowmcp "github.com/picatz/flowstate/cmd/flow/internal/mcp"
+	"github.com/picatz/flowstate/internal/logsafe"
 	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/audit"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
@@ -481,10 +482,10 @@ func observeMCPAuthenticationFailures(logger *slog.Logger, next http.Handler) ht
 			}
 		}
 		logger.WarnContext(req.Context(), "rejected MCP request",
-			"path", req.URL.Path,
-			"peer", req.RemoteAddr,
+			"path", logsafe.String(req.URL.Path),
+			"peer", logsafe.String(req.RemoteAddr),
 			"status", recorder.status,
-			"reason", reason)
+			"reason", logsafe.String(reason))
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/pprof"
 
 	"connectrpc.com/authn"
+	"github.com/picatz/flowstate/internal/logsafe"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/auth"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/gates"
 	"github.com/picatz/flowstate/pkg/flowstate/v1/server"
@@ -85,9 +86,9 @@ func serverHandler(
 		auth.WithExpectedResource(rpcResource),
 		auth.WithFailureObserver(func(ctx context.Context, req *http.Request, err error) {
 			logger.WarnContext(ctx, "rejected unauthenticated request",
-				"procedure", req.URL.Path,
-				"peer", req.RemoteAddr,
-				"reason", auth.PublicReason(err))
+				"procedure", logsafe.String(req.URL.Path),
+				"peer", logsafe.String(req.RemoteAddr),
+				"reason", logsafe.String(auth.PublicReason(err)))
 		}),
 	}
 	// peerVerifier is nil unless --tls-client-auth-identity was given (see
