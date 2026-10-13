@@ -8,6 +8,8 @@ package shipcheck
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -132,6 +134,11 @@ type actor struct {
 type review struct {
 	SubmittedAt string `json:"submittedAt"`
 	UpdatedAt   string `json:"updatedAt"`
+	// State and Body are read only for the activity digest: REST reports no
+	// updatedAt, so an edited review is visible there only as a changed
+	// body or state.
+	State string `json:"state"`
+	Body  string `json:"body"`
 }
 
 type comment struct {
@@ -161,6 +168,12 @@ type Result struct {
 	// REST is true when some of the evidence was read over REST, which cannot
 	// report a review body edited after the attestation.
 	REST bool
+	// Activity digests the comments, reviews, and latest inline-comment edit
+	// the verdict read. A merge that compares it with a fresh Activity read
+	// immediately before merging refuses anything that arrived or changed in
+	// between, which also covers what REST cannot timestamp: a review whose
+	// body or state was edited.
+	Activity string
 }
 
 // Check reads repo#number's evidence and evaluates it. An error means the
@@ -174,7 +187,43 @@ func Check(repo string, number int) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("review-thread check did not complete: %w", err)
 	}
-	return Result{Head: pr.HeadRefOID, Problems: evaluate(pr, unresolved), REST: fallbackNoted}, nil
+	return Result{
+		Head:     pr.HeadRefOID,
+		Problems: evaluate(pr, unresolved),
+		REST:     fallbackNoted,
+		Activity: activityDigest(pr.Comments, pr.Reviews, pr.LatestReviewCommentUpdatedAt),
+	}, nil
+}
+
+// Activity reads repo#number's comments, reviews, and latest inline-comment
+// edit again and digests them the way Check's Result.Activity does.
+func Activity(repo string, number int) (string, error) {
+	comments, err := loadComments(repo, number)
+	if err != nil {
+		return "", err
+	}
+	reviews, err := loadReviews(repo, number)
+	if err != nil {
+		return "", err
+	}
+	latest, err := loadLatestReviewCommentUpdate(repo, number)
+	if err != nil {
+		return "", err
+	}
+	return activityDigest(comments, reviews, latest), nil
+}
+
+// activityDigest is a SHA-256 over every field read of the activity, so a
+// new item, a timestamp, an edited body, or a changed review state each
+// change it.
+func activityDigest(comments []comment, reviews []review, latestInline string) string {
+	data, _ := json.Marshal(struct {
+		Comments     []comment
+		Reviews      []review
+		LatestInline string
+	}{comments, reviews, latestInline})
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // Head reads repo#number's current head SHA.
@@ -337,7 +386,7 @@ func loadCommentsGraphQL(repo string, number int) ([]comment, error) {
 	return nil, fmt.Errorf("pull-request comment query exceeded %d pages", maxThreadPages)
 }
 
-const reviewsQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{submittedAt updatedAt}}}}}`
+const reviewsQuery = `query($owner:String!,$repo:String!,$number:Int!,$cursor:String){repository(owner:$owner,name:$repo){pullRequest(number:$number){reviews(first:100,after:$cursor){pageInfo{hasNextPage endCursor} nodes{submittedAt updatedAt state body}}}}}`
 
 func loadReviewsGraphQL(repo string, number int) ([]review, error) {
 	parts := strings.Split(repo, "/")
@@ -745,7 +794,9 @@ func attestationProblem(pr pullRequest) string {
 				continue
 			}
 			if comment.AuthorAssociation != "OWNER" {
-				foreign = comment
+				if foreign == nil || comment.CreatedAt >= foreign.CreatedAt {
+					foreign = comment
+				}
 				continue
 			}
 			problem := markerProblem(pr, *comment, strings.TrimSuffix(strings.TrimPrefix(line, independentReviewMarker), " -->"))
@@ -761,14 +812,16 @@ func attestationProblem(pr pullRequest) string {
 			}
 		}
 	}
+	// Whichever attempt is newer is the one the operator just made: an owner
+	// attestation of an old head says nothing about a bot-posted one after it.
 	switch {
-	case latestProblem != "":
+	case latestProblem != "" && (foreign == nil || latest >= foreign.CreatedAt):
 		return latestProblem
 	case foreign != nil:
 		return fmt.Sprintf("the attestation marker was posted by %q with association %q, not by the repository owner; post it again as the owner (the GitHub MCP tools carry that identity, while gh with a session token posts as a bot)",
 			foreign.Author.Login, foreign.AuthorAssociation)
 	default:
-		return "no owner comment carries the `" + independentReviewMarker + "{...} -->` marker line; `go run ./tools/shipcheck --pr NUMBER --attest REVIEWER` prints the exact body to post"
+		return "no owner comment carries the `" + independentReviewMarker + "{...} -->` marker line; `go run ./tools/shipcheck --pr NUMBER --attest REVIEWER --head SHA` prints the exact body to post"
 	}
 }
 
@@ -779,6 +832,13 @@ func markerProblem(pr pullRequest, comment comment, raw string) string {
 	var evidence independentReview
 	if err := json.Unmarshal([]byte(raw), &evidence); err != nil {
 		return fmt.Sprintf("has a marker that is not valid JSON (%v)", err)
+	}
+	// Only the canonical spelling counts, so the marker reads the way it
+	// decodes: a status with its letters written as JSON escapes, or a
+	// reordered or extra key, would let
+	// the raw text and the decoded verdict say different things.
+	if canonical, err := json.Marshal(evidence); err != nil || string(canonical) != raw {
+		return fmt.Sprintf("has a marker that is not in canonical form; want %s, which `shipcheck --attest` prints", canonical)
 	}
 	switch {
 	case evidence.HeadSHA != pr.HeadRefOID:

@@ -309,6 +309,7 @@ type restReview struct {
 	} `json:"user"`
 	AuthorAssociation string `json:"author_association"`
 	State             string `json:"state"`
+	Body              string `json:"body"`
 	SubmittedAt       string `json:"submitted_at"`
 }
 
@@ -333,8 +334,9 @@ func restReviews(repo string, number int) ([]restReview, error) {
 	return decodeEach[restReview](items, "reviews")
 }
 
-// loadReviewsREST carries only submitted_at: REST does not expose a
-// review's updatedAt, which is the gap noteFallback names.
+// loadReviewsREST carries no updatedAt: REST does not expose one, which is
+// the gap noteFallback names. The state and body it does carry are what
+// Activity compares, so an edit between a verdict and a merge still shows.
 func loadReviewsREST(repo string, number int) ([]review, error) {
 	raw, err := restReviews(repo, number)
 	if err != nil {
@@ -342,7 +344,7 @@ func loadReviewsREST(repo string, number int) ([]review, error) {
 	}
 	reviews := make([]review, 0, len(raw))
 	for _, r := range raw {
-		reviews = append(reviews, review{SubmittedAt: r.SubmittedAt})
+		reviews = append(reviews, review{SubmittedAt: r.SubmittedAt, State: r.State, Body: r.Body})
 	}
 	return reviews, nil
 }

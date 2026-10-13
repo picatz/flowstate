@@ -67,7 +67,12 @@ evidence because the change looks small.
    pass on the unchanged final head.
 7. Merge with `go run ./tools/shipmerge --repo picatz/flowstate --pr NUMBER
    -F MESSAGE_FILE`: it reruns the shipcheck verdict in process and squash-merges
-   over REST pinned to the head that verdict read. Where it cannot run, merge
+   over REST pinned to the head that verdict read. Immediately before the merge
+   it reads the PR's comments, reviews (state and body), and latest
+   inline-comment edit again and refuses if any arrived or changed since the
+   verdict. The accepted residual is the seconds between that re-read and the
+   merge call, and a review edit that changes neither body nor state, which
+   REST cannot timestamp. Where it cannot run, merge
    manually with exact-head protection,
    `gh pr merge NUMBER -R picatz/flowstate --squash --match-head-commit SHA`.
    Fetch `origin/main`, prove the merged commit is reachable, and wait for all

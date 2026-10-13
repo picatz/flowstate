@@ -10,7 +10,10 @@
 // `sha` set to the head the check read: a push after the check makes GitHub
 // refuse the merge rather than land a head nobody attested. REST is the
 // transport a Claude Code session can reach, where `gh pr merge` (GraphQL)
-// is refused, so this is one route for every host.
+// is refused, so this is one route for every host. Right before merging it
+// reads the comments and reviews again and refuses if anything arrived or
+// changed since the verdict; over REST, which gives a review no update time,
+// that comparison of bodies and states is how an edited review is caught.
 //
 // The message file is a commit message: the subject on the first line, a
 // blank line, then the body. It is held to tools/commitcheck's commit
@@ -42,8 +45,9 @@ const maxMessageBytes = 64 << 10
 
 // check and gh are the evidence check and the GitHub CLI, replaced in tests.
 var (
-	check = shipcheck.Check
-	gh    = shipcheck.GH
+	check    = shipcheck.Check
+	activity = shipcheck.Activity
+	gh       = shipcheck.GH
 )
 
 func main() {
@@ -94,6 +98,23 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintln(stderr, "shipcheck:", problem)
 		}
 		fmt.Fprintln(stderr, "shipmerge: shipcheck did not pass, nothing merged")
+		return 1
+	}
+
+	// The verdict's reads are not one snapshot, and over REST they cannot see
+	// a review edited after the attestation. Reading the activity again just
+	// before the merge and requiring it unchanged closes both: anything that
+	// arrived or changed since the verdict, an edited review body or state
+	// included, stops the merge. What remains is the seconds between this
+	// read and the merge call, and a review edit that changes neither body
+	// nor state, which nothing REST reports.
+	now, err := activity(*repo, *number)
+	if err != nil {
+		fmt.Fprintln(stderr, "shipmerge: the activity re-read did not complete, nothing merged:", err)
+		return 1
+	}
+	if now != result.Activity {
+		fmt.Fprintln(stderr, "shipmerge: a comment or review arrived or changed after the shipcheck verdict, nothing merged; read it, then run again")
 		return 1
 	}
 

@@ -345,8 +345,16 @@ func TestIndependentReviewRejectsStaleOrIncompleteEvidence(t *testing.T) {
 		"no verdict": {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, "no actionable", "reviewed") }, `lacks the words "no actionable"`},
 		"bad json":   {func(c *comment) { c.Body = strings.ReplaceAll(c.Body, `"headSha":`, `headSha:`) }, "not valid JSON"},
 		"edited":     {func(c *comment) { c.CreatedAt, c.UpdatedAt = "2026-09-09T16:00:00Z", "2026-09-09T16:05:00Z" }, "post a new comment rather than editing"},
-		"not owner":  {func(c *comment) { c.AuthorAssociation = "NONE"; c.Author.Login = "app/claude" }, `posted by "app/claude" with association "NONE"`},
-		"no marker":  {func(c *comment) { c.Body = "PASS: no actionable findings." }, "--attest REVIEWER"},
+		"escaped status": {func(c *comment) {
+			escaped := `"status":"` + `\` + `u0070ass"` // "pass" with its p as a JSON escape
+			c.Body = strings.ReplaceAll(strings.ReplaceAll(c.Body, `"status":"pass"`, escaped), "PASS", "OK")
+		}, "not in canonical form"},
+		"extra key": {func(c *comment) {
+			c.Body = strings.ReplaceAll(c.Body, `"status":"pass"}`, `"status":"pass","note":"x"}`)
+		},
+			"not in canonical form"},
+		"not owner": {func(c *comment) { c.AuthorAssociation = "NONE"; c.Author.Login = "app/claude" }, `posted by "app/claude" with association "NONE"`},
+		"no marker": {func(c *comment) { c.Body = "PASS: no actionable findings." }, "--attest REVIEWER"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			candidate := pr
@@ -389,6 +397,28 @@ func TestAttestationIsWhatTheCheckAccepts(t *testing.T) {
 		if got, err := Attestation(bad.reviewer, bad.head); err == nil {
 			t.Errorf("Attestation(%q, %q) = %q, want an error", bad.reviewer, bad.head, got)
 		}
+	}
+}
+
+// TestANewerNonOwnerAttemptIsTheOneExplained: an owner attestation of an
+// earlier head followed by a marker a bot posted for the current head is a
+// wrong-identity problem, not a stale-head one; the newer attempt is the one
+// the operator just made.
+func TestANewerNonOwnerAttemptIsTheOneExplained(t *testing.T) {
+	pr := passingPullRequest()
+	owner := pr.Comments[0]
+	owner.URL, owner.CreatedAt = "https://example.test/owner", "2026-09-09T15:00:00Z"
+	owner.Body = strings.ReplaceAll(owner.Body, testHead, strings.Repeat("e", 40))
+	bot := pr.Comments[0]
+	bot.URL, bot.CreatedAt = "https://example.test/bot", "2026-09-09T16:00:00Z"
+	bot.AuthorAssociation, bot.Author.Login = "NONE", "app/claude"
+	pr.Comments = []comment{owner, bot}
+	if problem := attestationProblem(pr); !strings.Contains(problem, `posted by "app/claude"`) {
+		t.Fatalf("problem = %q, want the newer bot-posted marker's identity named", problem)
+	}
+	pr.Comments[1].CreatedAt = "2026-09-09T14:00:00Z"
+	if problem := attestationProblem(pr); !strings.Contains(problem, "review and attest the current head") {
+		t.Fatalf("problem = %q, want the newer owner attestation's stale head named", problem)
 	}
 }
 

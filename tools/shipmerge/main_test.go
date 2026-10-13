@@ -23,15 +23,25 @@ type fakes struct {
 	response string
 	ghErr    error
 	calls    [][]string
+	// activity is what the re-read before the merge returns; nil means the
+	// same digest the verdict carried.
+	activity    *string
+	activityErr error
 }
 
 func install(t *testing.T, f *fakes) {
 	t.Helper()
-	origCheck, origGH := check, gh
-	t.Cleanup(func() { check, gh = origCheck, origGH })
+	origCheck, origActivity, origGH := check, activity, gh
+	t.Cleanup(func() { check, activity, gh = origCheck, origActivity, origGH })
 	check = func(repo string, number int) (shipcheck.Result, error) {
 		f.checked = true
 		return f.result, f.checkErr
+	}
+	activity = func(repo string, number int) (string, error) {
+		if f.activity != nil {
+			return *f.activity, f.activityErr
+		}
+		return f.result.Activity, f.activityErr
 	}
 	gh = func(args ...string) ([]byte, error) {
 		f.calls = append(f.calls, args)
@@ -84,6 +94,36 @@ func TestNothingMergesUnlessShipcheckPasses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestActivityAfterTheVerdictBlocksTheMerge: over REST a review edit has no
+// timestamp, so the re-read before the merge is what sees it. An edited
+// review (a different digest) or a failed re-read merges nothing; an
+// unchanged digest merges.
+func TestActivityAfterTheVerdictBlocksTheMerge(t *testing.T) {
+	edited := "digest-after-edit"
+	for name, f := range map[string]*fakes{
+		"review edited": {result: shipcheck.Result{Head: head, REST: true, Activity: "digest-at-verdict"}, activity: &edited},
+		"re-read fails": {result: shipcheck.Result{Head: head, REST: true, Activity: "digest-at-verdict"}, activityErr: errors.New("REST: 502")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			install(t, f)
+			code, _, stderr := runWith(t, "--pr", "7", "--subject", "tools: add a merge command")
+			if code == 0 || len(f.calls) != 0 {
+				t.Fatalf("exit %d with gh calls %v; changed activity must merge nothing", code, f.calls)
+			}
+			if !strings.Contains(stderr, "nothing merged") {
+				t.Errorf("stderr = %q", stderr)
+			}
+		})
+	}
+	t.Run("unchanged", func(t *testing.T) {
+		f := &fakes{result: shipcheck.Result{Head: head, REST: true, Activity: "digest-at-verdict"}, response: `{"sha":"feedface","merged":true}`}
+		install(t, f)
+		if code, _, stderr := runWith(t, "--pr", "7", "--subject", "tools: add a merge command"); code != 0 || len(f.calls) != 1 {
+			t.Fatalf("exit %d, gh calls %v: %s", code, f.calls, stderr)
+		}
+	})
 }
 
 // TestTheMessageIsCheckedBeforeTheEvidence: a squash subject that would fail
