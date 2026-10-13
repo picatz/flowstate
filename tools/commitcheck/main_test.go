@@ -69,7 +69,7 @@ func TestAnOversizedInputIsRefusedRatherThanRead(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "a: b", subject)
 	assert.Equal(t, "\nbody", body)
-	assert.Equal(t, commitcheck.SurfaceCommit, where, "stdin carries whatever the caller has; a commit message owes only a subject shape")
+	assert.Equal(t, commitcheck.SurfaceCommit, where, "stdin carries whatever the caller has; a commit message owes no issue or verification record")
 	assert.Empty(t, actor, "stdin carries no pull request, so no actor to read one from")
 }
 

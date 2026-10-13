@@ -173,7 +173,7 @@ func conventionNote(in *hook.Input, owner, repo string, number int) string {
 	if !ok {
 		return ""
 	}
-	// A squash message is a commit message: it owes a subject shape only.
+	// A squash message is a commit message: it owes the subject shape and the absolute-claim and bounded checks.
 	findings := commitcheck.Check(title, stringOf(in.ToolInput["commit_message"]), commitcheck.SurfaceCommit)
 	if len(findings) == 0 {
 		return ""

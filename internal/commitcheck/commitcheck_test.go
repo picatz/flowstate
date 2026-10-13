@@ -107,10 +107,11 @@ func TestAbsoluteFindingsAreCappedAndTheRestCounted(t *testing.T) {
 	assert.Empty(t, Check("a: b", exact, SurfacePullRequest), "a body at the bound is read whole")
 }
 
-// A commit or squash message owes a subject shape and nothing about its
-// trailers, and an attribution trailer or session link is permitted: the host
-// adds them and the pull request body carries the issue and verification.
-func TestACommitMessageOwesOnlyASubjectShape(t *testing.T) {
+// A commit or squash message owes the subject shape plus the absolute-claim
+// and bounded-body checks, and nothing about issue references, verification,
+// or trailers: an attribution trailer or session link is permitted, since the
+// host adds them and the pull request body carries the issue and verification.
+func TestACommitMessageOwesSubjectAbsolutesAndBounds(t *testing.T) {
 	t.Parallel()
 
 	assert.Empty(t, Check("a: b", "", SurfaceCommit), "no issue or verification record is owed")

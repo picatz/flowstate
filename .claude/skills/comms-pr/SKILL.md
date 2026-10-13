@@ -31,7 +31,8 @@ mutation evidence only when they materially reduce the reviewer's work.
 
 `tools/commitcheck` runs on the title and body (`commitcheck.yml` passes
 `-strict`, so a finding fails the check); the squash message at merge time owes
-the title shape only:
+the title shape, the absolute-claim rule, and the length bound, but no issue or
+verification record:
 
 - Title: `scope: lowercase imperative`.
 - Body, pull request only: an issue reference (`Refs #N`, `Closes #N`) or a `No-Issue: <reason>`

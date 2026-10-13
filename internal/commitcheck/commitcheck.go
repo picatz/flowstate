@@ -53,9 +53,10 @@ const (
 type Surface int
 
 const (
-	// SurfaceCommit is a commit or squash message. It owes a subject shape
-	// and nothing about its trailers; the pull request body already carries
-	// the issue and the verification.
+	// SurfaceCommit is a commit or squash message. It owes the subject
+	// shape plus the absolute-claim and bounded-body checks, and nothing about
+	// issue references, verification, attribution, or session links; the pull
+	// request body carries the issue and the verification.
 	SurfaceCommit Surface = iota
 
 	// SurfacePullRequest is a pull request title and body.

@@ -95,8 +95,8 @@ func main() {
 //
 // Only the event payload is known to be a pull request body, which owes the
 // issue and verification records. The flags and stdin carry whatever the
-// caller has in hand, so they are read as a commit message, which owes a
-// subject shape only.
+// caller has in hand, so they are read as a commit message, which owes the
+// subject shape and the absolute-claim and bounded-body checks.
 func message(title, bodyFile, eventPath string, stdin io.Reader) (subject, body string, where commitcheck.Surface, actor string, err error) {
 	switch {
 	case title != "":

@@ -21,9 +21,10 @@ completed; do not write from the conversation's memory when the tree can answer.
 - Name a limitation or an unverified leg when it changes how the commit should
   be reviewed or used. Do not claim a test, review, or generated check ran unless
   its result is in hand.
-- A squash message is held to the subject shape only: the pull request body
-  carries the issue reference and the verification, so the message needs
-  neither trailer. `tools/commitcheck` reports a subject that is not
+- A squash message is held to the subject shape, the absolute-claim rule
+  ("safe", "fully tested" need evidence on their line), and a length bound; the
+  pull request body carries the issue reference and the verification, so the
+  message needs neither. `tools/commitcheck` reports a subject that is not
   `scope: lowercase imperative`.
 
 ## Attribution
