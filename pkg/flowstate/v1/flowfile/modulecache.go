@@ -177,6 +177,15 @@ func (e Env) ValidateSourceAtCached(m *ModuleCache, data []byte, path string) (D
 	return validateThroughEdition(e, data, path, m)
 }
 
+// ValidateSourceAtCachedReading is [Env.ValidateSourceAtCached] that also returns
+// the files the compile read for the file's `call:` steps, as [Positions.CalleeFiles]
+// names them: every callee however deeply nested, whether or not it compiled
+// or could be read. A caller that republishes on a save uses it to know which saved files
+// the answer depends on.
+func (e Env) ValidateSourceAtCachedReading(m *ModuleCache, data []byte, path string) (Diagnostics, []string, error) {
+	return validateReadingFiles(e, data, path, m)
+}
+
 // ValidateSourceFileCached is [ModuleCache.ValidateSourceFile] against this Env's
 // registry.
 func (e Env) ValidateSourceFileCached(m *ModuleCache, path string) (Diagnostics, error) {

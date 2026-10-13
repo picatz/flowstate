@@ -85,10 +85,17 @@ type FlowfileServer struct {
 	// A suite may diagnose its included testdefaults.yaml, and a workflow the
 	// file it calls; aggregation prevents one clean source from clearing a problem
 	// another open source still reports, and lets closing a source retract only
-	// its own contribution. See contributions.go.
-	diagnosticsMu           sync.Mutex
-	diagnosticsBySource     map[lsp.DocumentURI]map[lsp.DocumentURI][]publishedDiagnostic
-	sourcesByTarget         map[lsp.DocumentURI]map[lsp.DocumentURI]bool
+	// its own contribution. calleeReadsBySource is the canonical path of every file
+	// each open workflow's last compile read for its `call:` steps, compiled or not,
+	// which is what a save of a callee is matched against. See contributions.go.
+	diagnosticsMu       sync.Mutex
+	diagnosticsBySource map[lsp.DocumentURI]map[lsp.DocumentURI][]publishedDiagnostic
+	sourcesByTarget     map[lsp.DocumentURI]map[lsp.DocumentURI]bool
+	calleeReadsBySource map[lsp.DocumentURI]calleeReads
+
+	// calleeReadLimit lowers maxCalleeReads for a test.
+	calleeReadLimit int
+
 	testDefaultsBySuite     map[lsp.DocumentURI]lsp.DocumentURI
 	testSuitesByDefaults    map[lsp.DocumentURI]map[lsp.DocumentURI]bool
 	testOverflowsByDefaults map[lsp.DocumentURI]map[lsp.DocumentURI]bool

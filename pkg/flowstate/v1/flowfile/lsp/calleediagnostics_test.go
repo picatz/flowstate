@@ -11,6 +11,8 @@ import (
 	"github.com/sourcegraph/go-lsp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	v1 "github.com/picatz/flowstate/pkg/flowstate/v1"
 )
 
 // The two fixtures of #1555: a callee whose default breaks its own `must:`
@@ -289,7 +291,7 @@ func TestNoCodeActionOffersACalleeEditOnTheCallerBuffer(t *testing.T) {
 
 		doc, ok := f.c.server.docs.get(f.callerURI)
 		require.True(t, ok)
-		own, callees := diagnoseAll(doc)
+		own, callees, _ := diagnoseAll(doc)
 		for _, c := range own {
 			assert.Empty(t, c.source.File, "a callee's diagnostic is never carried as this buffer's")
 		}
@@ -374,5 +376,207 @@ func TestSavingACleanCalleeBrokenRepublishesItsOpenCaller(t *testing.T) {
 		// With the callee's buffer gone, the caller's view of it is what shows.
 		f.c.closeNoWait(string(f.calleeURI))
 		f.settled(t, f.calleeURI, "the caller's view of the callee", hasDiagnostics)
+	})
+}
+
+const (
+	// middleCallee calls the fixture's callee, as the middle link of A -> B -> C.
+	middleCallee = "edition: v2026.4\nname: middle\nsteps:\n  - id: leaf\n    call: ./callee.yaml\n"
+	// outerCaller calls middleCallee, and so reaches the fixture's callee only through it.
+	outerCaller = "edition: v2026.4\nname: outer\nsteps:\n  - id: hop\n    call: ./lib/middle.yaml\n"
+	// loggingOuter is outerCaller after its call is removed.
+	loggingOuter = "edition: v2026.4\nname: outer\nsteps:\n  - id: hop\n    log:\n      message: hi\n"
+)
+
+func (f *calleeFixture) saveCallee(t *testing.T, text string) {
+	t.Helper()
+	f.writeCallee(t, text)
+	require.NoError(t, f.c.conn.Notify(t.Context(), "textDocument/didSave", lsp.DidSaveTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: f.calleeURI},
+	}))
+}
+
+// publicationsFor counts the notifications sent for uri so far.
+func (f *calleeFixture) publicationsFor(uri lsp.DocumentURI) int {
+	f.c.mu.Lock()
+	defer f.c.mu.Unlock()
+	n := 0
+	for _, p := range f.c.withRelated {
+		if p.URI == uri {
+			n++
+		}
+	}
+
+	return n
+}
+
+// A workflow that reaches the saved file through another callee neither calls it
+// nor holds a diagnostic against it while everything is clean, so only what its
+// compile read can bring it back (#2714).
+func TestSavingACalleeRepublishesWorkflowsReachingItThroughAnotherCallee(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		middlePath := filepath.Join(f.dir, "lib", "middle.yaml")
+		require.NoError(t, os.WriteFile(middlePath, []byte(middleCallee), 0o644))
+		outerURI, middleURI := f.callerURI, fileURI(middlePath)
+
+		f.c.openNoWait(string(outerURI), outerCaller)
+		f.c.openNoWait(string(middleURI), middleCallee)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		f.settled(t, outerURI, "a clean outer workflow", isEmpty)
+		f.settled(t, middleURI, "a clean middle workflow", isEmpty)
+
+		f.saveCallee(t, plainCallee)
+
+		f.settled(t, outerURI, "callee-failed", func(p publishDiagnosticsParams) bool {
+			return len(p.Diagnostics) == 1 && p.Diagnostics[0].Code == "callee-failed"
+		})
+	})
+}
+
+// What a workflow read is replaced when it is published again, so one edited to
+// stop reaching the saved file is not republished by its save, and it is dropped
+// when the workflow closes.
+func TestCalleeReadsAreReplacedOnRepublishAndDroppedOnClose(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		middlePath := filepath.Join(f.dir, "lib", "middle.yaml")
+		require.NoError(t, os.WriteFile(middlePath, []byte(middleCallee), 0o644))
+		outerURI := f.callerURI
+
+		f.c.openNoWait(string(outerURI), outerCaller)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		f.settled(t, outerURI, "a clean outer workflow", isEmpty)
+		f.saveCallee(t, plainCallee)
+		f.settled(t, outerURI, "callee-failed", hasDiagnostics)
+
+		// The chain is removed: the workflow no longer reads the callee at all.
+		f.c.changeNoWait(string(outerURI), loggingOuter, 2)
+		f.settled(t, outerURI, "a clean outer workflow once the call is gone", isEmpty)
+		before := f.publicationsFor(outerURI)
+
+		f.saveCallee(t, fixedCallee)
+		synctest.Wait()
+		assert.Equal(t, before, f.publicationsFor(outerURI), "a workflow that no longer reaches the file is not republished by its save")
+
+		f.c.changeNoWait(string(outerURI), outerCaller, 3)
+		f.settled(t, outerURI, "a clean outer workflow again", isEmpty)
+		f.c.closeNoWait(string(outerURI))
+		synctest.Wait()
+		f.c.server.diagnosticsMu.Lock()
+		defer f.c.server.diagnosticsMu.Unlock()
+		assert.Empty(t, f.c.server.calleeReadsBySource, "a closed workflow keeps no record of what it read")
+	})
+}
+
+func (f *calleeFixture) notifySaved(t *testing.T, uri lsp.DocumentURI) {
+	t.Helper()
+	require.NoError(t, f.c.conn.Notify(t.Context(), "textDocument/didSave", lsp.DidSaveTextDocumentParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: uri},
+	}))
+}
+
+// A callee that could not be read has no compiled frame, but creating it must
+// still reach the workflow that calls it.
+func TestSavingAMissingCalleeRepublishesItsOpenCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, fixedCallee)
+		require.NoError(t, os.Remove(f.calleePath))
+		f.c.openNoWait(string(f.callerURI), calleeCaller)
+		f.settled(t, f.callerURI, "call-unreadable", hasDiagnostics)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
+
+		f.writeCallee(t, fixedCallee)
+		f.notifySaved(t, f.calleeURI)
+
+		f.settled(t, f.callerURI, "a clean caller", isEmpty)
+	})
+}
+
+// A pin the callee no longer matches stops its compile before a frame exists;
+// repairing the callee must still reach the workflow.
+func TestSavingACalleeThatFailedItsPinRepublishesItsOpenCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		f := newCalleeFixture(t, plainCallee)
+		pinned := calleeCaller + "    digest: " + v1.ContentDigest([]byte(fixedCallee)) + "\n"
+		f.c.openNoWait(string(f.callerURI), pinned)
+		f.settled(t, f.callerURI, "a pin failure", hasDiagnostics)
+		f.c.openNoWait(string(f.calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
+
+		f.writeCallee(t, fixedCallee)
+		f.notifySaved(t, f.calleeURI)
+
+		f.settled(t, f.callerURI, "a clean caller", isEmpty)
+	})
+}
+
+// A workflow that read more callee files than are remembered cannot be matched
+// against a save, so any callee save republishes it.
+func TestSavingAnyCalleeRepublishesAWorkflowWhoseReadsOverflowed(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		dir := t.TempDir()
+		server := &FlowfileServer{Logger: discardLogger(), calleeReadLimit: 1}
+		c := newClientFor(t, server)
+		f := &calleeFixture{c: c, dir: dir}
+		c.initialize()
+
+		head := "edition: v2026.4\nname: n\nsteps:\n"
+		// Names sort a before b, so b is the callee omitted from the one kept.
+		for _, name := range []string{"a.yaml", "b.yaml"} {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(head+"  - id: s\n    log:\n      message: hi\n"), 0o644))
+		}
+		callerURI := fileURI(filepath.Join(dir, "caller.yaml"))
+		bURI := fileURI(filepath.Join(dir, "b.yaml"))
+		c.openNoWait(string(callerURI), head+"  - id: p\n    call: ./a.yaml\n  - id: q\n    call: ./b.yaml\n")
+		f.settled(t, callerURI, "a clean caller", isEmpty)
+		c.openNoWait(string(bURI), head+"  - id: s\n    log:\n      message: hi\n")
+		synctest.Wait() // the buffer is open before it is saved
+
+		broken := calleeHead + "  - id: work\n    log:\n      message: hi\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(broken), 0o644))
+		f.notifySaved(t, bURI)
+
+		f.settled(t, callerURI, "callee-failed", hasDiagnostics)
+	})
+}
+
+// A callee that does not exist yet, under a directory reached through a symlink,
+// is keyed by the path it will have once created, so saving it by its real path
+// reaches the workflow.
+func TestSavingACalleeCreatedUnderASymlinkedDirectoryRepublishesItsCaller(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		realDir := filepath.Join(root, "real")
+		// Not a sibling of the real directory, so a name built from one relative
+		// to the other would climb out of the link's own spelling.
+		linkDir := filepath.Join(root, "ws", "deep", "link")
+		require.NoError(t, os.Mkdir(realDir, 0o755))
+		require.NoError(t, os.MkdirAll(filepath.Dir(linkDir), 0o755))
+		require.NoError(t, os.Symlink(realDir, linkDir))
+		c := newClient(t)
+		c.initialize()
+		f := &calleeFixture{c: c}
+
+		callerURI := fileURI(filepath.Join(linkDir, "workflow.yaml"))
+		c.openNoWait(string(callerURI), calleeCaller)
+		f.settled(t, callerURI, "call-unreadable", hasDiagnostics)
+
+		require.NoError(t, os.MkdirAll(filepath.Join(realDir, "lib"), 0o755))
+		calleePath := filepath.Join(realDir, "lib", "callee.yaml")
+		require.NoError(t, os.WriteFile(calleePath, []byte(fixedCallee), 0o644))
+		calleeURI := fileURI(calleePath)
+		c.openNoWait(string(calleeURI), fixedCallee)
+		synctest.Wait() // the buffer is open before it is saved
+		f.notifySaved(t, calleeURI)
+
+		f.settled(t, callerURI, "a clean caller", isEmpty)
 	})
 }

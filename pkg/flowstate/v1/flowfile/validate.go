@@ -2429,32 +2429,42 @@ func (e Env) ValidateSourceAt(data []byte, path string) (Diagnostics, error) {
 // rewrite that moves a line leaves the gate exactly where it was, because the
 // alternative is being helpful about the wrong line.
 func validateThroughEdition(env Env, data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
-	ds, err := parseAndValidate(env, data, path, cache)
+	ds, _, err := validateReadingFiles(env, data, path, cache)
+
+	return ds, err
+}
+
+// validateReadingFiles is [validateThroughEdition] that also names the callee
+// files the compile read ([Positions.CalleeFiles]), so a caller can tell which
+// saved files the answer depends on. The files are those of the compile whose
+// answer is returned; an edition gate that stops the parse read none.
+func validateReadingFiles(env Env, data []byte, path string, cache *ModuleCache) (Diagnostics, []string, error) {
+	ds, files, err := parseAndValidate(env, data, path, cache)
 	if err == nil {
-		return ds, nil
+		return ds, files, nil
 	}
 
 	var gate Diagnostics
 	if !errors.As(err, &gate) || !isEditionGate(gate) {
-		return nil, err
+		return nil, files, err
 	}
 
 	fixed, fixErr := env.Fix(data)
 	if fixErr != nil || !fixed.Complete() || !fixed.Changed() {
-		return nil, err
+		return nil, files, err
 	}
 	if !editionOnlyRewrite(data, fixed.Source) {
-		return nil, err
+		return nil, files, err
 	}
 
-	rest, restErr := parseAndValidate(env, fixed.Source, path, cache)
+	rest, restFiles, restErr := parseAndValidate(env, fixed.Source, path, cache)
 	if restErr != nil {
 		var restDiagnostics Diagnostics
 		if !errors.As(restErr, &restDiagnostics) {
 			// The rewritten document does not compile for a reason that is not a
 			// diagnostic at all. Nothing further can honestly be said about it, so
 			// the edition line stands alone exactly as it did before.
-			return nil, err
+			return nil, files, err
 		}
 		rest = restDiagnostics
 	}
@@ -2463,7 +2473,7 @@ func validateThroughEdition(env Env, data []byte, path string, cache *ModuleCach
 	// document which does not compile has always come back as, and the edition is
 	// still the reason it does not. What changes is only how much of the rest of
 	// the file the author is told about in the same breath.
-	return nil, append(slices.Clone(gate), rest...)
+	return nil, restFiles, append(slices.Clone(gate), rest...)
 }
 
 // isEditionGate reports whether a compile failed at the edition gate and nowhere
@@ -2517,10 +2527,11 @@ func isEditionDeclaration(line string) bool {
 // Calls [parse] directly rather than the public [Parse]/[ParseAt], so that when
 // the compiler reports diagnostics, the partial workflow is still available for
 // [validateParsed] to run the step-id checks against.
-func parseAndValidate(env Env, data []byte, path string, cache *ModuleCache) (Diagnostics, error) {
+func parseAndValidate(env Env, data []byte, path string, cache *ModuleCache) (Diagnostics, []string, error) {
 	wf, positions, err := parse(env, data, path, nil, new(int), cache.moduleSession())
+	ds, err := validateParsed(env, wf, positions, err)
 
-	return validateParsed(env, wf, positions, err)
+	return ds, positions.CalleeFiles(), err
 }
 
 func validateParsed(env Env, wf *v1.Workflow, positions *Positions, err error) (Diagnostics, error) {

@@ -242,6 +242,13 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	}
 	resolved := located.Path
 
+	// The callee is compiled under the name its own diagnostics are reported by,
+	// which is how its caller reached it and not the real path it was read from.
+	// Recorded as read before anything can refuse it, so a callee that cannot be
+	// read, fails its pin or does not compile is still a file this result depends on.
+	display := calleeDisplayName(cmp.Or(c.display, c.filePath), c.filePath, located.CallerDir, resolved)
+	c.pos.noteRead(display)
+
 	// The chain of files compiling this one, including this file itself — so
 	// that a direct self-call (A calls A) is caught by the same walk as a
 	// longer cycle (A calls B calls A), and so the callee inherits the whole
@@ -307,11 +314,10 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 		return nil
 	}
 
-	// The callee is compiled under the name its own diagnostics are reported by,
-	// which is how its caller reached it and not the real path it was read from.
-	display := calleeDisplayName(cmp.Or(c.display, c.filePath), located.CallerDir, resolved)
 	callee, calleePos, err := parseDisplayed(c.env, data, resolved, display, ancestors, c.callBudget, nil)
 	if err != nil {
+		// What the failing callee itself called is read all the same.
+		c.pos.noteRead(calleePos.CalleeFiles()...)
 		// A callee that did not compile has problems of its own, each already at
 		// its own line in its own file. They are kept as that file's diagnostics
 		// and this file says only that they exist.
@@ -331,6 +337,8 @@ func (c *compiler) call(pathNode ast.Node, stepPath, kindPath string, r ref, wit
 	// yet spent.
 	*c.callBudget += countCompiledNodes(callee.GetSteps())
 	if *c.callBudget > maxCallExpansionNodes {
+		// Compiled, but with no frame to walk: what it called is read all the same.
+		c.pos.noteRead(calleePos.CalleeFiles()...)
 		c.report(spanOfNode(pathNode), callRef,
 			"calling %q brings the total compiled across every call in this file to more than "+
 				"%d steps, which is more than a Flowfile's calls are meant to expand to; a diamond "+
