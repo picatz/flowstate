@@ -121,9 +121,10 @@ check:
 # separate because it needs vhs. CI and `check` run `regen-check`, so there is
 # one mechanism and one remedy.
 regen: regen-proto
-	go generate ./cmd/flow/internal/reference
-	go run ./cmd/flow docs generate
+	# fix before generate: the reference mirror compiles in copies of examples/.
 	go run ./cmd/flow fix examples/
+	go generate ./cmd/flow/internal/reference ./internal/schemaifacepilot
+	go run ./cmd/flow docs generate
 	$(MAKE) plugin-example-catalog-update
 	$(MAKE) fmt
 
@@ -135,6 +136,9 @@ regen-proto:
 # Run `regen`, then fail with one message when it changed or created anything.
 # Tracked drift shows in `git diff`; a generated file nobody committed shows in
 # check-untracked-generated (which does not touch the index).
+# Every place `regen` can create a file, for the untracked check below.
+REGEN_OUTPUTS := '*.pb.go' '*.connect.go' editors/claude-code/types/flowstate.d.ts docs/reference/ cmd/flow/internal/reference/ internal/schemaifacepilot/
+
 regen-check: regen
 	@git diff --exit-code || { echo "generated files are stale: run 'make regen' and commit the result" >&2; exit 1; }
 	@$(MAKE) --no-print-directory check-untracked-generated
@@ -162,7 +166,7 @@ plugin-proto:
 # generated output, so unrelated new files you have not staged yet do not fail
 # the rehearsal, and files .gitignore covers never do (#2169).
 check-untracked-generated:
-	@untracked="$$(git ls-files --others --exclude-standard -- '*.pb.go' '*.connect.go')" || exit 1; \
+	@untracked="$$(git ls-files --others --exclude-standard -- $(REGEN_OUTPUTS))" || exit 1; \
 	if [ -n "$$untracked" ]; then \
 		echo "generated files are stale: run 'make regen' and git add the new files:"; \
 		echo "$$untracked"; \
@@ -350,7 +354,7 @@ plugin-examples:
 	trap 'rm -f "$$generated" "$$validation"' EXIT HUP INT TERM; \
 	tools/pluginexamples/catalog.sh "$$generated" "$$validation"; \
 	diff -u examples/plugins/plugins.lock.json "$$generated" || { \
-		echo "plugin example catalog drifted; run 'make plugin-example-catalog-update' and review the result" >&2; \
+		echo "plugin example catalog drifted; run 'make regen' and commit the result" >&2; \
 		exit 1; \
 	}; \
 	go run ./cmd/flow validate --plugin-catalog "$$validation" examples/plugins/
