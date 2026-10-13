@@ -129,3 +129,28 @@ func TestArgsWalksLikeSlog(t *testing.T) {
 		}
 	}
 }
+
+func TestArgsRewritesGroupsAnyAndBadKeys(t *testing.T) {
+	t.Parallel()
+
+	var nilPtr *nilErr
+
+	got := logsafe.Args(
+		slog.Group("g", slog.String("s", "a\nb"), slog.Any("e", errors.New("x\ny"))),
+		slog.Any("n", nilPtr),
+		errors.New("bad\nkey"),
+	)
+
+	g := got[0].(slog.Attr).Value.Group()
+	if g[0].Value.String() != `a\nb` || g[1].Value.String() != `x\ny` {
+		t.Fatalf("group members not rewritten: %v", g)
+	}
+
+	if v := got[1].(slog.Attr).Value.String(); v != "<nil>" {
+		t.Fatalf("typed-nil error in an Attr = %q, want <nil>", v)
+	}
+
+	if got[2] != `bad\nkey` {
+		t.Fatalf("bad key = %v, want rewritten", got[2])
+	}
+}

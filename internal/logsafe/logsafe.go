@@ -97,9 +97,9 @@ func Value(v any) (safe any) {
 
 // Args returns args with the value of each key/value pair passed through
 // [Value]. It walks the arguments as [log/slog.Logger.Log] does: a string key
-// takes the next argument as its value, and a [log/slog.Attr], or anything else
-// where a key belongs, stands alone and is kept as written (an Attr's own
-// string value is rewritten, as a pair's is).
+// takes the next argument as its value, and a [log/slog.Attr] stands alone with its
+// own text rewritten, as a pair's is. Anything else where a key belongs is
+// logged by slog as the value of "!BADKEY", so it is rewritten as a value.
 func Args(args ...any) []any {
 	out := make([]any, 0, len(args))
 
@@ -116,7 +116,8 @@ func Args(args ...any) []any {
 		case slog.Attr:
 			out = append(out, safeAttr(key))
 		default:
-			out = append(out, key)
+			// slog logs this as the value of "!BADKEY", so it is a value.
+			out = append(out, Value(key))
 		}
 	}
 
@@ -141,7 +142,9 @@ func safeAttr(a slog.Attr) slog.Attr {
 
 		return slog.Group(a.Key, safe...)
 	default:
-		return a
+		// The resolved value, not the original: a LogValuer must not be asked
+		// again by the handler for something other than what was checked.
+		return slog.Attr{Key: a.Key, Value: v}
 	}
 }
 
