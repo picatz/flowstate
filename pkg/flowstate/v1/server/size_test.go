@@ -130,7 +130,7 @@ func TestARunTooLargeToCarryFailsRatherThanWedging(t *testing.T) {
 	// about. (This fixture used to grow a `for_each`'s `results`; that path is now
 	// bounded before it can wedge, which is a different guarantee proven elsewhere.)
 	//
-	// The state triples each iteration (`acc + acc + chunk`), so it crosses the bound
+	// The state roughly doubles each iteration (`acc + acc + chunk`), so it crosses the bound
 	// in a handful of Continue-As-New cycles from a specification that stays small.
 	// The claim is that a run which can no longer be carried fails instead of
 	// wedging, not that it does so after any particular number of cycles; each cycle
