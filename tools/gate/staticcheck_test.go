@@ -203,7 +203,7 @@ func ranOrSkipped(run bool) string {
 // analysers' GOTOOLCHAIN to one value. The Makefile's GOVULNCHECK and
 // STATICCHECK variables, ci.yml's run lines and deep.yml's govulncheck lines
 // each spell it, and the Makefile and ci.yml had drifted (go1.27.0 against
-// go1.27.2) while the Makefile claimed to be what CI runs. The gate's
+// go1.27.3) while the Makefile claimed to be what CI runs. The gate's
 // staticcheckToolchain is the reference because the test above already binds
 // ci.yml's staticcheck line to it.
 func TestEveryToolchainPinSpellsTheGatesRelease(t *testing.T) {

@@ -743,7 +743,7 @@ jobs:
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> govulncheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.2 go tool -modfile=../../tools/external/go.mod govulncheck ./... ) || failed=1
+            ( cd "$module" && GOTOOLCHAIN=go1.27.3 go tool -modfile=../../tools/external/go.mod govulncheck ./... ) || failed=1
           done
           exit $failed
 
@@ -790,7 +790,7 @@ jobs:
       # says so per standard-library package instead of reporting findings. See
       # CLAUDE.md.
       - name: Static analysis
-        run: GOTOOLCHAIN=go1.27.2 go tool -modfile=tools/external/go.mod staticcheck ./...
+        run: GOTOOLCHAIN=go1.27.3 go tool -modfile=tools/external/go.mod staticcheck ./...
 
       - name: Static analysis (plugin modules)
         run: |
@@ -798,7 +798,7 @@ jobs:
           for module in plugins/*/; do
             [ -f "$module/go.mod" ] || continue
             echo "==> staticcheck $module"
-            ( cd "$module" && GOTOOLCHAIN=go1.27.2 go tool -modfile=../../tools/external/go.mod staticcheck ./... ) || failed=1
+            ( cd "$module" && GOTOOLCHAIN=go1.27.3 go tool -modfile=../../tools/external/go.mod staticcheck ./... ) || failed=1
           done
           exit $failed
 
