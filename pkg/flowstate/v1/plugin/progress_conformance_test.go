@@ -583,7 +583,7 @@ func TestProgressFramesPastTheCapAreDropped(t *testing.T) {
 // What tells this apart from the call merely running out its CallTimeout is
 // the *shape* of the refusal, not how long it took to arrive. Reaching the
 // byte ceiling truncates the stream mid-envelope, which connect reports as
-// CodeInvalidArgument ("protocol error: incomplete envelope"); a deadline
+// CodeInternal ("protocol error: incomplete envelope"); a deadline
 // expiring reports CodeDeadlineExceeded and satisfies
 // errors.Is(err, context.DeadlineExceeded). A bound that quietly stopped
 // applying produces neither: the fixture would run its whole loop (cheaply,
@@ -626,14 +626,17 @@ func TestUnboundedProgressFloodIsStillRefused(t *testing.T) {
 	// in for the refusal under test with the ceiling never reached at all.
 	// So this asserts the shape the byte ceiling actually produces:
 	// boundedTransport (transport.go) stops the body mid-message, connect
-	// finds a truncated envelope, and reports CodeInvalidArgument naming it.
+	// finds a truncated envelope, and reports it by name. Connect v1.21.1
+	// moved that report from CodeInvalidArgument to CodeInternal, so the
+	// code alone no longer separates it from a broken stream; the envelope
+	// substring below is what does.
 	// Measured twelve times over, idle and under eight-way CPU load, always
 	// "protocol error: incomplete envelope: unexpected EOF"; the substring is
 	// the narrower half of that message rather than the whole of it, because
 	// truncation has a sibling spelling ("promised N bytes in enveloped
 	// message") that connect chooses between by where in a frame the cut
 	// lands, and both are this bound firing.
-	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
 		"the refusal must be the byte ceiling truncating the stream mid-envelope, not some other failure "+
 			"(a deadline, a dead plugin, a broken stream) standing in for it: %v", err)
 	assert.Contains(t, err.Error(), "envelope",
